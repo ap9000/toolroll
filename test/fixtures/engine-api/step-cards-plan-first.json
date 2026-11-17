@@ -98,6 +98,10 @@
     }
   ],
   "review": null,
+  "shell": {
+    "run": 3,
+    "why": null
+  },
   "failure": null,
   "waiting": null,
   "held": null,

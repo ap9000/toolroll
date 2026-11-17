@@ -250,7 +250,9 @@ fn the_console_saying_no_or_closing_is_said_plainly() {
         )),
     });
     assert_eq!(app.mode, Mode::Normal);
+    // The pane says why; no terminal window is drawn, and the refusal is said.
     assert!(matches!(app.term.as_ref().unwrap().link, Link::Closed(_)));
+    assert!(app.status.as_ref().unwrap().1.contains("only person using"));
     insta::assert_snapshot!("terminal_tab_refused", screen(&mut app, 120, 30));
     // Signed out (or a second person joined) while typing: back to the workbench, and why.
     let mut app = taken_over();
@@ -663,4 +665,110 @@ fn t_pressed_before_the_steps_are_read_goes_on_once_they_are() {
         Ok(parse(state.steps["t-done"].clone())),
     ));
     assert_eq!(away.mode, Mode::Normal);
+}
+
+// ---- nine4: a shell that can't open never takes keys -----------------------------------------------------------------
+
+/// What a key set off: any effect, or a dialog or composer opened.
+fn acted(app: &mut App, k: KeyEvent) -> bool {
+    let fx = app.key(k);
+    !fx.is_empty() || !matches!(app.mode, Mode::Normal)
+}
+
+#[test]
+fn a_build_with_nothing_to_open_is_refused_before_any_confirm() {
+    let mut app = app_on("t-done");
+    // The console says this build has no saved commit (StepCards.shell).
+    let mut steps = app.steps.clone().unwrap();
+    let run = steps.review.as_ref().unwrap().run;
+    steps.shell = Some(Shell {
+        run,
+        why: Some("This build has no saved commit to open a terminal on.".into()),
+    });
+    app.steps = Some(steps);
+    assert_eq!(app.key(key('t')), vec![]);
+    // No confirm, no pane, no terminal window: the refusal, in the console's words.
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.is_none());
+    assert_eq!(
+        app.status.as_ref().unwrap().1,
+        "This build has no saved commit to open a terminal on."
+    );
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        !shown.lines().any(|l| l.contains("│ ╭")),
+        "no terminal window:\n{shown}"
+    );
+    assert!(!shown.contains("PgUp/PgDn scroll"), "{shown}");
+}
+
+#[test]
+fn typing_after_a_failed_open_sets_off_no_workbench_act() {
+    let mut app = app_on("t-done");
+    app.key(key('t'));
+    screen(&mut app, 120, 30);
+    app.key(key('t'));
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: fake::RESULT_RUN,
+        result: Err(ApiError::Refused(
+            "This build has no saved commit to open a terminal on.".into(),
+        )),
+    });
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        !shown.lines().any(|l| l.contains("│ ╭")),
+        "no terminal window:\n{shown}"
+    );
+    // What a person who thinks they are typing in a shell presses: none of it reaches the workbench.
+    for k in [
+        key('w'),
+        key('n'),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        key('a'),
+        key('r'),
+        key('x'),
+        key('X'),
+        key('s'),
+        key('T'),
+        key('1'),
+        key('l'),
+        key('s'),
+    ] {
+        assert!(
+            !acted(&mut app, k),
+            "{k:?} acted: {:?} {:?}",
+            app.mode,
+            app.status
+        );
+        assert!(
+            app.status.as_ref().unwrap().1.contains("isn't taking keys"),
+            "{:?}",
+            app.status
+        );
+    }
+    // Moving on still works: the next tab, and t to try again.
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.tab, Tab::Live);
+}
+
+#[test]
+fn the_drawn_pane_input_gate_holds_for_a_live_shell_not_being_typed_in() {
+    let mut app = taken_over();
+    // Back to the workbench (Ctrl-]): the shell's window still shows; workbench acts don't fall through.
+    app.key(ctrl(']'));
+    assert_eq!(app.mode, Mode::Normal);
+    screen(&mut app, 120, 30);
+    for k in [
+        key('w'),
+        key('n'),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        key('a'),
+        key('r'),
+    ] {
+        assert!(!acted(&mut app, k), "{k:?} acted");
+    }
+    // t types in it again; moving and help still work.
+    assert_eq!(app.key(key('t')), vec![]);
+    assert_eq!(app.mode, Mode::TakeOver);
 }

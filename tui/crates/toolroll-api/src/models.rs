@@ -514,6 +514,9 @@ pub struct StepCards {
     pub live_run: Option<i64>,
     pub cards: Option<Vec<StepCard>>,
     pub review: Option<Review>,
+    /// Open build shell's build and why a terminal can't be opened on it (null `why`: it can be); null with no build.
+    #[serde(default)]
+    pub shell: Option<Shell>,
     /// Why a failed task stopped (null unless it failed).
     pub failure: Option<Failure>,
     /// A queued task waiting to start again (null otherwise).
@@ -527,6 +530,15 @@ pub struct StepCards {
     pub room: String,
 }
 
+/// Open build shell's build (StepCards.shell): the run it would open, and why it can't (None: it can).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Shell {
+    pub run: i64,
+    pub why: Option<String>,
+}
+
+/// Why a failed task stopped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Failure {

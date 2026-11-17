@@ -172,6 +172,7 @@
     }
   ],
   "review": null,
+  "shell": null,
   "failure": null,
   "waiting": null,
   "held": null,

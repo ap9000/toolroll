@@ -261,6 +261,16 @@ impl App {
         }
         self.panes.slots.resize(4, None);
         self.line_cache = None;
+        // Said for what it is (set_filter's "Showing everything." was about the list, not this).
+        let n = self.panes.slots.iter().filter(|s| s.is_some()).count() + 1;
+        self.say(
+            crate::app::Tone::Said,
+            if n == 1 {
+                "Watching 1 running task.".to_string()
+            } else {
+                format!("Watching {n} running tasks.")
+            },
+        );
         fx.push(Effect::Watch(self.rooms()));
         fx
     }
@@ -450,14 +460,18 @@ pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
         .or_else(|| watch.steps.as_ref().map(|s| clean(&s.task.title)))
         .unwrap_or_else(|| watch.task.clone());
     let waits = item.is_some_and(|i| i.section == Section::NeedsYou);
-    let mut lines = vec![Line::from(Span::styled(
-        fit_text(&title, w),
-        if waits { needs_you() } else { ink() },
-    ))];
-    let mut facts = vec![];
-    if let Some(agent) = app.facts.agent(&watch.task) {
-        facts.push(agent.to_string());
+    // The title first and whole when it can be (two lines at most, then cut), never given up for the model's name.
+    let title_style = if waits { needs_you() } else { ink() };
+    let mut wrapped = crate::text::wrap(&title, w);
+    if wrapped.len() > 2 {
+        let rest = wrapped[1..].join(" ");
+        wrapped.truncate(1);
+        wrapped.push(fit_text(&rest, w));
     }
+    let mut lines: Vec<Line> = wrapped
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, title_style)))
+        .collect();
     let state = if waits {
         "Needs you".to_string()
     } else if let Some(wait) = item.and_then(|i| i.waiting.as_ref()) {
@@ -482,10 +496,28 @@ pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
         }
         state
     };
-    facts.push(state);
+    // The facts line: its cost first when known (the console's figure, else its build's own), then its state, then
+    // the model's name only when the line still fits.
+    let mut facts = vec![];
     if app.prefs.settings.show_costs {
-        if let Some(cost) = app.facts.cost(&watch.task) {
+        let cost = app.facts.cost(&watch.task).or_else(|| {
+            watch.steps.as_ref().and_then(|s| {
+                s.cards
+                    .iter()
+                    .flatten()
+                    .find(|c| c.key == "build")
+                    .and_then(|c| c.cost_usd)
+            })
+        });
+        if let Some(cost) = cost {
             facts.push(format!("${cost:.2}"));
+        }
+    }
+    facts.push(state);
+    if let Some(agent) = app.facts.agent(&watch.task) {
+        let with = format!("{} · {agent}", facts.join(" · "));
+        if crate::text::width(&with) <= w {
+            facts.push(agent.to_string());
         }
     }
     lines.extend(

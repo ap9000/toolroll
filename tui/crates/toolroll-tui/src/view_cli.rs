@@ -548,7 +548,11 @@ pub fn reset(env: &Env) -> Result<String, String> {
         true,
         &reset_text,
     )?;
-    Ok(format!("Your workbench look is back to the defaults; your keys are unchanged. The previous file is {}.", backup.ok_or("No backup was made")?))
+    Ok(match backup {
+        Some(name) => format!("Your workbench look is back to the defaults; your keys are unchanged. The previous file is {name}."),
+        // Nothing changed, so nothing was kept beside it.
+        None => "Already the defaults; nothing was changed or backed up.".into(),
+    })
 }
 
 fn reset_text(text: &str) -> String {

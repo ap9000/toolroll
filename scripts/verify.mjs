@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createServer } from 'node:net';
 import { Screen } from './first-result-kit.mjs';
 import { FILING_ANSWER } from './tui-e2e.mjs';
-import { MARKER, SCENARIOS, assertAgentStandIns, checkedEnv, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
+import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, assertAgentStandIns, checkedEnv, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const featureMap = JSON.parse(readFileSync(join(repo, 'docs/feature-map.json'), 'utf8'));
@@ -31,6 +31,9 @@ export function validateMap(map, source) {
     if (!SCENARIOS.includes(entry.scenario)) throw new Error(`Unknown scenario: ${entry.scenario}`);
     if (!entry.screen || !entry.reach || !entry.expected) throw new Error(`Incomplete feature: ${entry.id}`);
     new RegExp(entry.expected);
+    if (entry.needs !== undefined && (!Array.isArray(entry.needs) || entry.needs.some(need => !WORLD_NEEDS.includes(need)))) {
+      throw new Error(`Invalid world needs for ${entry.id}`);
+    }
     for (const action of entry.actions) {
       if (!actions.has(action)) throw new Error(`Unknown action: ${action}`);
       covered.add(action);
@@ -40,6 +43,19 @@ export function validateMap(map, source) {
     }
     for (const key of entry.dialogKeys ?? []) if (!map.dialogKeys[key]) throw new Error(`Undeclared dialog key: ${key}`);
   }
+  const checked = new Set(), visiting = new Set();
+  const visit = entry => {
+    if (visiting.has(entry.id)) throw new Error(`Cyclic dependency: ${entry.id}`);
+    if (checked.has(entry.id)) return;
+    visiting.add(entry.id);
+    for (const id of entry.dependsOn ?? []) {
+      const dependency = map.features.find(f => f.id === id);
+      if (!dependency || dependency.scenario !== entry.scenario) throw new Error(`Invalid dependency ${id} for ${entry.id}`);
+      visit(dependency);
+    }
+    visiting.delete(entry.id); checked.add(entry.id);
+  };
+  for (const entry of map.features) visit(entry);
   for (const entry of map.intentionallyUnmapped) {
     const spec = actions.get(entry.action);
     if (!spec || !entry.reason || covered.has(entry.action)) throw new Error(`Invalid unmapped action: ${entry.action}`);
@@ -49,10 +65,23 @@ export function validateMap(map, source) {
   for (const spec of specs) if (!covered.has(spec.action)) throw new Error(`Unmapped keymap action: ${spec.action}`);
   return true;
 }
+/** Include needs of prerequisites that run even when their own feature is not selected. */
+export function selectedNeeds(selected, map = featureMap) {
+  const needs = new Set(), visited = new Set();
+  const visit = feature => {
+    if (visited.has(feature.id)) return;
+    visited.add(feature.id);
+    for (const need of feature.needs ?? []) needs.add(need);
+    for (const id of feature.dependsOn ?? []) visit(map.features.find(f => f.id === id));
+  };
+  for (const feature of selected) visit(feature);
+  return [...needs];
+}
 export function parseArgs(args) {
-  const options = { scenarios: [], features: [], keep: false, tarball: null, out: null };
+  const options = { scenarios: [], features: [], keep: false, help: false, tarball: null, out: null };
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
+    if (name === '--help' || name === '-h') { options.help = true; continue; }
     if (name === '--keep') { options.keep = true; continue; }
     if (!['--scenario', '--features', '--tarball', '--out'].includes(name) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`Invalid argument: ${name}`);
     const value = args[++i];
@@ -65,13 +94,66 @@ export function parseArgs(args) {
   for (const id of options.features) if (!featureMap.features.some(f => f.id === id)) throw new Error(`Unknown feature: ${id}`);
   return options;
 }
+export function usage() {
+  return `Usage: node scripts/verify.mjs [options]
+
+  --help, -h          Show this help without starting verification
+  --scenario <name>   Select a scenario (repeatable)
+  --features <ids>    Select comma-separated feature ids (repeatable)
+  --tarball <path>    Install and verify this package with scripts disabled
+  --out <folder>      Write evidence to an empty folder (in-repo: evidence/)
+  --keep              Retain the temporary world after stopping its processes
+
+Scenarios: ${SCENARIOS.join(', ')}
+Features by scenario:
+${SCENARIOS.map(s => `  ${s}: ${featureMap.features.filter(f => f.scenario === s).map(f => f.id).join(', ')}`).join('\n')}
+
+No selectors runs every feature. Both selectors run their intersection.
+Dependencies run as needed; only selected features receive verdicts.
+Example: node scripts/verify.mjs --features welcome,new-task,help
+`;
+}
+export function reportSummary(report) {
+  const failed = report.features.filter(f => f.status !== 'PASS');
+  return `PASS ${report.features.length - failed.length} · FAIL ${failed.length} of ${report.features.length}`
+    + (failed.length ? `\nFailing ids: ${failed.map(f => f.id).join(', ')}` : '');
+}
+export const expectedFailureReason = scenario => scenario === 'agent-error' ? 'agent-error' : 'retryable-infra';
+
+/** Run declared prerequisites once, but never let one failure suppress independent checks. */
+export async function runFeatures(selected, map, context, exerciseFeature = exercise, reset = toBase) {
+  const results = new Map();
+  const visit = async feature => {
+    if (results.has(feature.id)) return results.get(feature.id);
+    const start = Date.now();
+    let result;
+    for (const id of feature.dependsOn ?? []) {
+      const prerequisite = await visit(map.features.find(f => f.id === id));
+      if (prerequisite.status !== 'PASS') {
+        result = { status: 'FAIL', excerpt: '', error: `Prerequisite failed: ${id}` };
+        break;
+      }
+    }
+    if (!result) try {
+      await reset(context.term, context.world);
+      result = { status: 'PASS', ...await exerciseFeature(feature, context) };
+    } catch (error) {
+      result = { status: 'FAIL', excerpt: context.term.screen.text(), error: error.message };
+    }
+    result = { id: feature.id, scenario: feature.scenario, elapsedMs: Date.now() - start, ...result };
+    results.set(feature.id, result);
+    return result;
+  };
+  for (const feature of selected) await visit(feature);
+  return selected.map(f => results.get(f.id));
+}
 export function finishReport(report) {
   report.ok = report.sessions.length > 0 && report.features.length > 0 && report.features.every(f => f.status === 'PASS')
     && report.sessions.every(s => s.outbound?.status === 'PASS' && !s.error && !s.cleanupError);
   return report;
 }
 export function reportMarkdown(report) {
-  return `# Runtime verification\n\n${report.ok ? 'PASS' : 'FAIL'} · ${report.features.length} features\n\n`
+  return `# Runtime verification\n\n${reportSummary(report)}\n\nOverall: ${report.ok ? 'PASS' : 'FAIL'}\n\n`
     + report.sessions.map(s => `- ${s.scenario}: first text ${s.timings.firstTextMs ?? 'unseen'} ms; workbench ${s.timings.workbenchMs ?? 'unseen'} ms; outbound ${s.outbound?.status ?? 'FAIL'}${s.error ? `; ${s.error}` : ''}${s.cleanupError ? `; cleanup: ${s.cleanupError}` : ''}`).join('\n') + '\n\n'
     + report.features.map(f => `## ${f.id}: ${f.status}\n\n${f.error ?? f.state ?? ''}\n\n\`\`\`text\n${f.excerpt}\n\`\`\`\n`).join('\n');
 }
@@ -85,23 +167,33 @@ export async function until(fact, description, timeout = 60_000) {
     await new Promise(done => setTimeout(done, 30));
   }
 }
+/** The workbench's fatal dialog (view.rs): any key closes it and the workbench with it, so q never asks to quit. */
+const FATAL = /Press any key to close\./;
+export function fatalWords(text) {
+  const box = /╭ Toolroll ─[^\n]*\n([\s\S]*?)Press any key to close\./.exec(text)?.[1] ?? '';
+  return box.split('\n').map(line => { const a = line.indexOf('│'), b = line.lastIndexOf('│'); return a >= 0 && b > a ? line.slice(a + 1, b).trim() : ''; })
+    .filter(Boolean).join(' ') || 'its words could not be read';
+}
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 async function freePort() {
   const port = await new Promise((done, fail) => { const server = createServer(); server.once('error', fail); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => done(port)); }); });
   return port === 4180 ? freePort() : port;
 }
 class Terminal {
-  constructor(world, cli, binary, port, folder, cols) {
+  constructor(world, cli, binary, port, folder, cols, args = null) {
     Object.assign(this, { world, cli, binary, port, folder, cols, offset: 0, raw: '', answered: 0, started: Date.now(), steps: [], pids: new Set(), identities: new Map(), decoder: new StringDecoder('utf8'), screen: new Screen(40, cols) });
     mkdirSync(folder, { recursive: true });
     this.fifo = join(folder, 'keys'); this.log = join(folder, 'screen.log'); this.pidFile = join(folder, 'pid');
     run(world, 'mkfifo', [this.fifo]);
     this.keys = openSync(this.fifo, constants.O_RDWR);
+    this.exitFile = join(folder, 'exit-status');
     const command = ['python3', join(repo, 'scripts/fixtures/pty-host.py'), '40', String(cols), this.fifo, this.log, this.pidFile,
-      process.execPath, cli, '--port', String(port), ...(binary ? ['--tui-binary', binary] : [])].map(word).join(' ');
+      process.execPath, cli, ...(args ?? ['--port', String(port), ...(binary ? ['--tui-binary', binary] : [])])].map(word).join(' ');
     // Orphan the host, as tui-e2e does: a person's terminal has no coding agent ancestor.
     this.hostPidFile = join(folder, 'host-pid');
-    this.launcher = spawn(join(world.tools, 'sh'), ['-c', `${command} > ${word(join(folder, 'host.log'))} 2>&1 < /dev/null & printf '%s' "$!" > ${word(this.hostPidFile)}`],
+    const hosted = `${command} > ${word(join(folder, 'host.log'))} 2>&1 < /dev/null`;
+    const background = args === null ? hosted : `(${hosted}; printf '%s' "$?" > ${word(this.exitFile)})`;
+    this.launcher = spawn(join(world.tools, 'sh'), ['-c', `${background} & printf '%s' "$!" > ${word(this.hostPidFile)}`],
       { cwd: world.shop, env: checkedEnv(world), stdio: 'ignore', detached: true });
     this.launcherError = null;
     this.launcher.on('error', error => { this.launcherError = error; });
@@ -148,17 +240,25 @@ class Terminal {
         while (this.answered < count) { this.send('\x1b[?62c'); this.answered++; }
       }
     }
-    return this.screen.text();
+    return redactPasswords(this.screen.text(), this.world.secrets);
   }
   send(text) { writeSync(this.keys, text); }
   async wait(pattern) {
-    const shown = await until(() => { const text = this.text(); return pattern.test(text) && text; }, `screen ${pattern}`);
+    const shown = await until(() => {
+      const text = this.text();
+      if (pattern.test(text)) return text;
+      if (existsSync(this.exitFile)) throw new Error(`Terminal exited before ${pattern}: ${text}`);
+      // A fatal dialog ends the workbench on the next key: nothing waited for can come, so say what it said now.
+      if (FATAL.test(text)) throw new Error(`The workbench stopped with an error before ${pattern}: ${fatalWords(text)}`);
+      return false;
+    }, `screen ${pattern}`);
     this.steps.push({ expected: pattern.source, atMs: Date.now() - this.started, screen: shown });
     return shown;
   }
   async press(key, pattern) { this.send(keyBytes[key] ?? key); return this.wait(pattern); }
   async quit() {
     this.recordPids();
+    if (FATAL.test(this.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(this.text())}`);
     this.send('q'); await this.wait(/Quit Toolroll\?/); this.send('s');
     const pid = Number(readFileSync(this.pidFile, 'utf8'));
     await until(() => !alive(pid), 'workbench exit');
@@ -177,7 +277,23 @@ class Terminal {
     closeSync(this.keys);
     writeFileSync(join(this.folder, 'pids.json'), JSON.stringify([...this.identities].map(([pid, started]) => ({ pid, started }))));
   }
+}
 
+/** Same orphaned PTY host, isolation checks and recorded-process cleanup as the workbench. */
+async function runCliInTerminal(world, cli, args, answers, folder, terms) {
+  const term = new Terminal(world, cli, null, null, folder, 140, args);
+  terms.push(term); // Also cleaned up on interruption or a failed prompt.
+  for (const { prompt, answer } of answers) {
+    await term.wait(prompt);
+    term.recordPids();
+    term.send(answer + '\r');
+  }
+  await until(() => {
+    term.text();
+    return existsSync(term.exitFile);
+  }, 'CLI PTY exit');
+  const code = readFileSync(term.exitFile, 'utf8');
+  if (code !== '0') throw new Error(`Preparation CLI exited ${code}: ${term.text()}`);
 }
 
 /** The composer scrolls horizontally: its final words, not its hidden prefix, acknowledge input. */
@@ -219,8 +335,9 @@ export async function retryAttempt(term, lastRun, taskId, waitFor = until) {
 
 /** Back to the workbench's own screen between features: Esc out of any screen or dialog a feature left open (the
  * Agents screen, help, the palette, Settings, a composer), waiting on the screen fact each time, never a fixed sleep. */
-const OVERLAY = /Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel/;
-async function toBase(term) {
+const OVERLAY = /Search: |Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels/;
+async function toBase(term, world = null) {
+  if (FATAL.test(term.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(term.text())}`);
   for (let tries = 0; tries < 4 && OVERLAY.test(term.text()); tries++) {
     const before = term.text();
     // The Agents screen closes on A as well as Esc; use it when that screen is the one showing.
@@ -228,6 +345,14 @@ async function toBase(term) {
     await until(() => term.text() !== before, 'the screen answered', 10_000).catch(() => {});
   }
   if (OVERLAY.test(term.text())) throw new Error('Could not return to the workbench screen between features');
+  // Every feature starts on the Live tab: the Diff review keeps its own keys (Esc and n stay there).
+  if (!world) return;
+  const tab = () => { try { return Object.values(JSON.parse(readFileSync(join(world.env.XDG_STATE_HOME, 'toolroll/view.json'), 'utf8')).projects ?? {})[0]?.tab; } catch { return undefined; } };
+  for (let presses = 0; tab() !== undefined && tab() !== 'live'; presses++) {
+    if (presses >= 6) throw new Error('The Live tab never came back into focus between features');
+    const before = tab();
+    term.send('\t'); await until(() => tab() !== before, 'the tab moved', 10_000);
+  }
 }
 
 async function exercise(feature, context) {
@@ -260,16 +385,24 @@ async function exercise(feature, context) {
   const ready = async () => {
     if (context.finished) { context.built = false; context.finished = false; }
     await build(); await until(() => lastRun()?.finished_at && ['built', 'no-change'].includes(lastRun()?.outcome), 'scripted build result');
-    await wait(/Ready|Result/); await press('enter', /src\/math.js|test\/math.test.js/); context.task = task().id;
+    // A finished run is not yet a result to review: until its build process is recorded as exited, the row still reads
+    // Building and Enter opens Live (app.rs Action::Open opens Diff only for a review ask). The pipeline's "Ready" stage
+    // is drawn on every row, and the title names src/math.js: wait for the list row to read Result, as a person would,
+    // then open it and wait for its change list.
+    await wait(/●[^\n]*\sResult\b/);
+    await press('enter', /\d+ files?\s+\+\d+/);
+    await until(() => projectView()?.tab === 'diff', 'Enter opened the result on the Diff tab');
+    context.task = task().id;
   };
   const failed = async () => {
     await build(); await until(() => lastRun()?.finished_at && lastRun()?.outcome === 'failed', 'failed provider run');
     const tab = world.scenario === 'agent-error' ? 'live' : 'steps';
-    while (projectView()?.tab !== tab) {
+    for (let presses = 0; projectView()?.tab !== tab; presses++) {
+      if (presses >= 6) throw new Error(`The ${tab} tab never came into focus`);
       const before = projectView()?.tab;
       term.send('\t'); await until(() => projectView()?.tab !== before, 'failure tab changed');
     }
-    const expected = world.scenario === 'agent-error' ? 'agent-error' : 'provider-init';
+    const expected = expectedFailureReason(world.scenario);
     if (!lastRun().reason?.includes(expected)) throw new Error(`Expected ${expected}, got ${lastRun().reason}`);
   };
   let shown, state;
@@ -297,8 +430,40 @@ async function exercise(feature, context) {
     }
     case 'build': await build(); shown = term.text(); break;
     case 'result': await ready(); shown = term.text(); break;
-    case 'search': await ready(); shown = await press('/', /Search:/); term.send('subtract'); await wait(/subtract/); term.send('\r'); await normal(); break;
-    case 'export': await ready(); term.send('\x05'); await until(() => existsSync(join(world.root, 'editor.txt')) && /subtract/.test(readFileSync(join(world.root, 'editor.txt'), 'utf8')), 'editor export'); shown = term.text(); state = 'editor contains subtract'; break;
+    case 'search': {
+      // The result's own text says subtract: wait for the search line's echo and count, never the pane, at each step.
+      // Esc sent right before another key reads as Alt-<key>, so each key waits for its own effect first.
+      await ready(); await press('/', /Search: ▏/); term.send('subtract');
+      shown = await wait(/Search: subtract▏\s+\d+ of \d+/);
+      await press('enter', /Search: subtract\s+\d+ of \d+\s+n next/);
+      term.send(esc); await until(() => !/Search: /.test(term.text()), 'search closed'); break;
+    }
+    case 'export': {
+      await ready();
+      // Multiple visible panes do not imply the Diff is focused. A single panel and an acknowledged Diff tab do.
+      await palette('Focused: one panel');
+      for (let presses = 0; projectView()?.tab !== 'diff'; presses++) {
+        if (presses >= 6) throw new Error('The Diff tab never came into focus');
+        const before = projectView()?.tab;
+        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab changed');
+      }
+      await wait(/src\/math.js|test\/math.test.js/);
+      const output = join(world.root, 'editor.txt');
+      rmSync(output, { force: true });
+      term.send('\x05');
+      await until(() => {
+        if (/Nothing here to open in an editor/.test(term.text())) throw new Error('Focused pane refused editor export');
+        return existsSync(output) && /subtract/.test(readFileSync(output, 'utf8'));
+      }, 'editor export output file');
+      shown = term.text(); state = 'editor contains subtract';
+      // Leave the Live tab focused again, as every later feature expects (n does not open the composer from Diff).
+      for (let presses = 0; projectView()?.tab !== 'live'; presses++) {
+        if (presses >= 6) throw new Error('The Live tab never came back into focus');
+        const before = projectView()?.tab;
+        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab restored');
+      }
+      break;
+    }
     case 'take-over': await ready(); shown = await press('t', / Open build shell /); await press('t', /back to the workbench/); term.send('printf \"VERIFY_TERMINAL_OK\\n\"\r'); await wait(/VERIFY_TERMINAL_OK/); term.send('\x1d'); await wait(/Toolroll/); break;
     case 'send-back': await ready(); await press('r', /Send back/); term.send('Please add a test for negative numbers.'); shown = await press('enter', /Build #.*goes back/); await press('enter', /Sent back\. The revision is filed\./); context.built = true; await until(() => task().id !== context.task, 'revision task saved'); context.task = task().id; break;
     case 'accept': await ready(); shown = await press('a', /Accept the result of/); await press('enter', /Marked complete\.|Accepted\./); await until(() => task()?.state === 'done', 'task completion'); context.finished = true; break;
@@ -342,6 +507,13 @@ async function exercise(feature, context) {
       shown = await wait(/[●•·]/); term.send('!');
       await until(() => projectView()?.task === context.task && !projectView()?.unread?.includes(context.task), 'visiting task clears unread dot');
       state = 'unread task id saved then cleared on visit'; break;
+    }
+    case 'equalize': {
+      // Assert the saved outcome: equal splits can already be the current state.
+      term.send('=');
+      await until(() => projectView()?.ratioX === 50 && projectView()?.ratioY === 50
+        && /Even splits, and the list at its usual width/.test(term.text()), 'equal splits restored');
+      shown = await wait(new RegExp(feature.expected)); state = 'saved splits are 50%'; break;
     }
     default: {
       const action = feature.actions[0]; const before = JSON.stringify(stableView()), screenBefore = term.text();
@@ -405,20 +577,20 @@ export async function verify(options) {
           term.recordPids(); if (!session.timings.workbenchMs) session.timings = { firstTextMs: term.firstTextMs, workbenchMs: Date.now() - term.started };
         } };
         await context.relaunch();
-        for (const feature of features) {
-          const start = Date.now();
-          try {
-            if (interrupted) throw new Error(interrupted);
-            if (features.indexOf(feature) > 0) await toBase(context.term);
-            const evidence = await exercise(feature, context);
-            report.features.push({ id: feature.id, scenario, status: 'PASS', elapsedMs: Date.now() - start, ...evidence });
-          } catch (error) {
-            report.features.push({ id: feature.id, scenario, status: 'FAIL', elapsedMs: Date.now() - start, excerpt: context.term.screen.text(), error: error.message });
-            // Preserve truthful failures without typing dependent actions into an unknown dialog.
-            for (const pending of features.slice(features.indexOf(feature) + 1)) report.features.push({ id: pending.id, scenario, status: 'FAIL', excerpt: '', error: `Prerequisite failed: ${feature.id}` });
-            break;
-          }
+        const needs = selectedNeeds(features);
+        if (needs.length) {
+          // First start creates the laptop's owner via the product. Enrollment invalidates sessions, so stop and
+          // relaunch the workbench after preparation instead of driving a stale local-owner session.
+          await context.term.quit();
+          let preparations = 0;
+          await prepareWorld(world, cli, needs, (args, answers) => runCliInTerminal(world, cli, args, answers,
+            join(root, scenario, `prepare-${preparations++}`), terms));
+          session.prepared = needs;
+          await context.relaunch();
         }
+        report.features.push(...await runFeatures(features, featureMap, context));
+        // Quit from the workbench's own screen: q typed into a search, composer or dialog is text, not Quit.
+        await toBase(context.term);
         await context.term.quit();
       } catch (error) {
         session.error = error.message;
@@ -428,7 +600,7 @@ export async function verify(options) {
           try { await term.cleanup(); } catch (error) { session.cleanupError = error.message; }
           session.steps = [...(session.steps ?? []), ...term.steps];
           const folder = join(out, `${scenario}-${terms.indexOf(term)}`); mkdirSync(folder);
-          for (const name of ['screen.log', 'pids.json', 'host.log']) if (existsSync(join(term.folder, name))) writeFileSync(join(folder, name), readFileSync(join(term.folder, name)));
+          for (const name of ['screen.log', 'pids.json', 'host.log']) if (existsSync(join(term.folder, name))) writeFileSync(join(folder, name), redactPasswords(readFileSync(join(term.folder, name), 'utf8'), world.secrets));
         }
         try { session.outbound = checkOutbound(world); } catch (error) { session.outbound = { status: 'FAIL', error: error.message }; }
       }
@@ -436,6 +608,9 @@ export async function verify(options) {
   } finally {
     process.off('SIGINT', sigint); process.off('SIGTERM', sigterm);
     if (report.sessions.some(s => s.cleanupError)) report.keptRoot = root;
+    // Redact every string (errors and captured steps included), even if a product failure echoed a password.
+    const secrets = terms.flatMap(term => term.world.secrets);
+    Object.assign(report, JSON.parse(JSON.stringify(report, (_key, value) => typeof value === 'string' ? redactPasswords(value, secrets) : value)));
     finishReport(report);
     writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
     writeFileSync(join(out, 'report.md'), reportMarkdown(report));
@@ -445,6 +620,10 @@ export async function verify(options) {
   return report;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const report = await verify(parseArgs(process.argv.slice(2))); console.log(`${report.ok ? 'PASS' : 'FAIL'}: ${report.features.length} features`); process.exitCode = report.ok ? 0 : 1; }
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    if (options.help) console.log(usage());
+    else { const report = await verify(options); console.log(reportSummary(report)); if (!report.ok) console.log('Overall: FAIL (see report for session checks)'); process.exitCode = report.ok ? 0 : 1; }
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
