@@ -118,7 +118,7 @@ const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
 const WIRE = ["wire budgets"];
 /** rust.yml: advisory too, on pull requests that touch the terminal workbench or its contract. */
-const RUST = ["rust · macos-latest", "rust · ubuntu-latest"];
+const RUST = ["rust · ubuntu-latest"];
 /** The platforms the package carries a terminal workbench binary for (scripts/tui-build.mjs PLATFORMS). */
 const TUI_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"];
 /** package-build.yml's runner for each: its own platform. */
@@ -1197,7 +1197,7 @@ globalThis.fetch = async (url, options) => {
 });
 
 describe("the terminal workbench's Rust checks (.github/workflows/rust.yml)", () => {
-  test("they run fmt, clippy -D warnings and the tests on Linux and macOS for pull requests that touch tui/ or its contract, and never hold a release", () => {
+  test("they run fmt, clippy -D warnings and the tests on Linux (macOS: in the workbench bundle's job) for pull requests that touch tui/ or its contract, and never hold a release", () => {
     const rust = workflow("rust.yml");
     for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["test/fixtures/engine-api/schemas.json"], ["src/contracts/engine-api.ts"], [".github/workflows/rust.yml"]]) {
       expect(executed(pr(paths)).filter(name => RUST.includes(name)), paths[0]).toEqual(RUST);
@@ -1209,6 +1209,21 @@ describe("the terminal workbench's Rust checks (.github/workflows/rust.yml)", ()
     for (const name of RUST) expect(ADVISORY_PR_CHECKS[name]).toBe(".github/workflows/rust.yml");
     expect(rust.permissions).toEqual({ contents: "read" });
     expect(readFileSync(join(folder, "rust.yml"), "utf8")).not.toMatch(/secrets\./);
+  });
+
+  test("ci-speed-2: on macOS the same clippy and tests run in the workbench bundle's macOS job, which every pull request that runs rust.yml starts", () => {
+    const bundle = workflow("tui-bundle.yml").jobs["bundle"]!;
+    const checks = (bundle.steps ?? []).find(step => step.name === "Rust checks on macOS (clippy, tests)")!;
+    expect(checks.if).toBe("runner.os == 'macOS'");
+    for (const command of ["cargo clippy --locked --workspace --all-targets -- -D warnings", "cargo test --locked --workspace"]) expect(checks.run).toContain(command);
+    // Its own target folder: the package's binary still builds from nothing.
+    expect(checks.env).toEqual({ CARGO_TARGET_DIR: "target-checks" });
+    const steps = bundle.steps ?? [];
+    expect(steps.indexOf(checks)).toBeLessThan(steps.findIndex(step => (step.run ?? "").includes("--bundle dist/tui")));
+    // Every path that starts rust.yml (but rust.yml itself) starts the bundle's macOS job too.
+    for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["test/fixtures/engine-api/schemas.json"], ["src/contracts/engine-api.ts"]]) {
+      expect(executed(pr(paths)), paths[0]).toContain("workbench bundle · macos-latest");
+    }
   });
 });
 
@@ -1331,6 +1346,8 @@ describe("ci-speed-2 item 5: caches never cross from a pull request into main or
   test("the Rust checks cache crates and their build by OS, toolchain and lock file, pinned, on pull requests only", () => {
     const rust = workflow("rust.yml");
     expect(Object.keys(rust.on)).toEqual(["pull_request"]);
+    // The bundle's workflow also runs by hand: a dispatch runs the dispatching branch's own code, in that branch's scope.
+    expect(Object.keys(workflow("tui-bundle.yml").on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
     const cache = rust.jobs["rust"]!.steps!.filter(step => step.uses?.startsWith("actions/cache"));
     expect(cache.map(step => step.uses)).toEqual(["actions/cache@caa296126883cff596d87d8935842f9db880ef25"]);
     expect(readFileSync(join(folder, "rust.yml"), "utf8")).toContain("actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0");
@@ -1343,7 +1360,15 @@ describe("ci-speed-2 item 5: caches never cross from a pull request into main or
       expect(readFileSync(join(folder, file), "utf8"), file).not.toMatch(/actions\/cache\b/);
     }
     // Only workflows a pull request (or the nightly, through ci.yml) runs may restore one.
-    const caching = workflows.filter(one => readFileSync(join(folder, one.file), "utf8").includes("actions/cache@")).map(one => one.file);
-    expect(caching).toEqual(["rust.yml"]);
+    const caching = workflows.filter(one => readFileSync(join(folder, one.file), "utf8").includes("actions/cache@")).map(one => one.file).sort();
+    expect(caching).toEqual(["rust.yml", "tui-bundle.yml"]);
+    // In the bundle's workflow only its smoke job caches, and only the checks' own target folder, never tui/target.
+    const bundle = workflow("tui-bundle.yml").jobs["bundle"]!;
+    const cache = bundle.steps!.filter(step => step.uses?.startsWith("actions/cache"));
+    expect(cache.map(step => step.uses)).toEqual(["actions/cache@caa296126883cff596d87d8935842f9db880ef25"]);
+    expect(String(cache[0]!.with?.["path"])).not.toMatch(/tui\/target\s*$|tui\/target\n/m);
+    expect(String(cache[0]!.with?.["path"])).toContain("tui/target-checks");
+    expect(String(cache[0]!.with?.["key"])).toBe("rust-checks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-${{ hashFiles('tui/Cargo.lock') }}");
+    expect(workflow("tui-bundle.yml").jobs["binaries"]!.uses).toBe("./.github/workflows/package-build.yml");
   });
 });

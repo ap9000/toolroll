@@ -102,9 +102,9 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "install smoke · macos-latest": ".github/workflows/install-smoke.yml",
   // The wire budgets (test/perf/wire.wire.test.ts): bytes and queries per page, measured; never a release's question.
   "wire budgets": ".github/workflows/wire-budgets.yml",
-  // The terminal workbench's Rust checks (tui/): advisory until the workbench ships in the package.
+  // The terminal workbench's Rust checks (tui/): advisory until the workbench ships in the package. Their macOS run is a
+  // step of "workbench bundle · macos-latest" (docs/plans/ci-speed-2.md).
   "rust · ubuntu-latest": ".github/workflows/rust.yml",
-  "rust · macos-latest": ".github/workflows/rust.yml",
   // A packed install opens the terminal workbench it carries (scripts/tui-bundle-smoke.mjs): advisory, like the install
   // smoke; publish.yml's own check of the bundled binaries is what refuses a release.
   "workbench bundle · ubuntu-24.04": ".github/workflows/tui-bundle.yml",

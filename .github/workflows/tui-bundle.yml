@@ -119,6 +119,30 @@ jobs:
           test -n "$toolchain"
           rustup toolchain install "$toolchain" --profile minimal --target "$TARGET"
           cd tui && cargo --version && rustc --version
+      # macOS only: the workspace's clippy (every warning an error) and tests, which rust.yml runs on Linux; here rather
+      # than in a macOS job of their own, so a workbench pull request asks for one macOS runner fewer
+      # (docs/plans/ci-speed-2.md). Their own target folder, cached per pull request by toolchain and Cargo.lock; the
+      # package's binary below still builds from nothing in tui/target.
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        if: runner.os == 'macOS'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            tui/target-checks
+          key: rust-checks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-${{ hashFiles('tui/Cargo.lock') }}
+          restore-keys: |
+            rust-checks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-
+      - name: Rust checks on macOS (clippy, tests)
+        if: runner.os == 'macOS'
+        working-directory: tui
+        env:
+          CARGO_TARGET_DIR: target-checks
+        run: |
+          rustup component add clippy
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
       - name: This platform's binary, into the package
         run: node scripts/tui-build.mjs --bundle dist/tui --targets "$PLATFORM"
       - name: Checked as npm publish would pack it

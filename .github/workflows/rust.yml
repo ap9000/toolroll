@@ -2,8 +2,9 @@ name: Rust
 
 # The terminal workbench (tui/, docs/plans/solo-workbench.md T1): rustfmt, clippy with every warning an error, and the
 # workspace's tests (the contract fixtures in test/fixtures/engine-api parsed by the Rust models, the client against a
-# stand-in console, every screen state's snapshot) on Linux and macOS. Pull requests that touch the workbench, its
-# contract, or this file.
+# stand-in console, every screen state's snapshot) on Linux. Pull requests that touch the workbench, its contract, or
+# this file. On macOS the same clippy and tests run inside tui-bundle.yml's macOS job, which every such pull request
+# also starts: one macOS runner instead of two (docs/plans/ci-speed-2.md: macOS runners are what pull requests wait for).
 #
 # Advisory for now: not one of REQUIRED_PR_CHECKS, and the release verdict leaves these jobs out by name and workflow
 # (release.ts ADVISORY_PR_CHECKS), until the workbench ships in the package. It reads no secret.
@@ -25,13 +26,9 @@ concurrency:
 
 jobs:
   rust:
-    name: rust · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: rust · ubuntu-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CARGO_TERM_COLOR: never
