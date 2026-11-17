@@ -284,7 +284,9 @@ pub(crate) fn walk_trusted(
             .as_deref()
             .is_some_and(|h| h != at && h.starts_with(at));
         let sticky_ok = !own && mode & 0o1000 != 0 && above_home;
-        if mode & libc::S_IFMT as u32 != libc::S_IFDIR as u32 || !owner_ok || (shared && !sticky_ok)
+        if mode & u32::from(libc::S_IFMT) != u32::from(libc::S_IFDIR)
+            || !owner_ok
+            || (shared && !sticky_ok)
         {
             return Err(if own {
                 "its folder can be changed by other people, or isn't yours".to_string()
