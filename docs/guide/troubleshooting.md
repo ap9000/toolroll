@@ -3,16 +3,20 @@
 **`npm error EEXIST: file already exists … bin/standing-orders` while
 installing.** The older `standing-orders` package is still installed, and npm
 won't replace its command. Remove it, then install again:
-`npm uninstall -g standing-orders && npm install -g toolroll`. Your data
+`npm uninstall -g standing-orders && npm i -g toolroll`. Your data
 stays where it is, and the `standing-orders` command comes back with Toolroll.
 
-**A task plans first when it looks small.** Task sizing by a quick model
-call is off by default: with it off, nothing calls a model before you
-approve, only clearly tiny tasks (a short goal naming one file, or a typo or
-rename, with no risky words) build without a plan, and the plan says
-"Planned first: task sizing is off". Turn it on in Settings → General, or
-run `toolroll config set task-sizing on`. Setting `TOOLROLL_NO_TASK_CLASSIFIER`
-in Toolroll's environment keeps it off whatever the setting says.
+**The agent stopped with an error.** It stops after one failure. Open
+**What the agent said** in Live or Steps, fix the cause, then press `r` to
+review and retry. Those cleaned last lines stay inside Toolroll; they never
+go to chat, push, email or webhooks. Machine glitches retry automatically,
+up to three consecutive failures. `x` stops retries on a waiting task; `x`
+again resumes them. `X` cancels. Each action asks first. See
+[When a build fails](getting-started.md#when-a-build-fails).
+
+**A task plans first when it looks small.** Task sizing is off by default.
+Only clearly tiny changes skip planning on the automatic route. See
+[Task sizing](routing.md#task-sizing) for the setting and its model call.
 
 **"Sorting needs an OpenRouter key."** Add one in Settings → AI providers →
 OpenRouter. **Check again** there tests it.

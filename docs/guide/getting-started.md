@@ -19,7 +19,7 @@ name, still works (the script removes the older `standing-orders` package
 first, saying so). With npm instead:
 
 ```sh
-npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll
+npm uninstall -g standing-orders && npm i -g toolroll
 toolroll
 ```
 
@@ -48,11 +48,11 @@ each agent is doing and what needs you.
   is set). Or add your own with `toolroll repos add <folder>`, or press `w`
   and use the browser's welcome page to choose the agent and add a folder or
   one of your GitHub repositories. Then press `n` to write the first task;
-  the steps suggest a few starters.
-- **Approve and collect.** `a` shows the plan in full, and `y` approves it,
-  with no password. The result comes back **Ready**: mark it Complete with
-  `c`, or send it back for a revision with `b` (it asks what to change). `r`
-  retries a build that failed. `?` lists every key.
+  the steps suggest a few starters. Press `A` to open Agents and sign in there.
+- **Approve and collect.** Open the plan and read its approval card before
+  confirming. The result comes back **Ready**: press `a` to inspect and accept
+  it, or `r` to send it back with a note. On a failed task, `r` reviews and
+  retries it. `?` lists the keys in use. See [The terminal workbench](#the-terminal-workbench).
 - **The browser.** Press `w`, or run `toolroll --web`. It opens signed in.
   Running `toolroll` again gets you back in from any terminal.
 - **Quitting.** `q` asks whether to stop the agents (running work is saved)
@@ -69,7 +69,7 @@ it.
 
 | Install with | Command |
 |---|---|
-| npm | `npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll` |
+| npm | `npm uninstall -g standing-orders && npm i -g toolroll` |
 | Homebrew | `brew install ap9000/toolroll/toolroll` |
 | bun | `bun add -g toolroll` |
 | pnpm | `pnpm add -g toolroll` |
@@ -104,6 +104,185 @@ or Codex (`codex`). Settings → AI providers shows which are connected.
 Open **Chat** and say what you want in plain words. Toolroll drafts a plan
 with a goal, boundaries and checks for you to approve. Nothing is built until
 you approve it, and every result waits for you to accept it.
+
+## The terminal workbench
+
+Bare `toolroll` opens the workbench on macOS and Linux. The work list sits
+beside the selected task. **Live** shows the agent's output, **Steps** shows
+progress and failures, **Diff** shows the result and your notes, and
+**Terminal** holds a shell on the build. The top bar shows today's cost.
+
+### Keys and layout
+
+These are the default keys from the workbench's keymap. Press `?` for help
+generated from the keys you actually use, including your custom bindings.
+Press `:` or `Ctrl-K` for the command palette: actions, tasks, projects and
+settings. Actions without a key are available there too.
+
+| Key | Action |
+|---|---|
+| `j` / `k`, Down / Up | Next / previous item in the list |
+| Enter | Open the changes for a result, otherwise its live output |
+| Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
+| `n` | New task (in Diff, next note instead) |
+| `T` | New thread |
+| `s` | Send the running agent a note |
+| `p` | Pause the build; press again to resume |
+| `x` | Stop a build or its retries; resume retries on a task you held |
+| `X` | Cancel the task |
+| `a` | Inspect and accept the result |
+| `r` | Send back with a note; on a failed task, review and retry |
+| `t` | Take over in a terminal on the latest build |
+| `L` | Cycle one panel, two side by side, or a grid of four |
+| `o` / `O` | Focus the next / previous pane |
+| `<` / `>` | Narrow / widen the list with one panel, or the focused panel in a split |
+| `=` | Even the splits and restore the usual list width |
+| `b` | Cycle the list: full, slim status rail, hidden |
+| `z` | Zoom the focused panel; press again to return |
+| `!` / `@` | Next / previous thing that needs you, oldest first |
+| `'` | Return to where you were before jumping |
+| `/` | Search the focused pane |
+| Ctrl-E | Open the focused pane's text in your editor |
+| Page Up / `u`, Page Down / `d` | Scroll up / down |
+| End / `G` | Follow the newest output |
+| `y` | Copy a hunk or terminal output to the terminal's scrollback |
+| `A` | Open Agents |
+| `w` | Open Toolroll in the browser |
+| `1`–`9` | Answer the agent's question |
+| Esc | Cancel, close, or go back |
+| `q` / Ctrl-C | Quit |
+
+In Diff, `j` / `k` move by line, `[` / `]` by hunk, and `{` / `}` by file.
+Home or `g` goes to the first line of the file.
+`c` adds a note; Backspace or Delete removes it. `n` / `N` move between notes.
+`e` / `E` reveal more lines above / below a hunk. `v` switches to a side by
+side diff on a wide window. Notes stay with the result until you send them.
+
+Use **Move the list to the other side** in the palette to put it on the
+right. Settings → **List side** sets the default. The file setting is
+`list_side = "right"` (also accepted as `list-side`; use `"left"` to return).
+
+Below 64 columns, the workbench shows one column. Enter opens a task from
+the list, Esc returns to the list, and `b` switches between list and task.
+Your wider layout returns when you widen the window.
+
+Finished tasks keep an unread dot until you open them. Toolroll remembers
+the selected task and tab, list width, side and visibility, layout, split
+ratios and unread tasks per project. This goes in
+`$XDG_STATE_HOME/toolroll/view.json` when that variable is an absolute path,
+otherwise `~/.local/state/toolroll/view.json`. It is separate from your
+settings file and stores no task titles, agent text or credentials.
+
+### Search, editor and shell
+
+Press `/`, type a search, then Enter to keep it. `n` / `N` move through
+matches while searching; Esc leaves search. Search covers the focused
+Live, Steps, Diff or Terminal pane.
+
+Ctrl-E opens that pane's cleaned text using `$VISUAL`, or `$EDITOR` if
+`$VISUAL` is unset or blank. It opens a text snapshot; saving it does not
+change the task or build.
+Toolroll neutralizes modelines in the text and disables Vim modelines and
+Emacs local variables. Agent sign-in and install panes are never searched
+or exported to an editor.
+
+On the Terminal tab, `t` starts a real shell in a separate copy of the latest
+build. Ctrl-] leaves typing mode and returns to workbench keys. The shell
+keeps running. Use Ctrl-] to leave an agent's sign-in pane too.
+
+### Settings and themes
+
+Open **Settings in use** from the palette, or press `?` then `s`. Select a
+row and press Enter to change theme, density, glyphs, list side or
+notifications. These choices are saved to `tui.toml`; existing comments and
+other settings stay in place. A save failure is shown on screen.
+
+The file is `$XDG_CONFIG_HOME/toolroll/tui.toml`, or
+`~/.config/toolroll/tui.toml` without that variable. File edits are read at
+startup. For example:
+
+```toml
+theme = "terminal"
+density = "compact"
+glyphs = "unicode"
+list_side = "left"
+key-bar = true
+show-costs = true
+columns = ["step"]
+bell = true
+reduced-motion = false
+tmux-passthrough = false
+
+[notifications]
+asks = true
+finished = false
+failed = true
+
+[keys]
+preset = "default"
+accept = "f2"
+```
+
+Themes are `terminal` (your terminal's colours), `light`, `dark` and
+`high-contrast`. Density is `compact` or `comfortable`; glyphs are `unicode`,
+`ascii` or `nerd`. Optional list columns are `agent`, `step`, `age`, `cost`
+and `project`. Key presets are `default`, `vim` and `emacs`; bind an action
+by its name under `[keys]` with one key or a list of keys. The help screen
+shows the resulting bindings. Unknown settings and invalid values produce
+a warning and fall back safely.
+
+Colour follows your terminal: full colour, 256 colours, or its own 16
+colours. A nonempty `NO_COLOR` disables colour; `TERM=dumb` does too. Bold,
+dimming and reverse video still distinguish states. Optional `[colors]`
+overrides are checked for contrast and distinct status colours; unusable
+overrides are ignored with a warning. The palette's theme, cost and key-bar
+toggles affect only this session. Use Settings to save a theme.
+
+Desktop notifications inside tmux need both `tmux-passthrough = true` and
+tmux's `allow-passthrough` enabled.
+
+### Agents
+
+Press `A`. Agents are grouped as **Ready**, **Needs sign-in**, **Needs a
+check** and **Not installed**. **Check again** refreshes status without a
+model call. A signed-out agent is never started in the background; the
+status names the command to sign it in, such as `codex login`.
+
+Choose **Sign in** to run the agent's own login in a pane. Its browser
+sign-in works as usual. The agent saves its credentials in its own files;
+Toolroll never sees those credentials. Sign-in output is not kept when
+the pane closes. Never paste credentials into a task or chat.
+
+**Install** shows the exact npm command and asks you to confirm before it
+runs. Toolroll never runs `curl | bash` installers. For agents that only
+offer those installers, copy the command and run it yourself if you trust
+it. The screen also lets you copy sign-in commands.
+
+The Models section chooses the default agent and the agents and models
+for planning, building and review. Read the before-and-after confirmation
+before saving. These are the same saved choices as Settings → Models.
+Changing models here requires the operator on a solo install; otherwise
+open Settings → Models in the browser with `w`.
+
+### When a build fails
+
+**The agent stopped with an error** means the agent itself failed. Toolroll
+stops after that one failure. Read **What the agent said** in Live or Steps,
+fix the cause, then press `r` to review and retry.
+
+A machine glitch retries automatically after a pause. Live shows
+**Last build failed**, the reason, and the time until the next try.
+Automatic retries stop after three consecutive failures. Provider throttling
+or exhausted credits also follow the retry rules; Toolroll never silently
+switches your agent or account.
+
+**What the agent said** contains cleaned last lines, with paths and keys
+removed. It stays inside Toolroll. It is never sent through chat, push,
+email or webhooks. If no lines were saved, the failure still shows its reason.
+
+Press `x` to stop retrying a waiting task, then `x` again to resume it.
+`X` cancels a queued, running or failed task. Stop, resume, cancel and retry
+ask first and refuse if the task changed since you looked.
 
 ## More ways to run it
 
@@ -151,7 +330,7 @@ where the projects live; queued work resumes automatically.
 
 ```sh
 npx toolroll demo               # a seeded sandbox: see it working in 90 seconds, zero spend
-npx toolroll                    # what's in flight across your repos: read-only, zero config
+npx toolroll                    # open the terminal workbench
 ```
 
 ### Install with your agent
