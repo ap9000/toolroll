@@ -259,6 +259,10 @@ describe("a key that ends in \"-\" (base64url), before a space or at the end of 
     ["gitlab-token", `glpat-${body(20)}`],
     ["openai-key", `sk-proj-${body(40)}`],
     ["telegram-bot-token", `123456789:AA${body(33)}`],
+    ["openai-key", `sk-${body(40)}`],
+    // At their shortest, where backing off the "-" leaves too few characters.
+    ["slack-token", `xoxb-${body(10)}`],
+    ["discord-bot-token", `M${body(24).replace(/-$/, "a")}.${body(6)}.${body(27)}`],
   ])("%s", (name, key) => {
     for (const line of [`key ${key} here`, `key ${key}`]) expect(scanForSecrets(line).map(one => one.name), line).toEqual([name]);
   });

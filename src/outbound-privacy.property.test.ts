@@ -17,16 +17,19 @@ const URLSAFE = `${ALNUM}_-`;
 const urlsafe = (min: number, max: number) => fc.tuple(chars(URLSAFE, min - 1, max - 1), fc.constantFrom("-", "_", "-", "a", "Z", "9")).map(([body, last]) => `${body}${last}`);
 const name = fc.stringMatching(/^[a-z][a-z0-9._-]{0,11}$/);
 
-/** A folder on this computer: a home (macOS, Linux, root, `~`), a drive, a network share, a file URL. */
+/** A folder on this computer: a home (macOS, Linux, root, `~`), a drive, a network share, a file URL, and a home
+ * written another way: JSON-escaped, percent-encoded once, or by its variable. */
 const folder = fc.tuple(name, name).chain(([user, part]) => fc.constantFrom(
   `/Users/${user}/${part}`, `/home/${user}/${part}`, `/root/${part}`, `~/${part}`, `C:\\Users\\${user}\\${part}`, `d:/${part}`, `\\\\${user}\\${part}`, `file:///${part}`,
+  `\\/Users\\/${user}\\/${part}`, `%2FUsers%2F${user}%2F${part}`, `%2fhome%2f${user}`, `C%3A%5CUsers%5C${user}`, `$HOME/${part}`, `\${HOME}/${part}`, `%USERPROFILE%\\${part}`,
 ));
 /** A key or token in the shape its issuer gives it. */
 const key = fc.oneof(
   chars(UPPER, 16, 16).map(body => `AKIA${body}`),
   chars(ALNUM, 36, 36).map(body => `ghp_${body}`),
   chars(`${ALNUM}_`, 22, 60).map(body => `github_pat_${body}`),
-  fc.tuple(chars("0123456789", 6, 13), chars("0123456789", 6, 13), chars(ALNUM, 24, 24)).map(([team, bot, body]) => `xoxb-${team}-${bot}-${body}`),
+  fc.tuple(chars("0123456789", 6, 13), chars("0123456789", 6, 13), chars(ALNUM, 23, 23), fc.constantFrom("-", "_", "a", "9")).map(([team, bot, body, last]) => `xoxb-${team}-${bot}-${body}${last}`),
+  fc.tuple(fc.constantFrom("M", "N"), chars(ALNUM, 23, 25), urlsafe(6, 6), urlsafe(27, 40)).map(([first, id, stamp, hmac]) => `${first}${id}.${stamp}.${hmac}`),
   urlsafe(32, 90).map(body => `sk-${body}`),
   urlsafe(32, 90).map(body => `sk-proj-${body}`),
   chars(ALNUM, 24, 40).map(body => `sk_live_${body}`),

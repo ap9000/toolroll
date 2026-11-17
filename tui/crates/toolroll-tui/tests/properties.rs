@@ -410,11 +410,35 @@ proptest! {
         let query: String = chars[start..(start + len).min(chars.len())].iter().collect();
         prop_assume!(!query.trim().is_empty());
         prop_assert_eq!(matching(std::slice::from_ref(&line), &query), vec![0]);
-        let area = Rect::new(0, 0, 120, 1);
+        // The columns each character covers, from the line itself (not from the buffer the screen drew into).
+        let widths: Vec<u16> = chars.iter().map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(1).max(1) as u16).collect();
+        let columns: Vec<u16> = widths.iter().scan(0u16, |at, w| { let here = *at; *at += w; Some(here) }).collect();
+        let area = Rect::new(0, 0, widths.iter().sum(), 1);
         let mut buf = Buffer::empty(area);
         buf.set_string(0, 0, &line, Style::default());
         highlight(&mut buf, area, &query);
-        let lit = (0..area.width).filter(|x| buf[(*x, 0)].modifier.contains(Modifier::REVERSED)).count();
-        prop_assert!(lit > 0, "{:?} matches {:?}, but nothing is lit", query, line);
+        let lit: Vec<u16> = (0..area.width).filter(|x| buf[(*x, 0)].modifier.contains(Modifier::REVERSED)).collect();
+        // Expected: every occurrence, left to right and not overlapping, read character by character in lower case.
+        let q = query.to_lowercase();
+        let lower: Vec<String> = chars.iter().map(|c| c.to_lowercase().collect()).collect();
+        let mut want: Vec<u16> = vec![];
+        let mut i = 0;
+        while i < chars.len() {
+            let (mut text, mut j) = (String::new(), i);
+            while j < chars.len() && text.len() < q.len() {
+                text.push_str(&lower[j]);
+                j += 1;
+            }
+            if text.starts_with(&q) {
+                for k in i..j {
+                    want.extend(columns[k]..columns[k] + widths[k]);
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        prop_assert!(!want.is_empty());
+        prop_assert_eq!(lit, want, "{:?} in {:?}: the cells lit are not the matching ones", query, line);
     }
 }

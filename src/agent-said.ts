@@ -16,10 +16,43 @@ export const AGENT_SAID_CHARS = 200;
  * (the Arabic letter mark too). */
 const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-_]/g;
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g;
-/** An absolute path (a file at the root too, "/secret.txt"; a bare "/login" command stays), a home-relative or named-home
- * one ("~/x", "~sam/x"), or a drive path. A path ends at every character a path may start after ("(", "<", "[", "=",
- * as at a quote or a comma), so "a(C:\x" or "a=C:\x" glued to one is a path of its own, never a tail left behind. */
-const PATHS = /(^|[\s"'`(<[=:,])(?:(?:\/[^\s"'`()<>[\]/:,;=]+){2,}\/?|\/[^\s"'`()<>[\]/:,;=]*\.[^\s"'`()<>[\]/:,;=]+|~[A-Za-z0-9._-]*\/[^\s"'`()<>[\]:,;=]*|[A-Za-z]:[\\/][^\s"'`()<>[\]:,;=]*)/g;
+/**
+ * A folder on this computer, said as "[path]" whole: an absolute path (a file at the root too, "/secret.txt"; a bare
+ * "/login" command stays), a home-relative or named-home one ("~/x", "~sam/x"), a drive ("C:\x"), a network share
+ * ("\\server\x"), a home named by its variable ("$HOME/x", "${HOME}/x", "%USERPROFILE%\x"; never expanded), and a
+ * JSON-escaped one ("\/Users\/me"). A path runs to a space, a quote or `)>],:;` and keeps every other character
+ * ("/opt/customer=Acme/ledger.txt" is one path); it splits only where another rooted path starts, and paths glued
+ * together ("/a/b(C:\x") are one span, one "[path]".
+ */
+const START = String.raw`(^|[\s"'` + "`" + String.raw`(<[=:,])`;
+/** Where another rooted path starts: a drive, a home, a share, a home variable. */
+const NEW_ROOT = String.raw`(?![A-Za-z]:[\\/]|~[A-Za-z0-9._-]*\/|\\\\|\$\{?HOME\b|%(?:USERPROFILE|HOMEPATH)%|\$env:USERPROFILE\b)`;
+const ENDS = String.raw`\s"'` + "`" + String.raw`)>\]:,;`;
+const PART = `(?:${NEW_ROOT}[^${ENDS}/])`;
+const TAIL = `(?:${NEW_ROOT}[^${ENDS}])`;
+const ROOTED = [
+  `(?:\\/${PART}+){2,}\\/?`,
+  `\\/${PART}*\\.${PART}+`,
+  `~[A-Za-z0-9._-]*\\/${TAIL}*`,
+  `[A-Za-z]:[\\\\/]${TAIL}*`,
+  `\\\\\\\\${TAIL}+`,
+  `(?:\\$HOME|\\$\\{HOME\\}|%USERPROFILE%|%HOMEPATH%|\\$env:USERPROFILE)[\\\\/]${TAIL}*`,
+  `(?:\\\\\\/(?:${NEW_ROOT}[^${ENDS}/\\\\])+){2,}`,
+].join("|");
+const PATHS = new RegExp(`${START}((?:${ROOTED})+)`, "g");
+/** A file address is a folder on this computer too, never a web address kept whole. */
+const FILE_URL = /\bfile:\/\/[^\s"'`<>]*/gi;
+/** A run holding a percent escape ("%2FUsers%2Fme"): decoded once (bounded, never again) and said as "[path]" when the
+ * decoded text names a folder. */
+const ENCODED = /[^\s"'`<>]*%[0-9A-Fa-f]{2}[^\s"'`<>]*/g;
+const ROOTED_ANYWHERE = new RegExp(`(?:^|[^A-Za-z0-9])(?:${ROOTED})`);
+function encodedFolder(run: string): string {
+  if (run.length > 2048) return run;
+  const decoded = run.replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return ROOTED_ANYWHERE.test(` ${decoded}`) ? "[path]" : run;
+}
+/** Only the tail of a long output is read: its last lines are what is kept. */
+const READ_AT_MOST = 64 * 1024;
 /** A web address's userinfo ("https://user:pass@") and its query and fragment (where tokens ride): hidden. */
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@"'`<>]+@/gi;
 const URL_QUERY = /\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'`<>]*)[?#][^\s"'`<>]*/gi;
@@ -43,14 +76,18 @@ function shortened(line: string): string {
 /** The cleaned tail of an agent's output: [] when nothing is left to say. */
 export function agentSaidTail(text: string | null | undefined): string[] {
   if (text === null || text === undefined || text.trim() === "") return [];
-  const plain = text.replace(ESCAPES, "").replace(/\r\n?/g, "\n").replace(/\t/g, " ").replace(CONTROLS, "");
+  // A line cut by the read is dropped, never shown in part (half a path is not a path the rule would see).
+  const tail = text.length <= READ_AT_MOST ? text : text.slice(-READ_AT_MOST).replace(/^[^\n]*\n?/, "");
+  const plain = tail.replace(ESCAPES, "").replace(/\r\n?/g, "\n").replace(/\t/g, " ").replace(CONTROLS, "");
   // A web address's userinfo, query and fragment hidden first, so the address itself survives the key scan's line rule.
   const addresses = plain.split("\n").map(line => line.replace(URL_USERINFO, "$1[hidden]@").replace(URL_QUERY, "$1?[hidden]")).join("\n");
   const redacted = redactSecretLines(addresses, scanForSecrets(addresses));
   const lines = redacted.split("\n")
     // A web address is never a folder on this computer: kept whole (its secrets hidden above) while paths are said as [path].
     // It ends where its query does (a space, a quote or an angle bracket), so a path written right after it is still a path.
-    .map(line => line.split(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*)/i).map((part, at) => at % 2 === 1 ? part : part.replace(PATHS, "$1[path]")).join(""))
+    // A file address is a path.
+    .map(line => line.replace(FILE_URL, "[path]").split(/(\b(?!file:)[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*)/i)
+      .map((part, at) => at % 2 === 1 ? part : part.replace(ENCODED, encodedFolder).replace(PATHS, "$1[path]")).join(""))
     .map(line => line.replace(/\s+/g, " ").trim()).filter(line => line !== "");
   return lines
     .map(shortened)

@@ -1,7 +1,9 @@
 /**
  * Properties of the agent's last words (agent-said.ts), over generated output: escapes and controls, folders on this
- * computer, web addresses with userinfo, queries and fragments, key-shaped tokens and long lines, in any mix and next
- * to any separator. Each planted secret carries a unique tag that must not survive; each rule is checked by shape too.
+ * computer in every form the rule names (rooted, home, drive, share, file address, JSON-escaped, percent-encoded, a
+ * home variable), keys in their issuers' shapes, web addresses with userinfo, queries and fragments, and long lines, in
+ * any mix and next to any separator. Each planted folder, home name and key carries a unique tag that must not survive
+ * (an oracle independent of the rule's own patterns); queries and userinfo are checked by shape too.
  */
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
@@ -15,11 +17,46 @@ const seg = fc.stringMatching(/^[A-Za-z0-9._-]{1,10}$/);
 const SEPARATORS = [" ", "  ", "\n", "\r\n", "\t", '"', "'", "`", "(", "<", "=", ",", ":"];
 const URL_ENDS = [" ", "  ", "\n", "\r\n", "\t", '"', "'", "`", "<"];
 
-/** A folder on this computer, in every form the rule names (the tag in a folder name). */
-const folder = (tag: string): fc.Arbitrary<Piece> => fc.tuple(seg, fc.constantFrom("/Users/me", "/home/me", "/root", "/opt", "/private/tmp", "/var/folders/x", "~", "~sam", "~me.dev", "C:\\Users\\me", "d:", "/")).map(([name, root]) => {
-  const sep = root.startsWith("C:") ? "\\" : "/";
-  const text = root === "/" ? `/${tag}.${name}` : `${root}${sep}${tag}${sep}${name}`;
-  return { text, secret: [tag] };
+/** A folder on this computer, in every form the rule names: the tag in a folder's name, and a home's name (`h<tag>`)
+ * wherever the form has one. Neither may come out. */
+const folder = (tag: string): fc.Arbitrary<Piece> => fc.tuple(seg, fc.nat(18)).map(([name, form]) => {
+  const home = `h${tag}`;
+  const forms: [string, string[]][] = [
+    [`/Users/${home}/${tag}/${name}`, [tag, home]],
+    [`/home/${home}/${tag}/${name}`, [tag, home]],
+    [`/root/${tag}/${name}`, [tag]],
+    [`/opt/${tag}=${name}/x.txt`, [tag]],
+    [`/private/tmp/${tag}(${name}/y`, [tag]],
+    [`/var/folders/${tag}[${name}/z`, [tag]],
+    [`~/${tag}/${name}`, [tag]],
+    [`~${home}/${tag}/${name}`, [tag, home]],
+    [`C:\\Users\\${home}\\${tag}\\${name}`, [tag, home]],
+    [`d:/${tag}/${name}`, [tag]],
+    [`/${tag}.${name}`, [tag]],
+    [`\\\\fs${tag}\\share\\${name}`, [tag]],
+    [`file:///Users/${home}/${tag}`, [tag, home]],
+    [`\\/Users\\/${home}\\/${tag}`, [tag, home]],
+    [`%2FUsers%2F${home}%2F${tag}`, [tag, home]],
+    [`$HOME/${tag}/${name}`, [tag]],
+    [`\${HOME}/${tag}`, [tag]],
+    [`%USERPROFILE%\\${tag}\\${name}`, [tag]],
+    [`/opt/${tag}/a<${name}/b`, [tag]],
+  ];
+  const [text, secret] = forms[form % forms.length]!;
+  return { text, secret };
+});
+/** A key or token in its issuer's shape, the tag inside it; the whole key may not come out. */
+const key = (tag: string): fc.Arbitrary<Piece> => fc.tuple(fc.nat(5), fc.constantFrom("-", "_", "a", "Z")).map(([form, last]) => {
+  const upper = tag.toUpperCase().replace(/[^0-9A-Z]/g, "");
+  const text = [
+    `AKIA${upper.padEnd(16, "Q").slice(0, 16)}`,
+    `ghp_${tag.padEnd(36, "x").slice(0, 36)}`,
+    `sk-proj-${tag}${"Ab3".repeat(11)}${last}`,
+    `AIza${tag.padEnd(34, "k").slice(0, 34)}${last}`,
+    `glpat-${tag.padEnd(19, "r").slice(0, 19)}${last}`,
+    `xoxb-123456789-987654321-${tag.padEnd(24, "s").slice(0, 24)}`,
+  ][form % 6]!;
+  return { text, secret: [text] };
 });
 /** A web address whose query and fragment carry the tag. */
 const address = (tag: string): fc.Arbitrary<Piece> => fc.tuple(fc.constantFrom("https", "http", "git+ssh", "s3"), seg, fc.constantFrom("?", "#", "?a=1#")).map(([scheme, path, mark]) =>
@@ -43,14 +80,14 @@ const filler: fc.Arbitrary<Piece> = fc.oneof(fc.string({ unit: "grapheme", maxLe
   .map(text => ({ text, secret: [] }));
 
 /** An agent's output: pieces, each tagged uniquely, between separators. */
-const output: fc.Arbitrary<{ text: string; secret: string[] }> = fc.array(fc.tuple(fc.nat(5), fc.constantFrom(...SEPARATORS), fc.stringMatching(/^[a-z0-9]{4}$/)), { maxLength: 24 })
+const output: fc.Arbitrary<{ text: string; secret: string[] }> = fc.array(fc.tuple(fc.nat(6), fc.constantFrom(...SEPARATORS), fc.stringMatching(/^[a-z0-9]{4}$/)), { maxLength: 24 })
   .chain(plan => fc.tuple(...plan.map(([kind, chosen, salt], at) => {
     const tag = `t${at}k${salt}`;
     // Right after a web address, "=", ":", "," or "(" belong to it (a path or query may hold them): the next piece is
     // part of the address, not a piece of its own. A space, a tab, a line break, a quote or an angle bracket ends it.
     const afterAddress = at > 0 && (plan[at - 1]![0] === 1 || plan[at - 1]![0] === 2);
     const sep = afterAddress && !URL_ENDS.includes(chosen) ? " " : chosen;
-    const piece = [folder, address, userinfo, () => escapes, () => filler, glued][kind]!(tag);
+    const piece = [folder, address, userinfo, () => escapes, () => filler, glued, key][kind]!(tag);
     return piece.map(one => ({ ...one, text: `${sep}${one.text}` }));
   })))
   .map(pieces => ({ text: pieces.map(one => one.text).join(""), secret: pieces.flatMap(one => one.secret) }));
@@ -73,11 +110,6 @@ const astralCut = fc.tuple(fc.integer({ min: 190, max: 200 }), fc.constantFrom("
 
 /** A web address as the rule reads one: a scheme, `://`, up to a space, a quote or an angle bracket. */
 const ADDRESS = /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*/gi;
-/** A folder on this computer where a path can start: two or more named parts from the root ("/tmp/" alone, like a
- * "/login" command, is not one; a part holds none of the characters a path can start after), a home (`~/`, `~name/`),
- * a drive. */
-const PART = "[^\\s\"'\u0060()<>[\\]/:,;=]";
-const FOLDER = new RegExp(`(?:^|[\\s"'\u0060(<[=:,])(?:\\/${PART}+\\/${PART}|~[A-Za-z0-9._-]*\\/|[A-Za-z]:[\\\\/])`);
 /** Control characters (Cc), and the bidi controls (Bidi_Control: ALM, LRM, RLM, the embeddings, overrides and isolates). */
 const CONTROL = /[\p{Cc}\p{Bidi_Control}]/u;
 
@@ -89,13 +121,12 @@ describe("the agent's last words, for any output", () => {
     }), PROPERTY);
   });
 
-  test("no folder on this computer, no query or fragment, no userinfo: by shape and by every planted tag", () => {
+  test("no folder on this computer (no planted folder name or home name), no key, no query, fragment or userinfo", () => {
     fc.assert(fc.property(fc.oneof(output, nearCut), ({ text, secret }) => {
       const lines = agentSaidTail(text);
       const all = lines.join("\n");
       for (const tag of secret) expect(all, tag).not.toContain(tag);
       for (const line of lines) {
-        expect(line.replace(ADDRESS, " "), line).not.toMatch(FOLDER);
         for (const [url] of line.matchAll(ADDRESS)) {
           const info = /^[a-z][a-z0-9+.-]*:\/\/([^\s/@"'`<>]+)@/i.exec(url);
           if (info !== null) expect(info[1], url).toBe("[hidden]");

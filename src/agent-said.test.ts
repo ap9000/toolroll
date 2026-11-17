@@ -30,7 +30,33 @@ describe("the agent's last words, kept short and safe", () => {
     expect(agentSaidTail("~sam/notes/key.txt is unreadable\ncannot open /secret.txt\nrun /login, or /help")).toEqual(["[path] is unreadable", "cannot open [path]", "run /login, or /help"]);
     // Found by agent-said.property.test.ts: a folder right after a web address or glued to another folder is its own.
     expect(agentSaidTail("see https://x.example/a<~sam/notes and https://x.example/b\"/opt/srv/x")).toEqual(["see https://x.example/a<[path] and https://x.example/b\"[path]"]);
-    expect(agentSaidTail("/opt/a/b(C:\\Users\\me\\x /opt/a/b=/srv/c/d")).toEqual(["[path]([path] [path]=[path]"]);
+    // Glued rooted paths are one span; a path keeps every character up to a space, a quote or `)>],:;`.
+    expect(agentSaidTail("/opt/a/b(C:\\Users\\me\\x /opt/a/b=/srv/c/d")).toEqual(["[path] [path]"]);
+  });
+  test.each([
+    ["after =", "/opt/customer=Acme/ledger.txt"],
+    ["after (", "/opt/customer(Acme/ledger.txt"],
+    ["after <", "/opt/customer<Acme/ledger.txt"],
+    ["after [", "/opt/customer[Acme/ledger.txt"],
+    ["a drive glued with no break", "/a/bxC:\\Users\\me\\ledger.txt"],
+    ["JSON-escaped", '"\\/Users\\/me\\/ledger.txt"'],
+    ["percent-encoded", "%2FUsers%2Fme%2Fledger.txt"],
+    ["a drive, percent-encoded", "C%3A%5CUsers%5Cme%5Cledger.txt"],
+    ["$HOME", "$HOME/ledger.txt"],
+    ["${HOME}", "${HOME}/ledger.txt"],
+    ["%USERPROFILE%", "%USERPROFILE%\\ledger.txt"],
+    ["a file address", "file:///Users/me/ledger.txt"],
+    ["a network share", "\\\\fileserver\\finance\\ledger.txt"],
+  ])("a folder %s is said as [path] whole: nothing of it is left", (_, path) => {
+    const kept = agentSaidTail(`could not read ${path} today`);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).not.toMatch(/ledger|Acme|Users|finance|fileserver|HOME|USERPROFILE/);
+    expect(kept[0]).toMatch(/^could not read "?\[path\]"? today$/);
+  });
+  test("a percent escape is decoded once, never again; a web address's own escapes stay", () => {
+    expect(agentSaidTail("see %252FUsers%252Fme ok")).toEqual(["see %252FUsers%252Fme ok"]);
+    expect(agentSaidTail("see https://example.com/a%2Fb ok")).toEqual(["see https://example.com/a%2Fb ok"]);
+    expect(agentSaidTail("100% done, a=$HOMEDIR/x")).toEqual(["100% done, a=$HOMEDIR/x"]);
   });
   test("the cut never leaves a mark a second cleaning would read as part of a hidden query, nor half a character", () => {
     const line = `${"a".repeat(170)} https://x.example/p?token=1 and more after it`;

@@ -50,6 +50,11 @@ describe("the rule", () => {
     const key = ["ghp", "A".repeat(10) + "b".repeat(10) + "C".repeat(10) + "d1e2f3"].join("_");
     for (const one of [...SECRETS, "C:\\Users\\me", "see d:/backups", "\\\\server\\share", "file:///Users/me/x", `token ${key}`, "1234567:abcdefghijklmnopqrstuvwxyz"])
       expect(privateWords(one), one).toBe(true);
+    // A home written another way: JSON-escaped, percent-encoded once, or by its variable (never expanded).
+    for (const one of ['{"p":"\\/Users\\/me\\/x"}', "open %2FUsers%2Fme%2Fx", "C%3A%5CUsers%5Cme", "at $HOME/notes", "at ${HOME}/notes", "at %USERPROFILE%\\Docs", "$env:USERPROFILE\\x"])
+      expect(privateWords(one), one).toBe(true);
+    // Decoded once only; a variable that merely starts like one is not one.
+    for (const one of ["%252FUsers%252Fme", "a=$HOMEDIR/x", "100% done"]) expect(privateWords(one), one).toBe(false);
     // A project folder that happens to be called "home" or "Users" (joined, so the repository hygiene scan reads no path).
     for (const one of [ORDINARY, ["src", "home", "index.ts"].join("/"), "/next", "https://github.com/acme/shop/pull/3", ["packages", "Users", "list.ts"].join("/"), "ratio 3:4"])
       expect(privateWords(one), one).toBe(false);
