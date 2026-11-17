@@ -880,7 +880,12 @@ async function checkTrigger(store: Store, trigger: FlowTriggerRow, config: Extra
   // The cursor moves past what was handled, never past what is still waiting.
   const cursor = fetched.more !== undefined ? fetched.cursor ?? trigger.cursor : more ? due.at(-1)?.at ?? trigger.cursor : fetched.cursor ?? trigger.cursor;
   const said = results.length === 0 && fetched.said !== undefined ? fetched.said : outcomeWords(results, more);
-  store.updateFlowTrigger(trigger.id, { failures: 0, cursor, lastAt: now.toISOString(), lastOutcome: said, nextAt: new Date(now.getTime() + POLL_EVERY_MS).toISOString() }, now);
+  // The cursor moves only from where this check started. Two checks of one trigger can overlap (the worker's pass and
+  // a Check now): a first look that reached the inbox after mail came would otherwise move the watch past that mail.
+  store.transact(() => {
+    const moved = store.getFlowTrigger(trigger.id)?.cursor !== trigger.cursor;
+    store.updateFlowTrigger(trigger.id, { failures: 0, ...(moved ? {} : { cursor }), lastAt: now.toISOString(), lastOutcome: said, nextAt: new Date(now.getTime() + POLL_EVERY_MS).toISOString() }, now);
+  });
   return { ok: true, said, added: results.filter(one => one.made === "added").length };
 }
 

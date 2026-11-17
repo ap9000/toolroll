@@ -13,7 +13,8 @@ import { runOperate, runUpRole } from "./operate.js";
 import { buildIdentity, memoryChannel, type RoleToParent } from "./up-processes.js";
 import { register } from "./runner.js";
 import { PACKAGE_VERSION } from "./version.js";
-import { openStore } from "./store.js";
+import { isDatabaseBusy, openStore } from "./store.js";
+import { DatabaseSync } from "node:sqlite";
 import { readInstance } from "./console-instance.js";
 import { shortTempDir } from "../test/short-temp.js";
 import { freePort, freePorts } from "../test/free-port.js";
@@ -89,6 +90,29 @@ const startUp = (port: number, extra: string[] = []) => {
     .finally(() => { finished = true; });
   return { running, finished: () => finished };
 };
+/** Whether some connection holds the database's write lock right now: a write begun with no wait is refused. */
+const writeLockHeld = (): boolean => {
+  const probe = new DatabaseSync(db);
+  try { probe.exec("PRAGMA busy_timeout = 0"); probe.exec("BEGIN IMMEDIATE"); probe.exec("ROLLBACK"); return false; }
+  catch (error) { if (isDatabaseBusy(error)) return true; throw error; }
+  finally { probe.close(); }
+};
+const stopped = (pid: number): boolean => execFileSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("T");
+/**
+ * Stops a worker's whole process (the longest synchronous task there is) at a moment it is between writes. Stopped
+ * inside a write it would keep the database's write lock, and every process's next write waits for that lock (store.ts
+ * busy_timeout) — the console's own background writes too: that is the shared database, not the split. So: stopped
+ * (the kernel says so), then holding no write lock; otherwise let it run on and stop it again.
+ */
+async function stopBetweenWrites(pid: number): Promise<void> {
+  for (;;) {
+    process.kill(pid, "SIGSTOP");
+    while (!stopped(pid)) await new Promise(resolve => setImmediate(resolve));
+    if (!writeLockHeld()) return;
+    process.kill(pid, "SIGCONT");
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
 /** Ready: the handoff is out. What it started: its console's address and its runner. */
 async function started(up: { finished: () => boolean }, port: number): Promise<{ url: string; runner: string }> {
   await until("the handoff", () => lines.some(line => line.includes("toolroll onboard")) || up.finished());
@@ -118,8 +142,8 @@ describe("toolroll up as two processes", () => {
       for (const one of Object.values(found)) expect(one.command).not.toMatch(/--token|tok-|--runner/);
 
       // The longest synchronous task there is: the worker's whole process stopped. The console still answers at once.
-      process.kill(found.worker!.pid, "SIGSTOP");
       try {
+        await stopBetweenWrites(found.worker!.pid);
         for (let i = 0; i < 5; i++) {
           const started = performance.now();
           const answer = await fetch(new URL("/healthz", envelope.url), { signal: AbortSignal.timeout(2_000) });
