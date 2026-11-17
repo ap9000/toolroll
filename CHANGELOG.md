@@ -36,6 +36,7 @@ mistake, approving a sent-back plan without leaving the terminal, and interactiv
 - **The mail inbox never skips an email** when two checks overlap.
 - **Threads start in a project `toolroll` added itself,** and the new-task box shows while a thread is open.
 - **`tui.toml` with both `list-side` and `list_side`** reads back the same after a change (the dashed spelling wins).
+- **Turning on threads without a password** tells you to set one first (`toolroll password set`), in plain words.
 
 ## 0.9.112 — 2026-11-16
 
