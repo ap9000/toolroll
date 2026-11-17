@@ -2239,7 +2239,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // desktop update in every folder the chrome looks in.
         if (databaseFile !== null) { try { waitingUpdate(databaseFile, run => store.stopQuiescenceProblem(run) !== null, at); } catch { /* shown as last saved */ } }
         await Promise.all(waits);
-      }),
+      }).finally(() => options.onBackgroundPass?.()),
       onError: () => { /* each check keeps its own last answer; the next pass asks again */ },
     });
     void backgroundChecks.runNow();

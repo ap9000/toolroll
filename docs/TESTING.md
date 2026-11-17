@@ -195,6 +195,16 @@ passed every required check on its pull request before npm publication.
 `src/ci-workflow.test.ts` carry an `if:`, and that test holds the workflows
 to the check names `toolroll release` waits for.
 
+Files that judge other changes (the check lists above, the wire and click-path
+ceilings, `test/destinations.json`, the password inventories, the workflows
+themselves; `scripts/gate-files.json` lists them) are protected by
+`gate-changes.yml`, an advisory check on every pull request: a pull request
+that changes one fails unless one of its commits carries a trailer line
+`Gate-change: <file or glob> — <reason>` covering it. The check runs the base
+revision's `scripts/gate-changes.mjs`, which reads the list with
+`git show <base>:scripts/gate-files.json`, so a pull request can't loosen its
+own judge. Snapshots and `test/timings.json` are reported, never failed.
+
 ## Wire budgets
 
 `npm run test:perf:wire` (`test/perf/wire.wire.test.ts`, slice 0 of the fluid pages plan) measures what the browser
@@ -357,6 +367,14 @@ These are cut and not added:
   signed. A deletion names the retained test that still proves it.
 - **Private helpers** that the caller's tests already prove, and **implementation checks** such as mock call
   counts and internal ordering, unless the order is the safety property.
+
+Property tests (`*.property.test.ts` with fast-check, `tui/crates/toolroll-tui/tests/properties.rs` with
+proptest) attack the pure code agents most often get wrong at the edges: the agent's last words, the outbound
+privacy rule, a route's sealed bytes, tui.toml, view.json and search. Each runs 200 cases and prints the seed of a
+failure; replay it with `{ ...PROPERTY, seed, path }` (proptest saves its own under `proptest-regressions/`).
+
+A flaky test is never fixed by a longer timeout, an added sleep or a rerun: it waits on a fact (a state, an event, a
+file; a background pass says when it finished through `onBackgroundPass`), or it goes, with the reason in the commit.
 
 Prefer `test.each` tables to near-identical tests, and assert outcomes, not steps. A new feature gets an
 end-to-end check, not a unit test. A wording, layout or styling change gets no test.
