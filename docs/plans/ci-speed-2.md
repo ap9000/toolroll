@@ -229,13 +229,115 @@ it: `rust · macos-latest` is gone, and its `cargo clippy --locked --workspace -
 `cargo test --locked --workspace` run as a step of `workbench bundle · macos-latest` (tui-bundle.yml), which starts on
 every path that starts rust.yml (`tui/**`, the engine API fixtures and contract). `rust · ubuntu-latest` keeps fmt,
 clippy and the tests on Linux, now a written-out job without a single-value matrix. Same coverage on both platforms;
-a workbench pull request asks for 7 macOS runners instead of 8, and the bundle job takes ~120 s longer cold (~40 s warm),
+a workbench pull request asks for one macOS runner fewer, and the bundle job takes ~120 s longer cold (~40 s warm),
 off the critical path. The macOS unit lane itself is unchanged (still 3 shards, same files).
+
+## At most 5 macOS runners per pull request (owner-approved lever 1)
+
+GitHub-hosted macOS concurrency on this account is 5. What each kind of pull request asks for, across every workflow
+(the macOS joins, the native lanes, the upgrade test, the journeys, rust.yml and lint.yml all run on Linux or Windows):
+
+| Pull request | Before this branch | Now: at once (then) |
+| --- | --- | --- |
+| ordinary (src/, docs, tests) | 3 (macOS lane shards) | 3 |
+| workbench (tui/, the engine contract) | 7: 3 shards, rust macOS, bundle smoke, darwin-arm64, darwin-x64 | 4 (then 1): 3 shards, darwin-arm64; the bundle smoke after |
+| packaging (package.json, install paths) | 8: as workbench, plus the macOS install smoke | 5 (then 1) |
+| release-* (always packaging) | 11: plus Node 22's 3 macOS shards | 9 (then 1): 6 shards, install smoke, darwin-arm64, darwin-x64 |
+| nightly (not a pull request) | 6: both Nodes' macOS shards | 6 |
+
+How: `rust · macos-latest` folded into the bundle smoke (above); darwin-x64, the release's Intel build, runs only on
+release-* branches, by hand and at the tag (package-build.yml's `intel` input; publish.yml always builds all four, and
+an ordinary pull request's assemble verifies and packs the other three); and the bundle smoke waits for the package build
+and takes its binary (below), so it never runs beside that Mac. The macOS lane keeps 3 shards and its files.
+`src/ci-workflow.test.ts` holds the counts.
+
+The critical path doesn't move for a pull request on its own: it was already the macOS lane (~17 minutes median), and an
+ordinary pull request asked for 3. What changes is pressure: a workbench or packaging pull request no longer queues
+against itself (it asked for 7–8 of 5), and two pull requests at once now ask for 6–9 rather than 10–15, so fewer macOS
+shards wait behind them (the measured p90 queue was ~10 minutes). The workbench bundle's own path grows (package build
+~3 minutes, then the smoke with its macOS Rust checks, ~6–7 minutes in all), still well inside the macOS lane's.
+
+## Each workbench binary built once per pull request (lever 2)
+
+The bundle smoke built this platform's binary itself, beside the package build that built the same one (darwin-arm64
+on a second Mac, linux-x64 on a second Linux runner). Now it waits for the package build (`needs: binaries`), downloads
+`workbench-<platform>`, places it only once its sha256 is its build's report's (`tui-build.mjs --adopt`, nothing run
+first), and verifies it as publish would pack it with that report (`--verify --reports`: architecture, signature or
+static linking, the self-check with this build's contract digest, the pack list) — the same checks assemble runs.
+
+## Splitting store.ts's imports (lever 3)
+
+**Where the closure came from.** In the runtime import graph (no `import type`), `src/store.ts` imported 114 modules and
+reached 773 of 919 product files, serve.ts and operate.ts among them. Removing any one of its own imports took one file
+off: the graph is one tight knot. The knot had one thin bridge: `nightly-github → release-adapters → release-gate →
+desktop-update → desktop-host → operate → serve`, and the release gate used exactly one function from the desktop
+updater, `durableJson`.
+
+**Done (no behaviour change):**
+
+1. `durableJson` moved verbatim to `src/durable-json.ts`; `release-gate.ts` imports it there, `desktop-update.ts`
+   re-exports it (desktop-update.ts has no top-level side effects to miss). store.ts's runtime closure: **773 → 448**
+   product files; serve.ts and operate.ts are out of it.
+2. 124 type-only named imports in 30 files (`import { type A }`, which verbatimModuleSyntax still compiles to
+   `import {} from` and so loads the module) are now `import type` (erased). store.ts had two (chat-core, provider).
+3. The selector stopped following type-only imports (`import type`, `export type … from`, `import("…").Type`), which
+   can't load anything when tests run.
+
+No function in store.ts, operate.ts or server/tasks.ts moved (src/password-freshness.test.ts pins their ordinals).
+Typecheck, the build, the CLI's `--version`/`--help`, loading dist's store, serve and operate, and 46 affected test files
+(1257 tests: password freshness, public hygiene, the ci-* tests, store, desktop-update, toolroll-update, release-gate and
+the tests named after every changed file) pass.
+
+**Measured with the selector's own graph** (imports plus the files tests name), tests one changed `src/` module reaches,
+over 920 modules:
+
+| | median | p25 | p75 | modules reaching > 600 tests | store.ts closure |
+| --- | --: | --: | --: | --: | --: |
+| before | 823 | 823 | 823 | 785 | 893 |
+| type-only edges dropped | 711 | 711 | 711 | 778 | 886 |
+| + durableJson moved | 356 | 342 | 711 | 341 | 408 |
+| + `import type` conversions | 350 | 336 | 707 | 341 | 408 |
+
+**Re-run backtest** (historical trees, so it reflects the selector change only): still **0 misses** on Linux (123
+failing pairs) and macOS (32); the 25 large selections fall from 95% to 88% of the suite; mean Linux saving 6.3 s, macOS
+13.6 s. The same historical diffs planned on today's tree, before and after the split: 33 selecting runs, 654 → 628 files
+on average; two pull requests (#400, #403) drop from ~790 to ~520–560 files and their slowest Linux shard from 342–346 s
+to the 283 s floor. Most real pull requests touch several files, and at least one usually sits in the knot that remains.
+
+**What remains, and the plan for it.** store.ts's closure is now a 408-file knot in which 19 modules each reach all
+408, because they import store.ts and store.ts imports them. store.ts calls most of them once or twice:
+
+| store.ts imports (uses in store.ts) | |
+| --- | --- |
+| used once | workspace-revision, project-skills, project-knowledge, project-memory, model-catalog, runner, recipes |
+| used twice | verification-evidence, project-learning, review-context, nightly-github, provider-auth, run-efficiency |
+| more | code-map-store (7), agentconfig (7), fallback (5), vanished-retry (6), reported-usage (10), route-store (23) |
+
+Next steps, in the order they pay:
+
+1. **nightly-github → release-adapters** (159 of the 408): `refreshNightlyForDeploy` lazily imports the release
+   adapters. Move it to its own module beside its callers; store.ts keeps `nightlyDebtHold` from `./nightly-github.js`,
+   which src/eval-hooks.ts pins (store's `releaseNightlyProblem` must call it from there), so that pin stays true.
+2. **The once-used project-* and catalog modules**: each is one Store method that reads its module's rows. Turn the
+   method into a function in that module taking the store (`projectSkills(store, …)`), and have callers call it there.
+   This removes functions from store.ts, so src/password-freshness.test.ts's ordinals move: an owner-reviewed change to
+   that gate, one module per pull request.
+3. **result-follow-ups → builder** (29 files): it takes `approvedCommandShell` and the setup environment lists from
+   builder.ts; a small module of their own (security code: its own safety self-review) would cut builder out.
+4. **Lazy imports don't help selection**: an `await import()` still runs when a test calls that path, so the selector
+   (rightly) follows it. Only moving code out of the knot shrinks what a change reaches.
+
+Expected effect, from this tooling: (1) alone takes the store's closure to about 250 files; (1) and (2) would bring a
+typical single-module change to about 200–250 tests and let multi-file pull requests outside the store's core select
+roughly half the suite. That is a guess from the graph, not a backtest: the backtest can only judge it once those moves
+are in the history it replays.
 
 ## The new critical path, and what the owner decides
 
-Today: ~17 minutes median, set by the macOS lane (queue + ~12 minutes of job). Merged as it is (advisory), the branch
-doesn't change that; the Rust cache and the folded macOS job trim advisory, off-critical-path jobs and macOS demand.
+Today: ~17 minutes median, set by the macOS lane (queue + ~12 minutes of job). Merged as it is (selection advisory), a
+pull request on its own still takes that; what drops is macOS demand (at most 5 at once per pull request, 6–9 for two
+at once instead of 10–15), so the ~10-minute p90 queue should shrink, and advisory jobs get shorter (Rust cache, one
+binary build instead of two, no Intel Mac on ordinary pull requests).
 With `TEST_SELECTION: enforce`, the expected macOS critical path: unchanged for ~94% of pull requests (12 s on average),
 and about 3 minutes shorter (597 → 407 s of tests) for workbench- and documentation-only ones. Linux never sets the path.
 
@@ -247,11 +349,10 @@ Decisions for the owner:
 2. **The required typecheck** is already TypeScript 7's native checker; nothing to switch. What remains is that it runs
    in all 9 shard jobs (10–22 s each, 22 s on the macOS critical path): one typecheck job instead would save ~22 s per
    run; `src/ci-workflow.test.ts` currently requires it in every shard.
-3. **Where the real minutes are:** (a) macOS runner queueing (p90 ~10 min) and up to 8 macOS jobs per workbench pull
-   request — `workbench bundle · macos-latest` and `workbench bundle / binary · darwin-arm64` build the same darwin-arm64
-   binary twice, and `rust · macos-latest` compiles it a third time; folding them touches the release's package build;
-   (b) the store's import closure, which makes any selection reach the whole suite — splitting `store.ts`'s imports
-   (124 modules, reaching `serve.ts`) is what would make diff selection pay.
+3. **The three levers** (approved, built above): macOS at most 5 per pull request, each binary built once, and the first
+   cut of the store's closure. What's left to decide: the next store.ts moves (lever 3's plan), each of which changes
+   src/password-freshness.test.ts's pinned ordinals and wants its own review; and whether two concurrent pull requests'
+   3+3 macOS shards (over 5) are worth fewer lane shards once the selection is enforced.
 
 ## Checks run on this branch
 
