@@ -29,6 +29,22 @@ pub struct Search {
 /// The focused pane's text, one cleaned line per drawn line where it can be; None: nothing here may be searched or
 /// exported (no task, a thread, or an agent's sign-in pane).
 pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
+    // The width the pane was last drawn at (its text wraps as drawn); 80 before any frame.
+    let w = match app.areas.content.width {
+        0 => 80,
+        w => w as usize,
+    };
+    pane_text_in(app, crate::view::Room::screen(w))
+}
+
+/// The focused pane's whole text, for export (open-in-editor): the same content as drawn, laid out with no width to
+/// cut it to, without key hints or rules.
+pub fn export_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
+    pane_text_in(app, crate::view::Room::export())
+}
+
+/// The focused pane's text laid out in `room` (view::Room): as drawn (search), or whole (export).
+pub fn pane_text_in(app: &mut App, room: crate::view::Room) -> Option<(&'static str, Vec<String>)> {
     if app.thread_selected().is_some() || app.selected_item().is_none_or(|i| !i.is_task) {
         return None;
     }
@@ -42,18 +58,16 @@ pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
         .trim_end()
         .to_string()
     };
-    // The width the pane was last drawn at (its text wraps as drawn); 80 before any frame.
-    let w = match app.areas.content.width {
-        0 => 80,
-        w => w as usize,
-    };
+    let w = room.w;
     match app.tab {
         // Live: what is drawn above the output (a failure, what the agent said, a wait), then the whole output.
         Tab::Live => {
             let item = app.selected_item().cloned()?;
-            let (head, output) = crate::view::live_head(app, &item, w);
+            let (head, output) = crate::view::live_head(app, &item, room);
             let mut lines: Vec<String> = head.iter().map(line_text).collect();
-            app.live_head_lines = lines.len();
+            if room == crate::view::Room::screen(w) {
+                app.live_head_lines = lines.len();
+            }
             if output {
                 lines.extend(
                     crate::transcript::lines(&app.transcript, w, 0)
@@ -66,7 +80,7 @@ pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
         // Steps: exactly the lines the tab draws.
         Tab::Steps => Some((
             "steps",
-            crate::view::steps_lines(app, w)
+            crate::view::steps_lines(app, room)
                 .iter()
                 .map(line_text)
                 .collect(),

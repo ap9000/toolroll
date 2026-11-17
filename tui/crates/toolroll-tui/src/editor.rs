@@ -246,20 +246,44 @@ pub fn isolate_with(
     Ok(())
 }
 
-/// Mark `fd` close-on-exec and check it: true when it is, or when the number isn't open.
+/// Mark `fd` close-on-exec and check it: true when it is, or when the number isn't open, including when another thread
+/// closes it at any point in between (a closed descriptor leaks nothing). Only a descriptor that stays open without
+/// the mark is refused.
 #[cfg(unix)]
 pub fn cloexec(fd: i32) -> bool {
-    // SAFETY: fcntl on a descriptor number reads and sets only its flags.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags == -1 {
-            return std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF);
-        }
-        if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
-            return false;
-        }
-        let now = libc::fcntl(fd, libc::F_GETFD);
-        now != -1 && now & libc::FD_CLOEXEC != 0
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    cloexec_with(
+        fd,
+        // SAFETY: fcntl on a descriptor number reads only its flags.
+        &|fd| match unsafe { libc::fcntl(fd, libc::F_GETFD) } {
+            -1 => Err(errno()),
+            flags => Ok(flags),
+        },
+        // SAFETY: fcntl on a descriptor number sets only its flags.
+        &|fd, flags| match unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } {
+            -1 => Err(errno()),
+            _ => Ok(()),
+        },
+    )
+}
+
+/// cloexec's steps, with how flags are read and set given (tests play a descriptor closed between them).
+#[cfg(unix)]
+pub fn cloexec_with(
+    fd: i32,
+    get: &dyn Fn(i32) -> Result<i32, i32>,
+    set: &dyn Fn(i32, i32) -> Result<(), i32>,
+) -> bool {
+    let flags = match get(fd) {
+        Ok(flags) => flags,
+        Err(e) => return e == libc::EBADF,
+    };
+    if let Err(e) = set(fd, flags | libc::FD_CLOEXEC) {
+        return e == libc::EBADF;
+    }
+    match get(fd) {
+        Ok(now) => now & libc::FD_CLOEXEC != 0,
+        Err(e) => e == libc::EBADF,
     }
 }
 
@@ -721,6 +745,29 @@ mod tests {
         // A descriptor whose flag can't be set: refused.
         assert!(isolate_with(&|| Some(vec![0, 1, 2, 7]), &|| None, &|fd| fd != 7).is_err());
         assert!(isolate_with(&|| Some(vec![0, 1, 2, 7]), &|| None, &|_| true).is_ok());
+        // A descriptor another thread closes at any point while it is being marked leaks nothing: never a refusal
+        // (the parallel-test flake: closed between reading and setting its flags).
+        let open = |_: i32| -> Result<i32, i32> { Ok(0) };
+        let closed = |_: i32| -> Result<i32, i32> { Err(libc::EBADF) };
+        let set_ok = |_: i32, _: i32| -> Result<(), i32> { Ok(()) };
+        let set_closed = |_: i32, _: i32| -> Result<(), i32> { Err(libc::EBADF) };
+        assert!(cloexec_with(9, &closed, &set_ok));
+        assert!(cloexec_with(9, &open, &set_closed));
+        let first = std::cell::Cell::new(true);
+        let then_closed = |_: i32| -> Result<i32, i32> {
+            if first.replace(false) {
+                Ok(0)
+            } else {
+                Err(libc::EBADF)
+            }
+        };
+        assert!(cloexec_with(9, &then_closed, &set_ok));
+        // One that stays open without the mark, or can't be marked for another reason: refused.
+        assert!(!cloexec_with(9, &open, &set_ok));
+        let set_denied = |_: i32, _: i32| -> Result<(), i32> { Err(libc::EPERM) };
+        assert!(!cloexec_with(9, &open, &set_denied));
+        let marked = |_: i32| -> Result<i32, i32> { Ok(libc::FD_CLOEXEC) };
+        assert!(cloexec_with(9, &marked, &set_ok));
         // The spawn is refused, and nothing is written.
         let base = std::env::temp_dir().join(format!("tr-iso-{}", std::process::id()));
         let r = prepare(
@@ -775,6 +822,13 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// What these folder and file tests hand prepare for descriptor isolation: isolation has tests of its own
+    /// (isolate_with, cloexec_with), and a real walk of this test process's descriptors would race the other tests'
+    /// threads opening and closing theirs.
+    fn no_leaks() -> Result<(), String> {
+        Ok(())
+    }
+
     fn private_base(tag: &str, mode: u32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let base = std::fs::canonicalize(std::env::temp_dir())
@@ -796,7 +850,7 @@ mod tests {
             "line one\nline two\n",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         )
         .unwrap();
         let e = &launch.export;
@@ -822,7 +876,7 @@ mod tests {
             "x",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         )
         .unwrap();
         let two = prepare(
@@ -830,7 +884,7 @@ mod tests {
             "x",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         )
         .unwrap();
         let root = one.export.root.clone();
@@ -855,7 +909,7 @@ mod tests {
             "text",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         );
         assert!(
             matches!(&r, Err(w) if w.contains("isn't private")),
@@ -874,7 +928,7 @@ mod tests {
             "text",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         )
         .unwrap();
         let f = launch.export.file.clone();
@@ -895,7 +949,7 @@ mod tests {
             "text",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         )
         .unwrap();
         // Our folder made unwritable: the export can't be removed, and that is said (not claimed gone).
@@ -923,7 +977,7 @@ mod tests {
             "text",
             Some(("true".into(), vec![])),
             std::slice::from_ref(&base),
-            Box::new(isolate),
+            Box::new(no_leaks),
         );
         let Err(why) = r else {
             panic!("accepted a shared folder")

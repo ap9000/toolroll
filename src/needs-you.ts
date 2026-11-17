@@ -441,3 +441,11 @@ export function retryNoteOf(suggestion: string): string {
   if (plain.length <= RETRY_NOTE_LIMIT) return plain;
   return `${plain.slice(0, RETRY_NOTE_LIMIT - 1).replace(/\s+\S*$/, "").replace(/[,;:\s]+$/, "")}…`;
 }
+
+/** A task's run in the words every surface uses: "attempt 3 (build #4)" for a build (its builds counted oldest first,
+ * a scout and a repair among them, as the Steps tab's Build card counts them), "build #7" for any other run. */
+export function runWords(runs: readonly { id: number; role: string }[], id: number): string {
+  const builds = runs.filter(one => one.role === "builder" || one.role === "scout" || one.role === "repair").map(one => one.id).sort((a, b) => a - b);
+  const at = builds.indexOf(id);
+  return at < 0 ? `build #${id}` : `attempt ${at + 1} (build #${id})`;
+}
