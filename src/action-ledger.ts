@@ -13,6 +13,28 @@ export type LedgerEntry = {
   detail: string | null;
 };
 
+/** The largest structured detail kept whole (recordActionWhole). */
+export const RECORD_WHOLE_MAX = 16_384;
+
+/** An entry whose detail is structured JSON kept whole (a workbench change and its outcome: history that is settled
+ * later must hold the full change, not store.recordAction's first 300 characters). The JSON carries no raw control
+ * characters (stringify escapes them); it is bounded, refused past RECORD_WHOLE_MAX rather than cut, and shown cut
+ * where it's displayed (detailShown). Append-only like every entry. */
+export function recordActionWhole(db: Database, entry: Omit<LedgerEntry, "id" | "detail">, detail: unknown): number {
+  const text = JSON.stringify(detail);
+  if (text === undefined || text.length > RECORD_WHOLE_MAX || /[\u0000-\u001f\u007f]/.test(text)) throw new Error("Ledger detail is not storable");
+  const row = db.prepare("INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run(entry.at, entry.actor, entry.repo, entry.taskId, entry.runId, entry.action, entry.outcome, entry.source, text);
+  return Number(row.lastInsertRowid);
+}
+
+/** An entry's detail as shown on a page: at most DETAIL_SHOWN characters (a structured detail, recordActionWhole's,
+ * is kept whole in the ledger and its exports; a page shows its start). */
+export const DETAIL_SHOWN = 300;
+export function detailShown(detail: string): string {
+  return detail.length <= DETAIL_SHOWN ? detail : `${detail.slice(0, DETAIL_SHOWN - 1)}…`;
+}
+
 /** The table as v99 made it (v107 has it): the one earlier shape the v110 rebuild accepts. */
 export const LEDGER_V99_TABLE = (name: string) => `CREATE TABLE ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

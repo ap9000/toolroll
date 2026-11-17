@@ -250,6 +250,8 @@ export type MainOptions = {
   onboard?: { preview?: typeof previewGithubRepo; clone?: typeof cloneGithubRepo };
   update?: UpdateCliDeps;
   release?: ReleaseCliDeps;
+  /** Injected by tests: how `toolroll view` reads and changes the workbench's look (view-tools.ts). */
+  viewRunner?: import("./view-tools.js").ViewRunner;
   /** Tests: bare `toolroll` in a repository (quick-start.ts) — its repository, agent check, proofs and actions. */
   quickStart?: Partial<QuickStartSeams>;
   /** Tests: bare `toolroll` at a person's terminal (easy-start.ts) — the terminal and agent checks, and its seams. */
@@ -444,6 +446,8 @@ async function dispatch(
   if (first === "skills") return runSkillsCommand(rest, write);
   if (first === "repos") return runReposCommand(rest, write, mainOptions.onboard);
   if (first === "pulls") return runPullsCommand(rest, write);
+  // The workbench's look: read it, switch its theme, or put it back (undo for the lead's toolroll_view_set).
+  if (first === "view") return (await import("./view-tools.js")).runViewCommand(rest, write, mainOptions.viewRunner);
   if (first === "graph") return runGraphCommand(rest, write);
   if (first !== undefined && OPERATE_COMMANDS.has(first)) {
     return runOperate(first, rest, write, mainOptions.operate ?? {});

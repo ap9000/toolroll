@@ -17,10 +17,22 @@ const HOME_FOLDER = /(?:^|[\s"'`(<[=:,])(?:\/Users\/|\/home\/|\/root\/|~\/)/;
  * a network share ("\\server"), or a file URL. */
 const DRIVE_OR_SHARE = /(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\\\\|\bfile:\/\//i;
 
-/** Words no outbound message carries: a key, a bot token, or an absolute folder on this computer. A project's own
- * relative paths, a page's route and a web address are fine. */
+/** A home written another way: JSON-escaped ("\/Users\/"), by its variable ("$HOME/", "${HOME}/", "%USERPROFILE%\",
+ * "%HOMEPATH%", "$env:USERPROFILE"), never expanded, or as any scheme's local address ("vscode:///Users/me", an empty
+ * host). */
+const HOME_OTHERWISE = /(?:^|[\s"'`(<[=:,])\\\/(?:Users|home|root)\\\/|\$HOME[\\/]|\$\{HOME\}[\\/]|%USERPROFILE%|%HOMEPATH%|\$env:USERPROFILE\b|:\/\/\/(?:Users|home|root|[A-Za-z]:)[\\/]/i;
+/** Every percent escape decoded once, in one pass over the whole text (no prefix cap, never decoded again: "%252F"
+ * stays "%2F"). */
+const decodedOnce = (text: string): string => text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+
+/** Whether these words name a folder on this computer, read as written. */
+const folderWords = (text: string): boolean => HOME_FOLDER.test(text) || DRIVE_OR_SHARE.test(text) || HOME_OTHERWISE.test(text);
+
+/** Words no outbound message carries: a key, a bot token, or an absolute folder on this computer, as written or
+ * percent-encoded once ("%2FUsers%2Fme"). A project's own relative paths, a page's route and a web address are fine. */
 export function privateWords(text: string): boolean {
-  return scanForSecrets(text).length > 0 || /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/.test(text) || HOME_FOLDER.test(text) || DRIVE_OR_SHARE.test(text);
+  if (scanForSecrets(text).length > 0 || /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/.test(text) || folderWords(text)) return true;
+  return /%[0-9A-Fa-f]{2}/.test(text) && folderWords(` ${decodedOnce(text)}`);
 }
 
 /** Whether any of these fields would carry private words. */

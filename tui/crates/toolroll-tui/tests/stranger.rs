@@ -2,6 +2,8 @@
 //! every row Work sends is listed (and found by the palette), a failed task says why and offers Retry, the first run is
 //! the workbench's own welcome, help is made from the keymap, a key that does nothing says so, the Agents screen's
 //! sign-in states, the screen glitches, and Settings writing tui.toml.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -26,6 +28,7 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn app_on(work: Value) -> App {

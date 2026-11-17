@@ -120,6 +120,9 @@ export type LeadTurnInput = {
    * enrollment. A refusal ends the turn with nothing kept.
    */
   revalidate?: () => Promise<{ ok: true } | { ok: false; reason: LeadChannelProblem }>;
+  /** The person's own workbench look (view-tools.ts): given only to the person's own conversation on this computer
+   * (server/chat.ts). Absent: toolroll_view_read and toolroll_view_set refuse. */
+  view?: import("./view-tools.js").ViewRunner;
 };
 
 /** Why a chat's standing changed under a turn: each has its own plain words (LEAD_CHANNEL_COPY). */
@@ -711,7 +714,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: leadToolLabel(call.name) });
       // A registered tool this request did not advertise is refused before it is read or run (the only production
       // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
-      const toolContext = (): LeadToolContext => ({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) });
+      const toolContext = (): LeadToolContext => ({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }), ...(input.view === undefined ? {} : { view: input.view }) });
       // propose_start (docs/plans/one-step-chat.md C3), after the advertisement gate: its input is validated first (so
       // invalid input never reaches the classifier), then Toolroll prepares this call's own preview in this turn (up to
       // the classifier's budget), then the person's standing and the thread are re-proved after that wait, and only then

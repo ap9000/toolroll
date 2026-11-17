@@ -1,4 +1,4 @@
-import type { LedgerEntry } from "./action-ledger.js";
+import { detailShown, type LedgerEntry } from "./action-ledger.js";
 import { projectName } from "./project.js";
 import { exactWhenHtml } from "./when-html.js";
 import { html, postForm, type Html } from "./html.js";
@@ -59,7 +59,7 @@ ${text("ledger-outcome", "Outcome", "outcome", "Any outcome")}${text("ledger-tas
       const subject = row.runId !== null ? html`<a class="k-link" href="/r/${row.runId}">Run #${row.runId}</a>` : row.taskId !== null ? html`<a class="k-link k-mono" href="/t/${encodeURIComponent(row.taskId)}">${row.taskId}</a>` : "";
       const byActor = new URLSearchParams(kept); byActor.set("actor", row.actor);
       return html`<article class="h-audit" data-ledger-id="${row.id}"><span class="h-audit-time k-num">${exactWhenHtml(row.at)}</span>\
-<span class="h-audit-what"><a class="h-actor" href="/ledger?${byActor.toString()}" title="Only this actor's actions">${row.actor}</a> ${row.action}${row.detail === null ? "" : html`<span class="h-audit-detail">${row.detail}</span>`}</span>\
+<span class="h-audit-what"><a class="h-actor" href="/ledger?${byActor.toString()}" title="Only this actor's actions">${row.actor}</a> ${row.action}${row.detail === null ? "" : html`<span class="h-audit-detail">${detailShown(row.detail)}</span>`}</span>\
 <span class="h-audit-place">${row.repo === null ? "Instance" : projectName(row.repo)} ${subject}</span><span class="h-audit-out">${row.outcome} · ${row.source}</span></article>`;
     })}</div>`;
   const paging = kept.has("before") || params.has("before") || more
