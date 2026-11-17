@@ -85,6 +85,22 @@ impl Rgb {
     }
 
     /// The nearest of xterm's 256 colours, from the 6×6×6 cube and the grey ramp (never 0–15, which people retheme).
+    /// The colour a 256-colour terminal shows for this one (ansi256's choice, as a colour).
+    pub fn quantized256(self) -> Rgb {
+        let i = self.ansi256();
+        if i >= 232 {
+            let v = 8 + 10 * (i - 232);
+            return Rgb(v, v, v);
+        }
+        const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        let k = i - 16;
+        Rgb(
+            LEVELS[(k / 36) as usize],
+            LEVELS[((k / 6) % 6) as usize],
+            LEVELS[(k % 6) as usize],
+        )
+    }
+
     pub fn ansi256(self) -> u8 {
         const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
         let near = |c: u8| {
@@ -119,7 +135,7 @@ pub enum Paint {
     Terminal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     Paper,
     Ink,
@@ -335,6 +351,65 @@ pub fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
     Rgb(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
 }
 
+/// Every foreground the screen draws on every background, by role, and the contrast each must keep: the one table the
+/// contrast check reads (Theme::problem). tests/drawn_pairs.rs draws the screens with every role its own colour and
+/// fails when a pair drawn isn't here, so the check can't fall behind what is drawn. A floor of 1.0 is decoration
+/// (a rule's line), never text.
+/// The backgrounds code is drawn on (the Diff tab: the sheet, raised blocks, a changed line's wash, the selected file
+/// row), and the floor its accent (Theme::code_accent: strings and numbers) keeps on each.
+pub const CODE_ACCENT_ON: &[(Role, f64)] = &[
+    (Role::Paper, MARK_FLOOR),
+    (Role::Raised, MARK_FLOOR),
+    (Role::PassedSoft, MARK_FLOOR),
+    (Role::FailedSoft, MARK_FLOOR),
+];
+
+/// A role drawn on itself: listed here only, never assumed.
+pub const SAME_ROLE_DRAWN: &[Role] = &[];
+
+pub const DRAWN_PAIRS: &[(Role, Role, f64)] = &[
+    // Text: ink on every surface it is drawn on, and selected text on the selection.
+    (Role::Ink, Role::Paper, TEXT_FLOOR),
+    (Role::Ink, Role::Ground, TEXT_FLOOR),
+    (Role::Ink, Role::Raised, TEXT_FLOOR),
+    (Role::Ink, Role::Fill, TEXT_FLOOR),
+    (Role::Ink, Role::RunningSoft, TEXT_FLOOR),
+    (Role::Ink, Role::PassedSoft, TEXT_FLOOR),
+    (Role::Ink, Role::FailedSoft, TEXT_FLOOR),
+    (Role::SelectionInk, Role::Selection, TEXT_FLOOR),
+    // A search match: the raised block's colour on ink (the match reversed out of its line).
+    (Role::Raised, Role::Ink, TEXT_FLOOR),
+    // The one verb and the solid chip: the sheet's paper on ink, and on needs you.
+    (Role::Paper, Role::Ink, TEXT_FLOOR),
+    (Role::Paper, Role::NeedsYou, TEXT_FLOOR),
+    (Role::Paper, Role::Muted, MARK_FLOOR),
+    // Quiet text, everywhere it is drawn.
+    (Role::Muted, Role::Paper, MARK_FLOOR),
+    (Role::Muted, Role::Ground, MARK_FLOOR),
+    (Role::Muted, Role::Raised, MARK_FLOOR),
+    (Role::Muted, Role::Fill, MARK_FLOOR),
+    (Role::Muted, Role::RunningSoft, MARK_FLOOR),
+    (Role::Muted, Role::PassedSoft, MARK_FLOOR),
+    (Role::Muted, Role::FailedSoft, MARK_FLOOR),
+    // The status marks and words: on the sheet, the selected row, raised blocks and their own washes.
+    (Role::NeedsYou, Role::Paper, MARK_FLOOR),
+    (Role::NeedsYou, Role::Raised, MARK_FLOOR),
+    (Role::Running, Role::Paper, MARK_FLOOR),
+    (Role::Running, Role::Raised, MARK_FLOOR),
+    (Role::Running, Role::RunningSoft, MARK_FLOOR),
+    (Role::Passed, Role::Paper, MARK_FLOOR),
+    (Role::Passed, Role::Raised, MARK_FLOOR),
+    (Role::Passed, Role::PassedSoft, MARK_FLOOR),
+    (Role::Failed, Role::Paper, MARK_FLOOR),
+    (Role::Failed, Role::Raised, MARK_FLOOR),
+    (Role::Failed, Role::FailedSoft, MARK_FLOOR),
+    // Behind a dialog only (the scrim greys everything under it in quiet text): not meant to be read there.
+    (Role::Muted, Role::Selection, 1.0),
+    // Rules: decoration.
+    (Role::Line, Role::Paper, 1.0),
+    (Role::Line, Role::Raised, 1.0),
+];
+
 /// The floors an override must keep (WCAG contrast against the paper, and ΔE between the meaning colours).
 pub const TEXT_FLOOR: f64 = 4.5;
 pub const MARK_FLOOR: f64 = 3.0;
@@ -420,9 +495,12 @@ impl Theme {
                     Role::Fill,
                     mix(b, ink, if is_dark { 0.11 } else { 0.08 }),
                 );
-                set(&mut palette, Role::RunningSoft, mix(b, run, 0.14));
-                set(&mut palette, Role::PassedSoft, mix(b, pass, 0.14));
-                set(&mut palette, Role::FailedSoft, mix(b, fail, 0.14));
+                // A lighter wash on a light terminal: a 256-colour terminal rounds it to a grey, not a pink the status
+                // can't be read on (DRAWN_PAIRS, quantized).
+                let soft = if is_dark { 0.14 } else { 0.12 };
+                set(&mut palette, Role::RunningSoft, mix(b, run, soft));
+                set(&mut palette, Role::PassedSoft, mix(b, pass, soft));
+                set(&mut palette, Role::FailedSoft, mix(b, fail, soft));
             }
         }
         let mut theme = Theme {
@@ -473,83 +551,91 @@ impl Theme {
         }
     }
 
-    fn rgb(&self, role: Role) -> Option<Rgb> {
-        match self.palette.get(role) {
-            Paint::Rgb(c) => Some(c),
-            Paint::Terminal => None,
-        }
-    }
-
-    /// The first rule this palette breaks, in words (`focus`: the role just changed is named first).
+    /// The first rule this palette breaks, in words (`focus`: the role just changed is named first). Every pair the
+    /// screen draws (DRAWN_PAIRS) keeps its floor, in true colour and as a 256-colour terminal shows it; and the four
+    /// status colours stay apart from each other, both ways.
     pub fn problem(&self, focus: Option<Role>) -> Option<String> {
-        let paper = self.reference;
-        let floors = [
-            (Role::Ink, TEXT_FLOOR),
-            (Role::Muted, MARK_FLOOR),
-            (Role::NeedsYou, MARK_FLOOR),
-            (Role::Running, MARK_FLOOR),
-            (Role::Passed, MARK_FLOOR),
-            (Role::Failed, MARK_FLOOR),
-        ];
-        let mut problems: Vec<(Role, String)> = vec![];
-        for (role, floor) in floors {
-            if let Some(c) = self.rgb(role) {
-                if c.contrast(paper) < floor {
-                    let words = if role == Role::Paper || focus == Some(Role::Paper) {
-                        format!("{} would be too faint on it", role.words())
-                    } else {
-                        "it would be too faint on the background".to_string()
-                    };
-                    problems.push((role, words));
-                }
-            }
-        }
-        // Words on the sheets' own fills, and each status on its wash.
-        let ink_on = self.rgb(Role::Ink).unwrap_or(if self.dark {
+        let ink_on = if self.dark {
             Rgb(255, 255, 255)
         } else {
             Rgb(0, 0, 0)
-        });
-        for (fg, bg, floor) in [
-            (Role::Ink, Role::Raised, TEXT_FLOOR),
-            (Role::Ink, Role::Fill, TEXT_FLOOR),
-            (Role::Ink, Role::Ground, TEXT_FLOOR),
-            (Role::Running, Role::RunningSoft, MARK_FLOOR),
-            (Role::Passed, Role::PassedSoft, MARK_FLOOR),
-            (Role::Failed, Role::FailedSoft, MARK_FLOOR),
-        ] {
-            let f = if fg == Role::Ink {
-                Some(ink_on)
-            } else {
-                self.rgb(fg)
+        };
+        // A role's colour as drawn: the terminal's own paper is the reference; its own ink, white or black.
+        let resolve = |r: Role| -> Option<Rgb> {
+            match self.palette.get(r) {
+                Paint::Rgb(c) => Some(c),
+                Paint::Terminal => match r {
+                    Role::Paper => Some(self.reference),
+                    Role::Ink | Role::NeedsYou | Role::SelectionInk => Some(ink_on),
+                    _ => None,
+                },
+            }
+        };
+        let mut problems: Vec<(Role, String)> = vec![];
+        for &(fg, bg, floor) in DRAWN_PAIRS {
+            if floor <= 1.0 {
+                continue;
+            }
+            let (Some(f), Some(b)) = (resolve(fg), resolve(bg)) else {
+                continue;
             };
-            if let (Some(f), Some(b)) = (f, self.rgb(bg)) {
-                if f.contrast(b) < floor {
-                    let mine = if focus == Some(fg) { fg } else { bg };
-                    problems.push((
-                        mine,
-                        format!("{} would be too faint on {}", fg.words(), bg.words()),
-                    ));
-                }
+            let short = if f.contrast(b) < floor {
+                Some("")
+            } else if f.quantized256().contrast(b.quantized256()) < floor {
+                Some(" on a 256-colour terminal")
+            } else {
+                None
+            };
+            if let Some(at) = short {
+                let mine = if focus == Some(bg) { bg } else { fg };
+                let on = if bg == Role::Paper {
+                    "the background".to_string()
+                } else {
+                    bg.words().to_string()
+                };
+                let who = if focus == Some(fg) {
+                    "it".to_string()
+                } else {
+                    fg.words().to_string()
+                };
+                problems.push((mine, format!("{who} would be too faint on {on}{at}")));
             }
         }
-        if let (Some(sel), Some(ink)) = (self.rgb(Role::Selection), self.rgb(Role::SelectionInk)) {
-            if sel.contrast(ink) < TEXT_FLOOR {
+        // Code's accent (fixed per theme) on every background code is drawn on.
+        let accent = self.code_accent();
+        for &(bg, floor) in CODE_ACCENT_ON {
+            let Some(b) = resolve(bg) else { continue };
+            let short = if accent.contrast(b) < floor {
+                Some("")
+            } else if accent.quantized256().contrast(b.quantized256()) < floor {
+                Some(" on a 256-colour terminal")
+            } else {
+                None
+            };
+            if let Some(at) = short {
+                let on = if bg == Role::Paper {
+                    "the background".to_string()
+                } else {
+                    bg.words().to_string()
+                };
                 problems.push((
-                    Role::SelectionInk,
-                    "selected text would be too faint on the selected row".into(),
+                    bg,
+                    format!("code's strings and numbers would be too faint on {on}{at}"),
                 ));
             }
         }
         for (i, a) in Role::MEANING.iter().enumerate() {
             for b in &Role::MEANING[i + 1..] {
-                if let (Some(ca), Some(cb)) = (self.rgb(*a), self.rgb(*b)) {
-                    if ca.distance(cb) < APART_FLOOR {
+                if let (Some(ca), Some(cb)) = (resolve(*a), resolve(*b)) {
+                    let close = ca.distance(cb) < APART_FLOOR
+                        || ca.quantized256().distance(cb.quantized256()) < APART_FLOOR;
+                    if close {
                         let other = if focus == Some(*a) { *b } else { *a };
                         let mine = if focus == Some(*a) { *a } else { *b };
-                        let words =
-                            format!("{} and {} would look alike", mine.words(), other.words());
-                        problems.push((mine, words));
+                        problems.push((
+                            mine,
+                            format!("{} and {} would look alike", mine.words(), other.words()),
+                        ));
                     }
                 }
             }
@@ -641,6 +727,16 @@ impl Theme {
         self.status(Role::Failed, Color::Red)
     }
 
+    /// The one accent code is drawn in (strings and numbers in the Diff tab): fixed per theme, never a role, so the
+    /// contrast check reads it against every background code is drawn on (CODE_ACCENT_ON).
+    pub fn code_accent(&self) -> Rgb {
+        match (self.name, self.dark) {
+            (ThemeName::HighContrast, _) => Rgb(0xe2, 0xb6, 0xff),
+            (_, true) => Rgb(0xc8, 0x9b, 0xff),
+            (_, false) => Rgb(0x82, 0x50, 0xdf),
+        }
+    }
+
     /// Code in the Diff tab (syntax.rs classes): never a meaning colour (no blue, green or red, no amber). Keywords
     /// and types are ink by weight, comments muted and italic, and strings and numbers one quiet violet (the
     /// terminal's magenta at 16 colours); with colour off only weight and slant remain.
@@ -655,11 +751,7 @@ impl Theme {
                     Color::Magenta
                 }),
                 _ => {
-                    let c = match (self.name, self.dark) {
-                        (ThemeName::HighContrast, _) => Rgb(0xe2, 0xb6, 0xff),
-                        (_, true) => Rgb(0xc8, 0x9b, 0xff),
-                        (_, false) => Rgb(0x82, 0x50, 0xdf),
-                    };
+                    let c = self.code_accent();
                     Style::default().fg(match self.depth {
                         Depth::TrueColor => Color::Rgb(c.0, c.1, c.2),
                         _ => Color::Indexed(c.ansi256()),

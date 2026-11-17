@@ -449,6 +449,33 @@ pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
     }
 }
 
+/// tui.toml is looked at every this many ticks (a second).
+pub const SETTINGS_EVERY: u64 = 4;
+
+/// What says tui.toml changed: its length, modification time (nanoseconds), device and inode; zeros when it isn't there.
+pub type SettingsSig = (u64, i128, u64, u64);
+
+/// tui.toml's signature now (never following a link: a link is read, and refused, by the reader).
+pub fn settings_sig(path: &std::path::Path) -> SettingsSig {
+    let Ok(m) = std::fs::symlink_metadata(path) else {
+        return (0, 0, 0, 0);
+    };
+    let at = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let (dev, ino) = (0, 0);
+    (m.len(), at, dev, ino)
+}
+
 /// What a list row says about where its task stands (unread: any change of it you didn't see). Its age and other
 /// clocks are left out: time passing is no news.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,6 +549,8 @@ pub struct Transcript {
 /// The Live tab's laid-out lines: for which transcript version, width and first record, and when.
 pub struct LineCache {
     pub version: u64,
+    /// The look the lines were coloured with: a new theme (a reload of tui.toml, `t`) lays them out again.
+    pub look: (crate::theme::Theme, crate::theme::Glyphs),
     pub width: usize,
     pub from: usize,
     pub built: std::time::Instant,
@@ -836,6 +865,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// What tui.toml looked like when last read (watch_settings): its size, time and file, None before the first look.
+    pub settings_sig: Option<SettingsSig>,
     /// A task just filed here: selected once the work list lists it (its detail shown).
     pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
@@ -945,6 +976,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            settings_sig: None,
             filed: None,
             said_for: None,
             status_stale: false,
@@ -1836,6 +1868,10 @@ impl App {
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        // tui.toml looked at once a second: a change (its size, time or file) is read again, strictly, and said.
+        if self.ticks.is_multiple_of(SETTINGS_EVERY) {
+            self.watch_settings();
+        }
         // A status line about a task that has since moved on: gone as soon as it is no longer held.
         if self.status_stale && !self.status_held() {
             self.status = None;
@@ -1878,6 +1914,29 @@ impl App {
         fx.extend(gathered);
         fx.extend(fast);
         fx
+    }
+
+    /// tui.toml changed on disk (another editor, or the person's lead through `toolroll-tui view set`): read again with
+    /// the same strict reader; a bad file keeps the last good settings and says why.
+    pub fn watch_settings(&mut self) {
+        let Some(path) = self.prefs.path.clone() else {
+            return;
+        };
+        let now = settings_sig(&path);
+        match self.settings_sig {
+            None => self.settings_sig = Some(now),
+            Some(was) if was == now => {}
+            Some(_) => {
+                self.settings_sig = Some(now);
+                match self.prefs.reload() {
+                    Ok(words) => {
+                        self.line_cache = None;
+                        self.say(Tone::Said, words);
+                    }
+                    Err(why) => self.say(Tone::Refused, why),
+                }
+            }
+        }
     }
 
     /// While a status line about the selected task shows ("Building it."), that task is read every FAST_READ, for at

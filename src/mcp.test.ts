@@ -68,6 +68,17 @@ describe("the MCP stdio server", () => {
   });
   afterEach(() => store.close());
 
+  test("an agent's own tool list (the gateway a task's agents and coordinators use) has no way to restyle the workbench", () => {
+    const h = harness(store, token);
+    h.send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta } });
+    const names = ((h.last()["result"] as Record<string, unknown>)["tools"] as { name: string }[]).map(one => one.name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.filter(name => name.startsWith("toolroll_view"))).toEqual([]);
+    h.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { _meta: modernMeta, name: "toolroll_view_set", arguments: { theme: "light" } } });
+    const called = h.last();
+    expect(called["error"] !== undefined || (called["result"] as { isError?: boolean } | undefined)?.isError === true).toBe(true);
+  });
+
   test("startup dies on an unknown or revoked credential — never a read-only fallback", () => {
     const bad = harness(store, "not-a-token");
     expect(bad.outcome).toMatchObject({ ok: false, reason: "unauthenticated" });

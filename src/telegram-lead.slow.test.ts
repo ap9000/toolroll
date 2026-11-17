@@ -435,6 +435,19 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(script.sends().at(-1)!.params["entities"]).toBeUndefined();
   });
 
+  test("a chat app never restyles the workbench: toolroll_view_set from the phone is refused in words, and nothing is written", async () => {
+    answers.push(
+      { text: "", calls: [{ id: "f1", name: "find_tools", args: { query: "restyle the workbench theme" } }] },
+      { text: "", calls: [{ id: "v1", name: "toolroll_view_set", args: { theme: "light" } }] },
+      { text: "I can't from here." },
+    );
+    script.updates.push([textUpdate(2, "make my workbench light")]);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[2]!.history)).toContain("person's own conversation in the console on this computer");
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'workbench look changed'").get()?.["n"]).toBe(0);
+  });
+
   test("a long reply full of links, bold and & or < goes out in parts Telegram accepts, each link whole as an entity", async () => {
     origin = "https://so.example.com";
     const urls = Array.from({ length: 200 }, (_, index) => `https://docs.example.org/guide/${index}?a=1&b=2`);

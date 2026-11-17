@@ -1536,9 +1536,11 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     } else {
         0
     };
+    let look = (app.prefs.theme, app.prefs.settings.glyphs);
     let stale = match &app.line_cache {
         Some(c) => {
-            c.width != w
+            c.look != look
+                || c.width != w
                 || c.from != from
                 || (c.version != t.version
                     && (app.follow || c.built.elapsed() > std::time::Duration::from_millis(500)))
@@ -1548,6 +1550,7 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     if stale {
         app.line_cache = Some(crate::app::LineCache {
             version: t.version,
+            look,
             width: w,
             from,
             built: std::time::Instant::now(),

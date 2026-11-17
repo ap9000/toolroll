@@ -19,6 +19,7 @@ import {
   resultPanelHtml, revisionSealFields, runFactsRows, runNoun, terminalDiffCard,
 } from "./render-results.js";
 import { publicationFactsOf } from "./render-tasks.js";
+import { detailShown } from "../action-ledger.js";
 
 /** A section of a reading page: its heading and body (kit `k-sec`). */
 export const sec = (title: string, body: HtmlValue, attrs: Html = html``): Html => html`<section class="k-sec"${attrs}><h3>${title}</h3>${body}</section>`;
@@ -331,7 +332,7 @@ ${runs.map(run => html`<div class="h-tr" role="row"><span role="cell"><a class="
   const entries = pack.ledger.entries.filter(one => one.source !== "request");
   const requests = pack.ledger.entries.length - entries.length;
   const log = sec("Audit log", html`${entries.length === 0 ? note("No entries.") : html`<ul class="h-log">${[...entries].reverse().map(one => html`<li data-ledger-id="${one.id}">\
-<span class="k-num k-muted">${at(one.at)}</span><span><b>${one.actor}</b> ${one.action}${one.detail ? html`<span class="k-muted"> · ${one.detail}</span>` : ""}</span>\
+<span class="k-num k-muted">${at(one.at)}</span><span><b>${one.actor}</b> ${one.action}${one.detail ? html`<span class="k-muted"> · ${detailShown(one.detail)}</span>` : ""}</span>\
 <span class="k-muted">${one.outcome}</span><span class="h-seal">${shortHash(one.seal?.hash ?? null)}</span></li>`)}</ul>`}${
     requests > 0 ? note(`Plus ${requests} ${requests === 1 ? "request" : "requests"} made through the console (accepted or refused), listed in the JSON.`) : ""}${
     pack.ledger.truncated ? note(`This record holds ${entries.length} of the task's entries and the newest ${requests} requests; the audit log export has the rest.`) : ""}`);

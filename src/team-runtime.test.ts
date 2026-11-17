@@ -115,3 +115,41 @@ describe("a shared conversation's turn that never finishes", () => {
     await runtime.close();
   });
 });
+
+// Restyling the workbench is the person's own conversation's: a shared team conversation's lead is refused, in words,
+// and nothing is written (view-tools.ts; the team runtime never hands a lead turn the writer).
+describe("a shared conversation never restyles the workbench", () => {
+  let dir: string;
+  let store: Store;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "so-team-view-"));
+    store = openStore(":memory:");
+    store.saveApprover("alex", "h".repeat(64), T0);
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("toolroll_view_set from a team conversation's lead is refused and the history holds no change", async () => {
+    const requests: { history: unknown }[] = [];
+    const subscriptionRunner: SubscriptionLeadRunner = request => {
+      requests.push({ history: request.history });
+      if (requests.length === 1) return Promise.resolve(reply("", [{ id: "f1", name: "find_tools", args: { query: "restyle the workbench theme" } }]));
+      if (requests.length === 2) return Promise.resolve(reply("", [{ id: "v1", name: "toolroll_view_set", args: { theme: "light" } }]));
+      return Promise.resolve(reply("I can't from here."));
+    };
+    const runtime = createTeamRuntime({ store, repos: () => [REPO], evidenceRoot: dir, provider: () => ({ config: SUB, key: null }), subscriptionRunner, clock: () => T0, capacity: 1 });
+    const actor: TeamActor = { name: "alex", generation: store.accountOf("alex")!.generation };
+    const leadId = ((await runtime.execute(actor, { operation: "create-lead", args: { name: "Launch lead", projects: [REPO] } })).result as { leadId: string }).leadId;
+    const created = await runtime.execute(actor, { operation: "create-conversation", args: { leadId, title: "Launch", visibility: "team", projects: [REPO] } });
+    const conversationId = (created.result as { conversationId: string }).conversationId;
+    expect(await runtime.execute(actor, { operation: "authorize", args: { conversationId, termsDigest: created.snapshot!.chatAuthorization!.termsDigest } })).toMatchObject({ ok: true });
+    expect(await runtime.execute(actor, { operation: "send", args: { conversationId, text: "make my workbench light", requestId: "view" } })).toMatchObject({ ok: true });
+    await runtime.pass();
+    await vi.waitFor(() => expect(requests).toHaveLength(3));
+    expect(JSON.stringify(requests[2]!.history)).toContain("person's own conversation in the console on this computer");
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'workbench look changed'").get()?.["n"]).toBe(0);
+    await runtime.close();
+  });
+});

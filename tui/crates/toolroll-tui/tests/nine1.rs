@@ -1,6 +1,8 @@
 //! The stranger test's fifth round, toward 9: "Building it." goes as soon as the task moves on; narrow mode shows the
 //! list and the task in turn, with where you are; search reads everything Live draws; the list's width said is the
 //! width drawn; unread marks every change you didn't see; and what is drawn, searched and exported are one text.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -27,6 +29,7 @@ fn ctrl(c: char) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn said(app: &App) -> String {
@@ -211,6 +214,7 @@ fn search_finds_what_live_draws_above_the_output() {
 fn drawn_rows(app: &mut App, w: u16, h: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     let c = app.areas.content;
     let buf = term.backend().buffer();
     (c.top()..c.bottom())
