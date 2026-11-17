@@ -1239,7 +1239,7 @@ describe("the terminal workbench's Rust checks (.github/workflows/rust.yml)", ()
     // Its own target folder: the package's binary still builds from nothing.
     expect(checks.env).toEqual({ CARGO_TARGET_DIR: "target-checks" });
     const steps = bundle.steps ?? [];
-    expect(steps.indexOf(checks)).toBeLessThan(steps.findIndex(step => (step.run ?? "").includes("--bundle dist/tui")));
+    expect(steps.indexOf(checks)).toBeLessThan(steps.findIndex(step => (step.run ?? "").includes("--adopt")));
     // Every path that starts rust.yml (but rust.yml itself) starts the bundle's macOS job too.
     for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["test/fixtures/engine-api/schemas.json"], ["src/contracts/engine-api.ts"]]) {
       expect(executed(pr(paths)), paths[0]).toContain("workbench bundle · macos-latest");
@@ -1262,8 +1262,16 @@ describe("the packed install's terminal workbench (.github/workflows/tui-bundle.
     expect(job.if).toBeUndefined();
     const runs = runsOf(job);
     // The publish job's own packaging script, then the packed install in a throwaway world (scripts/isolated-env.mjs).
-    for (const command of [`node scripts/tui-build.mjs --bundle dist/tui --targets "$PLATFORM"`, `node scripts/tui-build.mjs --verify --targets "$PLATFORM"`, `node scripts/tui-bundle-smoke.mjs --out "$RUNNER_TEMP/tui-bundle"`]) expect(runs).toContain(command);
-    expect(runs.indexOf("npm run build")).toBeLessThan(runs.findIndex(run => run.includes("--bundle dist/tui")));
+    // ci-speed-2: this platform's binary is the package build's (built once per pull request): downloaded, matched to its
+    // report before anything runs, then verified here, self-check and report included. Nothing here builds it again.
+    for (const command of [`node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"`, `node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"`, `node scripts/tui-bundle-smoke.mjs --out "$RUNNER_TEMP/tui-bundle"`]) expect(runs).toContain(command);
+    expect(runs.filter(run => run.includes("--bundle"))).toEqual([]);
+    expect(job.needs).toBe("binaries");
+    const fetched = (job.steps ?? []).findIndex(step => step.uses?.startsWith("actions/download-artifact@"));
+    expect(job.steps?.[fetched]?.with).toEqual({ name: "workbench-${{ matrix.platform }}", path: "${{ runner.temp }}/workbench" });
+    expect(fetched).toBeLessThan((job.steps ?? []).findIndex(step => (step.run ?? "").includes("--adopt")));
+    expect(runs.indexOf("npm run build")).toBeLessThan(runs.findIndex(run => run.includes("--adopt")));
+    expect(runs.findIndex(run => run.includes("--adopt"))).toBeLessThan(runs.findIndex(run => run.includes("--verify")));
     expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
     expect(lane.permissions).toEqual({ contents: "read" });
     expect(readFileSync(join(folder, "tui-bundle.yml"), "utf8")).not.toMatch(/secrets\.|github\.token/);
@@ -1431,5 +1439,23 @@ describe("ci-speed-2 item 4: oxlint (.github/workflows/lint.yml), advisory", () 
     expect((REQUIRED_PR_CHECKS as readonly string[]).includes(job.name!)).toBe(false);
     for (const line of readFileSync(join(folder, "lint.yml"), "utf8").split("\n").filter(one => /uses: actions\//.test(one))) expect(line).toMatch(/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
     expect(readFileSync(join(folder, "lint.yml"), "utf8")).not.toMatch(/secrets\.|github\.token/);
+  });
+});
+
+describe("ci-speed-2: macOS runners a pull request asks for", () => {
+  test("an ordinary, a workbench and a packaging pull request ask for at most 5 at once; a release-* branch for 9", () => {
+    const mac = (event: Event) => reported(event).filter(one => one.runs && /macos/.test(one.runner)).map(one => one.name).sort();
+    // The workbench bundle's macOS smoke waits for the package build (needs: binaries), so it never runs beside its Mac.
+    expect(workflow("tui-bundle.yml").jobs["bundle"]!.needs).toBe("binaries");
+    const atOnce = (event: Event) => mac(event).filter(name => name !== "workbench bundle · macos-latest");
+    const shards = shardNames("24").filter(name => name.includes("macos shard"));
+    expect(mac(pr(["src/store.ts"]))).toEqual(shards);
+    expect(mac(pr(["tui/crates/toolroll-tui/src/app.rs"]))).toEqual([...shards, "workbench bundle / binary · darwin-arm64", "workbench bundle · macos-latest"].sort());
+    expect(mac(pr(["package.json"]))).toEqual([...shards, "install smoke · macos-latest", "workbench bundle / binary · darwin-arm64", "workbench bundle · macos-latest"].sort());
+    for (const event of [pr(["src/store.ts"]), pr(["tui/crates/toolroll-tui/src/app.rs"]), pr(["package.json", "src/tui-launch.ts", "tui/Cargo.lock"])]) {
+      expect(atOnce(event).length, JSON.stringify(event)).toBeLessThanOrEqual(5);
+    }
+    // A release candidate's pull request also runs Node 22's macOS shards and the Intel Mac's binary: 9 at once, then the smoke.
+    expect(atOnce(pr(["package.json", "CHANGELOG.md"], "release-9.9.9")).length).toBe(9);
   });
 });

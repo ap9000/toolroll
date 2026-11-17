@@ -3,11 +3,13 @@ name: Workbench bundle
 # The package a release publishes, proved on the pull request before any tag:
 #
 #   - "workbench bundle / binary · <platform>" and "workbench bundle / assemble": the SAME jobs publish.yml calls
-#     (package-build.yml, the same runners and pinned actions and Rust): all four binaries built, signed (macOS) and
+#     (package-build.yml, the same runners and pinned actions and Rust): the binaries built, signed (macOS) and
 #     self-checked on their own platforms, then matched to their reports before anything runs, bundled, checked
-#     (--verify) and packed, so a release is never their first run;
+#     (--verify) and packed, so a release is never their first run. All four on a release-* branch and by hand; the
+#     other pull requests leave the Intel Mac's darwin-x64 to the release (docs/plans/ci-speed-2.md);
 #   - "workbench bundle · <os>": a packed install opens the workbench it carries (scripts/tui-bundle-smoke.mjs): this
-#     platform's binary built into dist/tui and checked (--bundle, --verify), the checkout packed and `npm i -g`'d into
+#     platform's binary from the package build above (built once), matched to its report and checked into dist/tui
+#     (--adopt, --verify --reports), the checkout packed and `npm i -g`'d into
 #     a throwaway prefix with its own npm cache, bare `toolroll` from that install must open the bundled workbench in a
 #     real pseudo-terminal (scripts/tui-e2e.mjs --expect bundled, no --tui-binary), and with the binary deleted from the
 #     install, the classic Ink screen with the launcher's one-line notice. On Linux x64 and macOS arm64.
@@ -62,8 +64,12 @@ jobs:
       # The Intel Mac's binary only for a release-* branch and by hand; publish.yml always builds all four.
       intel: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
 
+  # This platform's binary is the one the package build above built, signed and self-checked (docs/plans/ci-speed-2.md:
+  # built once per pull request, not twice): downloaded, matched to its build's report before anything runs, then
+  # checked here as publish would pack it, self-check included. The workbench bundle waits for that build.
   bundle:
     name: workbench bundle · ${{ matrix.os }}
+    needs: binaries
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -115,7 +121,9 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
+      # The Rust checks below are macOS's; the binary itself comes from the package build.
       - name: Toolchain (tui/rust-toolchain.toml's exact Rust)
+        if: runner.os == 'macOS'
         run: |
           toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' tui/rust-toolchain.toml)"
           test -n "$toolchain"
@@ -124,7 +132,7 @@ jobs:
       # macOS only: the workspace's clippy (every warning an error) and tests, which rust.yml runs on Linux; here rather
       # than in a macOS job of their own, so a workbench pull request asks for one macOS runner fewer
       # (docs/plans/ci-speed-2.md). Their own target folder, cached per pull request by toolchain and Cargo.lock; the
-      # package's binary below still builds from nothing in tui/target.
+      # package's binary is never built from it.
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         if: runner.os == 'macOS'
         with:
@@ -145,10 +153,14 @@ jobs:
           rustup component add clippy
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
-      - name: This platform's binary, into the package
-        run: node scripts/tui-build.mjs --bundle dist/tui --targets "$PLATFORM"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: workbench-${{ matrix.platform }}
+          path: ${{ runner.temp }}/workbench
+      - name: This platform's binary, the exact file its build reported, into the package (nothing runs yet)
+        run: node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"
       - name: Checked as npm publish would pack it
-        run: node scripts/tui-build.mjs --verify --targets "$PLATFORM"
+        run: node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"
       - name: A packed install opens the bundled workbench; without it, the classic screen
         timeout-minutes: 15
         env:
