@@ -645,3 +645,21 @@ fn paging_a_short_card_never_skips_a_row_and_a_jump_past_unread_rows_never_count
     screen(&mut app, 120, 16);
     assert!(matches!(&app.mode, Mode::StartThread(t) if !t.seen_end));
 }
+
+/// n works everywhere: with a thread open, the new task's composer is drawn in the thread's panel, and what is typed
+/// shows there before Enter files it (it was once typed into unseen).
+#[test]
+fn a_new_task_typed_while_a_thread_is_open_is_shown() {
+    let mut app = thread_app(window());
+    for (w, h) in [(120, 30), (120, 18)] {
+        app.key(key('n'));
+        assert!(matches!(app.mode, Mode::NewTask(..)), "{:?}", app.mode);
+        for c in "Add a test".chars() {
+            app.key(key(c));
+        }
+        let shown = screen(&mut app, w, h);
+        assert!(shown.contains("New task: Add a test"), "{shown}");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    }
+}

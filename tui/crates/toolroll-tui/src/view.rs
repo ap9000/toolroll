@@ -1212,7 +1212,7 @@ fn draw_question(f: &mut Frame, app: &App, q: &toolroll_api::Question, area: Rec
 
 /// The composer at the foot of the panel: what is being typed (steering, a note, a new task or thread) with its caret,
 /// or, on a running build, a quiet line saying a note can be sent; the keys on the right. Roomy: a filled box.
-fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
+pub(crate) fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
     let inner = if roomy {
         let r = Rect {
             height: area.height.saturating_sub(1),

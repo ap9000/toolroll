@@ -310,12 +310,20 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .is_some_and(|q| q.state == "pending" && q.answerable);
     let card = waits && area.height >= 20 && w >= 40;
     let q_lines = q_lines + if card { 2 } else { 0 };
-    let input = matches!(app.mode, Mode::NewThread(_));
+    // A new task (n works everywhere) gets the same composer as a task's panel (view.rs draw_composer): never typed
+    // into unseen. A new thread keeps its own line here.
+    let roomy = area.height >= 22;
+    let input_h: u16 = match app.mode {
+        Mode::NewThread(_) => 1,
+        Mode::NewTask(..) if roomy => 5,
+        Mode::NewTask(..) => 2,
+        _ => 0,
+    };
     let [head, content, qa, input_row] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
         Constraint::Length(q_lines),
-        Constraint::Length(u16::from(input)),
+        Constraint::Length(input_h),
     ])
     .areas(area);
     let title = facts
@@ -455,6 +463,9 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         qa
     };
     f.render_widget(Paragraph::new(lines), qa);
+    if matches!(app.mode, Mode::NewTask(..)) {
+        crate::view::draw_composer(f, app, input_row, roomy);
+    }
     if let Mode::NewThread(text) = &app.mode {
         f.render_widget(
             Paragraph::new(Line::from(vec![
