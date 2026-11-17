@@ -39,16 +39,25 @@ each agent is doing and what needs you.
 - **No password.** A new install on your own computer signs you in as its
   owner. There is no login file to find. You can watch and drive your work,
   approve plans and add projects without one.
-- **Three steps to a first result.** Until your first task, the terminal
-  lists three steps and what each still needs: an agent (Claude Code or
-  Codex; it shows the command that signs one in), a project, and a first
-  task. With no project yet, press `s` to try the sample project: a tiny
-  repository with one function and its test, made in your projects folder
-  (`toolroll welcome sample` does the same from a shell while no password
-  is set). Or add your own with `toolroll repos add <folder>`, or press `w`
-  and use the browser's welcome page to choose the agent and add a folder or
-  one of your GitHub repositories. Then press `n` to write the first task;
-  the steps suggest a few starters. Press `A` to open Agents and sign in there.
+- **Ready to start.** With no task selected, the workbench asks
+  **What would you like to work on?** and offers **New task n** and
+  **Agents A**. If an agent is ready and a project is connected and taking
+  work, press `n` and describe your change. The welcome shows the agents'
+  readiness and who the first task goes to; if an agent needs sign-in or a
+  check, it shows that next action there instead.
+- **When setup is missing.** Before the first Ready result, unfinished
+  project and worker setup appears under **Needs you**: **Add a project**
+  when none is connected, or **Start taking work** when no builder is ready
+  for the project. Completed steps and checks still in progress aren't asks.
+  Agent sign-in and the first task stay in the workbench's welcome rather
+  than becoming separate setup rows. Setup asks are only shown to an
+  approver, outside the demo and restricted consoles, and retire after the
+  first Ready result.
+  For the full **Agent · Project · First task** walkthrough, run
+  `toolroll welcome` or open the browser's welcome page. With no project,
+  `toolroll welcome sample` makes a tiny sample repository (available while
+  no password is set). Or add your own with `toolroll repos add <folder>`.
+  Press `A` to open Agents and sign in there; `w` opens the browser.
 - **Approve and collect.** Open the plan and read its approval card before
   confirming. The result comes back **Ready**: press `a` to inspect and accept
   it, or `r` to send it back with a note. On a failed task, `r` reviews and
@@ -198,8 +207,9 @@ notifications. These choices are saved to `tui.toml`; existing comments and
 other settings stay in place. A save failure is shown on screen.
 
 The file is `$XDG_CONFIG_HOME/toolroll/tui.toml`, or
-`~/.config/toolroll/tui.toml` without that variable. File edits are read at
-startup. For example:
+`~/.config/toolroll/tui.toml` without that variable. Look settings apply live,
+usually within one second of a file edit. Key changes take effect the next
+time the workbench starts. For example:
 
 ```toml
 theme = "terminal"
@@ -237,6 +247,18 @@ dimming and reverse video still distinguish states. Optional `[colors]`
 overrides are checked for contrast and distinct status colours; unusable
 overrides are ignored with a warning. The palette's theme, cost and key-bar
 toggles affect only this session. Use Settings to save a theme.
+
+You can also inspect, change or reset the look from a shell:
+
+```sh
+toolroll view                    # show the look in use and saved themes
+toolroll view theme set dark     # use a built-in or saved theme
+toolroll view reset              # default look; keep your keys and back up the old file
+```
+
+Reset preserves `[keys]`, including comments, and keeps each previous file
+as `tui.toml.bak.<timestamp>.<number>` beside `tui.toml`.
+You can also [ask chat to restyle the workbench](chat-and-phone.md#restyle-the-workbench-by-asking-your-agent).
 
 Desktop notifications inside tmux need both `tmux-passthrough = true` and
 tmux's `allow-passthrough` enabled.
