@@ -1,8 +1,10 @@
 name: Gate changes
 
 # Protect the judges: a pull request that changes a file that judges other changes (a check list, a ceiling, an
-# inventory, a workflow: scripts/gate-files.json) fails here unless one of its commits says so with a trailer line,
-# `Gate-change: <file or glob> — <reason>`, for each such file. Snapshots and timings are reported, never failed.
+# inventory, a workflow: scripts/gate-files.json) fails here unless one of its commits discloses it with a trailer,
+# `Gate-change: <file or glob> — <reason>`, in its trailer block, for each such file. A trailer is a disclosure for the
+# person reviewing, never an approval. Snapshots and timings are reported, never failed. The pull request's words are
+# printed inside a stop-commands block, so none of them is read as a workflow command.
 #
 # The rules are the base's: this job runs the pull request's base revision's scripts/gate-changes.mjs, which reads the
 # gate list from the base too (`git show <base>:scripts/gate-files.json`), so a pull request that edits the list or the
@@ -36,7 +38,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ env.TESTED_SHA }}
-          # The merge base and every commit of the pull request (their trailers).
+          # The merge base and every commit of the pull request (their trailer blocks).
           fetch-depth: 0
           persist-credentials: false
       - name: Tested commit

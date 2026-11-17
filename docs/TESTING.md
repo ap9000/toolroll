@@ -199,11 +199,13 @@ Files that judge other changes (the check lists above, the wire and click-path
 ceilings, `test/destinations.json`, the password inventories, the workflows
 themselves; `scripts/gate-files.json` lists them) are protected by
 `gate-changes.yml`, an advisory check on every pull request: a pull request
-that changes one fails unless one of its commits carries a trailer line
-`Gate-change: <file or glob> — <reason>` covering it. The check runs the base
-revision's `scripts/gate-changes.mjs`, which reads the list with
-`git show <base>:scripts/gate-files.json`, so a pull request can't loosen its
-own judge. Snapshots and `test/timings.json` are reported, never failed.
+that changes one fails unless one of its own commits (merges aside) discloses
+it with `Gate-change: <file or glob> — <reason>` in its trailer block (the
+last paragraph). A trailer is a disclosure for the reviewer, not an approval.
+The check runs the base revision's `scripts/gate-changes.mjs`, which reads the
+list with `git show <base>:scripts/gate-files.json`, so a pull request can't
+loosen its own judge. Snapshots and `test/timings.json` are reported, never
+failed.
 
 ## Wire budgets
 

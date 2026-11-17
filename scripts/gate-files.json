@@ -1,22 +1,16 @@
 {
   "about": [
     "The judges: files that decide whether another change is good enough (scripts/gate-changes.mjs, .github/workflows/gate-changes.yml).",
-    "A pull request that changes one must say so in one of its commits, with a trailer line: `Gate-change: <file or glob> — <reason>`.",
+    "A pull request that changes one must disclose it in the trailer block (the last paragraph) of one of its commits: `Gate-change: <file or glob> — <reason>`. A trailer is a disclosure for the person reviewing, never an approval.",
     "This list and the script are always read from the pull request's base, never from the pull request: a change can't loosen the judge that judges it.",
-    "path: a file or a glob (`*` within a folder name, `**` across folders). regions: only these parts of the file are the judge (a line that starts with `from`, through the first line that is exactly `to`; no `to`: that one line). report: listed in the summary, never failed."
+    "path: a file or a glob (`*` within a folder name, `**` as a whole folder name: any number of folders). report: listed in the summary, never failed."
   ],
   "gates": [
     { "path": "scripts/gate-files.json", "why": "this list" },
     { "path": "scripts/gate-changes.mjs", "why": "the script that reads this list and the trailers" },
     { "path": ".github/workflows/**", "why": "what CI runs, and how" },
     { "path": "src/ci-workflow.test.ts", "why": "holds the workflows to the release's check lists" },
-    { "path": "src/release.ts", "why": "the checks a release waits for and the ones it leaves out", "regions": [
-      { "from": "export const REQUIRED_PR_CHECKS = [", "to": "] as const;" },
-      { "from": "export const REQUIRED_PR_CHECKS_WORKFLOW", "to": "};" },
-      { "from": "export const PROTECTION_REPORT_ONLY_CHECKS" },
-      { "from": "export const ADVISORY_PR_CHECKS", "to": "};" },
-      { "from": "export const RELEASE_TAG_CHECKS" }
-    ] },
+    { "path": "src/release.ts", "why": "the checks a release waits for and the ones it leaves out (the whole file)" },
     { "path": "scripts/ci-shards.mjs", "why": "the shard verifier: which files must run and which skips are allowed" },
     { "path": "scripts/ci-no-skips.mjs", "why": "the git lanes' no-skip rule" },
     { "path": "scripts/ci-scope.mjs", "why": "which pull requests skip the area lanes" },
