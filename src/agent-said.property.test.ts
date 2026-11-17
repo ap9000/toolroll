@@ -19,7 +19,7 @@ const URL_ENDS = [" ", "  ", "\n", "\r\n", "\t", '"', "'", "`", "<"];
 
 /** A folder on this computer, in every form the rule names: the tag in a folder's name, and a home's name (`h<tag>`)
  * wherever the form has one. Neither may come out. */
-const folder = (tag: string): fc.Arbitrary<Piece> => fc.tuple(seg, fc.nat(18)).map(([name, form]) => {
+const folder = (tag: string): fc.Arbitrary<Piece> => fc.tuple(seg, fc.nat(23)).map(([name, form]) => {
   const home = `h${tag}`;
   const forms: [string, string[]][] = [
     [`/Users/${home}/${tag}/${name}`, [tag, home]],
@@ -41,6 +41,11 @@ const folder = (tag: string): fc.Arbitrary<Piece> => fc.tuple(seg, fc.nat(18)).m
     [`\${HOME}/${tag}`, [tag]],
     [`%USERPROFILE%\\${tag}\\${name}`, [tag]],
     [`/opt/${tag}/a<${name}/b`, [tag]],
+    [`%HOMEPATH%\\${tag}\\${name}`, [tag]],
+    [`$env:USERPROFILE\\${tag}`, [tag]],
+    [`/opt/${tag}$HOME.txt/${name}`, [tag]],
+    [`vscode:///Users/${home}/${tag}`, [tag, home]],
+    [`%2Fopt%2F${tag}${"%2Fa".repeat(700)}`, [tag]],
   ];
   const [text, secret] = forms[form % forms.length]!;
   return { text, secret };
@@ -58,6 +63,15 @@ const key = (tag: string): fc.Arbitrary<Piece> => fc.tuple(fc.nat(5), fc.constan
   ][form % 6]!;
   return { text, secret: [text] };
 });
+/** Past every limit the rule keeps: a folder at the end of a line longer than a line is read, one at the start of such a
+ * line (cut away whole), a folder after thousands of slashes or escaped slashes, and output longer than is read. */
+const long = (tag: string): fc.Arbitrary<Piece> => fc.tuple(fc.nat(4), fc.integer({ min: 4_000, max: 9_000 }), folder(tag)).map(([form, n, inner]) => [
+  { text: `${"x".repeat(n)} ${inner.text}`, secret: inner.secret },
+  { text: `${inner.text}${"y".repeat(n)}`, secret: inner.secret },
+  { text: `${"/".repeat(n)} ${inner.text}`, secret: inner.secret },
+  { text: `${"\\/".repeat(n)} ${inner.text}`, secret: inner.secret },
+  { text: `${"w".repeat(66_000 + n)}\n${inner.text}`, secret: inner.secret },
+][form]!);
 /** A web address whose query and fragment carry the tag. */
 const address = (tag: string): fc.Arbitrary<Piece> => fc.tuple(fc.constantFrom("https", "http", "git+ssh", "s3"), seg, fc.constantFrom("?", "#", "?a=1#")).map(([scheme, path, mark]) =>
   ({ text: `${scheme}://host.example/${path}${mark}q${tag}=1`, secret: [`q${tag}`] }));
@@ -80,14 +94,14 @@ const filler: fc.Arbitrary<Piece> = fc.oneof(fc.string({ unit: "grapheme", maxLe
   .map(text => ({ text, secret: [] }));
 
 /** An agent's output: pieces, each tagged uniquely, between separators. */
-const output: fc.Arbitrary<{ text: string; secret: string[] }> = fc.array(fc.tuple(fc.nat(6), fc.constantFrom(...SEPARATORS), fc.stringMatching(/^[a-z0-9]{4}$/)), { maxLength: 24 })
+const output: fc.Arbitrary<{ text: string; secret: string[] }> = fc.array(fc.tuple(fc.nat(7), fc.constantFrom(...SEPARATORS), fc.stringMatching(/^[a-z0-9]{4}$/)), { maxLength: 24 })
   .chain(plan => fc.tuple(...plan.map(([kind, chosen, salt], at) => {
     const tag = `t${at}k${salt}`;
     // Right after a web address, "=", ":", "," or "(" belong to it (a path or query may hold them): the next piece is
     // part of the address, not a piece of its own. A space, a tab, a line break, a quote or an angle bracket ends it.
     const afterAddress = at > 0 && (plan[at - 1]![0] === 1 || plan[at - 1]![0] === 2);
     const sep = afterAddress && !URL_ENDS.includes(chosen) ? " " : chosen;
-    const piece = [folder, address, userinfo, () => escapes, () => filler, glued, key][kind]!(tag);
+    const piece = [folder, address, userinfo, () => escapes, () => filler, glued, key, long][kind]!(tag);
     return piece.map(one => ({ ...one, text: `${sep}${one.text}` }));
   })))
   .map(pieces => ({ text: pieces.map(one => one.text).join(""), secret: pieces.flatMap(one => one.secret) }));

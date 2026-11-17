@@ -53,6 +53,10 @@ describe("the rule", () => {
     // A home written another way: JSON-escaped, percent-encoded once, or by its variable (never expanded).
     for (const one of ['{"p":"\\/Users\\/me\\/x"}', "open %2FUsers%2Fme%2Fx", "C%3A%5CUsers%5Cme", "at $HOME/notes", "at ${HOME}/notes", "at %USERPROFILE%\\Docs", "$env:USERPROFILE\\x"])
       expect(privateWords(one), one).toBe(true);
+    // Decoded over the whole text, however long: no prefix is all that is read.
+    expect(privateWords(`${"ordinary words ".repeat(1_400)} %2fUsers%2fme`)).toBe(true);
+    // Any scheme's local address.
+    for (const one of ["open vscode:///Users/me/x", "see x-app:///home/me/y", "at idea:///C:/Users/me"]) expect(privateWords(one), one).toBe(true);
     // Decoded once only; a variable that merely starts like one is not one.
     for (const one of ["%252FUsers%252Fme", "a=$HOMEDIR/x", "100% done"]) expect(privateWords(one), one).toBe(false);
     // A project folder that happens to be called "home" or "Users" (joined, so the repository hygiene scan reads no path).

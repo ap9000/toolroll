@@ -47,11 +47,37 @@ describe("the agent's last words, kept short and safe", () => {
     ["%USERPROFILE%", "%USERPROFILE%\\ledger.txt"],
     ["a file address", "file:///Users/me/ledger.txt"],
     ["a network share", "\\\\fileserver\\finance\\ledger.txt"],
+    ["%HOMEPATH%", "%HOMEPATH%\\ledger.txt"],
+    ["$env:USERPROFILE", "$env:USERPROFILE\\ledger.txt"],
+    ["with a home variable inside a name", "/opt/customer$HOME.txt/ledger.txt"],
+    ["as another scheme's local address", "vscode:///Users/me/ledger.txt"],
+    ["as another scheme's address with a path", "vscode://file/Users/me/ledger.txt"],
+    ["percent-encoded, longer than is decoded", `%2Fopt%2Fclient%2Fledger${"%2Fa".repeat(800)}`],
   ])("a folder %s is said as [path] whole: nothing of it is left", (_, path) => {
     const kept = agentSaidTail(`could not read ${path} today`);
     expect(kept).toHaveLength(1);
     expect(kept[0]).not.toMatch(/ledger|Acme|Users|finance|fileserver|HOME|USERPROFILE/);
     expect(kept[0]).toMatch(/^could not read "?\[path\]"? today$/);
+  });
+  test.each([
+    ["slashes", "/"], ["escaped slashes", "\\/"], ["an unfinished escape", "%2"], ["escaped words", "a%2Fb"], ["drives", "C:\\"],
+    ["homes", "~a/"], ["home variables", "$HOME/"], ["dotted words", "a."], ["colons", "a:"], ["addresses", "https://a"], ["other schemes", "x://"],
+    ["spaced slashes", "/ "], ["spaced escaped words", "a%2Fb "],
+  ])("64 KiB of %s is read at once (no pattern rescans a line)", (_, unit) => {
+    const text = unit.repeat(Math.ceil(65_536 / unit.length));
+    const started = performance.now();
+    const kept = agentSaidTail(text);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(kept.length).toBeGreaterThan(0);
+  });
+  test("a line too long to read keeps its end after \"… \", never emptied; a read that starts at a line keeps that line", () => {
+    expect(agentSaidTail(`${"x".repeat(100 * 1024)} error: disk full`)).toEqual(["… error: disk full"]);
+    // A first line the read began inside keeps its end too; its partial first word goes (half a path is no path).
+    expect(agentSaidTail(`/Users/me/${"y".repeat(70_000)} the build failed`)).toEqual(["… the build failed"]);
+    // The read starts exactly where a line does: that line is kept whole.
+    const body = `first kept line\n${"z".repeat(65_536 - 16)}`;
+    expect(body).toHaveLength(65_536);
+    expect(agentSaidTail(`${"w".repeat(100)}\n${body}`)).toEqual(["first kept line", "…"]);
   });
   test("a percent escape is decoded once, never again; a web address's own escapes stay", () => {
     expect(agentSaidTail("see %252FUsers%252Fme ok")).toEqual(["see %252FUsers%252Fme ok"]);

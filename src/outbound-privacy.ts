@@ -17,12 +17,13 @@ const HOME_FOLDER = /(?:^|[\s"'`(<[=:,])(?:\/Users\/|\/home\/|\/root\/|~\/)/;
  * a network share ("\\server"), or a file URL. */
 const DRIVE_OR_SHARE = /(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\\\\|\bfile:\/\//i;
 
-/** A home written another way: JSON-escaped ("\/Users\/"), or by its variable ("$HOME/", "${HOME}/", "%USERPROFILE%\",
- * "%HOMEPATH%", "$env:USERPROFILE"), never expanded. */
-const HOME_OTHERWISE = /(?:^|[\s"'`(<[=:,])\\\/(?:Users|home|root)\\\/|\$HOME[\\/]|\$\{HOME\}[\\/]|%USERPROFILE%|%HOMEPATH%|\$env:USERPROFILE\b/i;
-/** Percent escapes are decoded once, over at most this much text, and never again ("%252F" stays "%2F"). */
-const DECODE_AT_MOST = 20_000;
-const decodedOnce = (text: string): string => text.slice(0, DECODE_AT_MOST).replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+/** A home written another way: JSON-escaped ("\/Users\/"), by its variable ("$HOME/", "${HOME}/", "%USERPROFILE%\",
+ * "%HOMEPATH%", "$env:USERPROFILE"), never expanded, or as any scheme's local address ("vscode:///Users/me", an empty
+ * host). */
+const HOME_OTHERWISE = /(?:^|[\s"'`(<[=:,])\\\/(?:Users|home|root)\\\/|\$HOME[\\/]|\$\{HOME\}[\\/]|%USERPROFILE%|%HOMEPATH%|\$env:USERPROFILE\b|:\/\/\/(?:Users|home|root|[A-Za-z]:)[\\/]/i;
+/** Every percent escape decoded once, in one pass over the whole text (no prefix cap, never decoded again: "%252F"
+ * stays "%2F"). */
+const decodedOnce = (text: string): string => text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
 
 /** Whether these words name a folder on this computer, read as written. */
 const folderWords = (text: string): boolean => HOME_FOLDER.test(text) || DRIVE_OR_SHARE.test(text) || HOME_OTHERWISE.test(text);

@@ -21,7 +21,8 @@ const name = fc.stringMatching(/^[a-z][a-z0-9._-]{0,11}$/);
  * written another way: JSON-escaped, percent-encoded once, or by its variable. */
 const folder = fc.tuple(name, name).chain(([user, part]) => fc.constantFrom(
   `/Users/${user}/${part}`, `/home/${user}/${part}`, `/root/${part}`, `~/${part}`, `C:\\Users\\${user}\\${part}`, `d:/${part}`, `\\\\${user}\\${part}`, `file:///${part}`,
-  `\\/Users\\/${user}\\/${part}`, `%2FUsers%2F${user}%2F${part}`, `%2fhome%2f${user}`, `C%3A%5CUsers%5C${user}`, `$HOME/${part}`, `\${HOME}/${part}`, `%USERPROFILE%\\${part}`,
+  `\\/Users\\/${user}\\/${part}`, `%2FUsers%2F${user}%2F${part}`, `%2fhome%2f${user}`, `C%3A%5CUsers%5C${user}`, `$HOME/${part}`, `\${HOME}/${part}`, `%USERPROFILE%\\${part}`, `%HOMEPATH%\\${part}`, `$env:USERPROFILE\\${part}`,
+  `vscode:///Users/${user}/${part}`, `x-app:///home/${user}`,
 ));
 /** A key or token in the shape its issuer gives it. */
 const key = fc.oneof(
@@ -40,8 +41,8 @@ const key = fc.oneof(
   fc.tuple(name, chars(ALNUM, 6, 20)).map(([user, pass]) => `https://${user}:${pass}@git.company.dev/repo.git`),
 );
 const secret = fc.oneof(folder, key);
-/** Ordinary words around it: any text, kept off the secret by a separator. */
-const words = fc.string({ unit: "grapheme", maxLength: 40 });
+/** Ordinary words around it: any text, sometimes longer than any limit a check might keep (20,000 characters). */
+const words = fc.oneof({ weight: 4, arbitrary: fc.string({ unit: "grapheme", maxLength: 40 }) }, { weight: 1, arbitrary: fc.integer({ min: 20_000, max: 30_000 }).map(n => "ordinary words ".repeat(Math.ceil(n / 15))) });
 const separator = fc.constantFrom(" ", "\n", "\t", "(", '"', "'", "`", "=", ",", ": ");
 const message = fc.tuple(words, separator, secret, separator, words).map(([before, open, hidden, close, after]) => ({ text: `${before}${open}${hidden}${close}${after}`, hidden }));
 
