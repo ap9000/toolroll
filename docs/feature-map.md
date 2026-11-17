@@ -26,8 +26,9 @@ person to retry. Codex is signed out in every scenario. `smoke` and `signed-out`
 file no tasks; `narrow` starts a real 60-column PTY.
 
 Selecting a feature runs its prerequisites as needed; only requested features
-receive verdicts. A prerequisite failure fails subsequent requested features in
-that session instead of typing keys into an unknown dialog. JSON and Markdown
+receive verdicts. `dependsOn` declares same-scenario prerequisites. A failed prerequisite fails only
+its dependents; independent features still run. Each exercised feature returns to
+the base workbench screen first. JSON and Markdown
 reports retain the actual screen evidence, elapsed time, launch timings,
 outbound-table scan and cleanup errors. A failed or unavailable check is a
 failure, never an implied pass. These are synthetic journeys, not agent output
