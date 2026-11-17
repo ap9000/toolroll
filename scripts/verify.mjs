@@ -167,6 +167,13 @@ export async function until(fact, description, timeout = 60_000) {
     await new Promise(done => setTimeout(done, 30));
   }
 }
+/** The workbench's fatal dialog (view.rs): any key closes it and the workbench with it, so q never asks to quit. */
+const FATAL = /Press any key to close\./;
+export function fatalWords(text) {
+  const box = /╭ Toolroll ─[^\n]*\n([\s\S]*?)Press any key to close\./.exec(text)?.[1] ?? '';
+  return box.split('\n').map(line => { const a = line.indexOf('│'), b = line.lastIndexOf('│'); return a >= 0 && b > a ? line.slice(a + 1, b).trim() : ''; })
+    .filter(Boolean).join(' ') || 'its words could not be read';
+}
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 async function freePort() {
   const port = await new Promise((done, fail) => { const server = createServer(); server.once('error', fail); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => done(port)); }); });
@@ -241,6 +248,8 @@ class Terminal {
       const text = this.text();
       if (pattern.test(text)) return text;
       if (existsSync(this.exitFile)) throw new Error(`Terminal exited before ${pattern}: ${text}`);
+      // A fatal dialog ends the workbench on the next key: nothing waited for can come, so say what it said now.
+      if (FATAL.test(text)) throw new Error(`The workbench stopped with an error before ${pattern}: ${fatalWords(text)}`);
       return false;
     }, `screen ${pattern}`);
     this.steps.push({ expected: pattern.source, atMs: Date.now() - this.started, screen: shown });
@@ -249,6 +258,7 @@ class Terminal {
   async press(key, pattern) { this.send(keyBytes[key] ?? key); return this.wait(pattern); }
   async quit() {
     this.recordPids();
+    if (FATAL.test(this.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(this.text())}`);
     this.send('q'); await this.wait(/Quit Toolroll\?/); this.send('s');
     const pid = Number(readFileSync(this.pidFile, 'utf8'));
     await until(() => !alive(pid), 'workbench exit');
@@ -325,8 +335,9 @@ export async function retryAttempt(term, lastRun, taskId, waitFor = until) {
 
 /** Back to the workbench's own screen between features: Esc out of any screen or dialog a feature left open (the
  * Agents screen, help, the palette, Settings, a composer), waiting on the screen fact each time, never a fixed sleep. */
-const OVERLAY = /Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels/;
+const OVERLAY = /Search: |Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels/;
 async function toBase(term, world = null) {
+  if (FATAL.test(term.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(term.text())}`);
   for (let tries = 0; tries < 4 && OVERLAY.test(term.text()); tries++) {
     const before = term.text();
     // The Agents screen closes on A as well as Esc; use it when that screen is the one showing.
@@ -374,8 +385,14 @@ async function exercise(feature, context) {
   const ready = async () => {
     if (context.finished) { context.built = false; context.finished = false; }
     await build(); await until(() => lastRun()?.finished_at && ['built', 'no-change'].includes(lastRun()?.outcome), 'scripted build result');
-    // The task's title names src/math.js too: wait for the change summary itself, the fact that the result's changes loaded.
-    await wait(/Ready|Result/); await press('enter', /src\/math.js|test\/math.test.js/); context.task = task().id;
+    // A finished run is not yet a result to review: until its build process is recorded as exited, the row still reads
+    // Building and Enter opens Live (app.rs Action::Open opens Diff only for a review ask). The pipeline's "Ready" stage
+    // is drawn on every row, and the title names src/math.js: wait for the list row to read Result, as a person would,
+    // then open it and wait for its change list.
+    await wait(/●[^\n]*\sResult\b/);
+    await press('enter', /\d+ files?\s+\+\d+/);
+    await until(() => projectView()?.tab === 'diff', 'Enter opened the result on the Diff tab');
+    context.task = task().id;
   };
   const failed = async () => {
     await build(); await until(() => lastRun()?.finished_at && lastRun()?.outcome === 'failed', 'failed provider run');
@@ -413,7 +430,14 @@ async function exercise(feature, context) {
     }
     case 'build': await build(); shown = term.text(); break;
     case 'result': await ready(); shown = term.text(); break;
-    case 'search': await ready(); shown = await press('/', /Search:/); term.send('subtract'); await wait(/subtract/); term.send('\r'); await normal(); break;
+    case 'search': {
+      // The result's own text says subtract: wait for the search line's echo and count, never the pane, at each step.
+      // Esc sent right before another key reads as Alt-<key>, so each key waits for its own effect first.
+      await ready(); await press('/', /Search: ▏/); term.send('subtract');
+      shown = await wait(/Search: subtract▏\s+\d+ of \d+/);
+      await press('enter', /Search: subtract\s+\d+ of \d+\s+n next/);
+      term.send(esc); await until(() => !/Search: /.test(term.text()), 'search closed'); break;
+    }
     case 'export': {
       await ready();
       // Multiple visible panes do not imply the Diff is focused. A single panel and an acknowledged Diff tab do.
@@ -565,6 +589,8 @@ export async function verify(options) {
           await context.relaunch();
         }
         report.features.push(...await runFeatures(features, featureMap, context));
+        // Quit from the workbench's own screen: q typed into a search, composer or dialog is text, not Quit.
+        await toBase(context.term);
         await context.term.quit();
       } catch (error) {
         session.error = error.message;
