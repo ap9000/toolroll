@@ -387,6 +387,22 @@ select ~85% (Linux 343 → 325 s, macOS 597 → 581 s) instead of ~22%. The way 
 `learning-look.ts` and `eval-oracle.ts` name their children in plain strings (a lookup table of literals instead of
 `./${name}.ts`), which the reader can follow. Advisory stays the default.
 
+**The way back, first step (008c6837, and the selector's named-load rule).** `src/learning-look.ts` now starts its two
+children from a fixed table of plain URLs (same files, arguments, environment and deadline; an unknown name still
+fails), and `src/eval-oracle.ts`'s `import(pathToFileURL(join(caseDir, "oracle.mjs")).href)` reaches the tree's
+`oracle.mjs` files (its case folder comes from the caller, which tests set, so a table there would change behaviour).
+Neither loads "anything" any more. Measured: no change yet. The same ~260 tests also reach `src/browser-shell.ts` (171:
+it reads the built browser assets through `new URL(`./browser/${name}`, …)`) and `src/easy-start.ts` (93: it imports the
+built terminal bundle, `dist/tui.js`). A documentation-only change on today's tree selects 500 of 902 files (Linux
+283 s, the attack floor; macOS 169 of 244 lane files, 501 s); the 14 historical pull requests that selected, replayed
+on today's tree, are unchanged (Linux 313 s, macOS 560 s on average). Backtest: 0 misses.
+
+Next step, if wanted: both remaining files read the build's output, which is a function of `src/` (and of scripts and the
+package, which already run everything). Name the browser assets as literal paths and teach the selector that a path
+into the build counts as "runs the build" (selected when `src/` changes, not on documentation-only changes); give
+easy-start's bundle import the same treatment. That would bring documentation- and workbench-only pull requests back to
+~200 files (macOS ~407 s).
+
 ## Checks run on this branch
 
 `src/ci-select.test.ts`, `src/ci-shards.test.ts`, `src/ci-workflow.test.ts`, `src/ci-candidate.test.ts` (one Vitest
