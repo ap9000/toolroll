@@ -135,9 +135,10 @@ jobs:
           have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
           bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # Before the candidate's copy is made: the trusted base revision's selector over this diff (docs/plans/ci-speed-2.md).
-      # Advisory, it only says what it would run; enforce, .ci-test-selection holds the files (vitest.config.ts) and the
-      # join judges the shards against its own copy of the plan. A base without the selector runs every file.
+      # Before the candidate's code runs: the trusted base revision's selector over this diff (docs/plans/ci-speed-2.md).
+      # Advisory, it only says what it would run; enforce, its files go to the test step as TEST_SELECTION_LIST, which the
+      # harness hands the candidate as TOOLROLL_TEST_SELECTION (nothing in the checkout is read), and the join judges the
+      # shards against its own copy of the plan. A base without the selector runs every file.
       - name: Test selection
         shell: bash
         env:
@@ -145,13 +146,12 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          rm -f .ci-test-selection
           selector=.trusted-base/scripts/ci-select.mjs
           if [ ! -f "$selector" ]; then echo "::notice::the base revision has no test selector yet; every file runs"; exit 0; fi
           plan() { node "$selector" plan --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" --list "$RUNNER_TEMP/selected.txt"; }
           if [ "$TEST_SELECTION" != enforce ]; then plan || echo "::warning::the test selector failed; advisory, so every file runs as always"; exit 0; fi
           plan
-          cp "$RUNNER_TEMP/selected.txt" .ci-test-selection
+          { echo "TEST_SELECTION_LIST<<SELECTION_END"; cat "$RUNNER_TEMP/selected.txt"; echo "SELECTION_END"; } >> "$GITHUB_ENV"
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
       - name: The candidate's user and its copy of the checkout
@@ -170,7 +170,7 @@ jobs:
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=linux ${TEST_SELECTION_LIST:+--env "TOOLROLL_TEST_SELECTION=$TEST_SELECTION_LIST"} --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/6'
       - uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
@@ -297,8 +297,9 @@ jobs:
           # The newest patch release: a cached older one hid SQLite 3.54.1 from the suite (0.9.105).
           check-latest: true
           cache: npm
-      # The same selection as the Linux shards, before the candidate's copy is made (docs/plans/ci-speed-2.md): under
-      # enforce vitest.config.ts runs the lane's files that are in it; the macOS join holds the shards to its own plan.
+      # The same selection as the Linux shards, for the lane, before the candidate's code runs (docs/plans/ci-speed-2.md):
+      # under enforce the test step hands the lane's selected files to the candidate; the macOS join holds the shards to
+      # its own plan.
       - name: Test selection
         shell: bash
         env:
@@ -307,13 +308,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           LANE: ${{ inputs.macos_lane || 'macos' }}
         run: |
-          rm -f .ci-test-selection
           selector=.trusted-base/scripts/ci-select.mjs
           if [ ! -f "$selector" ]; then echo "::notice::the base revision has no test selector yet; every file of the lane runs"; exit 0; fi
           plan() { node "$selector" plan --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" --lane "$LANE" --list "$RUNNER_TEMP/selected.txt"; }
           if [ "$TEST_SELECTION" != enforce ]; then plan || echo "::warning::the test selector failed; advisory, so every file of the lane runs as always"; exit 0; fi
           plan
-          cp "$RUNNER_TEMP/selected.txt" .ci-test-selection
+          { echo "TEST_SELECTION_LIST<<SELECTION_END"; cat "$RUNNER_TEMP/selected.txt"; echo "SELECTION_END"; } >> "$GITHUB_ENV"
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
       - name: The candidate's user and its copy of the checkout
@@ -332,7 +332,7 @@ jobs:
       # Vitest's own JSON report, back on fd 3 and converted on the trusted side: no candidate script summarizes it.
       # TOOLROLL_REQUIRE_NATIVE: a native attack that can't run here fails instead of skipping (a skip is not evidence);
       # the join's verifier runs with the same --native policy.
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --env TOOLROLL_REQUIRE_NATIVE=darwin --env TOOLROLL_TEST_LANE="$LANE" ${TEST_SELECTION_LIST:+--env "TOOLROLL_TEST_SELECTION=$TEST_SELECTION_LIST"} --report "$RUNNER_TEMP/shard-report.json" -- npm run test:all -- --shard=${{ matrix.shard }}/3'
         env:
           LANE: ${{ inputs.macos_lane || 'macos' }}
       - uses: actions/upload-artifact@v4
@@ -471,11 +471,14 @@ jobs:
           harness=.trusted-base/scripts
           if [ ! -f "$harness/ci-candidate.mjs" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts; fi
           mkdir -p "$RUNNER_TEMP/harness"
-          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$RUNNER_TEMP/harness/"
+          cp "$harness/ci-candidate.mjs" "$harness/ci-candidate-probe.cjs" "$harness/ci-no-skips.mjs" "$RUNNER_TEMP/harness/"
           sudo -n "$(command -v node)" "$RUNNER_TEMP/harness/ci-candidate.mjs" prepare --workspace "$GITHUB_WORKSPACE" --temp "$RUNNER_TEMP" --npm-cache "$(npm config get cache)" --tool-cache "$RUNNER_TOOL_CACHE"
       - run: '"$RUNNER_TEMP/candidate" run -- npm ci --ignore-scripts'
       - run: '"$RUNNER_TEMP/candidate" canary'
-      - run: '"$RUNNER_TEMP/candidate" run --env CI=true -- npx vitest run src/sqlite-compat.test.ts src/store.test.ts src/sqlite-telemetry.test.ts'
+      - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/sqlite.json" -- npx vitest run src/sqlite-compat.test.ts src/store.test.ts src/sqlite-telemetry.test.ts'
+      # Every one of the lane's files ran and passed whole, by the base revision's list (docs/plans/ci-speed-2.md).
+      - name: Every SQLite check ran
+        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/sqlite.json" --expect sqlite --root "$GITHUB_WORKSPACE"
 
   # Whether the area lanes below apply (docs/plans/test-matrix.md): every pull request runs them except a narrow
   # documentation-only change (scripts/ci-scope.mjs says exactly which), and every release-* branch and every run that
@@ -712,9 +715,9 @@ jobs:
       - run: '"$RUNNER_TEMP/candidate" canary'
       - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
-        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"
+        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json" --expect git --root "$GITHUB_WORKSPACE"
       - name: Partial clones are refused on the floor's git
-        run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/partial-clone.json" -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts && node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/partial-clone.json"'
+        run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/partial-clone.json" -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts && node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/partial-clone.json" --expect partial-clone --root "$GITHUB_WORKSPACE"'
 
   git-247:
     name: git 2.47 · debian trixie
@@ -760,4 +763,4 @@ jobs:
       - run: '"$RUNNER_TEMP/candidate" canary'
       - run: '"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/git-lane.json" -- npm run test:git --'
       - name: Every git test ran
-        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"
+        run: node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json" --expect git --root "$GITHUB_WORKSPACE"

@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
 import { pullRequestChanges, upgradeScope } from "../scripts/ci-upgrade-scope.mjs";
@@ -551,7 +551,9 @@ describe("the CI workflows", () => {
       for (const [shard, join, platform] of [["test-shard", "test", "linux"], ["macos-shard", "macos", "darwin"]] as const) {
         const suite = (one.jobs[shard]?.steps ?? []).find(step => (step.run ?? "").includes("npm run test:all"));
         // macOS runs its lane (the nightly every file), and its join judges that lane.
-        expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""} --report`);
+        // ci.yml's shards also hand the candidate the test selection, only when the selection step set it (enforce).
+        const selection = file === "ci.yml" ? ' ${TEST_SELECTION_LIST:+--env "TOOLROLL_TEST_SELECTION=$TEST_SELECTION_LIST"}' : "";
+        expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""}${selection} --report`);
         expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
         // ci.yml's joins also take the test selection's plan when TEST_SELECTION is enforce (docs/plans/ci-speed-2.md).
         const planned = file === "ci.yml" ? ' "\\$\\{planned\\[@\\]\\}"' : "";
@@ -603,7 +605,8 @@ describe("the CI workflows", () => {
     expect(runs.filter(run => /\bnpm (ci|run)\b|\bnpx\b/.test(run)).every(run => run.startsWith('"$RUNNER_TEMP/candidate" run '))).toBe(true);
     expect(runs.some(run => run.includes("npm run test:git"))).toBe(true);
     // Judged on the trusted side, by the base revision's script.
-    expect(runs).toContain('node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json"');
+    // ci-speed-2 (Codex review): the base revision's list of the lane's files, which the report must hold exactly.
+    expect(runs).toContain('node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json" --expect git --root "$GITHUB_WORKSPACE"');
     expect(runs.find(run => run.includes(" prepare "))).toContain("--user node");
     // The floor's git has no --no-lazy-fetch: its lane proves, by name, that a partial clone is refused there.
     const floor = (job.steps ?? []).find(step => (step.run ?? "").includes("checkout-git-partial-clone.test.ts"));
@@ -1329,6 +1332,9 @@ describe("the wire budgets (.github/workflows/wire-budgets.yml)", () => {
   });
 });
 
+/** Under enforce, the selection step's last line: the list into the test step's environment (TEST_SELECTION_LIST). */
+const SELECTION_TO_ENV = '{ echo "TEST_SELECTION_LIST<<SELECTION_END"; cat "$RUNNER_TEMP/selected.txt"; echo "SELECTION_END"; } >> "$GITHUB_ENV"';
+
 describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until ci.yml says enforce", () => {
   const raw = parse(readFileSync(join(folder, "ci.yml"), "utf8")) as { env?: Record<string, string> };
   const shard = workflow("ci.yml").jobs["test-shard"]!, joinJob = workflow("ci.yml").jobs["test"]!;
@@ -1338,7 +1344,7 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(raw.env).toEqual({ TEST_SELECTION: "advisory" });
     // Nothing else reads a selection: the release candidate's Node 22, the newest Node's SQLite checks and the git lanes
     // run as before.
-    for (const id of ["node-latest", "git-floor", "git-247"]) expect(JSON.stringify(workflow("ci.yml").jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
+    for (const id of ["node-latest", "git-floor", "git-247"]) expect(JSON.stringify(workflow("ci.yml").jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION/);
     expect(JSON.stringify(workflow("release-candidate.yml"))).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
   });
 
@@ -1349,10 +1355,11 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(at).toBeLessThan(steps.findIndex(one => (one.run ?? "").includes(" prepare ")));
     const run = step(shard, "Test selection")!.run!;
     // A list the candidate committed never stands: it is removed first, and only the trusted plan can put one back.
-    expect(run.split("\n")[0]).toBe("rm -f .ci-test-selection");
     expect(run).toContain("selector=.trusted-base/scripts/ci-select.mjs");
     expect(run).toContain('if [ "$TEST_SELECTION" != enforce ]; then plan || echo');
-    expect(run.trimEnd().split("\n").at(-1)).toBe('cp "$RUNNER_TEMP/selected.txt" .ci-test-selection');
+    // Under enforce, the list goes to the test step's environment, never into the checkout.
+    expect(run.trimEnd().split("\n").at(-1)).toBe(SELECTION_TO_ENV);
+    expect(run).not.toContain(".ci-test-selection");
     expect(step(shard, "Test selection")!.env).toEqual({ EVENT: "${{ github.event_name }}", HEAD_REF: "${{ github.head_ref }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
   });
 
@@ -1373,9 +1380,8 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(at).toBeGreaterThan(steps.findIndex(one => one.with?.["path"] === ".trusted-base"));
     expect(at).toBeLessThan(steps.findIndex(one => (one.run ?? "").includes(" prepare ")));
     const run = steps[at]!.run!;
-    expect(run.split("\n")[0]).toBe("rm -f .ci-test-selection");
     expect(run).toContain('--lane "$LANE" --list "$RUNNER_TEMP/selected.txt"');
-    expect(run.trimEnd().split("\n").at(-1)).toBe('cp "$RUNNER_TEMP/selected.txt" .ci-test-selection');
+    expect(run.trimEnd().split("\n").at(-1)).toBe(SELECTION_TO_ENV);
     expect(steps[at]!.env?.["LANE"]).toBe("${{ inputs.macos_lane || 'macos' }}");
     expect(macJoin.steps?.[0]?.with).toMatchObject({ "fetch-depth": 0, "persist-credentials": false });
     const plan = step(macJoin, "Test selection")!;
@@ -1384,11 +1390,38 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(runsOf(macJoin).at(-1)).toContain('planned=(); if [ "$TEST_SELECTION" = enforce ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi');
   });
 
-  test("vitest.config.ts reads the list only in CI, and an empty or missing list is the whole suite", () => {
+  test("Codex review, high: vitest.config.ts takes a selection only from the harness's TOOLROLL_TEST_SELECTION; a .ci-test-selection in the checkout changes nothing", async () => {
     const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
-    expect(config).toContain('process.env["CI"] === "true" && existsSync(join(import.meta.dirname, ".ci-test-selection"))');
-    expect(config).toContain("include: selection.length > 0 ?");
-    expect(readFileSync(join(import.meta.dirname, "..", ".gitignore"), "utf8").split("\n")).toContain("/.ci-test-selection");
+    expect(config).toContain("const selection: string[] = selectedFiles(process.env);");
+    expect(config).not.toMatch(/readFileSync|existsSync|ci-test-selection/);
+    // The config as Vitest loads it, in CI, beside a planted list: the whole suite. With the harness's variable: its files.
+    const planted = join(import.meta.dirname, "..", ".ci-test-selection");
+    const saved = { ci: process.env["CI"], selection: process.env["TOOLROLL_TEST_SELECTION"], lane: process.env["TOOLROLL_TEST_LANE"] };
+    const load = async (_: string) => { vi.resetModules(); return ((await import("../vitest.config.ts")) as { default: { test: { include: string[] } } }).default.test.include; };
+    writeFileSync(planted, "src/ci-select.test.ts\n", { flag: "wx" });
+    try {
+      process.env["CI"] = "true"; delete process.env["TOOLROLL_TEST_SELECTION"]; delete process.env["TOOLROLL_TEST_LANE"];
+      expect(await load("planted")).toEqual(["src/**/*.test.ts", "test/attacks/**/*.test.ts"]);
+      process.env["TOOLROLL_TEST_SELECTION"] = "src/ci-select.test.ts\nsrc/ci-shards.test.ts\n";
+      expect(await load("harness")).toEqual(["src/ci-select.test.ts", "src/ci-shards.test.ts"]);
+    } finally {
+      rmSync(planted, { force: true });
+      for (const [name, value] of [["CI", saved.ci], ["TOOLROLL_TEST_SELECTION", saved.selection], ["TOOLROLL_TEST_LANE", saved.lane]] as const) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+    // And the joins and every lane with a list refuse a checkout that holds one (src/ci-shards.test.ts).
+    expect(readFileSync(join(import.meta.dirname, "..", ".gitignore"), "utf8")).not.toContain("ci-test-selection");
+  });
+
+  test("Codex review, high: every special lane is held to its whole list, by the base revision's ci-no-skips", () => {
+    const jobs = workflow("ci.yml").jobs;
+    for (const id of ["git-floor", "git-247"]) expect(runsOf(jobs[id]!)).toContain('node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/git-lane.json" --expect git --root "$GITHUB_WORKSPACE"');
+    expect(runsOf(jobs["git-floor"]!).find(run => run.includes("partial-clone.json"))).toMatch(/ci-no-skips\.mjs" "\$RUNNER_TEMP\/partial-clone\.json" --expect partial-clone --root "\$GITHUB_WORKSPACE"'?$/);
+    const sqlite = runsOf(jobs["node-latest"]!);
+    expect(sqlite).toContain('"$RUNNER_TEMP/candidate" run --env CI=true --report "$RUNNER_TEMP/sqlite.json" -- npx vitest run src/sqlite-compat.test.ts src/store.test.ts src/sqlite-telemetry.test.ts');
+    expect(sqlite.at(-1)).toBe('node "$RUNNER_TEMP/harness/ci-no-skips.mjs" "$RUNNER_TEMP/sqlite.json" --expect sqlite --root "$GITHUB_WORKSPACE"');
+    expect(sqlite.find(run => run.includes(" prepare "))).toContain('"$harness/ci-no-skips.mjs"');
   });
 });
 

@@ -238,6 +238,15 @@ export function plannedFiles(listed, planFile) {
   return [...new Set(plan.files)].sort();
 }
 
+/**
+ * The test selection's files for a shard (docs/plans/ci-speed-2.md): only what the trusted harness hands the candidate,
+ * TOOLROLL_TEST_SELECTION (one file per line; ci.yml passes it only when TEST_SELECTION is enforce). Never a file from
+ * the checkout: a .ci-test-selection the candidate commits is read by nothing, and the joins refuse it.
+ */
+export function selectedFiles(env) {
+  return String(env["TOOLROLL_TEST_SELECTION"] ?? "").split("\n").map(one => one.trim()).filter(one => one !== "");
+}
+
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };
 
 /**
@@ -267,6 +276,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
     if (args.includes("--lane") && lane !== "all" && !Object.hasOwn(LANES, lane ?? "")) throw new Error(`--lane takes all or ${Object.keys(LANES).join(" or ")}`);
     const listed = plannedFiles(lane === undefined || lane === "all" ? inventory(root) : laneFiles(root, lane), flag(args, "plan"));
+    // No lane reads a .ci-test-selection, and a change may not add one (Codex review): it fails the join.
+    if (existsSync(join(root, ".ci-test-selection"))) throw new Error("the checkout holds a .ci-test-selection: no lane reads one, and a change may not add one");
     const reports = reportsIn(folder, node);
     if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
     const problem = shardsProblem(reports, listed, { shards, root, base, native });

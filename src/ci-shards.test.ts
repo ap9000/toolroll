@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, plannedFiles, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, plannedFiles, readReport, reportsIn, selectedFiles, shardsProblem } from "../scripts/ci-shards.mjs";
+import { EXPECTED, expectedFiles, laneProblem } from "../scripts/ci-no-skips.mjs";
 import { FILE_OVERHEAD_SECONDS, medianTimes, planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
@@ -310,5 +311,59 @@ describe("ci-speed-2: the join under a test selection (--plan)", () => {
     expect(shardsProblem(ran(["src/a.test.ts", "src/b.test.ts"]), owed, { shards: 1, root, base })).toBeNull();
     expect(shardsProblem(ran(["src/a.test.ts"]), owed, { shards: 1, root, base })).toMatch(/ran in no shard/);
     expect(shardsProblem(ran(["src/a.test.ts", "src/b.test.ts", "test/attacks/d.test.ts"]), owed, { shards: 1, root, base })).toMatch(/include policy doesn't find/);
+  });
+});
+
+describe("ci-speed-2, Codex review: no lane narrows by a file in the checkout, and every special lane runs its whole list", () => {
+  const passing = (names: string[], at: string) => ({ success: true, testResults: names.map(name => ({ name: join(at, name), assertionResults: [{ status: "passed", fullName: "t", title: "t" }] })) });
+  const lane = join(scratch, "special");
+  for (const one of ["src/teardown-git.test.ts", "src/worktree.slow.test.ts", "test/attacks/checkout-git-pointer.test.ts", "test/attacks/fence-git-views.test.ts", "src/store.test.ts", "src/sqlite-compat.test.ts", "src/sqlite-telemetry.test.ts", "src/other.test.ts"]) write(lane, one, "test('x', () => {});\n");
+  const noSkips = (report: unknown, args: string[], root = lane) => {
+    const file = join(scratch, `report-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(file, JSON.stringify(report));
+    return spawnSync(process.execPath, [join(REPO, "scripts/ci-no-skips.mjs"), file, ...args, "--root", root], { encoding: "utf8" });
+  };
+
+  test("the selection comes only from TOOLROLL_TEST_SELECTION, never from a file", () => {
+    expect(selectedFiles({ CI: "true" })).toEqual([]);
+    expect(selectedFiles({ TOOLROLL_TEST_SELECTION: " src/a.test.ts \n\nsrc/b.test.ts\n" })).toEqual(["src/a.test.ts", "src/b.test.ts"]);
+  });
+
+  test("the git lane's list is package.json's test:git, and each lane owes exactly its files", () => {
+    const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(pkg.scripts["test:git"]).toBe(`vitest run ${EXPECTED.git.filters!.join(" ")}`);
+    expect(expectedFiles("git", lane)).toEqual(["src/teardown-git.test.ts", "src/worktree.slow.test.ts", "test/attacks/checkout-git-pointer.test.ts", "test/attacks/fence-git-views.test.ts"]);
+    expect(expectedFiles("sqlite", lane)).toEqual(["src/sqlite-compat.test.ts", "src/sqlite-telemetry.test.ts", "src/store.test.ts"]);
+    expect(laneProblem(["src/a.test.ts"], ["src/a.test.ts", "src/b.test.ts"])).toMatch(/didn't run \(src\/b\.test\.ts\)/);
+    expect(laneProblem(["src/a.test.ts", "src/c.test.ts"], ["src/a.test.ts"])).toMatch(/ran src\/c\.test\.ts/);
+    // In this checkout, every lane finds its files.
+    for (const name of Object.keys(EXPECTED)) expect(expectedFiles(name, REPO).length, name).toBeGreaterThan(0);
+  });
+
+  test("a passing subset of a lane fails; the whole list passes; a planted .ci-test-selection fails every listed lane", () => {
+    const sqlite = ["src/sqlite-compat.test.ts", "src/store.test.ts", "src/sqlite-telemetry.test.ts"];
+    expect(noSkips(passing(sqlite, lane), ["--expect", "sqlite"]).status).toBe(0);
+    const subset = noSkips(passing(sqlite.slice(0, 1), lane), ["--expect", "sqlite"]);
+    expect(subset.status).toBe(1);
+    expect(subset.stderr).toMatch(/2 of the lane's files didn't run/);
+    expect(noSkips(passing(expectedFiles("git", lane), lane), ["--expect", "git"]).status).toBe(0);
+    expect(noSkips(passing(expectedFiles("git", lane).slice(1), lane), ["--expect", "git"]).status).toBe(1);
+    write(lane, ".ci-test-selection", "src/store.test.ts\n");
+    try {
+      const planted = noSkips(passing(sqlite, lane), ["--expect", "sqlite"]);
+      expect(planted.status).toBe(1);
+      expect(planted.stderr).toMatch(/holds a \.ci-test-selection/);
+    } finally { rmSync(join(lane, ".ci-test-selection")); }
+  });
+
+  test("the shards' join refuses a checkout that holds a .ci-test-selection", () => {
+    const tree = join(scratch, "planted-join");
+    write(tree, "src/a.test.ts", "test('a', () => {});\n");
+    write(tree, ".ci-test-selection", "src/a.test.ts\n");
+    const reports = join(scratch, "planted-reports");
+    write(reports, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/a.test.ts"), status: "passed", assertionResults: [{ status: "passed" }] }])));
+    const cli = spawnSync(process.execPath, [join(REPO, "scripts/ci-shards.mjs"), "verify", reports, "--root", tree, "--base", tree, "--sha", "a".repeat(40), "--node", "24", "--shards", "1"], { encoding: "utf8" });
+    expect(cli.status).toBe(1);
+    expect(cli.stderr).toMatch(/holds a \.ci-test-selection/);
   });
 });
