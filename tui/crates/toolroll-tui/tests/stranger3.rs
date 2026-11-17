@@ -1,6 +1,8 @@
 //! The stranger test's second round (0.9.111): a waiting or retrying task can be stopped or cancelled, its wait is
 //! explained from the engine's own due time, what the agent said is shown, build numbers and durations are the current
 //! build's, the Build card folds its usual settings, the palette matches words, and the new-thread composer says where.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -26,6 +28,7 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn status(app: &App) -> String {

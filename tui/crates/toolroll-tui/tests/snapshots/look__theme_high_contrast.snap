@@ -27,7 +27,7 @@ expression: "themed(ThemeName::HighContrast, Depth::TrueColor, None)"
                                                                                                     
    j/k  move   ⏎  open   s  steer   n  new   :  all actions                                         
 
-abbbbbbbbaaccccccddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
+abbbbbbbbaaccccccaaddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 agabbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaiiiiiiiihhhhhhhhhhhhhhhhhhhhhhhhhhhhhaaaaaaaaaaaaaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagabbbbbbbbbbbbbbbbbbbbbbbaaeeeeeeeeeeaaaaaaaaaaaaaaaga
@@ -38,13 +38,13 @@ agabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaffffffffagagallmmmmmmmmmmmmmmmmllllllllllllll
 agaddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaagagallnnllllllllllllllllllllllloooooooollllllllllllllaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagallnnlllllllllllllllllllllllllllllllllllllllllllllaga
 agabbbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagalllllllllllllllllllllllllllllllllllllllllllllllllaga
-agapqqqqqqqqqqqqqqqqqqqqqqqqrrrrreeeeeeeeeeagagalloooosssssssssssssssssssssssssssssssssssssssllllaga
-agatttttttttttttttrrrrrrrrrrrrrrrrrrrrrrrrragagallooollllllllllllllllllllllllllllllllllllllllllllaga
+agapiiiiiiiiiiiiiiiiiiiiiiiipppppeeeeeeeeeeagagallooooqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqllllaga
+agappppppppppppppppppppppppppppppppppppppppagagallooollllllllllllllllllllllllllllllllllllllllllllaga
 agakbaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeagagallooooollllllllllllllllllllllllllllllllllllllllllaga
 agadddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaagagallooooooooooooooooooollllllllllllllllllllllllllllaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagallnnlllllllllllloooooooooooooooooooolllllllllllllaga
 agabbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagalllllllllllllllllllllllllllllllllllllllllllllllllaga
-agajbaaaaaaaaaaaaaaaaaaaaaaaaaaaauuuuuuuuuuagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
+agajbaaaaaaaaaaaaaaaaaaaaaaaaaaaarrrrrrrrrragagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 agadddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
@@ -67,9 +67,6 @@ l = fg #ffffff bg #141414
 m = fg #d4d4d4 bg #141414 bold
 n = fg #5ff0a8 bg #141414
 o = fg #d4d4d4 bg #141414
-p = fg #8ec8ff bg #ffffff
-q = fg #ffffff bg #ffffff bold
-r = fg #000000 bg #ffffff
-s = fg #ffffff bg #141414 bold
-t = fg #d4d4d4 bg #ffffff
-u = fg #5ff0a8 bg #0b3220
+p = fg #000000 bg #ffffff
+q = fg #ffffff bg #141414 bold
+r = fg #5ff0a8 bg #0b3220

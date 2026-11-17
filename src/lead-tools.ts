@@ -124,6 +124,10 @@ export type LeadToolContext = {
    * this turn, after the call's input was validated (startInputOf). Never read from the model's arguments; absent (a
    * direct call outside a turn), nothing was prepared and the person gets an ordinary task card. */
   startPrepared?: FastPreview;
+  /** The person's own workbench look (view-tools.ts): present only in the person's own conversation on this computer
+   * (server/chat.ts decides: a browser session from this computer, the computer's own person). Absent everywhere
+   * else (a team chat, Telegram, a token, another person, a task's agents), so the two view tools refuse there. */
+  view?: ViewRunner;
 };
 
 export type LeadToolResult = { ok: true; body: unknown } | { ok: false; message: string };
@@ -140,6 +144,8 @@ import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
 import { steerStandingWords } from "./steer-status.js";
 import { agentQuestion, openAgentQuestions } from "./agent-board.js";
 import { utcMinute } from "./when-html.js";
+import { RECORD_WHOLE_MAX, recordActionWhole } from "./action-ledger.js";
+import { VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewRunner } from "./view-tools.js";
 
 const REPO_ID = /^r[0-9]{1,3}$/;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -491,6 +497,8 @@ export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
 
 /** Words a deferred tool is found by, beyond its name and description. */
 const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
+  toolroll_view_read: ["workbench", "theme", "colours", "colors", "look", "restyle", "style", "terminal", "dark", "light"],
+  toolroll_view_set: ["workbench", "theme", "colours", "colors", "look", "restyle", "style", "density", "glyphs", "columns", "make it look"],
   show_card: ["findings", "handover", "card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "builders", "workers", "integrations", "show", "dashboard"],
   propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
   get_findings: ["finding", "findings", "review", "handover", "follow-through", "failed check", "send back"],
@@ -545,6 +553,61 @@ export function findLeadTools(query: string): { name: string; summary: string }[
 function summaryLine(description: string): string {
   const first = /^(.+?[.!?])(\s|$)/.exec(description)?.[1] ?? description;
   return first.length <= 160 ? first : `${first.slice(0, 157).trimEnd()}…`;
+}
+
+/** Why the view tools refuse here, or null: only the person's own conversation on this computer (ctx.view), never a
+ * shared team chat. */
+function viewRefusal(ctx: LeadToolContext): LeadToolResult | null {
+  if (ctx.view === undefined || teamRoomOf(ctx.store, ctx.thread) !== null) {
+    return { ok: false, message: "Restyling the workbench is for the person's own conversation in the console on this computer: ask there, or they can edit tui.toml themselves." };
+  }
+  return null;
+}
+
+/** This person's workbench changes, newest last (the last VIEW_HISTORY_SCAN): each pending one with its final word, if any. */
+const VIEW_HISTORY_SCAN = 200;
+type ViewHistoryRow = { id: number; at: string; change: Record<string, unknown> | null; final: "done" | "failed" | "uncertain" | null };
+function viewHistory(ctx: LeadToolContext): ViewHistoryRow[] {
+  const rows = ctx.store.handle.prepare("SELECT id, at, outcome, detail FROM action_ledger WHERE actor = ? AND action = ? ORDER BY id DESC LIMIT ?")
+    .all(ctx.who.name, VIEW_LEDGER_ACTION, VIEW_HISTORY_SCAN).reverse();
+  const parsed = (text: unknown): Record<string, unknown> | null => {
+    if (typeof text !== "string") return null;
+    try { const value: unknown = JSON.parse(text); return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null; }
+    catch { return null; }
+  };
+  const pending: ViewHistoryRow[] = [];
+  const byId = new Map<number, ViewHistoryRow>();
+  for (const row of rows) {
+    const detail = parsed(row["detail"]);
+    if (row["outcome"] === "pending") {
+      const change = detail?.["change"];
+      const one: ViewHistoryRow = { id: Number(row["id"]), at: String(row["at"]), change: typeof change === "object" && change !== null ? change as Record<string, unknown> : null, final: null };
+      pending.push(one);
+      byId.set(one.id, one);
+    } else if (row["outcome"] === "done" || row["outcome"] === "failed" || row["outcome"] === "uncertain") {
+      const of = byId.get(Number(detail?.["pending"]));
+      if (of !== undefined && of.final === null) of.final = row["outcome"];
+    }
+  }
+  return pending;
+}
+
+/** A pending change older than this whose writer never answered (the process ended between reserving and finishing):
+ * marked uncertain. Longer than the writer's own time limit, so a change still being written is never marked. */
+const VIEW_UNCONFIRMED_MS = 60_000;
+
+/** The words an uncertain change carries in the history (the audit log shows them beside it). */
+export const VIEW_UNCERTAIN_WORDS = "This change may or may not have applied: the workbench never confirmed it.";
+
+/** The person's changes the writer never confirmed, left pending past VIEW_UNCONFIRMED_MS: marked uncertain. Never
+ * inferred from the file as it is now (a later write could make it look done or not done); an uncertain change keeps
+ * counting toward the limit while its time is in the window, as a done one does. */
+function settleViewChanges(ctx: LeadToolContext): void {
+  const stale = ctx.now.getTime() - VIEW_UNCONFIRMED_MS;
+  for (const one of viewHistory(ctx).filter(row => row.final === null && Date.parse(row.at) < stale)) {
+    recordActionWhole(ctx.store.handle, { at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION,
+      outcome: "uncertain", source: "request" }, { pending: one.id, said: VIEW_UNCERTAIN_WORDS });
+  }
 }
 
 /** A fixed destination this person may open, checked once for show_control and for a card's Button. */
@@ -2062,6 +2125,57 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       return { ok: true, body: { proposal: proposalId, kind: "answer", decision: id, option: chosen.id, awaiting: chosen.reversible ? "the operator's confirmation" : "the operator's explicit confirmation — this option is irreversible" } };
     },
   },
+  toolroll_view_read: {
+    description: "Read the person's terminal workbench look before restyling it: its settings, what may be changed and to what, the theme roles (what each colours), the built-in and saved themes, and a short styling guide. Only in the person's own conversation on this computer.",
+    handle: ctx => {
+      const refused = viewRefusal(ctx);
+      if (refused !== null) return refused;
+      const read = ctx.view!("read");
+      if (!read.ok) return { ok: false, message: read.why };
+      settleViewChanges(ctx);
+      const body = read.body;
+      return { ok: true, body: { settings: body["settings"], colors: body["colors"], allowed: body["allowed"], roles: body["roles"], themes: body["themes"], guide: body["guide"] } };
+    },
+  },
+  toolroll_view_set: {
+    description: "Restyle the person's terminal workbench (tui.toml) when they ask: a theme (built-in or saved), a saved theme of your own (save_theme: name, base, role colours; use: true switches to it, so 'make it look like X' is reusable), role colours (never a status's), density, glyphs, list columns (add only), list side, reduced motion, key bar, costs, notifications (on only: turning anything off is the person's). Read toolroll_view_read first. Contrast is enforced on every colour pair drawn: a change that makes text too faint is refused with the reason. Keys are never changed here (the person changes them). The running workbench repaints within a second; the person can undo with `toolroll view reset`.",
+    handle: (ctx, args) => {
+      const refused = viewRefusal(ctx);
+      if (refused !== null) return refused;
+      const raw = args as Record<string, unknown>;
+      if ("keys" in raw) return { ok: false, message: "Keys can't be changed by an agent: they stay with the person (tui.toml's [keys], or the workbench's Settings screen), so an accept or a cancel never becomes a one-key accident." };
+      const allowed = new Set(Object.keys(LEAD_TOOL_INPUTS.toolroll_view_set.shape));
+      const unknown = Object.keys(raw).filter(key => !allowed.has(key));
+      if (unknown.length > 0) return { ok: false, message: `toolroll_view_set takes ${[...allowed].join(", ")}; not ${unknown.slice(0, 3).map(one => redactForLead(one.slice(0, 32), { repos: [], names: [] })).join(", ")}.` };
+      const change = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== undefined));
+      if (Object.keys(change).length === 0) return { ok: false, message: "Nothing to change: name at least one setting." };
+      const text = JSON.stringify(change);
+      if (text.length > RECORD_WHOLE_MAX - 64) return { ok: false, message: "That change is too large: change a few settings at a time." };
+      // At most VIEW_CHANGES_PER_MINUTE changes a minute, counted in the ledger the changes are written to: every one
+      // reserved counts (pending, done or uncertain); only one that failed doesn't.
+      settleViewChanges(ctx);
+      const since = ctx.now.getTime() - 60_000;
+      const recent = viewHistory(ctx).filter(one => Date.parse(one.at) > since && one.final !== "failed").length;
+      if (recent >= VIEW_CHANGES_PER_MINUTE) return { ok: false, message: `That's ${VIEW_CHANGES_PER_MINUTE} workbench changes in a minute; wait a moment before the next.` };
+      // Reserved before the workbench is touched: whatever happens next, the history holds the whole change.
+      const entry = { at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION, source: "request" as const };
+      const pending = recordActionWhole(ctx.store.handle, { ...entry, outcome: "pending" }, { change });
+      const set = ctx.view!("set", text);
+      if (!set.ok) {
+        // Unsure (no answer): the writer never confirmed it, so it may or may not have applied. Marked uncertain, and
+        // it keeps counting toward the limit.
+        if (set.unsure === true) {
+          recordActionWhole(ctx.store.handle, { ...entry, outcome: "uncertain" }, { pending, said: VIEW_UNCERTAIN_WORDS, why: set.why.slice(0, 200) });
+          return { ok: false, message: `${set.why}. This change may or may not have applied: read the workbench's settings before trying again.` };
+        }
+        recordActionWhole(ctx.store.handle, { ...entry, outcome: "failed" }, { pending, why: set.why.slice(0, 500) });
+        return { ok: false, message: set.why };
+      }
+      const changed = Array.isArray(set.body["changed"]) ? set.body["changed"].filter((one): one is string => typeof one === "string").slice(0, 40) : [];
+      recordActionWhole(ctx.store.handle, { ...entry, outcome: "done" }, { pending, changed });
+      return { ok: true, body: { changed, said: "Saved to tui.toml; the running workbench shows it within a second. `toolroll view reset` undoes it (the previous file is kept as tui.toml.bak)." } };
+    },
+  },
   propose_cancel: {
     description: "Propose task cancellation/reason; operator must arm and confirm.",
     handle: (ctx, args) => {
@@ -2082,7 +2196,8 @@ export const LEAD_TOOLS: LeadTool[] = (Object.keys(LEAD_TOOL_INPUTS) as LeadTool
   // Flow proposals already used their strict contract in 0.9.36; keep that validation unchanged. A shared action's
   // unknown keys reach prepareSharedAction, whose per-operation check refused them in 0.9.36 and still does. Every other
   // tool ignored unknown arguments and still strips them.
-  const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : name === "propose_action" ? LEAD_TOOL_READ_INPUTS[name].loose() : LEAD_TOOL_READ_INPUTS[name].strip();
+  // toolroll_view_set also reads loosely: a key it doesn't take (keys above all) is refused in words, never dropped.
+  const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : name === "propose_action" || name === "toolroll_view_set" ? LEAD_TOOL_READ_INPUTS[name].loose() : LEAD_TOOL_READ_INPUTS[name].strip();
   const handler = LEAD_TOOL_HANDLERS[name] as LeadToolHandler<N>;
   return {
     name,

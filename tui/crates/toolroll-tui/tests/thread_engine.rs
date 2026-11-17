@@ -3,6 +3,8 @@
 //! picks an option, and the act the console receives carries exactly the request, the card digest and the choice the
 //! screen showed, with the session's credentials. With Flexible off (as this build ships), nothing is listed and a new
 //! thread is refused in the console's words.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -19,6 +21,11 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App) -> String {
     let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    let (w, h) = (
+        term.backend().buffer().area.width,
+        term.backend().buffer().area.height,
+    );
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 

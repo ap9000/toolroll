@@ -220,7 +220,8 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
     // The advertised contract stays strict on both surfaces.
     assertContract({ schema: input, read: value => verdict(input, value), valid, invalid });
     // propose_action passes unknown keys to the action's own per-operation check (as 0.9.36 did); see the handler test.
-    const passesKeys = surface === "lead" && tool === "propose_action";
+    // toolroll_view_set passes them too: its handler refuses each by name (keys above all), never drops one silently.
+    const passesKeys = surface === "lead" && (tool === "propose_action" || tool === "toolroll_view_set");
     const stripsKeys = surface === "lead" && tool !== "propose_flow" && !passesKeys;
     const runtimeInvalid = passesKeys ? invalid.filter(sample => sample.name !== "an unknown key") : !stripsKeys ? invalid : invalid.filter(sample =>
       sample.name !== "an unknown key" && !sample.paths.some(path => FALLBACK_FIELDS[tool]?.includes(path)));

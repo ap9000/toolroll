@@ -119,6 +119,10 @@ impl Notifier {
                 self.pending.retain(|(_, t)| t != &item.id);
                 self.pending.push((kind, item.id.clone()));
             }
+            // A change of a kind that is off isn't marked seen: turned back on, whatever is still waiting says so.
+            if kind.is_some() && !want {
+                continue;
+            }
             self.seen.insert(
                 item.id.clone(),
                 Seen {

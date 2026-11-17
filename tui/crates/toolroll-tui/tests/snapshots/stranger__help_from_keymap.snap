@@ -17,7 +17,7 @@ expression: shown
 " ││ n              New task                                 </>            Narrower / wider list (or split)         │ │ "
 " ││ T              New thread                               =              Even splits, usual list width            │ │ "
 " ││ !/@            Next / previous that needs you           b              List: full, rail, hidden                 │ │ "
-" ││ '              Back to where you were                   z              Zoom the focused panel                   │ │ "
+" ││ '              Jump back (again: forward)               z              Zoom the focused panel                   │ │ "
 " ││ /              Search this pane                         A              Agents: add, sign in, choose models      │ │ "
 " ││                                                                                                                 │ │ "
 " ││ In Diff                                                                                                         │ │ "

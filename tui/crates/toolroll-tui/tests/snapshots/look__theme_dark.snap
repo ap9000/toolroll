@@ -27,7 +27,7 @@ expression: "themed(ThemeName::Dark, Depth::TrueColor, None)"
                                                                                                     
    j/k  move   ⏎  open   s  steer   n  new   :  all actions                                         
 
-abbbbbbbbaaccccccddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
+abbbbbbbbaaccccccaaddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 agghhhhhiiiggggggggggggggggggggggggggggggggggaggjjjjjjjjiiiiiiiiiiiiiiiiiiiiiiiiiiiiigggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhggeeeeeeeeeegggggggggggggggga
@@ -38,13 +38,13 @@ agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggnnoooooooooooooooonnnnnnnnnnnnnn
 aggkkkkkkkkkkkkkkkkggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnqqqqqqqqnnnnnnnnnnnnnngga
 aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 agghhhhhhhiiiggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggrjjjjjjjjjjjjjjjjjjjjjjjjssssseeeeeeeeeeggaggnnqqqqtttttttttttttttttttttttttttttttttttttttnnnngga
-agguuuuuuuuuuuuuuusssssssssssssssssssssssssggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggrjjjjjjjjjjjjjjjjjjjjjjjjrrrrreeeeeeeeeeggaggnnqqqqsssssssssssssssssssssssssssssssssssssssnnnngga
+aggrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggmhggggggggggggggggggggggggggggeeeeeeeeeeggaggnnqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnqqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnngga
 agghhhhhhiiigggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-agglhggggggggggggggggggggggggggggvvvvvvvvvvggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agglhggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
@@ -69,8 +69,6 @@ n = fg #ededed bg #1c1c1c
 o = fg #a1a1a1 bg #1c1c1c bold
 p = fg #3dd68c bg #1c1c1c
 q = fg #a1a1a1 bg #1c1c1c
-r = fg #70b8ff bg #3a3a3a
-s = fg #ededed bg #3a3a3a
-t = fg #ededed bg #1c1c1c bold
-u = fg #a1a1a1 bg #3a3a3a
-v = fg #3dd68c bg #1b3127
+r = fg #ededed bg #3a3a3a
+s = fg #ededed bg #1c1c1c bold
+t = fg #3dd68c bg #1b3127

@@ -110,9 +110,11 @@ const NATIVE = Object.values(NATIVE_JOBS) as string[];
 const REPEAT = "Windows Job Object containment · c2 repeat";
 /** The newest Node's SQLite checks (ci.yml node-latest): an ordinary check on every pull request, never a required one. */
 const LATEST = "node 26 · SQLite";
+/** gate-changes.yml: a changed judge without a Gate-change trailer fails it, on every pull request; advisory. */
+const GATE = "gate changes";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
-const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
+const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path", GATE];
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
 const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
@@ -486,7 +488,7 @@ describe("the CI workflows", () => {
   });
 
   test("the release's actions are pinned to full commit SHAs, each with its version", () => {
-    for (const file of ["publish.yml", "package-build.yml", "tui-bundle.yml"]) {
+    for (const file of ["publish.yml", "package-build.yml", "tui-bundle.yml", "gate-changes.yml"]) {
       const uses = Object.values(workflow(file).jobs).flatMap(job => (job.steps ?? []).map(step => step.uses).filter((one): one is string => one !== undefined));
       expect(uses.length, file).toBeGreaterThan(0);
       for (const one of uses) expect(one, `${file}: ${one}`).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/);
@@ -1191,6 +1193,33 @@ globalThis.fetch = async (url, options) => {
     expect(proofProblem(w)).toBeNull();
     w.runs[0]!.path = `${CI}${suffix}`;
     expect(proofProblem(w)).not.toBeNull();
+  });
+});
+
+describe("protect the judges (.github/workflows/gate-changes.yml)", () => {
+  test("every pull request runs the base's gate-changes script over its own diff; written out, pinned, read-only, advisory", () => {
+    const gates = workflow("gate-changes.yml");
+    expect(Object.keys(gates.on)).toEqual(["pull_request"]);
+    expect(gates.permissions).toEqual({ contents: "read" });
+    for (const paths of [["docs/a.md"], ["src/release.ts"], ["test/destinations.json"], [".github/workflows/ci.yml"]]) expect(executed(pr(paths)), paths[0]).toContain(GATE);
+    const job = gates.jobs["gates"]!;
+    // Written out: no matrix, no condition (a skipped job would read as passing).
+    expect(job.name).toBe(GATE);
+    expect(job.strategy).toBeUndefined();
+    expect(job.if).toBeUndefined();
+    // The candidate's checkout carries its history and no token; the judge is the base's copy, the candidate's only
+    // when the base has none.
+    expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "fetch-depth": 0, "persist-credentials": false });
+    expect(job.steps?.filter(step => step.uses?.startsWith("actions/checkout@")).map(step => step.with?.["path"])).toEqual([undefined, ".trusted-base"]);
+    expect(job.env).toMatchObject({ TESTED_SHA: "${{ github.event.pull_request.head.sha }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
+    const run = runsOf(job).join("\n");
+    expect(run).toContain("judge=.trusted-base/scripts/gate-changes.mjs");
+    expect(run).toContain('node "$judge" check --root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$TESTED_SHA"');
+    // Nothing of the candidate's runs: no install, no build, no npm at all, and no secret.
+    expect(run).not.toMatch(/\bnpm\b|\bnpx\b/);
+    expect(readFileSync(join(folder, "gate-changes.yml"), "utf8")).not.toMatch(/\$\{\{\s*(?:secrets\.|github\.token)/);
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(GATE)).toBe(false);
+    expect(ADVISORY_PR_CHECKS[GATE]).toBe(".github/workflows/gate-changes.yml");
   });
 });
 

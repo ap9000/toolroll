@@ -1,6 +1,8 @@
 //! The stranger test's fifth round, toward 9: "Building it." goes as soon as the task moves on; narrow mode shows the
 //! list and the task in turn, with where you are; search reads everything Live draws; the list's width said is the
 //! width drawn; unread marks every change you didn't see; and what is drawn, searched and exported are one text.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -27,6 +29,7 @@ fn ctrl(c: char) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn said(app: &App) -> String {
@@ -211,6 +214,7 @@ fn search_finds_what_live_draws_above_the_output() {
 fn drawn_rows(app: &mut App, w: u16, h: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     let c = app.areas.content;
     let buf = term.backend().buffer();
     (c.top()..c.bottom())
@@ -240,19 +244,21 @@ fn drawn_searched_and_exported_text_are_one() {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect();
-        // Every row drawn is a line of the text searched and exported (Steps draws it all here).
+        // Every row drawn is a line of the text searched (Steps draws it all here).
         for row in &rows {
             assert!(
                 exported.iter().any(|l| l == row),
                 "{tab:?}: drawn but not exported: {row:?}\n{exported:#?}"
             );
         }
-        // And the export is that text, the editor's file and nothing else.
+        // And the export is the same content laid out whole (nine2: no width, no key hints, no rules), the editor's
+        // file and nothing else.
+        let (_, whole) = toolroll_tui::search::export_text(&mut app).unwrap();
         let fx = app.key(ctrl('e'));
         let [Effect::OpenInEditor { text: file, .. }] = &fx[..] else {
             panic!("{fx:?}")
         };
-        let mut want = text.join("\n");
+        let mut want = whole.join("\n");
         want.push('\n');
         assert_eq!(file, &want);
         if tab == Tab::Steps {

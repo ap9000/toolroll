@@ -11,6 +11,7 @@ use crate::text::clean;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use unicode_width::UnicodeWidthStr;
 
 /// At most this many characters are searched for.
 pub const MAX_QUERY: usize = 100;
@@ -28,6 +29,22 @@ pub struct Search {
 /// The focused pane's text, one cleaned line per drawn line where it can be; None: nothing here may be searched or
 /// exported (no task, a thread, or an agent's sign-in pane).
 pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
+    // The width the pane was last drawn at (its text wraps as drawn); 80 before any frame.
+    let w = match app.areas.content.width {
+        0 => 80,
+        w => w as usize,
+    };
+    pane_text_in(app, crate::view::Room::screen(w))
+}
+
+/// The focused pane's whole text, for export (open-in-editor): the same content as drawn, laid out with no width to
+/// cut it to, without key hints or rules.
+pub fn export_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
+    pane_text_in(app, crate::view::Room::export())
+}
+
+/// The focused pane's text laid out in `room` (view::Room): as drawn (search), or whole (export).
+pub fn pane_text_in(app: &mut App, room: crate::view::Room) -> Option<(&'static str, Vec<String>)> {
     if app.thread_selected().is_some() || app.selected_item().is_none_or(|i| !i.is_task) {
         return None;
     }
@@ -41,18 +58,16 @@ pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
         .trim_end()
         .to_string()
     };
-    // The width the pane was last drawn at (its text wraps as drawn); 80 before any frame.
-    let w = match app.areas.content.width {
-        0 => 80,
-        w => w as usize,
-    };
+    let w = room.w;
     match app.tab {
         // Live: what is drawn above the output (a failure, what the agent said, a wait), then the whole output.
         Tab::Live => {
             let item = app.selected_item().cloned()?;
-            let (head, output) = crate::view::live_head(app, &item, w);
+            let (head, output) = crate::view::live_head(app, &item, room);
             let mut lines: Vec<String> = head.iter().map(line_text).collect();
-            app.live_head_lines = lines.len();
+            if room == crate::view::Room::screen(w) {
+                app.live_head_lines = lines.len();
+            }
             if output {
                 lines.extend(
                     crate::transcript::lines(&app.transcript, w, 0)
@@ -65,7 +80,7 @@ pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
         // Steps: exactly the lines the tab draws.
         Tab::Steps => Some((
             "steps",
-            crate::view::steps_lines(app, w)
+            crate::view::steps_lines(app, room)
                 .iter()
                 .map(line_text)
                 .collect(),
@@ -121,34 +136,40 @@ pub fn matching(lines: &[String], query: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Light every occurrence of the query drawn in `area` (reversed: it reads in every theme, colour off included).
+/// Light every occurrence of the query drawn in `area` (reversed: it reads in every theme, colour off included). Read
+/// as `matching` reads a line: each drawn character lower-cased whole (İ is two characters then), and a wide character
+/// (日) one character over both its cells, so a line counted as matching is lit where it is drawn.
 pub fn highlight(buf: &mut Buffer, area: Rect, query: &str) {
-    let q: Vec<char> = query.to_lowercase().chars().collect();
+    let q = query.to_lowercase();
     if q.is_empty() {
         return;
     }
     for y in area.top()..area.bottom() {
-        let cells: Vec<char> = (area.left()..area.right())
-            .map(|x| {
-                buf[(x, y)]
-                    .symbol()
-                    .chars()
-                    .next()
-                    .unwrap_or(' ')
-                    .to_lowercase()
-                    .next()
-                    .unwrap_or(' ')
-            })
-            .collect();
+        // The characters drawn on this row: where each starts, how many cells it covers, and its lower case.
+        let mut drawn: Vec<(u16, u16, String)> = vec![];
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            let width = (UnicodeWidthStr::width(symbol) as u16).clamp(1, area.right() - x);
+            drawn.push((x, width, symbol.to_lowercase()));
+            x += width;
+        }
         let mut i = 0;
-        while i + q.len() <= cells.len() {
-            if cells[i..i + q.len()] == q[..] {
-                for k in 0..q.len() {
-                    let x = area.left() + (i + k) as u16;
-                    let cell = &mut buf[(x, y)];
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        while i < drawn.len() {
+            let mut text = String::new();
+            let mut j = i;
+            while j < drawn.len() && text.len() < q.len() {
+                text.push_str(&drawn[j].2);
+                j += 1;
+            }
+            if text.starts_with(&q) {
+                for (start, width, _) in &drawn[i..j] {
+                    for k in 0..*width {
+                        let cell = &mut buf[(start + k, y)];
+                        cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                    }
                 }
-                i += q.len();
+                i = j;
             } else {
                 i += 1;
             }

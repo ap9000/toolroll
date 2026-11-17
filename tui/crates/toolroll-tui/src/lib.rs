@@ -23,6 +23,7 @@ pub mod theme;
 pub mod thread;
 pub mod transcript;
 pub mod view;
+pub mod view_cli;
 pub mod viewstate;
 
 /// `--version`'s line, which the launcher's self-check reads (tui-launch.ts): this build and its engine contract.

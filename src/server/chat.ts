@@ -63,6 +63,7 @@ import { loadBotToken,redactToken } from "../telegram.js";
 import { WORK_INDEX_MAX_LIMIT,workIndexPage,type WorkIndexItem } from "../work-index.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
+import { binaryViewRunner, viewAllowedFor } from '../view-tools.js';
 import { html,htmlString,postForm,reauth } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
@@ -954,7 +955,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
       const ended = (ok: boolean) => { if (onProgress !== undefined) endLiveTurn(opened.thread.id, ok, onProgress); };
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
       void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
-        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); }, onProgress: event => onProgress?.(event), channel: "console", requestId, ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
+        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); }, onProgress: event => onProgress?.(event), channel: "console", requestId,
+        // The workbench's look is this computer's person's own: a browser session from this computer, signed in as
+        // this computer's local owner, or as the one person of a single-person install (view-tools.ts).
+        ...(viewAllowed(request, who) ? { view: viewRunner } : {}), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // Lost a race to another turn of this person's between deciding and admission: it waits instead of being refused.
           if (!outcome.ok && "refused" in outcome && (outcome.refused === "concurrent" || outcome.refused === "backlog") && queueIt().kind === "queued") {
@@ -1507,5 +1511,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
     "chat.file": chatFile,
     "chat.ack-send": chatAckSend,
   });
+  // (Last in this factory: chatSend reads them per request, after it is built.)
+  /** Whether this request may restyle the workbench: from this computer, by this computer's own person. */
+  const viewRunner = options.viewRunner ?? binaryViewRunner();
+  const viewAllowed = (request: import("node:http").IncomingMessage, who: { name: string; via: string; authority?: string }): boolean =>
+    viewAllowedFor({ via: who.via, ...(who.authority === undefined ? {} : { authority: who.authority }), name: who.name,
+      fromThisComputer: runtime.fromThisComputer(request), approvers: store.listApprovers().map(one => one.name) });
   return { registrations, chatFirstRun, phoneCard, chatProjectOf, beginLiveTurn, endLiveTurn, noteLead, takeLeadNote, demoResultView, storeChatKey, forgetChatKey, sweepChatDrafts, runChatTurn, chatHomeOf, firstTasksFor, approverCandidateCount, evictOldestCandidate };
 }

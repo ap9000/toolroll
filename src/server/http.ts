@@ -138,6 +138,8 @@ export type ServeOptions = {
   /** Subscription-backed mate transport; injected in tests so no real
    * Codex or Claude membership turn is consumed. */
   subscriptionChatRunner?: SubscriptionLeadRunner;
+  /** Tests: how the workbench's look is read and changed (view-tools.ts); production runs the checked workbench binary. */
+  viewRunner?: import("../view-tools.js").ViewRunner;
   /** Tests: stands in for `codex mcp list --json` in the project (the Tools page's "Found on this computer"). */
   codexToolList?: (cwd: string) => Promise<string | null>;
   /** Tests: the home whose ~/.toolroll (or older ~/.standing-orders) tool-secrets and ~/.claude.json the Tools page uses. */
@@ -184,6 +186,9 @@ export type ServeOptions = {
    * how often they run and ask this computer's agents again. */
   backgroundChecks?: boolean;
   backgroundChecksMs?: number;
+  /** Injected by tests: told after each background pass has finished, every check it started included, so a test waits
+   * for passes (a fact), never for a stretch of time. */
+  onBackgroundPass?: () => void;
   /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
   folderLook?: FolderLookRunner;
   folderLookMs?: number;

@@ -91,11 +91,20 @@ pub fn inside(r: Rect) -> Rect {
 /// `line` widened to `w` cells with `band` behind every cell (a raised block's row, a selected row, a changed line).
 pub fn band(line: Line<'static>, w: usize, band: Style) -> Line<'static> {
     let used = line.width();
+    // The selected row: every word on it in the selection's own ink (theme.rs DRAWN_PAIRS checks only that pair), so a
+    // colour that reads on the sheet can never vanish on the selection. A word on its own background (a badge) keeps it.
+    let selection = theme::fills() && band == theme::selected();
     let mut spans: Vec<Span<'static>> = line
         .spans
         .into_iter()
         // A span's own background (a changed word) wins; elsewhere the band's.
-        .map(|s| Span::styled(s.content, band.patch(s.style)))
+        .map(|s| {
+            let mut style = s.style;
+            if selection && style.bg.is_none() {
+                style.fg = band.fg;
+            }
+            Span::styled(s.content, band.patch(style))
+        })
         .collect();
     if used < w {
         spans.push(Span::styled(" ".repeat(w - used), band));

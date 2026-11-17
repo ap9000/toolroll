@@ -77,7 +77,7 @@ actions! {
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
     PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
-    JumpBack = "jump-back", Global, Move, "Back to where you were before jumping", ["'"];
+    JumpBack = "jump-back", Global, Move, "Back to where each jump left from (again right away: forward)", ["'"];
     Search = "search", Global, Act, "Search this pane (Live, Steps, Diff, Terminal)", ["/"];
     OpenInEditor = "open-in-editor", Global, Act, "Open this pane's text in your $EDITOR", ["ctrl-e"];
     Palette = "palette", Global, Act, "Every action, task, project and setting", [":", "ctrl-k"];
@@ -294,7 +294,7 @@ fn help_words(a: Action) -> Option<&'static str> {
         Action::Stop => "Stop the build, or its retries",
         Action::SendBack => "Send back with a note; retry if failed",
         Action::TakeOver => "Take over: a terminal on the build",
-        Action::JumpBack => "Back to where you were",
+        Action::JumpBack => "Jump back (again: forward)",
         Action::Search => "Search this pane",
         Action::OpenInEditor => "Open this pane in $EDITOR",
         Action::Equalize => "Even splits, usual list width",

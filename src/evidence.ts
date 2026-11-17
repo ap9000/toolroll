@@ -815,19 +815,21 @@ export function storeHandoffArtifact(
  * ordinary source line matches by accident; generic "password=" shapes
  * are deliberately absent — test fixtures would drown the signal.
  */
+// A key whose alphabet has "-" may end with one (base64url): it ends at a word boundary, or where its alphabet does
+// (a plain `\b` misses "AIza…-" followed by a space, since "-" and " " are both non-word).
 export const SECRET_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
   { name: "private-key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { name: "aws-access-key", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
   { name: "github-token", pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b|github_pat_[A-Za-z0-9_]{22,}/ },
-  { name: "slack-token", pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { name: "slack-token", pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?:\b|(?![\w-]))/ },
   { name: "npm-auth-token", pattern: /_authToken\s*=\s*[^\s$][^\s]*/ },
-  { name: "openai-key", pattern: /\bsk-[A-Za-z0-9_-]{32,}\b/ },
+  { name: "openai-key", pattern: /\bsk-[A-Za-z0-9_-]{32,}(?:\b|(?![\w-]))/ },
   // v99: the other keys a team pastes most.
   { name: "stripe-key", pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b|\bwhsec_[A-Za-z0-9]{24,}\b/ },
-  { name: "google-api-key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
-  { name: "gitlab-token", pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/ },
-  { name: "telegram-bot-token", pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/ },
-  { name: "discord-bot-token", pattern: /\b[MN][A-Za-z\d]{23,25}\.[\w-]{6}\.[\w-]{27,}\b/ },
+  { name: "google-api-key", pattern: /\bAIza[0-9A-Za-z_-]{35}(?:\b|(?![\w-]))/ },
+  { name: "gitlab-token", pattern: /\bglpat-[A-Za-z0-9_-]{20,}(?:\b|(?![\w-]))/ },
+  { name: "telegram-bot-token", pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{33}(?:\b|(?![\w-]))/ },
+  { name: "discord-bot-token", pattern: /\b[MN][A-Za-z\d]{23,25}\.[\w-]{6}\.[\w-]{27,}(?:\b|(?![\w-]))/ },
   { name: "password-in-url", pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s:@/]{3,}@[^\s/]/i },
   // T2 review: a PuTTY private key's first line, and an AWS secret key assigned on its own (its 40 characters).
   { name: "putty-private-key", pattern: /PuTTY-User-Key-File-\d+:/ },

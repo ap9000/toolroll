@@ -107,7 +107,9 @@
     "propose_scope": [{ "task": "t-42", "goal": "Rename the link and add a redirect.", "not": "", "touches": ["src/footer.tsx"], "acceptance": [{ "id": "c1", "statement": "Old links redirect", "evidence": ["check"], "how": null }] }],
     "propose_agents": [{ "task": "t-42", "size": "large", "why": "It touches billing." }, { "task": "t-42", "role": "builder", "agent": { "provider": "claude", "model": "opus" } }, { "task": "t-42", "role": "repair", "clear": true }, { "task": "t-42", "size": "small", "risky": false }],
     "propose_answer": [{ "decision": 1, "option": "a", "rationale": "The reversible one first." }],
-    "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }]
+    "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }],
+    "toolroll_view_read": [{}],
+    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8" }, "use": true } }, { "colors": { "muted": "#a39d8f" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }]
   },
   "gateway": {
     "get_project_context": [{ "repo": "/repo/demo", "query": "footer" }, { "repo": "/repo/demo", "query": "src/serve.ts", "mode": "impact" }],

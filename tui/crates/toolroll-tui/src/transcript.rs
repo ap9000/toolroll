@@ -348,7 +348,8 @@ pub fn lines(t: &Transcript, width: usize, from: usize) -> Vec<Line<'static>> {
 /// A card of steps: its head, then its lines two columns in, on a raised block a row taller than its words (without
 /// fills: the head, the lines indented, and a blank line after).
 fn card(out: &mut Vec<Line<'static>>, head: String, lines: Vec<Line<'static>>, width: usize) {
-    let fills = crate::theme::fills();
+    // Laid out whole (an export): no raised block, so nothing is padded out to the width.
+    let fills = crate::theme::fills() && width < crate::view::EXPORT_WIDTH;
     let raised = crate::theme::raised();
     let pad = |l: Line<'static>| -> Line<'static> {
         let mut spans = vec![Span::raw("  ")];

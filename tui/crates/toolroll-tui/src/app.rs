@@ -449,6 +449,33 @@ pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
     }
 }
 
+/// tui.toml is looked at every this many ticks (a second).
+pub const SETTINGS_EVERY: u64 = 4;
+
+/// What says tui.toml changed: its length, modification time (nanoseconds), device and inode; zeros when it isn't there.
+pub type SettingsSig = (u64, i128, u64, u64);
+
+/// tui.toml's signature now (never following a link: a link is read, and refused, by the reader).
+pub fn settings_sig(path: &std::path::Path) -> SettingsSig {
+    let Ok(m) = std::fs::symlink_metadata(path) else {
+        return (0, 0, 0, 0);
+    };
+    let at = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let (dev, ino) = (0, 0);
+    (m.len(), at, dev, ino)
+}
+
 /// What a list row says about where its task stands (unread: any change of it you didn't see). Its age and other
 /// clocks are left out: time passing is no news.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,11 +549,16 @@ pub struct Transcript {
 /// The Live tab's laid-out lines: for which transcript version, width and first record, and when.
 pub struct LineCache {
     pub version: u64,
+    /// The look the lines were coloured with: a new theme (a reload of tui.toml, `t`) lays them out again.
+    pub look: (crate::theme::Theme, crate::theme::Glyphs),
     pub width: usize,
     pub from: usize,
     pub built: std::time::Instant,
     pub lines: Vec<ratatui::text::Line<'static>>,
 }
+
+/// How many places jump-back (') remembers.
+pub const JUMPS_KEPT: usize = 20;
 
 /// What the loop does for an update.
 #[derive(Debug, Clone, PartialEq)]
@@ -798,8 +830,10 @@ pub struct App {
     pub divider_down: Option<std::time::Instant>,
     /// Finished, failed or answered tasks not opened since (shown marked, counted in the top bar).
     pub unread: std::collections::BTreeSet<String>,
-    /// Where a needs-you jump left from (jump-back returns there).
-    pub jump_from: Option<String>,
+    /// Where each needs-you jump (! or @) left from, newest last, at most JUMPS_KEPT: jump-back (') returns there.
+    pub jumps: Vec<String>,
+    /// After a jump back: (where it came from, where it landed). ' pressed again while still there goes forward.
+    pub jump_forward: Option<(String, String)>,
     /// The search last made in this pane (its query stays lit after Enter until Esc).
     pub search: Option<crate::search::Search>,
     /// The dialog drawn in the last frame, as `dialog_key` names it (view.rs sets it each frame; None when no dialog
@@ -836,6 +870,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// What tui.toml looked like when last read (watch_settings): its size, time and file, None before the first look.
+    pub settings_sig: Option<SettingsSig>,
     /// A task just filed here: selected once the work list lists it (its detail shown).
     pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
@@ -925,7 +961,8 @@ impl App {
             live_head_lines: 0,
             divider_down: None,
             unread: std::collections::BTreeSet::new(),
-            jump_from: None,
+            jumps: vec![],
+            jump_forward: None,
             search: None,
             drawn_dialog: None,
             owned,
@@ -945,6 +982,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            settings_sig: None,
             filed: None,
             said_for: None,
             status_stale: false,
@@ -1836,6 +1874,10 @@ impl App {
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        // tui.toml looked at once a second: a change (its size, time or file) is read again, strictly, and said.
+        if self.ticks.is_multiple_of(SETTINGS_EVERY) {
+            self.watch_settings();
+        }
         // A status line about a task that has since moved on: gone as soon as it is no longer held.
         if self.status_stale && !self.status_held() {
             self.status = None;
@@ -1878,6 +1920,29 @@ impl App {
         fx.extend(gathered);
         fx.extend(fast);
         fx
+    }
+
+    /// tui.toml changed on disk (another editor, or the person's lead through `toolroll-tui view set`): read again with
+    /// the same strict reader; a bad file keeps the last good settings and says why.
+    pub fn watch_settings(&mut self) {
+        let Some(path) = self.prefs.path.clone() else {
+            return;
+        };
+        let now = settings_sig(&path);
+        match self.settings_sig {
+            None => self.settings_sig = Some(now),
+            Some(was) if was == now => {}
+            Some(_) => {
+                self.settings_sig = Some(now);
+                match self.prefs.reload() {
+                    Ok(words) => {
+                        self.line_cache = None;
+                        self.say(Tone::Said, words);
+                    }
+                    Err(why) => self.say(Tone::Refused, why),
+                }
+            }
+        }
     }
 
     /// While a status line about the selected task shows ("Building it."), that task is read every FAST_READ, for at
@@ -2813,17 +2878,7 @@ impl App {
             }
             Action::NextNeedsYou => self.next_needs_you(true),
             Action::PreviousNeedsYou => self.next_needs_you(false),
-            Action::JumpBack => match self.jump_from.take() {
-                Some(id) if self.all_items.iter().any(|i| i.id == id) => {
-                    self.jump_from = self.selected_id();
-                    self.say(Tone::Said, "Back where you were.");
-                    self.show_task(&id)
-                }
-                _ => {
-                    self.say(Tone::Said, "Nowhere to go back to: jump with ! first.");
-                    vec![]
-                }
-            },
+            Action::JumpBack => self.jump_back(),
             Action::Search => match crate::search::pane_text(self) {
                 Some(_) => {
                     self.mode = Mode::Search(crate::search::Search {
@@ -2839,7 +2894,8 @@ impl App {
                     vec![]
                 }
             },
-            Action::OpenInEditor => match crate::search::pane_text(self) {
+            // The whole text, not the drawn one: nothing cut to the pane's width, no key hints, no rules.
+            Action::OpenInEditor => match crate::search::export_text(self) {
                 Some((name, lines)) if !lines.is_empty() => {
                     let mut text = lines.join("\n");
                     text.push('\n');
@@ -3313,6 +3369,37 @@ impl App {
     }
 
     /// `!`: the next thing waiting on you, oldest first, round and round (the filter set aside when it hides it).
+    /// ' : back to where the newest jump left from. Pressed again right after (still on the place it landed), forward
+    /// to where it came from: like vim's '', the two places swap. Places no longer listed are skipped.
+    fn jump_back(&mut self) -> Vec<Effect> {
+        let here = self.selected_id();
+        if let Some((from, landed)) = self.jump_forward.take() {
+            if here.as_deref() == Some(landed.as_str())
+                && self.all_items.iter().any(|i| i.id == from)
+            {
+                self.jumps.push(landed.clone());
+                if self.jumps.len() > JUMPS_KEPT {
+                    self.jumps.remove(0);
+                }
+                self.jump_forward = None;
+                self.say(Tone::Said, "Forward again.");
+                return self.show_task(&from);
+            }
+        }
+        while let Some(id) = self.jumps.pop() {
+            if Some(&id) == here.as_ref() || !self.all_items.iter().any(|i| i.id == id) {
+                continue;
+            }
+            if let Some(here) = here {
+                self.jump_forward = Some((here, id.clone()));
+            }
+            self.say(Tone::Said, "Back where you were.");
+            return self.show_task(&id);
+        }
+        self.say(Tone::Said, "Nowhere to go back to: jump with ! first.");
+        vec![]
+    }
+
     fn next_needs_you(&mut self, forward: bool) -> Vec<Effect> {
         let mut waiting: Vec<(usize, &Item)> = self
             .all_items
@@ -3337,10 +3424,17 @@ impl App {
             (None, true) => 0,
             (None, false) => ids.len() - 1,
         };
-        // Where this jump left from (not a needs-you task itself): jump-back returns there. The list's order stays.
-        if at.is_none() {
-            self.jump_from = here;
+        // Where this jump left from, whatever it was (a needs-you task too): jump-back returns there. The list's
+        // order stays.
+        if let Some(here) = here {
+            if self.jumps.last() != Some(&here) {
+                self.jumps.push(here);
+            }
+            if self.jumps.len() > JUMPS_KEPT {
+                self.jumps.remove(0);
+            }
         }
+        self.jump_forward = None;
         let id = ids[next].clone();
         let fx = self.show_task(&id);
         let words = format!("{} of {} waiting on you.", next + 1, ids.len());

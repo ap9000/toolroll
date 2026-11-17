@@ -388,6 +388,7 @@ import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js
 import { ruleHoldOf } from "./route-store.js";
 import { wasInterrupted } from "./run-ending.js";
 import { loginFileOf, migrateLegacyLogin, removeStaleSavedLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
+import { runWords } from "./needs-you.js";
 
 export type Write = (line: string) => void;
 
@@ -10203,10 +10204,12 @@ function showTask(positional: readonly string[], context: Context): number {
     ...taskRouteStandingLines(id, routed, detail.dispatch?.summary === NO_AGENT_TITLE),
     // Provenance per run (v47): the actual provider and model each phase
     // spent as, and the route it spent under.
+    // Each build said as the task's attempt, with the console's id beside it ("attempt 3 (build #4)"), as the workbench,
+    // the task page and the lead say it; a run that isn't a build (a plan, a review) keeps its id alone.
     ...detail.runs
       .filter(one => one.route !== null)
       .slice(0, 8)
-      .map(one => `  build #${one.id}  ${one.role.padEnd(8)} ${one.route!.provider}${one.route!.model === null ? "" : ` · ${one.route!.model}`}  [${one.route!.chosen}]`),
+      .map(one => `  ${runWords(detail.runs, one.id)}  ${one.role.padEnd(8)} ${one.route!.provider}${one.route!.model === null ? "" : ` · ${one.route!.model}`}  [${one.route!.chosen}]`),
   ]);
 }
 

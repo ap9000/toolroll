@@ -2,6 +2,8 @@
 //! by the real client with the session's cookie, form token and mutation key, the console recording every act. Notes
 //! are never sent by moving around; Send back with notes posts exactly the notes the dialog drew; Accept with notes saves
 //! them then completes; a context answer that comes back after the file changed is dropped.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -76,6 +78,7 @@ async fn pump(app: &mut App, client: &Client, fx: Vec<Effect>) {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 
