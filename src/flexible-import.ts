@@ -4,8 +4,9 @@
  * thread's committed work enters the project's repository, and nothing else does.
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` before it
- *   reads or writes anything.
+ * - Nothing here checks the interactive agent threads' switch (flexible-available.ts): inspecting a thread's candidate
+ *   and the quarantined import of it are a person's recovery of past work, allowed while threads are off. What grants
+ *   anything after it (arming a Ship, its merge) checks the switch in its own transaction (flexible-ship.ts).
  * - Toolroll does it, never the agent, and the thread's repository is attacker input: no git ever runs in it, so its
  *   config, hooks, attributes and refs-by-command are never read. Toolroll reads the thread's branch tip from its ref
  *   file (or packed-refs) as plain bytes, proves the thread's objects folder is the plain folder it made (no link
@@ -39,7 +40,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { flexibleThread, flexibleThreadBranch, flexibleThreadPaths, withFlexibleThreadLock, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
 import { readProjectRefs, refsChangedOutside, refSnapshotOf, saveRefSnapshot } from "./flexible-refs.js";
@@ -364,7 +364,6 @@ async function changedEntries(read: Git, repo: string, base: string, candidate: 
  * descending from the base. */
 export async function readFlexibleCandidate(store: Store, input: { thread: string; runner?: Runner; limits?: Partial<FlexibleImportLimits> }):
   Promise<{ ok: true; candidate: string; base: string; changedPaths: string[] } | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const limits = limitsOf(input.limits);
   const deadline = Date.now() + limits.importMs;
   const source = sourceOf(store, input.thread, limits, deadline);
@@ -624,7 +623,6 @@ export async function importFlexibleCandidate(store: Store, input: { thread: str
   /** A test seam (a parameter, never a setting): tighter limits than FLEXIBLE_IMPORT_LIMITS. */
   limits?: Partial<FlexibleImportLimits> }):
   Promise<FlexibleImported | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const locked = await withFlexibleThreadLock(input.thread, () => guarded(() => importLocked(store, input)));
   if (locked.ok === false && (locked.reason === "not-available" || locked.reason === "thread-unknown")) return pre(locked.reason);
   return locked as FlexibleImported | FlexibleImportRefusal;
@@ -704,7 +702,6 @@ async function importLocked(store: Store, input: { thread: string; seq: number; 
  */
 export async function removeFlexibleImportRefs(store: Store, input: { thread: string; seq: number; candidate: string; branchBefore: string | null; runner?: Runner }):
   Promise<{ ok: true } | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const locked = await withFlexibleThreadLock(input.thread, async (): Promise<{ ok: true } | FlexibleImportRefusal> => {
     const thread = flexibleThread(store, input.thread);
     if (thread === null) return pre("thread-unknown");
@@ -732,7 +729,6 @@ export async function removeFlexibleImportRefs(store: Store, input: { thread: st
  * never anything newer.
  */
 export async function flexibleTaskBranch(store: Store, input: { thread: string; branch: string; at: string; make: boolean; runner?: Runner }): Promise<boolean> {
-  if (!FLEXIBLE_AVAILABLE) return false;
   const thread = flexibleThread(store, input.thread);
   if (thread === null || !SHA.test(input.at) || !/^toolroll\/flexible-[0-9a-f]{32}$/.test(input.branch)) return false;
   let project: string;
@@ -752,7 +748,6 @@ export async function flexibleTaskBranch(store: Store, input: { thread: string; 
  */
 export async function settleInterruptedImport(store: Store, input: { thread: string; seq: number; candidate: string; branchBefore: string | null; runner?: Runner }):
   Promise<{ ok: true; importRef: "removed" | "absent" | "moved"; branch: "restored" | "untouched" | "moved" } | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const thread = flexibleThread(store, input.thread);
   if (thread === null) return pre("thread-unknown");
   if (!SHA.test(input.candidate) || (input.branchBefore !== null && !SHA.test(input.branchBefore))) return refused("unreadable");

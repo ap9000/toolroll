@@ -4,8 +4,9 @@
  * launch runs in.
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false (flexible-available.ts): every entry point refuses with
- *   `not-available` before it reads or writes anything.
+ * - Making, fencing or spawning a thread checks the interactive agent threads' switch (flexible-available.ts
+ *   flexibleAvailable: off unless a person turned them on) first and refuses `not-available` before it reads or writes
+ *   anything; stopping and removing never check it.
  * - A thread never writes the person's repository. Toolroll (outside any fence, with the hardened git runner) makes
  *   `<state>/threads/<id>/repo`: a fresh repository, not a worktree, with no remotes, whose objects/info/alternates
  *   names the project's real `objects` folder, on branch `toolroll/code-<id>` at the recorded base. Its new objects
@@ -31,7 +32,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { buildCacheEnv, fenceFor, FLEXIBLE_THREADS_DIR, grantFolder, PROTECTED_DIRS, PROTECTED_FILES, runFolders, srtTermsOf, type FenceGrants, type LaunchFence, type TaskBoundary } from "./agent-fence.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
@@ -43,7 +44,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, holdLaunch, recordGateShut, recordLaunchOpened, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, reserveLaunchOpen, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
@@ -234,7 +235,7 @@ export async function prepareFlexibleThread<R extends { ok: false; reason: strin
   /** Told when making the repository fails after `reserve` (before the record ends failed): what was reserved is given back. */
   release?: (id: string, why: string) => void }):
   Promise<{ ok: true; thread: FlexibleThreadRow; paths: FlexibleThreadPaths } | FlexibleThreadRefusal | R> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
   if (!projectRowKnown(store, input.repo)) return refuse("not-a-project");
@@ -314,7 +315,6 @@ export async function prepareFlexibleThread<R extends { ok: false; reason: strin
  * nothing is removed until the whole tree's exit is verified (F2c custody).
  */
 export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   // The thread's lock (withThreadLock), taken before anything else: a launch admitted, probed and spawned under it is
   // wholly before this removal (whose check then sees its process) or wholly after it (and finds the thread gone).
@@ -448,7 +448,7 @@ function threadReadOnly(paths: FlexibleThreadPaths): string[] {
  */
 export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInput):
   { ok: true; launch: LaunchFence; paths: FlexibleThreadPaths; thread: FlexibleThreadRow } | FlexibleThreadRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const network = input.network;
   if (!Number.isSafeInteger(network.proxyPort) || network.proxyPort < 1 || network.proxyPort > 65_535 || typeof network.token !== "string" || network.token === "") return refuse("network-required");
   if (network.relayPort !== undefined && (!Number.isSafeInteger(network.relayPort) || network.relayPort < 1 || network.relayPort > 65_535 || network.relayPort === network.proxyPort)) return refuse("network-required");
@@ -590,7 +590,6 @@ function withThreadLock<T>(id: string, work: () => Promise<T>, timeoutMs?: numbe
  * so a level change and a turn start are wholly before or wholly after each other. `timeoutMs`: give up (throw) when
  * another holder keeps it that long; absent, the lock's own wait. */
 export async function withFlexibleThreadLock<T>(id: string, work: () => Promise<T>, timeoutMs?: number): Promise<T | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(id)) return refuse("thread-unknown");
   return withThreadLock(id, work, timeoutMs);
 }
@@ -628,9 +627,11 @@ export type FlexibleThreadSpawnInput = FlexibleThreadLaunchInput & { proxyEnv: R
   /** What the agent's own adapter adds to the thread's environment (its relay and its configuration folder); never
    * replaces a variable the thread's environment already sets. */
   agentEnv?: Record<string, string>;
-  /** Run under the thread's lock after the launch is registered and immediately before its start gate opens: a reason to
-   * keep the gate shut (the caller's authority or level no longer holds), or null. */
-  beforeOpen?: () => string | null;
+  /** Required: run under the thread's lock after the launch is registered, inside the launch's final reservation
+   * transaction (flexible-launch.ts reserveLaunchOpen, which reads the interactive agent threads switch in the same
+   * transaction) immediately before its start gate opens: a reason to keep the gate shut (the caller's turn, authority or
+   * level no longer holds), or null. */
+  beforeOpen: () => string | null;
   /** What the agent's adapter adds once the launch has its id (its relay grant, bound to exactly this launch): run after
    * the launch is recorded, before the spawn; never replaces a variable already set. */
   agentEnvFor?: (launchId: string) => Record<string, string> };
@@ -648,7 +649,7 @@ export type FlexibleThreadSpawned = { ok: true; pid: number; launchId: string; l
  */
 export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadSpawnInput, file: string, args: readonly string[],
   platform: NodeJS.Platform = process.platform, seams: FlexibleThreadSpawnSeams = {}): Promise<FlexibleThreadSpawned | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   return withThreadLock(input.id, () => spawnLocked(store, input, file, args, platform, seams));
 }
@@ -712,22 +713,19 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     try { recordNeverStarted(store, record.id, `stopped before it ran: ${error instanceof Error ? error.message : String(error)}`); } catch { /* left spawning: settleLaunch ends it */ }
     return refuse("containment", "the agent's process couldn't be registered, so it was stopped before it ran");
   }
-  // At the moment of use: the caller's own re-check (its turn, its level, its authority), with the gate still shut.
+  // At the moment of use, with the gate still shut: one reservation transaction reads the interactive agent threads
+  // switch, runs the caller's own re-check (its turn, its level, its authority) and records the launch as opened. Any
+  // refusal, or a record that can't be written, keeps the gate shut for good.
   let shut: string | null;
-  try { shut = input.beforeOpen?.() ?? null; } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
+  try {
+    if (typeof input.beforeOpen !== "function") throw new Error("the start has no last re-check");
+    shut = reserveLaunchOpen(store, { launch: record.id, thread: input.id, turn: input.launch.turn, check: input.beforeOpen });
+  } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
   if (shut !== null) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
     stopUnopenedLaunch(child);
     recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
     return refuse("thread-not-ready", shut);
-  }
-  // The launch is recorded as opened before the gate opens: a record that can't be written keeps it shut.
-  try { recordLaunchOpened(store, { launch: record.id, thread: input.id, turn: input.launch.turn }); }
-  catch {
-    try { child.stdin?.destroy(); } catch { /* already closed */ }
-    stopUnopenedLaunch(child);
-    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: "stopped before it ran: its launch couldn't be recorded" });
-    return refuse("thread-not-ready", "its launch couldn't be recorded");
   }
   child.stdin!.write("start\n");
   return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };
@@ -743,7 +741,6 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
 export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string; holderGone?: boolean;
   /** Only this launch of this holder (rechecked under the thread's lock; another one there is left alone). */
   expect?: { launch: string; holder: string } }): Promise<SettleResult | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   return withThreadLock(input.id, async () => {
     const state = stateFolderOf(store);
@@ -762,7 +759,7 @@ export async function stopFlexibleThreadAgent(store: Store, input: { id: string;
  * it runs inside an outer sandbox the runtime makes (F2c).
  */
 export function flexibleThreadCodexProfile(store: Store, input: FlexibleThreadLaunchInput): FlexibleThreadRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   void store; void input;
   return refuse("codex-unsupported");
 }

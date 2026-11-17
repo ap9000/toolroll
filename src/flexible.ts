@@ -5,8 +5,9 @@
  * start makes at the moment of use (F2 calls it inside the transaction that starts the thread).
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false (flexible-available.ts): every writer and the delegation
- *   check refuse with `not-available`.
+ * - Turning terms on, the delegation check and the settings view check the interactive agent threads' switch
+ *   (flexible-available.ts flexibleAvailable: off unless a person turned them on) first and refuse with
+ *   `not-available`; lowering and turning off never do (they only narrow).
  * - Turning it on is a person's password ceremony (a password typed now or a one-use identity-provider re-check), by
  *   any approver who can approve work in the project. The terms are rebuilt from Toolroll's own records inside the
  *   write transaction and must hash to exactly the digest the person was shown; otherwise nothing is written.
@@ -22,7 +23,7 @@
  */
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical-json.js";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import type { PermissionLevel } from "./policy.js";
 import type { Store } from "./store.js";
 
@@ -251,7 +252,8 @@ export type FlexibleRefusalReason =
   | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-lower" | "stale-generation" | "not-a-starter" | "above-max";
 export type FlexibleRefusal = { ok: false; reason: FlexibleRefusalReason; message: string };
 
-export const FLEXIBLE_UNAVAILABLE = "Flexible projects aren't available in this version. Nothing changed.";
+/** Said by every Flexible surface while interactive agent threads are off (flexible-available.ts). */
+export const FLEXIBLE_UNAVAILABLE = "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`.";
 const WORDS: Readonly<Record<Exclude<FlexibleRefusalReason, "terms-lapsed">, string>> = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "not-an-approver": "Only an approver for this project can do that. Nothing changed.",
@@ -329,7 +331,7 @@ function insertRow(store: Store, row: { repo: string; terms: FlexibleTerms; sign
  */
 export function enableFlexible(store: Store, input: { repo: string; by: string; proof: string; choice?: FlexibleChoice; shownDigest: string; now: Date }):
   { ok: true; id: number; digest: string; terms: FlexibleTerms; replaced: boolean } | FlexibleRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (input.proof !== "password-now" && input.proof !== "sso-now") return refuse("proof-required");
   const proof = input.proof;
   return store.transact(() => {
@@ -355,7 +357,6 @@ export function enableFlexible(store: Store, input: { repo: string; by: string; 
  */
 export function lowerFlexible(store: Store, input: { repo: string; by: string; max: FlexibleLevel; now: Date }):
   { ok: true; changed: boolean; digest: string; terms: FlexibleTerms } | FlexibleRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!isFlexibleLevel(input.max)) return refuse("invalid-choice");
   return store.transact(() => {
     if (approverHere(store, input.by, input.repo) === null) return refuse("not-an-approver");
@@ -381,7 +382,6 @@ export function lowerFlexible(store: Store, input: { repo: string; by: string; m
 /** Turn a project's Flexible off: any approver of the project, one step. Ends whatever terms are live, unreadable or
  * lapsed ones included, in one write transaction. */
 export function turnFlexibleOff(store: Store, input: { repo: string; by: string; now: Date }): { ok: true; changed: boolean } | FlexibleRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   return store.transact(() => {
     if (approverHere(store, input.by, input.repo) === null) return refuse("not-an-approver");
     const live = store.handle.prepare("SELECT id FROM flexible_terms WHERE repo = ? AND ended_at IS NULL").get(input.repo);
@@ -438,7 +438,7 @@ export function endLapsedFlexible(store: Store, which: { signer: string } | { re
  */
 export function flexibleDelegationAtUse(store: Store, input: { repo: string; starter: { name: string; generation: number }; digest: string; level: FlexibleLevel; freshProof: boolean }):
   { ok: true; termsId: number; digest: string; terms: FlexibleTerms } | FlexibleRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   return store.transact(() => {
     const standing = flexibleStanding(store, input.repo);
     if (standing.state === "secure") return refuse("not-flexible");
@@ -461,11 +461,15 @@ export function flexibleDelegationAtUse(store: Store, input: { repo: string; sta
 // ---- the settings page's view ---------------------------------------------------------------------------------------
 
 /** Settings → Project → How work starts: the standing, and the terms this person would sign now (or why they can't).
- * Undefined while this build doesn't offer Flexible, so no page draws it. */
+ * A read, so never blocked by interactive agent threads' switch: while it is off, a project with terms still shows them
+ * with Lower and Turn off (turning something down is never blocked) and no way to turn them on; a project with none
+ * shows nothing (undefined). */
 export type FlexibleSettingsView = { repo: string; standing: FlexibleStanding; proposal: { terms: FlexibleTerms; digest: string } | { problem: string }; canChange: boolean };
 export function flexibleSettingsView(store: Store, repo: string, viewer: { name: string; canChange: boolean }): FlexibleSettingsView | undefined {
-  if (!FLEXIBLE_AVAILABLE) return undefined;
-  const proposed = viewer.canChange ? proposedFlexibleTerms(store, repo, viewer.name) : refuse("not-an-approver");
-  return { repo, standing: flexibleStanding(store, repo), canChange: viewer.canChange,
+  const standing = flexibleStanding(store, repo);
+  const on = flexibleAvailable(store);
+  if (!on && standing.state === "secure") return undefined;
+  const proposed = !on ? refuse("not-available") : viewer.canChange ? proposedFlexibleTerms(store, repo, viewer.name) : refuse("not-an-approver");
+  return { repo, standing, canChange: viewer.canChange,
     proposal: proposed.ok ? { terms: proposed.terms, digest: proposed.digest } : { problem: proposed.message.replace(/ Nothing changed\.$/, "") } };
 }

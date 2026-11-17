@@ -69,7 +69,7 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // install is solo (server/terminals.ts reads solo and the local sign-in again at every proof and right before the
   // program starts). A shell for the person already at this computer; it grants no credential and widens no way in.
   "take-over",
-  // Flexible threads (pre-enable; refused while Flexible isn't available): the laptop owner's yes to a thread's terms card
+  // Flexible threads (refused while interactive agent threads are off): the laptop owner's yes to a thread's terms card
   // (flexible-start.ts), the thread starting under the project's signed Flexible terms. It grants nothing those terms
   // don't (a start above their password-free level still needs this proof); the start (engine-api.ts threadStart)
   // checks this exact act.
@@ -90,6 +90,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Settings → General's task sizing (task-sizing.ts): whether a quick model call on the owner's own plan sizes new tasks
   // before the yes. It grants no access and approves nothing; the handler checks this exact act inside its write.
   "task-sizing-switch",
+  // Settings → General's interactive agent threads (beta; flexible-available.ts): whether threads may start at all. It
+  // starts nothing and approves nothing (each thread still needs its project's Flexible terms and its own terms card);
+  // the handler checks this exact act inside its write.
+  "flexible-switch",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

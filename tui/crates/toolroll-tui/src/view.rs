@@ -1455,21 +1455,26 @@ fn new_thread_hint(app: &App, w: usize) -> Line<'static> {
         .and_then(|p| std::path::Path::new(p).file_name())
         .map(|n| clean(&n.to_string_lossy()))
         .unwrap_or_else(|| "no project".into());
-    let mut spans = vec![Span::styled("In ", dim()), Span::styled(project, ink())];
-    if let Some(agent) = app
-        .agents
-        .as_ref()
-        .and_then(|a| a.first_task.as_ref())
-        .map(|t| clean(&t.name))
-    {
-        spans.push(Span::styled(" · with ", dim()));
-        spans.push(Span::styled(agent, ink()));
+    // Threads run Claude Code only for now, whoever takes this computer's tasks: said whole when it fits, never cutting
+    // what Enter does.
+    let later = " · Codex threads come later";
+    let enter = format!(" · {} shows its terms first", marks().enter);
+    let fits = 3
+        + project.chars().count()
+        + " · with Claude Code".len()
+        + later.chars().count()
+        + enter.chars().count()
+        <= w;
+    let mut spans = vec![
+        Span::styled("In ", dim()),
+        Span::styled(project, ink()),
+        Span::styled(" · with ", dim()),
+        Span::styled("Claude Code", ink()),
+    ];
+    if fits {
+        spans.push(Span::styled(later, dim()));
     }
-    spans.push(Span::styled(" · ", dim()));
-    spans.push(Span::styled(
-        format!("{} shows its terms first", marks().enter),
-        dim(),
-    ));
+    spans.push(Span::styled(enter, dim()));
     fit_line(Line::from(spans), w)
 }
 
@@ -3049,6 +3054,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             app.prefs.screen(
                 (area.width as usize).saturating_sub(8).min(88),
                 app.settings_row,
+                app.threads.answered.then_some(!app.threads.off),
             ),
         ),
         Mode::Quit => (

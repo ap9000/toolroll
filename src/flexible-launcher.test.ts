@@ -1,6 +1,6 @@
 /**
- * The console's launcher for a Flexible thread's network and storage (flexible-launcher.ts), with the constant mocked on
- * (tests only, vi.mock; the build's is false and flexible-disabled.test.ts proves nothing here runs then): the thread's
+ * The console's launcher for a Flexible thread's network and storage (flexible-launcher.ts), with the switch mocked on
+ * (tests only, vi.mock; the default is off and flexible-disabled.test.ts proves nothing here runs then): the thread's
  * network from Toolroll's records (never a provider host, never local services); the launch's own proxy started after
  * the storage check, and closed exactly once however it ends: the agent stopped (its tree verified gone), its exit, a
  * stop seen from elsewhere, the console stopping, or a turn that launches nothing. Real loopback proxies; fake
@@ -29,7 +29,7 @@ import { randomBytes } from "node:crypto";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
 const tid = (k: number) => k.toString(16).padStart(32, "0");

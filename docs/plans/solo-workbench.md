@@ -114,12 +114,16 @@ the terminal with keys kept out of the agent).
 batches (owner's yes for each). Solo mode defaults to Flexible only when all seven gates + F0 + Ship arm + a kill switch
 + a stranger test on Flexible pass. Flexible stays in one worktree off the release path until then.
 
-**Flexible enable gates (status 2026-11-15; the full list is in src/flexible-available.ts).** Built behind the constant:
-F2a–F2e, F3, F4 (in review), and the pre-enable pieces — the console's launcher (each launch's own run proxy and storage
-check), the start's terms card bound by its key (the laptop owner starts as its own local-owner act), and the thread view
-woken on change instead of polled. Left before the constant flips: the F0 real-model matrix (the owner's yes per batch),
-Claude's stdio permission channel proved (F0 row H), Codex threads inside the srt fence, the bubblewrap attack runs green
-in CI, the import's quarantine proved against the real sandbox, the F5 CLI, and the docs.
+**Flexible enable gates (status 2026-11-16; the full list is in src/flexible-available.ts).** The compile-time
+constant is gone: Settings → General's "Interactive agent threads (beta)" switch (flexible_setting, schema v171; CLI
+`toolroll config set flexible on|off`) turns threads on, off by default including on upgraded installs, an instance
+operator's ordinary step-up (a solo session stands in, a team needs the password, never a token). Claude Code only;
+Codex threads are refused. Every entry point that starts something new checks it (the thread start again inside its
+recording transaction, the relay inside each call's reservation); turned off mid-thread, the relay refuses the next
+call and the console's upkeep stops the agent. Built: F2a–F2e, F3, F4, the console's launcher, the start's terms card
+and the woken thread view. Left before a later slice flips the default on for solo installs: the F0 real-model matrix
+(the owner's yes per batch), Claude's stdio permission channel proved (F0 row H), Codex threads inside the srt fence,
+the bubblewrap attack runs green in CI, the import's quarantine proved against the real sandbox, and a stranger test.
 
 ## Cut / park
 The old Swift WKWebView app (a menu-bar notifier after launch, if wanted); row-level live deltas (B2b) unless the gated

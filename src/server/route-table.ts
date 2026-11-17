@@ -164,11 +164,11 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.approve": "approve-plan",
   "task.act.keep-grown": "approve-plan",
   "decision.answer": "answer-question",
-  // A thread's owner answers their own agent's request (F3; refused while Flexible isn't available).
+  // A thread's owner answers their own agent's request (F3; refused while interactive agent threads are off).
   "agents.live.thread.answer": "answer-question",
   // Starting a thread: the laptop owner's yes to the thread's terms card, at this computer (the Flexible plan v2 §3: the
   // local owner's act is a person's proof). engine-api.ts threadStart checks this exact act inside its proof; refused while
-  // Flexible isn't available.
+  // interactive agent threads are off.
   "agents.live.thread.start": "start-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
@@ -223,6 +223,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // Task sizing by a quick model call: an installation setting the laptop's owner may turn on or off (its handler proves
   // the step-up and this exact act inside its write).
   "settings.task-sizing": "task-sizing-switch",
+  // Interactive agent threads (beta): an installation setting the laptop's owner may turn on or off (its handler proves
+  // the step-up and this exact act inside its write).
+  "settings.flexible": "flexible-switch",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -438,10 +441,10 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
 // The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted exactly as the Live grid's reads.
-// A run now; a Flexible thread on the same road, refused while Flexible isn't available.
+// A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
 get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
-// Flexible threads (F3), all refused while Flexible isn't available: the person's own threads as the work list shows them,
+// Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.
 get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped", callers: ["cookie"], ...free });
 post("pages", "agents.live.thread.answer", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/answer$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/answer` });
@@ -630,7 +633,7 @@ post("settings", "settings.project-check-access", "/settings/project/check-acces
 post("settings", "settings.project-sandbox", "/settings/project/sandbox", { scope: "step-up", callers: ["cookie"] });
 // Flexible projects (flexible.ts, slice F1): an approver of the project, from a browser. Turning it on takes a typed
 // password over exactly the terms shown (the handler proves it as a credential act); lowering and turning off are one
-// click. While this build doesn't offer Flexible (FLEXIBLE_AVAILABLE) the handler refuses every post.
+// click. While interactive agent threads are off (flexible-available.ts) the handler refuses every post.
 post("settings", "settings.project-flexible", "/settings/project/flexible", { project: "form", callers: ["cookie"], ...approver("An approver for this project changes how its work starts.", "/settings/project") });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 // Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
@@ -648,6 +651,9 @@ post("settings", "settings.local-mode-off", "/settings/local-mode/off", { caller
 // Task sizing by a quick model call (task-sizing.ts): an instance operator's step-up from a browser (a solo session stands
 // in; a team needs the password), or the laptop owner's own act.
 post("settings", "settings.task-sizing", "/settings/task-sizing", { scope: "step-up", limited: "deny", ...operator("An instance operator chooses how tasks are sized.", "/settings/general?section=task-sizing") });
+// Interactive agent threads (beta; flexible-available.ts): an instance operator's step-up from a browser sign-in only
+// (a solo session stands in; a team needs the password; never a token), or the laptop owner's own act.
+post("settings", "settings.flexible", "/settings/flexible", { callers: ["cookie"], scope: "step-up", limited: "deny", ...operator("An instance operator turns interactive agent threads on or off.", "/settings/general?section=flexible") });
 post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.

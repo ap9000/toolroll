@@ -22,6 +22,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use toolroll_api::{LiveThreads, ThreadFacts, ThreadQuestion, ThreadRow};
 
+/// Said when `T` is pressed while the console says interactive agent threads are off.
+pub const THREADS_OFF: &str =
+    "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`.";
 /// Said when a thread's question changed (or was answered elsewhere) while its dialog was open.
 pub const THREAD_QUESTION_CHANGED: &str = "This question changed — look again.";
 /// Said when Enter is pressed before the dialog drew the end of what would be allowed.
@@ -42,8 +45,11 @@ pub type ThreadLook = (crate::theme::Theme, crate::theme::Glyphs);
 /// The threads the console listed, and the one being watched.
 #[derive(Debug, Default)]
 pub struct Threads {
-    /// The console said threads aren't available (Flexible is off): they are never asked for again.
+    /// The console's last answer said interactive agent threads are off (asked again with the next work read, so turning
+    /// them on in the browser or the CLI shows here).
     pub off: bool,
+    /// The console has answered at least once (on or off): until then the settings screen says it isn't known.
+    pub answered: bool,
     pub fetching: bool,
     pub rows: Vec<ThreadRow>,
     pub view: Option<ThreadView>,
