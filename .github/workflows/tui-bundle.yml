@@ -33,6 +33,9 @@ on:
       - "scripts/tui-build.mjs"
       - "scripts/tui-e2e.mjs"
       - "scripts/tui-bundle-smoke.mjs"
+      - "scripts/verify.mjs"
+      - "scripts/verify-world.mjs"
+      - "docs/feature-map.json"
       - "scripts/isolated-env.mjs"
       - "scripts/fixtures/pty-host.py"
       - ".github/workflows/publish.yml"
@@ -128,3 +131,12 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: node scripts/tui-bundle-smoke.mjs --out "$RUNNER_TEMP/tui-bundle"
+      # The runtime-verification command against this checkout's own bundled workbench: the unit shards have no Rust
+      # binary (the launcher would open the classic screen), so its live run belongs here.
+      - name: Runtime verification on the bundled workbench (scripts/verify.mjs)
+        timeout-minutes: 15
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          node scripts/verify.mjs --features welcome,new-task,help,agents,palette,settings,layout,zoom,search --out "$RUNNER_TEMP/verify" \
+            || { echo "::stop-commands::verify-report-${{ github.run_id }}"; cat "$RUNNER_TEMP/verify/report.md" "$RUNNER_TEMP/verify/screens.txt" 2>/dev/null | head -400; echo "::verify-report-${{ github.run_id }}::"; exit 1; }
