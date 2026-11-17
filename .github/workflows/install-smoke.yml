@@ -41,14 +41,18 @@ concurrency:
 jobs:
   smoke:
     name: install smoke · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # The check keeps its macos-latest name; it runs on the named Apple Silicon image macos-15
+    # (2026-11-17: jobs on the moving macos-latest label got no runner).
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        include:
+          - { os: ubuntu-24.04, runner: ubuntu-24.04 }
+          - { os: macos-latest, runner: macos-15 }
     steps:
       - uses: actions/checkout@v5
         with:

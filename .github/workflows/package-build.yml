@@ -48,7 +48,7 @@ jobs:
       matrix:
         include:
           - platform: darwin-arm64
-            runner: macos-latest
+            runner: macos-15
             target: aarch64-apple-darwin
           - platform: darwin-x64
             runner: macos-15-intel

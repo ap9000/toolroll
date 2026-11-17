@@ -124,7 +124,7 @@ const RUST = ["rust · macos-latest", "rust · ubuntu-latest"];
 /** The platforms the package carries a terminal workbench binary for (scripts/tui-build.mjs PLATFORMS). */
 const TUI_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"];
 /** package-build.yml's runner for each: its own platform. */
-const TUI_RUNNERS = { "darwin-arm64": "macos-latest", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-24.04", "linux-arm64": "ubuntu-24.04-arm" } as Record<string, string>;
+const TUI_RUNNERS = { "darwin-arm64": "macos-15", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-24.04", "linux-arm64": "ubuntu-24.04-arm" } as Record<string, string>;
 /** tui-bundle.yml's packed-install smokes. */
 const TUI_BUNDLE_SMOKE = ["workbench bundle · macos-latest", "workbench bundle · ubuntu-24.04"];
 /** tui-bundle.yml: advisory too, on pull requests that touch the workbench, its launcher, what gets packed, or the proof:
@@ -275,7 +275,7 @@ describe("the CI workflows", () => {
     }
     expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([]);
     expect(executed({ kind: "workflow_dispatch" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([...INSTALL_SMOKE].sort());
-    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-15", "ubuntu-24.04"]);
     const job = smoke.jobs["smoke"]!;
     expect(job.if).toBeUndefined();
     expect((job as { "timeout-minutes"?: number })["timeout-minutes"]).toBeLessThanOrEqual(15);
@@ -537,7 +537,7 @@ describe("the CI workflows", () => {
         expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
         expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}$`));
       }
-      expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
+      expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-15");
     }
     expect((workflow("native-lanes.yml").jobs["linux-fence"]?.steps ?? []).find(step => step.run === "npm run test:attacks")?.env).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: "linux" });
   });
@@ -1285,7 +1285,7 @@ describe("the packed install's terminal workbench (.github/workflows/tui-bundle.
     }
     for (const paths of [["src/release.ts"], ["docs/a.md"], ["src/server/pages.ts"]]) expect(names(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([]);
     expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => TUI_BUNDLE.includes(name))).toEqual([]);
-    expect(reported(pr(["src/tui-launch.ts"])).filter(one => TUI_BUNDLE_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    expect(reported(pr(["src/tui-launch.ts"])).filter(one => TUI_BUNDLE_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-15", "ubuntu-24.04"]);
     const job = lane.jobs["bundle"]!;
     expect(job.if).toBeUndefined();
     const runs = runsOf(job);

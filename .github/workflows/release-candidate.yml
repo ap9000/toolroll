@@ -200,7 +200,8 @@ jobs:
   macos-shard:
     name: node 22 · macos shard ${{ matrix.shard }}/3
     if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
-    runs-on: macos-latest
+    # A named Apple Silicon image, not the moving macos-latest label (2026-11-17: macos-latest jobs got no runner).
+    runs-on: macos-15
     timeout-minutes: 40
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
