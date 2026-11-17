@@ -1,6 +1,6 @@
 /** Non-spending account checks. Only normalized facts leave this module. */
 import { homedir } from "node:os";
-import { type ExecResult, type run } from "./exec.js";
+import type { ExecResult, run } from "./exec.js";
 import { statusProbe, type StatusProbeOptions } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV, inspectionOf, type ProviderId } from "./provider.js";
 import { isAcpProvider, type KeyedProviderId } from "./acp-agents.js";

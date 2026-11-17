@@ -70,11 +70,11 @@ type Scope
 import { oneLineOf,refuse,screen,withScript,type Chrome,type Screen } from "./chrome.js";
 import { chatResultHref,refusedInPlace,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
-import { type ProjectPeek,type WorkRow } from "./render-pages.js";
+import type { ProjectPeek,WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
 import { approvalSummaryOf, summaryContextOf } from "../approval-summary.js";
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
-import { type Who } from "./session.js";
+import type { Who } from "./session.js";
 import { mergeReadyViewOf } from "./merge-ready-view.js";
 import { machineChecked, machineCheckWords } from "../machine-check.js";
 import type { TaskPageExtras } from "./runtime.js";
@@ -83,11 +83,11 @@ import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
 import { reviewEvidenceScript } from "./render-results.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
-import {
-type Run,
-type Store,
-type Task,
-type TaskState
+import type {
+Run,
+Store,
+Task,
+TaskState
 } from "../store.js";
 import { taskControlOf } from "../task-control.js";
 import { taskLinkFromLegacy,taskLinkOf } from "../task-link.js";

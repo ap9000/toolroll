@@ -5,7 +5,7 @@ import { APPROVAL_RULES_CSS } from "../approval-rules-ui.js";
 import { ASSIGNMENT_CSS } from "../assignment-ui.js";
 import { BACKUP_CSS } from "../backup-ui.js";
 import { BRAND_MARK_CSS } from "../brand-mark.js";
-import { type BrowserSignIn,type BrowserUpdateNotice,type BrowserWorkspace,type PageWork } from "../browser-workspace.js";
+import type { BrowserSignIn,BrowserUpdateNotice,BrowserWorkspace,PageWork } from "../browser-workspace.js";
 import { CHAT_POLISH_CSS } from "../chat-polish.js";
 import { CHECK_SETTINGS_CSS } from "../check-levels-ui.js";
 import { CODING_SHIPPING_CSS } from "../coding-shipping-ui.js";
@@ -41,7 +41,7 @@ import { SKILLS_CSS } from "../skills-ui.js";
 import { SPEND_CSS } from "../spend-ui.js";
 import { SSO_CSS } from "../sso-ui.js";
 import { STORAGE_CSS } from "../storage-ui.js";
-import { type Decision,type Run } from "../store.js";
+import type { Decision,Run } from "../store.js";
 import { styleAsset } from "../style-asset.js";
 import { spendLine,type tally } from "../summary.js";
 import { TASK_STATUS_CSS } from "../task-status.js";
@@ -59,8 +59,8 @@ import { join } from "node:path";
 import { type ServerResponse } from "node:http";
 import { attributes, html, joinHtml, postForm, scriptElement, styleElement, type Html } from "../html.js";
 import { page,refusedInPlace,respond } from "./http.js";
-import { type ProjectPeek } from "./render-pages.js";
-import { type Who } from "./session.js";
+import type { ProjectPeek } from "./render-pages.js";
+import type { Who } from "./session.js";
 
 /** The spend line for a 7am reader: whole cents, "runs", the gap still named. */
 export function consoleSpend(summary: ReturnType<typeof tally<Run & { taskId: string }>>): string {

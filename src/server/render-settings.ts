@@ -6,8 +6,8 @@ import { LEAD_NAME_MAX,LEAD_PERSONA_MAX,type LeadIdentity } from "../lead-identi
 import { projectName } from "../project.js";
 import { latestVersionNow } from "../releases.js";
 import { isAlive as runnerAlive } from "../runner.js";
-import { type Capability,type Store } from "../store.js";
-import { type TokenSource } from "../telegram.js";
+import type { Capability,Store } from "../store.js";
+import type { TokenSource } from "../telegram.js";
 import { chatMoney,type Chrome,screen,type Screen,when } from "./chrome.js";
 import { taskHref } from "./http.js";
 import { html,joinHtml,postForm,type Html } from "../html.js";

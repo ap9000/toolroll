@@ -5,10 +5,10 @@
  */
 import { advancedShownNow } from "../advanced-view.js";
 import { ACTIVITY_ACTORS, activityAge, activityLimit, activityMetrics, activityScope } from "../project-activity.js";
-import { type BrowserProjectRow, type BrowserProjectsView } from "../browser-workspace.js";
+import type { BrowserProjectRow, BrowserProjectsView } from "../browser-workspace.js";
 import { html, htmlString, joinHtml, postForm, type Html, type HtmlValue } from "../html.js";
-import { type ListOutcome } from "../onboard.js";
-import { type ProjectOutcomes } from "../project-outcomes.js";
+import type { ListOutcome } from "../onboard.js";
+import type { ProjectOutcomes } from "../project-outcomes.js";
 import { projectName } from "../project.js";
 import { homedir } from "node:os";
 import { type Chrome, relativeAge, screen, type Screen } from "./chrome.js";
@@ -16,7 +16,7 @@ import {
   acts, approvalFactsNow, approvalTerms, approveForm, btn, chip, count, disclose, doc, docHeader, dock, empty, facts, field, group, infoLine, input,
   linkTabs, note, notice, pageHeader, phoneHeader, row, slots, status,
 } from "./kit.js";
-import { type OnboardCardState, type ProjectPeek } from "./render-pages.js";
+import type { OnboardCardState, ProjectPeek } from "./render-pages.js";
 
 /** A path as a person reads it: the home folder as ~. */
 export function shortPathOf(path: string): string {

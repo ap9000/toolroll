@@ -19,7 +19,7 @@ import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
 import { randomBytes } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
-import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
+import type { FormFieldOf,FormView } from "../contracts/console-api.js";
 import { listCoordinators } from "../coordinator.js";
 import { logEvent } from "../log.js";
 import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAuthorizeUrl,verifyIdToken } from "../oidc.js";

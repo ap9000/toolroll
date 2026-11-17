@@ -54,8 +54,8 @@ parseResultTab,
 RESULT_REVIEW_SCRIPT
 } from "../result-review.js";
 import type { DirectChatProviderId } from "../store.js";
-import {
-type Store
+import type {
+Store
 } from "../store.js";
 import { runActivityOf } from "../task-activity.js";
 import { teamWorkspaceHtml } from '../team-ui.js';
@@ -68,7 +68,7 @@ import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
 import { chatPanelResultHref,chatReturnWithLatest,chatRefusal,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
 import { chatAckPage,chatPage,NOT_STARTED_SESSION,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
-import { type ProjectPeek } from "./render-pages.js";
+import type { ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {

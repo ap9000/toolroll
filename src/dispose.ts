@@ -34,7 +34,7 @@ import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
 import type { ClosedState, Store } from "./store.js";
 import { nightlyTaskRef, releaseTaskRef } from "./store.js";
-import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
+import type { ProofVerdict, VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
 import { propose, approve, liveReleaseOf, releaseCheckScope } from "./scope.js";

@@ -1,4 +1,4 @@
-import { type ProjectIdentities } from "../project-identity.js";
+import type { ProjectIdentities } from "../project-identity.js";
 import type { FreshFacts } from '../scope.js';
 import type { createPersonalQueueRuntime } from '../lead-queue-runtime.js';
 import type { FlowRooms } from '../flow-live.js';
@@ -13,46 +13,46 @@ import { type AssignmentSnapshot } from '../assignment.js';
 import { type BrowserPhoneCard,type BrowserResultView,type BrowserTaskTab,type BrowserUpdates } from '../browser-workspace.js';
 import type { Html } from '../html.js';
 import { CodingWorkspace } from '../coding-workspace.js';
-import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
+import type { FormFieldOf,FormView } from "../contracts/console-api.js";
 import type { DemoLead } from "../demo.js";
-import { type FirstRunStep,type FirstTaskSuggestion } from "../first-run.js";
-import { type GoogleVisit } from "../google-mail.js";
-import { type ConnectVisit } from "../mcp-connect.js";
-import { type CatalogSeams } from "../model-catalog.js";
+import type { FirstRunStep,FirstTaskSuggestion } from "../first-run.js";
+import type { GoogleVisit } from "../google-mail.js";
+import type { ConnectVisit } from "../mcp-connect.js";
+import type { CatalogSeams } from "../model-catalog.js";
 import { type FailureExplanation } from '../needs-you.js';
-import { type OidcClaims,type OidcProvider,type OidcVisit } from "../oidc.js";
-import { type Principal } from "../operate-remote.js";
-import { type VerifiedApprover } from "../principal.js";
-import { type ProjectSettingsView } from "../project-delete-ui.js";
-import { type ProviderConnection } from "../provider-connection.js";
-import { type ProviderId } from "../provider.js";
+import type { OidcClaims,OidcProvider,OidcVisit } from "../oidc.js";
+import type { Principal } from "../operate-remote.js";
+import type { VerifiedApprover } from "../principal.js";
+import type { ProjectSettingsView } from "../project-delete-ui.js";
+import type { ProviderConnection } from "../provider-connection.js";
+import type { ProviderId } from "../provider.js";
 import {
 authenticateApprover as checkApproverPassword,
 type Scope
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
 import type { CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,PlanRevision,TaskFamily,TaskRef } from "../store.js";
-import {
-type Decision,
-type LeadAsk,type LeadThreadScope,
-type Run,
-type Store,
-type Task,
-type TaskState
+import type {
+Decision,
+LeadAsk,LeadThreadScope,
+Run,
+Store,
+Task,
+TaskState
 } from "../store.js";
 import type { TeamChatProviderResolver } from '../team-chat-authorization.js';
 import type { TeamResponse } from '../team-contract.js';
 import { createTeamRuntime } from '../team-runtime.js';
-import { type ToolsView } from "../tools-ui.js";
-import {
-type ReviewFacts
+import type { ToolsView } from "../tools-ui.js";
+import type {
+ReviewFacts
 } from "../workspace-ui.js";
 import { WorktreePool } from "../worktree.js";
-import { type Chrome,type Screen } from "./chrome.js";
-import { type ServeOptions } from "./http.js";
-import { type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./render-chat.js";
-import { type ProjectPeek } from "./render-pages.js";
-import { type ResultDetail } from "./render-results.js";
+import type { Chrome,Screen } from "./chrome.js";
+import type { ServeOptions } from "./http.js";
+import type { ChatEnablement,LiveTurn,ReplacedThread,TaskChatFocus } from "./render-chat.js";
+import type { ProjectPeek } from "./render-pages.js";
+import type { ResultDetail } from "./render-results.js";
 import { taskBody,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
 import { PersistentSessions,type Session,type SsoIntent,type Who } from "./session.js";
 

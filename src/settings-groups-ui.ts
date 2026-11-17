@@ -8,14 +8,14 @@
  * Groups (design/kit.ts SETTINGS_GROUPS): General, Agents and models, Chat apps and alerts, Approvals and safety,
  * Projects, People and sign-in, Spend (its own page, /spend), System.
  */
-import { type BrowserPhoneCard, type BrowserUpdates } from "./browser-workspace.js";
+import type { BrowserPhoneCard, BrowserUpdates } from "./browser-workspace.js";
 import { SETTINGS_GROUP_ICONS, SETTINGS_GROUPS, plural } from "./design/kit.js";
 import { digestTimes } from "./digest-times.js";
 import { html, joinHtml, postForm, type Html, type HtmlValue } from "./html.js";
 import { RESULT_SHOT_CHOICES } from "./result-shots.js";
-import { type UnattendedPermissionMode } from "./scope.js";
+import type { UnattendedPermissionMode } from "./scope.js";
 import { type QualityMode, qualityModeTitle } from "./quality.js";
-import { type ResultScreenshots } from "./store.js";
+import type { ResultScreenshots } from "./store.js";
 import { kitSectionForm, SECRET_OPT_OUTS } from "./settings-kit.js";
 import { START_BUILDER_HREF } from "./needs-you.js";
 import {

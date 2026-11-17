@@ -21,7 +21,7 @@
 
 import { readPulls, type Pull } from "./pulls.js";
 import { githubIssues } from "./issues.js";
-import { type BackendTask, type Runner } from "./backend.js";
+import type { BackendTask, Runner } from "./backend.js";
 
 export type RemoteState = {
   pulls: Pull[];

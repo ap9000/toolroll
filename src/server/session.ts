@@ -1,8 +1,8 @@
 /** Browser sessions and the signed-in caller of a request. */
-import { type ChatDraft } from "../converse.js";
-import { type Principal } from "../operate-remote.js";
-import { type Store } from "../store.js";
-import { type Authority } from "../local-owner.js";
+import type { ChatDraft } from "../converse.js";
+import type { Principal } from "../operate-remote.js";
+import type { Store } from "../store.js";
+import type { Authority } from "../local-owner.js";
 import { createHash } from "node:crypto";
 import { type Server } from "node:http";
 

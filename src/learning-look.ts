@@ -6,7 +6,7 @@
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { type FirstTaskSuggestion } from "./first-run.js";
+import type { FirstTaskSuggestion } from "./first-run.js";
 
 /** How long one project's recovery may take before it is stopped (the next pass tries again). */
 export const LEARNING_LOOK_MS = 60_000;

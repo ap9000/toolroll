@@ -42,7 +42,7 @@ import {
   safeResultImageCaption,
   verifyResultImage,
 } from "./chat-evidence.js";
-import { type Store } from "./store.js";
+import type { Store } from "./store.js";
 import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { checkedChunks, guardSlack, taskSubject } from "./outbound-privacy.js";

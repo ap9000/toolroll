@@ -52,7 +52,7 @@ import { isWritesMode, type WritesMode } from "./writes-mode.js";
 import { isCheckAccess, type CheckAccess } from "./check-access.js";
 import { MAX_MACH_LOOKUP, MAX_READ_DENY, validMachLookup, validReadDeny } from "./project-sandbox.js";
 import { z } from "zod";
-import { type EvidenceKind } from "./contracts/acceptance-terms.js";
+import type { EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
 import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCriterion, type AcceptanceProblem, type ScopeTerms } from "./contracts/scope.js";
 import type { Store, Mutation } from "./store.js";

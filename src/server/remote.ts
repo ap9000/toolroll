@@ -8,8 +8,8 @@ import { createMcpHttp } from "../mcp-http.js";
 import { createOAuthHttp,resourceMetadataUrl } from "../mcp-oauth.js";
 import { reproveRemote,type Principal } from "../operate-remote.js";
 import { RequestBudget,SourceAdmission,type Admission } from "../request-budget.js";
-import {
-type Store
+import type {
+Store
 } from "../store.js";
 import type { TeamResponse } from '../team-contract.js';
 import { handleTeamHttp, TEAM_PASSWORD_REVERIFY_MS } from '../team-http.js';
@@ -17,7 +17,7 @@ import { handleTeamsHttp } from "../teams.js";
 import type { EdgeContext } from './handler-context.js';
 import { flowHook,telegramHook,type RemoteHookContext } from "./remote-hooks.js";
 import { respond,type ServeOptions } from "./http.js";
-import { type Who } from "./session.js";
+import type { Who } from "./session.js";
 
 export interface RemoteRuntime {
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; elsewhere?: boolean; }) => Who | null;

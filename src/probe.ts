@@ -24,7 +24,7 @@ import {
   type ExecResult,
   type RunOptions,
 } from "./exec.js";
-import { type Capability, type Store } from "./store.js";
+import type { Capability, Store } from "./store.js";
 
 export type Runner = (
   file: string,

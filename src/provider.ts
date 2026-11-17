@@ -22,7 +22,7 @@
 import { INTERPRETER_INJECTION_ENV } from "./acp-attest.js";
 import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
-import { type ExecResult, type RunOptions } from "./exec.js";
+import type { ExecResult, RunOptions } from "./exec.js";
 import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, runAcpSession, CLAUDE_COST_UNKNOWN } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
