@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { FLOW_TEMPLATES } from "./flows.js";
-import { addFlowTriggerTo, runFlowTriggers, type TriggerIo } from "./flow-triggers.js";
+import { addFlowTriggerTo, checkFlowTriggerNow, runFlowTriggers, type TriggerIo } from "./flow-triggers.js";
 import { saveEmailSettings, sendEmail, sendingAccount, type Mail } from "./flow-actions.js";
 import { freshText, mailboxAccess, readMail, type MailReader, type MailboxAccess } from "./mailbox.js";
 import { disconnectGoogle, finishGoogleConsent, googleAccessToken, googleConsent, readGoogleMail, saveGoogleClient } from "./google-mail.js";
@@ -93,6 +93,30 @@ describe("an email trigger", () => {
     // Nothing new: nothing added, and nothing is ever read twice.
     expect(await runFlowTriggers(store, repo, at(7), io)).toMatchObject({ added: 0 });
     expect(store.flowCards(flow, true)).toHaveLength(2);
+  });
+
+  test("two checks that overlap (the worker's pass and Check now): one that read the inbox after mail came never moves the watch past it", async () => {
+    mailServer();
+    const flow = replies();
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "email", sender: "example.com", subject: null }, "alex", T0, dir);
+    if (!made.ok) throw new Error(made.message);
+    const box = mailbox();
+    const gh: TriggerIo["gh"] = async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: false });
+    const io: TriggerIo = { gh, fetch, dir, mail: box.reader };
+    // The worker's pass takes the new trigger (due at once) and is slow to reach the mail server.
+    let reached!: () => void, release!: () => void;
+    const atServer = new Promise<void>(resolve => { reached = resolve; }), open = new Promise<void>(resolve => { release = resolve; });
+    const slow: TriggerIo = { gh, fetch, dir, mail: async (...args) => { reached(); await open; return box.reader(...args); } };
+    const pass = runFlowTriggers(store, repo, at(1), slow);
+    await atServer;
+    // Check now looks first: from here on, new mail becomes cards.
+    expect(await checkFlowTriggerNow(store, store.flowTriggers(flow)[0]!, at(1), io)).toMatchObject({ ok: true, said: expect.stringContaining("Watching the inbox") });
+    box.deliver(raw({ from: "Priya Shah <priya@example.com>", subject: "Refund for order 42?", body: "Charged twice." }));
+    // The slow pass reads the inbox only now, after Priya's mail came, and ends.
+    release();
+    await pass;
+    expect(await checkFlowTriggerNow(store, store.flowTriggers(flow)[0]!, at(2), io)).toMatchObject({ ok: true });
+    expect(store.flowCards(flow, true).map(card => card.title)).toEqual(["Refund for order 42?"]);
   });
 
   test("a reply to the sender stays in their thread; to anyone else it's a new email", async () => {
