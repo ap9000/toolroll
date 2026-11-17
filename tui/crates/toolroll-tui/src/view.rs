@@ -1590,7 +1590,9 @@ pub fn live_head(app: &App, item: &Item, room: Room) -> (Vec<Line<'static>>, boo
         return (situation, false);
     }
     let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
-    let words = if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
+    let words = if app.steps_unreadable_here() && item.is_task {
+        crate::app::STEPS_UNREADABLE.to_string()
+    } else if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
         "Ready for you to check. Press Enter for the changes, a to accept, or r to send it back."
             .to_string()
     } else if review && app.steps.is_some() {
@@ -1717,6 +1719,12 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
 pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     let w = room.w;
     let Some(steps) = &app.steps else {
+        if app.steps_unreadable_here() {
+            return wrap(crate::app::STEPS_UNREADABLE, w)
+                .into_iter()
+                .map(Line::raw)
+                .collect();
+        }
         return vec![Line::raw("Reading…")];
     };
     let mut lines = vec![];

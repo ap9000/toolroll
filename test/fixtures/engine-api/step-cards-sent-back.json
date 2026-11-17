@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "task": {
+    "id": "task-52bec3dd05101c00-v2",
+    "root": "task-52bec3dd05101c00",
+    "title": "Add a subtract(a, b) function next to add in src/math.js, with a test.",
+    "state": "queued",
+    "project": "/home/me/shop"
+  },
+  "chain": "plan-first",
+  "headline": "Needs you",
+  "liveRun": null,
+  "cards": [
+    {
+      "key": "plan",
+      "label": "Plan",
+      "state": "done",
+      "mark": "done",
+      "sentence": "Written by claude · shown below",
+      "at": "2026-11-17T09:22:14.333Z",
+      "needsYou": false,
+      "inChain": true,
+      "agent": {
+        "provider": "claude",
+        "model": "claude-scripted"
+      },
+      "startedAt": "2026-11-17T09:22:13.547Z",
+      "latestStartedAt": "2026-11-17T09:22:13.547Z",
+      "finishedAt": "2026-11-17T09:22:14.333Z",
+      "costUsd": 0.001,
+      "runs": [
+        2
+      ]
+    },
+    {
+      "key": "approve",
+      "label": "Approval",
+      "state": "current",
+      "mark": "needs",
+      "sentence": "",
+      "at": null,
+      "needsYou": true,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "latestStartedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": [],
+      "terms": {
+        "key": "e54961373aeebe6180070def70f0a044",
+        "revision": "This revises build #1. It keeps the same limits.",
+        "rows": [
+          {
+            "label": "Goal",
+            "words": "Add a subtract(a, b) function next to add in src/math.js, with a test. — revision",
+            "lines": []
+          },
+          {
+            "label": "Done when",
+            "words": "Add a subtract(a, b) function next to add in src/math.js, with a test. — revision, and the project's checks pass (runs automatically)",
+            "lines": []
+          },
+          {
+            "label": "Agent",
+            "words": "Claude Opus 5.5 plans and reviews; Claude Sonnet 5.5 builds and fixes",
+            "lines": []
+          },
+          {
+            "label": "Files",
+            "words": "any file in the project",
+            "lines": []
+          },
+          {
+            "label": "Network",
+            "words": "the agent's provider, npm",
+            "lines": []
+          },
+          {
+            "label": "Tools",
+            "words": "file edits and routine commands; anything risky stops",
+            "lines": []
+          },
+          {
+            "label": "May cost",
+            "words": "No spend cap · stops at its time limit (20 min without progress)",
+            "lines": []
+          },
+          {
+            "label": "Your pick",
+            "words": "builder Claude Sonnet 5.5; fixer Claude Sonnet 5.5, not the project’s usual pick",
+            "lines": []
+          }
+        ],
+        "warnings": [],
+        "usualLabel": "Your usual project settings",
+        "usual": [
+          {
+            "label": "Checks",
+            "words": "Default"
+          },
+          {
+            "label": "Writes",
+            "words": "only its checkout, its caches and its temp folder"
+          },
+          {
+            "label": "Reads",
+            "words": "your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written"
+          },
+          {
+            "label": "Time limit",
+            "words": "stops after 1000 turns or 20 min without progress"
+          },
+          {
+            "label": "Fixes",
+            "words": "on the same model, up to 4 turns and 5 min"
+          },
+          {
+            "label": "Project checks",
+            "words": "sandboxed"
+          }
+        ]
+      }
+    },
+    {
+      "key": "build",
+      "label": "Build",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "Starts when you approve. Earlier attempts are here.",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "latestStartedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "checks",
+      "label": "Checks",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "The project's checks run on the result",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "latestStartedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "ready",
+      "label": "Ready",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "A result for you to review",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "latestStartedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    }
+  ],
+  "review": null,
+  "failure": null,
+  "waiting": null,
+  "held": null,
+  "retry": null,
+  "approval": null,
+  "room": "task:task-52bec3dd05101c00"
+}
