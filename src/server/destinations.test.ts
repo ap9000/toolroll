@@ -121,7 +121,7 @@ let demo: World, operator: World;
 /** The demo's own samples where a row's generic sample names nothing there. `${api}` is the demo's payments project. */
 const DEMO_PATHS: Record<string, string> = {
   "review": "/review?result=fix-payout-rounding&run=6", "task.page": "/t/fix-payout-rounding", "task.release": "/t/fix-payout-rounding/release",
-  "task.steps": "/t/fix-payout-rounding/steps", "task.diff": "/t/fix-payout-rounding/diff",
+  "task.steps": "/t/fix-payout-rounding/steps", "task.approval": "/t/fix-payout-rounding/approval", "task.diff": "/t/fix-payout-rounding/diff",
   "run.evidence": "/r/6/evidence/8", "flow.page": "/flows/3", "flow.insights": "/flows/3/insights", "flow.export": "/flows/3/export",
   "recipes.start": "/recipes/start?recipe=small-feature", "recipes.edit": "/recipes/edit?recipe=small-feature",
   "recipes.export": "/recipes/export?recipe=small-feature", "recipes.from-task": "/recipes/from-task?task=fix-payout-rounding",

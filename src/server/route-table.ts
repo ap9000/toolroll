@@ -464,6 +464,9 @@ get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", 
 // The engine API: a task's step cards and its result's diff file by file, admitted as the task page is.
 get("tasks", "task.steps", `^\\/t\\/${TASK}\\/steps$`, { project: "task", limited: "resource", ...free, sample: "/t/one/steps" });
 get("tasks", "task.diff", `^\\/t\\/${TASK}\\/diff$`, { project: "task", limited: "resource", ...free, sample: "/t/one/diff" });
+// The approval waiting on a task, as its page's approval form carries it (a nonce minted as the page mints one): a
+// browser or terminal session only; the yes is the page's own POST /t/<task>/approve.
+get("tasks", "task.approval", `^\\/t\\/${TASK}\\/approval$`, { project: "task", limited: "resource", callers: ["cookie"], ...free, sample: "/t/one/approval" });
 // One-tap release approval (trusted-release-reports.md A6/A7): the sheet, and the push's opaque locator, which only
 // redirects to it once the plane's own state says the task ref is a release in the person's projects.
 get("tasks", "task.release", `^\\/t\\/${TASK}\\/release$`, { project: "task", limited: "resource", ...free, sample: "/t/one/release" });

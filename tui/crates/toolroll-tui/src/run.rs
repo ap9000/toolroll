@@ -249,6 +249,10 @@ impl Loop {
                 let r = client.steps(&task).await;
                 let _ = tx.send(Msg::Steps(task, r));
             })),
+            Effect::FetchApproval(task) => drop(tokio::spawn(async move {
+                let r = client.approval(&task).await;
+                let _ = tx.send(Msg::Approval(task, r));
+            })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));

@@ -101,6 +101,10 @@ export type BrowserKeys = {
   check(who: Who, request: IncomingMessage, body: { getAll(name: string): string[] } | null): KeyRefusal | null;
   /** A browser session whose key is from an earlier console start (or none at all) while the key is required. */
   stale(who: Who, back?: string): Reconnect | null;
+  /** Whether this request is a terminal client's session presenting its own key, from this console start (the key on
+   * for this console). Only such a request may have a read that mints (engine-api.ts the approval card); a browser
+   * session, a cookie read on another port or a bearer never does, whatever the install. */
+  terminalKeyed(who: Who, request: IncomingMessage): boolean;
   /** Gives a session being made (or reconnected) a fresh key: its hash and this start's epoch go on the session, the key
    * comes back to deliver once. Null while not required, or off the canonical origin (that origin's storage would hold it). */
   issue(session: Pick<Session, "keyEpoch" | "keyHash">, request: IncomingMessage): string | null;
@@ -157,6 +161,11 @@ export function createBrowserKeys(deps: {
       return null;
     },
     stale,
+    terminalKeyed(who, request) {
+      if (!deps.enabled || who.via !== "cookie" || !terminalSession(who.session) || stale(who) !== null) return false;
+      const presented = presentedKey(request, null);
+      return presented !== null && keyMatches(presented, who.session.keyHash);
+    },
     issue(session, request) {
       const canonical = canonicalHost();
       if (canonical === null || request.headers.host !== canonical) return null;
