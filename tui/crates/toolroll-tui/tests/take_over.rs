@@ -558,11 +558,13 @@ fn nothing_starts_before_the_scope_is_confirmed() {
     assert_eq!(app.key(key('t')), vec![]);
     let shown = screen(&mut app, 120, 30);
     assert!(
-        shown.contains("Opens your shell in a separate copy of attempt 1.")
+        shown.contains("A shell in a separate copy of this task's latest build.")
+            && shown.contains("control the running agent.")
             && shown.contains("direnv"),
         "{shown}"
     );
     insta::assert_snapshot!("take_over_confirm", shown);
+    insta::assert_snapshot!("build_shell_confirm_narrow", screen(&mut app, 60, 24));
     // Any other key keeps the dialog; Esc opens nothing.
     assert_eq!(app.key(key('x')), vec![]);
     assert!(matches!(app.mode, Mode::ConfirmTakeOver { .. }));

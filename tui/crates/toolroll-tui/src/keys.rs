@@ -72,7 +72,7 @@ actions! {
     Accept = "accept", Global, Act, "Accept the result", ["a"];
     SendBack = "send-back", Global, Act, "Send the result back, with a note (on a failed task: retry it)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
-    TakeOver = "take-over", Global, Act, "Take over: type in a terminal on the latest build", ["t"];
+    TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
@@ -99,6 +99,7 @@ actions! {
     ListSide = "list-side", Global, Layout, "Move the list to the other side", [];
     LayoutFocused = "layout-focused", Global, Layout, "Focused: one panel", [];
     LayoutSideBySide = "layout-side-by-side", Global, Layout, "Side by side: two panels", [];
+    WatchRunning = "watch-running", Global, Layout, "Watch running tasks", [];
     LayoutGrid = "layout-grid", Global, Layout, "Grid of four panels", [];
     FilterAll = "filter-all", Global, Filter, "Everything", [];
     FilterThisProject = "filter-this-project", Global, Filter, "This project", [];
@@ -293,7 +294,7 @@ fn help_words(a: Action) -> Option<&'static str> {
         Action::Open => "Open the changes, else the live output",
         Action::Stop => "Stop the build, or its retries",
         Action::SendBack => "Send back with a note; retry if failed",
-        Action::TakeOver => "Take over: a terminal on the build",
+        Action::TakeOver => "Open build shell",
         Action::JumpBack => "Jump back (again: forward)",
         Action::Search => "Search this pane",
         Action::OpenInEditor => "Open this pane in $EDITOR",

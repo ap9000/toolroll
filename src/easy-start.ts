@@ -323,13 +323,17 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     if (exit === "keep") {
       const said = await handoff();
       write(said);
-      if (ownedNow() === null) return EXIT.ok;
+      if (ownedNow() === null) {
+        write("Reopen with: toolroll");
+        return EXIT.ok;
+      }
     }
     write("Stopping Toolroll… (running work is saved)");
     stopOwned(child);
     await child.exited;
     write("Toolroll stopped.");
   }
+  write("Reopen with: toolroll");
   return EXIT.ok;
 }
 

@@ -1013,7 +1013,7 @@ async fn act(
         if task != "t-done" || run != Some(RESULT_RUN) {
             return json_answer(
                 404,
-                json!({ "ok": false, "error": "This build has no saved result yet. Wait for it to finish (or stop it), then take over." }),
+                json!({ "ok": false, "error": "This build has no saved result yet. Wait for it to finish (or stop it), then open the build shell." }),
             );
         }
         let session = term_session(task, RESULT_RUN);

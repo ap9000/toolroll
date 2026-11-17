@@ -2724,7 +2724,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v
         }
         Tab::Terminal if app.pane_here().is_some() => vec![
-            (&[TakeOver], "type in it"),
+            (&[TakeOver], "Open build shell"),
             (&[ScrollUp, ScrollDown], "scroll"),
             (&[Copy], "copy"),
             (&[MoveDown, MoveUp], "task"),
@@ -3003,14 +3003,10 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             " Quit Toolroll? ",
             vec![
                 Line::raw(""),
-                Line::from(sheet::act(
-                    "s",
-                    "Stop agents and quit (running work is saved)",
-                    false,
-                )),
+                Line::from(sheet::act("s", "Stop agents and quit", false)),
                 Line::from(sheet::act(
                     "b",
-                    "Keep running, and start when you log in",
+                    "Keep agents running (reopen with `toolroll`)",
                     false,
                 )),
                 Line::from(sheet::act("Esc", "Back", false)),
@@ -3029,7 +3025,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             keys.push(Span::raw("  "));
             keys.extend(sheet::act("Esc", "to cancel", false));
             lines.push(Line::from(keys));
-            (" Take over ", lines)
+            (" Open build shell ", lines)
         }
         Mode::ConfirmHold { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
@@ -3692,7 +3688,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .unwrap_or_default();
     let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         let words = if item.is_task {
-            "Take over: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
+            "Open build shell: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
         } else {
             "This isn't a task. Press w to open it in the browser."
         };

@@ -5,6 +5,8 @@ with a person in charge of every decision that matters.
 
 ## Start
 
+- [Coming from herdr](from-herdr.md): task panels, parallel work, persistence and differences
+
 - [Getting started](getting-started.md): install, sign in, first project and task;
   [terminal keys, settings and Agents](getting-started.md#the-terminal-workbench)
 - [Tasks, results and revisions](tasks.md): the loop, the lead, Ready and Complete, what is in the current build

@@ -5,10 +5,13 @@
   <img src="docs/media/wordmark-light.svg" alt="Toolroll" width="440">
 </picture>
 
-### Your agents build. You decide.
+### Delegate a change. Review the diff here.
 
-For Claude Code, Codex and Gemini, on your own machine.<br>
-Approve each plan once. Get results back Ready with the diff, the check status and screenshots.
+> **Terminal screenshot placeholder:** a current terminal-workbench capture belongs at
+> `docs/media/terminal-workbench.png` (not yet captured). The repository has web
+> screenshots and terminal text snapshots, but no current terminal image.
+
+For Claude Code, Codex and Gemini, on your own machine.
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
@@ -17,13 +20,6 @@ Approve each plan once. Get results back Ready with the diff, the check status a
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2022.20-171717)
 
 **[Website](https://toolroll.dev)** · [Docs](docs/guide/README.md) · [For agents](docs/agents.md) · [Use cases](https://toolroll.dev/use-cases) · [Changelog](CHANGELOG.md)
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/ui/tasks-dark.png">
-  <img src="docs/media/ui/tasks-light.png" alt="The Tasks page in Toolroll: tasks grouped by what they need from you (approve a plan, open a result, unblock), each with one button." width="920">
-</picture>
-
-<sub>Every task across every project, and the one thing each needs from you. (Demo workspace.)</sub>
 
 </div>
 
@@ -48,36 +44,35 @@ The first command removes Toolroll's older package, `standing-orders`, if you
 have it: npm can't install over it (it stops with `EEXIST: file already
 exists … bin/standing-orders`). Without it, the command does nothing.
 
-Toolroll opens in your terminal and runs while that window is open. No
+Toolroll opens in your terminal. On quit, choose whether agents keep running. No
 password and no login file: on your own computer you're already in. Started
 in a git repository, that repository is your project; press `n` for a first
-task, approve the plan, and the result comes back **Ready**. Elsewhere, press
+task and describe the change. Enter chooses **Just code**; Tab switches to
+**Plan first**, then Enter submits. Review any proposed build terms before
+starting. The result comes back **Ready**: review the diff with Enter, then
+press `a` to accept (confirm after reading), or `r` to request a revision. Elsewhere, press
 `s` to try a small sample project, add your own with
 `toolroll repos add <folder>`, or open the browser (press `w`, or run
 `toolroll --web`). To look around
 first, `toolroll demo` opens a seeded sandbox with no model calls and no spend.
 More: [Getting started](docs/guide/getting-started.md).
 
-## How it works
+## The terminal loop
 
-```
- describe ─▶ plan ─▶ approve ─▶ build ─▶ check ─▶ Ready ─▶ you decide
-                       you       agent   exact     diff     Complete,
-                                         commit    + checks send back or merge
-```
+**Install → `toolroll` → `n` → describe → Enter → build → review diff → accept.**
 
-1. **Describe** the outcome in Chat, the terminal or your phone.
-2. **Plan.** Toolroll reads the repository and drafts the goal, what's out of
-   bounds, the requirements, and the exact agent and model.
-3. **Approve** once. Nothing spends until you do; changing the terms asks again.
-4. **Build.** An agent works on its own branch. A judgement call
-   becomes a question for you, not a guess.
-5. **Check.** Once you set your project's check, it runs on the exact commit.
-6. **Ready.** The diff, the check log and screenshots. Mark it Complete, send
-   it back with what to change, or merge through the pull request.
+Enter in the new-task composer chooses **Just code** by default. Tab toggles
+**Plan first**; Enter then submits that choice. Just code skips planning, not
+the build terms or safety checks. Plan first drafts a scope for you to review
+and approve before building.
 
-Approving work you start on this computer needs no password. Hands-off modes,
-merging, releasing and most settings ask you to set one first: `toolroll password set`.
+Agents work on their own branches. A judgement call becomes a question for
+you. A result becomes **Ready**, awaiting your review, with its diff and actual
+check status. Accept marks it Complete; publishing and merging need their own
+approvals. Set your project's check to verify the exact result.
+
+[Coming from herdr](docs/guide/from-herdr.md) ·
+[Terminal keys and layouts](docs/guide/getting-started.md#the-terminal-workbench)
 
 ## Use cases
 

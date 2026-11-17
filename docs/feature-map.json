@@ -188,7 +188,7 @@
       "id": "take-over",
       "screen": "Terminal",
       "reach": "t; read scope; t opens terminal; Ctrl-] returns",
-      "expected": "Take over",
+      "expected": "Open build shell",
       "scenario": "success",
       "actions": [
         "take-over"
@@ -772,6 +772,12 @@
       ],
       "feature": "Side by side (on a wide window)",
       "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "watch-running",
+      "keys": [],
+      "feature": "Watch running tasks",
+      "reason": "Palette-only local layout action. Rust tests cover filtering, selection and empty slots; the PTY feature harness does not yet dispatch it."
     }
   ]
 }

@@ -340,6 +340,7 @@ fn terminal_tab_and_help_and_quit() {
     app.owned = true;
     assert_eq!(app.key(key('q')), vec![]);
     insta::assert_snapshot!("quit", screen(&mut app, 120, 30));
+    insta::assert_snapshot!("quit_narrow", screen(&mut app, 60, 24));
     assert_eq!(app.key(key('s')), vec![Effect::Exit(EXIT_STOP)]);
     app.mode = Mode::Quit;
     assert_eq!(app.key(key('b')), vec![Effect::Exit(EXIT_KEEP)]);

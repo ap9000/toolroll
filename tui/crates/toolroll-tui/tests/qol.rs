@@ -657,3 +657,96 @@ fn links_are_only_ours() {
     screen(&mut covered, 120, 30);
     assert!(covered.areas.links.is_empty());
 }
+
+#[test]
+fn watch_running_replaces_pins_and_filters_without_starting_work() {
+    let mut app = on("t-done");
+    let fx = app.set_layout(Layout::Grid);
+    answer(&mut app, fx);
+    app.set_filter(Filter::NeedsMe);
+    app.zoom = true;
+    let fx = through_palette(&mut app, Action::WatchRunning);
+    assert!(
+        fx.iter()
+            .all(|e| !matches!(e, Effect::Act { .. } | Effect::TermOpen { .. })),
+        "layout must never post: {fx:?}"
+    );
+    answer(&mut app, fx);
+    assert_eq!(app.filter, Filter::All);
+    assert!(!app.zoom);
+    assert_eq!(app.panes.layout, Layout::Grid);
+    assert_eq!(app.panes.focus, 0);
+    assert_eq!(app.selected_item().unwrap().id, "t-live");
+    let ids: Vec<_> = app.panes.watches().map(|w| w.task.as_str()).collect();
+    assert_eq!(ids, vec!["t-rate"]);
+    assert!(app.panes.slots[2].is_none() && app.panes.slots[3].is_none());
+    insta::assert_snapshot!("watch_running_grid", screen(&mut app, 160, 40));
+    // Long title and unavailable saved output remain readable without losing the task's state.
+    let original = app
+        .all_items
+        .iter()
+        .find(|i| i.id == "t-rate")
+        .unwrap()
+        .title
+        .clone();
+    app.all_items.iter_mut().find(|i| i.id == "t-rate").unwrap().title =
+        "Rate-limit middleware: handle simultaneous requests across projects without dropping retry headers".into();
+    app.panes.slots[1].as_mut().unwrap().transcript.missing =
+        Some("Build output is unavailable. Open Steps for the saved build status.".into());
+    insta::assert_snapshot!("watch_running_long_failure", screen(&mut app, 160, 40));
+    app.all_items
+        .iter_mut()
+        .find(|i| i.id == "t-rate")
+        .unwrap()
+        .title = original;
+    insta::assert_snapshot!("watch_running_narrow", screen(&mut app, 60, 24));
+    let fx = app.key(key('o'));
+    answer(&mut app, fx);
+    assert_eq!(app.selected_item().unwrap().id, "t-rate");
+    let fx = app.key(key('O'));
+    answer(&mut app, fx);
+    app.key(key('s'));
+    assert!(matches!(app.mode, Mode::Steer(..)));
+}
+
+#[test]
+fn watch_running_includes_retry_waits_and_caps_at_four() {
+    let mut app = on("t-done");
+    app.now = toolroll_tui::view::epoch("2026-11-14T12:00:40Z").unwrap() - 40;
+    let template = app
+        .all_items
+        .iter()
+        .find(|i| i.id == "t-done")
+        .unwrap()
+        .clone();
+    for n in 0..6 {
+        let mut item = template.clone();
+        item.id = format!("waiting-{n}");
+        item.section = Section::UpNext;
+        item.waiting = Some(parse(serde_json::json!({
+            "retryAt": "2026-11-14T12:00:40Z", "lastFailure": "Temporary failure"
+        })));
+        app.all_items.push(item);
+    }
+    let fx = app.watch_running();
+    assert!(fx
+        .iter()
+        .all(|e| !matches!(e, Effect::Act { .. } | Effect::TermOpen { .. })));
+    let ids: Vec<_> = app.panes.watches().map(|w| w.task.as_str()).collect();
+    assert_eq!(ids, vec!["t-rate", "waiting-0", "waiting-1"]);
+    insta::assert_snapshot!("watch_running_waiting", screen(&mut app, 160, 40));
+    app.all_items
+        .retain(|i| i.section != Section::Working && i.waiting.is_none());
+    let before = app.panes.clone();
+    assert!(app.watch_running().is_empty());
+    assert_eq!(
+        app.panes, before,
+        "empty action must preserve the current layout"
+    );
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("No running or waiting tasks."));
+}

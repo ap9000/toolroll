@@ -198,7 +198,7 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     run.press("j");
     // The first t says what it opens; nothing starts until the second.
     run.press("t");
-    run.wait_for("Opens your shell in a separate copy of attempt 1.", 5);
+    run.wait_for("A shell in a separate copy of this task's latest build.", 5);
     assert!(engine.acts().iter().all(|a| a.path != "/term/start"));
     run.press("t");
     let shown = run.wait_for("$ ", 10);
@@ -245,7 +245,7 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     run.press("\x1d");
     // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
     // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
-    run.wait_for("type in it", 5);
+    run.wait_for("Open build shell", 5);
     run.wait_for("Back to the workbench", 5);
     let raw = run.quit();
     no_leaks(&raw);
@@ -265,7 +265,7 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     let mut run = Run::start(&engine, &scratch, 34, 120);
     run.press("j");
     run.press("t");
-    run.wait_for("Opens your shell in a separate copy", 5);
+    run.wait_for("A shell in a separate copy", 5);
     run.press("t");
     run.wait_for("$ echo hi", 10);
     let shown = run.wait_for("Typing", 5);
@@ -332,7 +332,7 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     );
     run.press("j");
     run.press("t");
-    run.wait_for("Opens your shell", 5);
+    run.wait_for("A shell in a separate copy", 5);
     run.press("t");
     run.wait_for("Typing", 10);
     // The stream has started: the console's own fact (bytes it streamed), never which kind of line happens to fill
@@ -371,7 +371,7 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     run.press("\x1d");
     // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
     // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
-    run.wait_for("type in it", 5);
+    run.wait_for("Open build shell", 5);
     run.wait_for("Back to the workbench", 5);
     run.quit();
     let own: serde_json::Value =
