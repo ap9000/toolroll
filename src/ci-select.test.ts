@@ -66,10 +66,9 @@ describe("what must run everything", () => {
     const files = { ...world, "src/data/rules.json": "{}\n", "assets/logo.svg": "<svg/>\n" };
     expect(planFor(files, modified("src/data/rules.json")).why).toMatch(/src\/data\/rules\.json: nothing in the graph reads it/);
     expect(planFor(files, modified("assets/logo.svg")).mode).toBe("full");
-    // Source nobody imports still reaches every test that runs the build; with no such test, it runs everything.
-    expect(planFor({ ...world, "src/orphan.ts": "export {};\n" }, modified("src/orphan.ts")).mode).toBe("selected");
-    const noBuild = Object.fromEntries(Object.entries(world).filter(([path]) => path !== "src/cli-run.test.ts"));
-    expect(planFor({ ...noBuild, "src/orphan.ts": "export {};\n" }, modified("src/orphan.ts")).mode).toBe("full");
+    // Codex review: source nothing imports by a path the graph reads is loaded some other way, if at all: everything runs,
+    // whether or not some test runs the build.
+    expect(planFor({ ...world, "src/orphan.ts": "export {};\n" }, modified("src/orphan.ts")).why).toMatch(/src\/orphan\.ts: nothing in the graph reads it/);
   });
 
   test("every trigger is anchored, so it names what it means and nothing else", () => {
@@ -130,6 +129,31 @@ describe("what a selected plan holds", () => {
     const none = plan({ event: "pull_request", headRef: "x", entries: modified("src/a.ts"), tree: treeOf(world), tests: ["src/c.test.ts"] }) as Plan;
     expect(none.mode).toBe("full");
     expect(none.files).toEqual(["src/c.test.ts"]);
+  });
+
+  test.each([
+    ["a computed import()", 'export const load = (name: string) => import(`./plugins/${name}.js`);'],
+    ["an import() of a variable", "export const load = (where: string) => import(where);"],
+    ["a comment inside import()", 'export const load = () => import(/* chunk */ "./c.js" + suffix);'],
+    ["require() of a variable", "export const load = (where: string) => require(where);"],
+    ["new URL() of a variable beside import.meta.url", "export const at = (name: string) => new URL(name, import.meta.url);"],
+    ["a relative path that isn't in the tree", 'export { gone } from "./gone.js";'],
+  ])("Codex review, medium: %s may load any file, so every test reaching it runs, whatever changed", (_, code) => {
+    const files = { ...world, "src/loader.ts": code, "src/loader.test.ts": 'import "./loader.js";\ntest("l", () => {});\n' };
+    for (const change of ["docs/plans/p.md", "src/c.ts"]) {
+      const result = planFor(files, modified(change));
+      expect(result.files, change).toContain("src/loader.test.ts");
+      expect(result.reasons["src/loader.test.ts"], change).toMatch(/reaches a load it can't read \(src\/loader\.ts\)|reaches/);
+    }
+    expect(references(code).dynamic.length + (code.includes("gone") ? 1 : 0)).toBeGreaterThan(0);
+  });
+
+  test("loads the graph can read stay precise: one string, two behind a condition, a URL of a sibling, an import() in a comment or a string", () => {
+    const code = [
+      'const a = await import("./a.js");', 'const b = new URL(source ? "./b.ts" : "./b.js", import.meta.url);', "// import(anything)",
+      'const fixture = `import(${x}) and require(y)`;', 'const re = /["\x27`]/;', 'const page = new URL("https://toolroll.dev/x");',
+    ].join("\n");
+    expect(references(code)).toMatchObject({ imports: ["./a.js", "./b.js", "./b.ts"], dynamic: [] });
   });
 
   test("the same inputs give the same plan, sorted", () => {

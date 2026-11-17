@@ -102,15 +102,72 @@ export function walksRepository(text) {
   return false;
 }
 
-const SPECIFIER = [
-  /\bfrom\s*["']([^"'\n]+)["']/g,
-  /\bimport\s*["']([^"'\n]+)["']/g,
-  // A dynamic import, but not one in a type (`: import("./x.js").Room`, `typeof import("./x.js")`), which is erased.
-  /(?<!typeof\s+)\bimport\(\s*["']([^"'\n]+)["']\s*\)(?!\s*\.\s*[A-Z])/g,
-  /\brequire\(\s*["']([^"'\n]+)["']\s*\)/g,
-  /\bvi\.(?:mock|doMock|unmock|importActual|importMock)\(\s*["']([^"'\n]+)["']/g,
-  /\bnew URL\(\s*["']([^"'\n]+)["']\s*,\s*import\.meta\.url/g,
-];
+/**
+ * The code with its comments and the contents of its strings blanked out, position for position: quotes stay, so a
+ * specifier's place is found in the code and its text read from the original. An `import(` in a comment, or a whole
+ * fixture module inside a template string, is then neither an edge nor an unresolved import.
+ */
+export function masked(text) {
+  const out = text.split("");
+  const blank = (from, to) => { for (let at = from; at < to; at++) if (out[at] !== "\n") out[at] = " "; };
+  let at = 0;
+  while (at < text.length) {
+    const c = text[at], next = text[at + 1];
+    if (c === "/" && next === "/") { const end = text.indexOf("\n", at); const stop = end === -1 ? text.length : end; blank(at, stop); at = stop; continue; }
+    if (c === "/" && next === "*") { const end = text.indexOf("*/", at + 2); const stop = end === -1 ? text.length : end + 2; blank(at, stop); at = stop; continue; }
+    // A regular expression literal (after an operator, a bracket, a keyword or the start): skipped whole, so a quote or a
+    // backtick inside one (/["'`]/) never opens a string that would blank real code.
+    if (c === "/" && regexMayStart(text, at)) {
+      let end = at + 1, inClass = false;
+      while (end < text.length && text[end] !== "\n" && (inClass || text[end] !== "/")) {
+        if (text[end] === "\\") end++;
+        else if (text[end] === "[") inClass = true;
+        else if (text[end] === "]") inClass = false;
+        end++;
+      }
+      if (text[end] === "/") { blank(at + 1, end); at = end + 1; continue; }
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      let end = at + 1;
+      while (end < text.length && text[end] !== c && !(c !== "`" && text[end] === "\n")) end += text[end] === "\\" ? 2 : 1;
+      blank(at + 1, Math.min(end, text.length));
+      at = end + 1;
+      continue;
+    }
+    at++;
+  }
+  return out.join("");
+}
+
+/** Whether a `/` at `at` can open a regular expression: what comes before it is an operator, an opening bracket, a
+ * keyword that takes an expression, or nothing. */
+function regexMayStart(text, at) {
+  let back = at - 1;
+  while (back >= 0 && /\s/.test(text[back])) back--;
+  if (back < 0) return true;
+  if ("(,=:[!&|?{};+-*%<>~^".includes(text[back])) return true;
+  return /\b(?:return|typeof|case|do|else|in|of|void|yield|await)$/.test(text.slice(Math.max(0, back - 6), back + 1));
+}
+
+/** A quoted specifier at `index` of the masked code: its text in the original, or null when it isn't one plain string. */
+const QUOTED = /^(["'`])([^"'`\n]*)\1/;
+const STATIC = [/\bfrom\s*(?=["'])/g, /\bimport\s*(?=["'])/g, /\bvi\.(?:mock|doMock|unmock|importActual|importMock)\(\s*(?=["'`])/g];
+/** A call whose argument decides what code loads. Resolved when the argument is one plain string, or two behind a
+ * condition (`source ? "./child.ts" : "./child.js"`), and for `new URL` the second argument is import.meta.url. */
+const LOADS = /(?<!typeof\s+)\b(import|require|new\s+URL)\s*\(/g;
+const PLAIN = `(?:"[^"\\n$]*"|'[^'\\n$]*'|\`[^\`\\n$]*\`)`;
+const RESOLVED_ARGUMENT = new RegExp(`^\\s*(?:[\\w.!]+\\s*\\?\\s*${PLAIN}\\s*:\\s*${PLAIN}|${PLAIN})\\s*$`);
+
+/** The argument of the call whose `(` is at `open` in the masked code, by balanced parentheses: [start, end). */
+function argumentAt(code, open) {
+  let depth = 0;
+  for (let at = open; at < code.length; at++) {
+    if (code[at] === "(") depth++;
+    else if (code[at] === ")" && --depth === 0) return [open + 1, at];
+  }
+  return [open + 1, code.length];
+}
+
 const LITERAL = /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`([^`$\\]*)`/g;
 /** `join(a, "test", "fixtures")` and `resolve(…)`: consecutive literal arguments are one path. */
 const JOINED = /\b(?:join|resolve)\(([^()]*)\)/g;
@@ -119,11 +176,31 @@ const JOINED = /\b(?:join|resolve)\(([^()]*)\)/g;
  * anything through one. `import { type A } from` stays: it is kept as `import {} from`, and loads its module. */
 const TYPE_ONLY = /^[ \t]*(?:import|export)\s+type\s+[^;]*?\bfrom\s*["'][^"'\n]+["'];?/gm;
 
-/** The relative import specifiers that load code when it runs, and the path-like string literals, in a file's text. */
+/**
+ * What a file's text loads and names: the relative specifiers its code loads when it runs, the path-like string
+ * literals, and `dynamic`: every load whose argument it can't read as plain strings (a variable, a call, a template
+ * with `${…}`), with its text. A file with a dynamic load may load any file (buildGraph), so the graph never treats it as
+ * reaching less than everything.
+ */
 export function references(text) {
-  const imports = new Set(), literals = new Set();
-  const code = text.replace(TYPE_ONLY, "");
-  for (const re of SPECIFIER) for (const match of code.matchAll(re)) if (match[1].startsWith(".")) imports.add(match[1]);
+  const imports = new Set(), literals = new Set(), dynamic = [];
+  const code = masked(text).replace(TYPE_ONLY, match => " ".repeat(match.length));
+  const take = (index, spec) => { if (spec.startsWith(".")) imports.add(spec); };
+  for (const re of STATIC) for (const match of code.matchAll(re)) {
+    const quoted = QUOTED.exec(text.slice(match.index + match[0].length));
+    if (quoted !== null) take(match.index, quoted[2]);
+  }
+  for (const match of code.matchAll(LOADS)) {
+    const open = match.index + match[0].length - 1;
+    const [from, to] = argumentAt(code, open);
+    const argument = text.slice(from, to);
+    // `import("./rooms.js").RoomBackend` in a type is erased: a capitalised member right after the call.
+    if (match[1] === "import" && /^\s*\.\s*[A-Z]/.test(code.slice(to + 1))) continue;
+    const parts = match[1] === "import" || match[1] === "require" ? [argument] : [argument.slice(0, topLevelComma(code.slice(from, to))), argument.slice(topLevelComma(code.slice(from, to)) + 1)];
+    if (match[1] !== "import" && match[1] !== "require" && !/^\s*import\.meta\.url\s*$/.test(parts[1] ?? "")) continue; // a URL of something else
+    if (!RESOLVED_ARGUMENT.test(parts[0])) { dynamic.push(`${match[1].replace(/\s+/, " ")}(${argument.trim().slice(0, 60)})`); continue; }
+    for (const one of parts[0].matchAll(/(["'`])([^"'`\n$]*)\1/g)) take(match.index, one[2]);
+  }
   for (const match of text.matchAll(LITERAL)) {
     const value = match[1] ?? match[2] ?? match[3] ?? "";
     if (value.length > 1 && value.length < 300 && !/\s/.test(value) && (value.includes("/") || NAMED_EXT.test(value))) literals.add(value);
@@ -132,7 +209,18 @@ export function references(text) {
     const parts = [...match[1].matchAll(/["'`]([^"'`\s$]+)["'`]/g)].map(one => one[1]);
     if (parts.length >= 2) literals.add(parts.join("/"));
   }
-  return { imports: [...imports].sort(), literals: [...literals].sort() };
+  return { imports: [...imports].sort(), literals: [...literals].sort(), dynamic };
+}
+
+/** The index of the first comma outside brackets in a masked argument, or its length. */
+function topLevelComma(code) {
+  let depth = 0;
+  for (let at = 0; at < code.length; at++) {
+    if ("([{".includes(code[at])) depth++;
+    else if (")]}".includes(code[at])) depth--;
+    else if (code[at] === "," && depth === 0) return at;
+  }
+  return code.length;
 }
 
 /** `spec` from `from`, as a file the tree has: TypeScript's `.js` → `.ts`/`.tsx`, `.mjs` → `.mts`, an extension added,
@@ -184,13 +272,14 @@ export function buildGraph(tree) {
     suffixIndex.set(value, unique);
     return unique;
   };
-  const edges = new Map(), walkers = new Set(), dist = new Set(), unresolved = new Map();
+  const edges = new Map(), walkers = new Set(), dist = new Set(), unresolved = new Map(), wild = new Map();
   for (const file of files) {
     if (!CODE.test(file) || !GRAPH_ROOTS.includes(file.split("/")[0])) continue;
     const text = tree.read(file);
     if (typeof text !== "string") continue;
     const out = new Set();
-    const { imports, literals } = references(text);
+    const { imports, literals, dynamic } = references(text);
+    if (dynamic.length > 0) wild.set(file, dynamic);
     // A test, a test helper or a script reaches whatever its literals name: tests start scripts and the CLI by path and
     // read fixtures and documents by name. Product code that lists a file's name (a report naming test/ensure-build.ts,
     // a lock file list) doesn't run or read this checkout's copy of it.
@@ -204,8 +293,14 @@ export function buildGraph(tree) {
       const folder = posix.normalize(posix.join(posix.dirname(file), spec)).replace(/\/+$/, "");
       const inside = folder === "." ? files : folder.startsWith("../") ? undefined : folders.get(folder);
       if (inside !== undefined) { for (const one of inside) if (one !== file && (runsByName || !CODE.test(one))) out.add(one); continue; }
+      // The build's copy of a source module (`../dist/sandbox-launch.js` from src/): that module.
+      const built = posix.normalize(posix.join(posix.dirname(file), spec));
+      const source = built.startsWith("dist/") ? resolveImport("src/x.ts", `./${built.slice("dist/".length)}`, has) : null;
+      if (source !== null) { out.add(source); continue; }
       if (!unresolved.has(file)) unresolved.set(file, []);
       unresolved.get(file).push(spec);
+      // A path that isn't in the tree may be anything at run time: the file may load any file.
+      wild.set(file, [...(wild.get(file) ?? []), `${spec} (not in the tree)`]);
     }
     // Product code's literals reach only its own package's data under src/ (console.css beside the server): a name like
     // "AGENTS.md" or "package.json" there means a file of the project it works on, not of this checkout.
@@ -214,7 +309,7 @@ export function buildGraph(tree) {
     if (walksRepository(text)) walkers.add(file);
     edges.set(file, [...out].sort());
   }
-  return { files, edges, walkers, dist, unresolved };
+  return { files, edges, walkers, dist, unresolved, wild };
 }
 
 /** Every file `start` reaches (itself included), following edges; a file that names the build reaches every non-test
@@ -222,13 +317,14 @@ export function buildGraph(tree) {
 function closureOf(start, graph, memo) {
   if (memo.has(start)) return memo.get(start);
   const seen = new Set([start]), stack = [start];
-  let build = false;
+  let build = false, loadsAnything = null;
   while (stack.length > 0) {
     const at = stack.pop();
     if (graph.dist.has(at)) build = true;
+    if (loadsAnything === null && graph.wild.has(at)) loadsAnything = at;
     for (const to of graph.edges.get(at) ?? []) if (!seen.has(to)) { seen.add(to); stack.push(to); }
   }
-  const result = { seen, build };
+  const result = { seen, build, loadsAnything };
   memo.set(start, result);
   return result;
 }
@@ -275,20 +371,22 @@ export function plan({ event, headRef, entries, tree, tests }) {
   for (const targets of graph.edges.values()) for (const to of targets) reached.add(to);
   for (const path of changed) {
     if (INERT.some(re => re.test(path)) || TEST.test(path) || reached.has(path)) continue;
-    // Under src/, the build carries it to every test that runs the CLI; anything else nobody names runs everything.
-    if (!/^src\/.+\.tsx?$/.test(path) || graph.dist.size === 0) return full(`${path}: nothing in the graph reads it`);
+    // Source too: a module nothing imports by a path the graph can read is loaded some other way, if at all.
+    return full(`${path}: nothing in the graph reads it`);
   }
   const changedSet = new Set(changed);
   const srcChanged = changed.some(path => path.startsWith("src/") && !TEST.test(path));
   const memo = new Map();
   const reasons = {};
   for (const test of [...tests].sort()) {
-    const { seen, build } = closureOf(test, graph, memo);
+    const { seen, build, loadsAnything } = closureOf(test, graph, memo);
     const always = alwaysReason(test, graph.walkers.has(test));
     if (always !== null) { reasons[test] = always; continue; }
     if (changedSet.has(test)) { reasons[test] = "changed"; continue; }
     const hit = [...changedSet].find(path => seen.has(path));
     if (hit !== undefined) { reasons[test] = `reaches ${hit}`; continue; }
+    // A load the graph can't read (a computed path, a variable, a path not in the tree) may load any file.
+    if (loadsAnything !== null) { reasons[test] = `reaches a load it can't read (${loadsAnything})`; continue; }
     if (build && srcChanged) reasons[test] = "runs the build, and src/ changed";
   }
   const files = Object.keys(reasons).sort();
