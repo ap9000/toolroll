@@ -116,6 +116,11 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
       ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null),
         accept: acceptFactsOf(store, assignment, viewer, evidenceRoot) } : null,
+    // The build Open build shell would open (the result waiting, else the newest build), and why it can't be, in the
+    // words the start refuses with (server/terminals.ts takeOverOf): asked before anything is confirmed.
+    shell: shellOf(store, family,
+      assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
+        ? assignment.receipt.runId : builds[0]?.id ?? null),
     failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, builds) : null,
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
@@ -131,6 +136,21 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
   };
+}
+
+/** The words Open build shell is refused with when its build has nothing to open on, as the start itself says them
+ * (server/terminals.ts takeOverOf, which re-proves every one of them when a terminal is asked for). */
+export const SHELL_NO_RESULT = "This build has no saved result yet. Wait for it to finish (or stop it), then open the build shell.";
+export const SHELL_NO_COMMIT = "This build has no saved commit to open a terminal on.";
+
+/** Open build shell's build (`run`) and why it can't be opened (null: it can be, as far as the saved facts say). */
+function shellOf(store: Store, family: TaskFamily, runId: number | null): StepCards["shell"] {
+  if (runId === null) return null;
+  const run = resultRunsOf(store, family).find(one => one.id === runId) ?? null;
+  if (run === null) return { run: runId, why: SHELL_NO_RESULT };
+  const revision = run.headRevision;
+  if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return { run: runId, why: SHELL_NO_COMMIT };
+  return { run: runId, why: null };
 }
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,

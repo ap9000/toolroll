@@ -9,9 +9,11 @@
 
 **Delegate a change. Review the diff here.**
 
-> **Terminal screenshot placeholder:** a current terminal-workbench capture belongs at
-> `docs/media/terminal-workbench.png` (not yet captured). The repository has web
-> screenshots and terminal text snapshots, but no current terminal image.
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/terminal-workbench-light.png">
+  <img src="docs/media/terminal-workbench.png" alt="The Toolroll terminal workbench: the work list with two tasks that need you, and the Live tab following a running build" width="900">
+</picture>
+<sub>The terminal workbench, shown with sample tasks and output.</sub>
 
 For Claude Code, Codex and Gemini, on your own machine.
 

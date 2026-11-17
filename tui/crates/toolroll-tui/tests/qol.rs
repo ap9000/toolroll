@@ -750,3 +750,44 @@ fn watch_running_includes_retry_waits_and_caps_at_four() {
         .1
         .contains("No running or waiting tasks."));
 }
+
+/// nine4: watching running tasks at 120 columns: each panel's title whole (wrapped, never "Document add in REA…"),
+/// its cost first when known, the model's name only where it fits, and the toast says what this is.
+#[test]
+fn watch_running_at_120_columns_keeps_titles_and_shows_cost_first() {
+    let mut app = on("t-done");
+    let long = "Document add in README with an example, and link it from the getting-started guide";
+    app.all_items
+        .iter_mut()
+        .find(|i| i.id == "t-rate")
+        .unwrap()
+        .title = long.into();
+    let fx = through_palette(&mut app, Action::WatchRunning);
+    answer(&mut app, fx);
+    assert_eq!(app.status.as_ref().unwrap().1, "Watching 2 running tasks.");
+    let shown = screen(&mut app, 120, 30);
+    // The watched panel's own cells (right of the focused one), read line by line without its borders.
+    let panel: Vec<String> = shown
+        .lines()
+        .filter_map(|l| {
+            l.trim_matches('"')
+                .rsplit('│')
+                .nth(1)
+                .map(|c| c.trim().to_string())
+        })
+        .collect();
+    let words = panel.join(" ");
+    assert!(
+        words.contains("Document add in README with an example, and link it from the"),
+        "{words}\n{shown}"
+    );
+    assert!(!shown.contains("Document add in REA…"), "{shown}");
+    // The focused panel at this width: its cost first, then its state; the model's name gives way.
+    let facts = shown
+        .lines()
+        .find_map(|l| l.split('┃').nth(1).filter(|c| c.contains("$0.31")))
+        .expect("cost shown");
+    let at = facts.find("$0.31").unwrap();
+    assert!(facts[at..].contains("Building now"), "{facts}");
+    assert!(!facts.contains("claude sonnet"), "{facts}");
+}

@@ -2,7 +2,7 @@
  * ledger and rate limit, the CLI's undo, and (with the workbench binary built) a stand-in lead turn that reads then
  * sets through the real writer, so tui.toml changes. No model is called. */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,7 +216,10 @@ describe("the lead restyles the person's own workbench", () => {
       expect(readFileSync(file, "utf8")).toBe(text);
       // Undo from the CLI's road: the defaults, the old file kept.
       expect(real("reset").ok).toBe(true);
-      expect(readFileSync(`${file}.bak`, "utf8")).toBe(text);
+      // Kept beside it under a readable, timestamped name (tui.toml.bak-2026-11-17T00-37-37).
+      const backups = readdirSync(join(home, ".config", "toolroll")).filter(name => /^tui\.toml\.bak-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/.test(name));
+      expect(backups).toHaveLength(1);
+      expect(readFileSync(join(home, ".config", "toolroll", backups[0]!), "utf8")).toBe(text);
       mkdirSync(join(home, "x"));
       writeFileSync(join(home, "x", "y"), "");
     } finally {

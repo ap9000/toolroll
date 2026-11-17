@@ -373,7 +373,10 @@ fn zoom_shows_the_focused_panel_alone_and_comes_back() {
     let zoomed = screen(&mut app, 160, 40);
     assert!(zoomed.lines().next().unwrap().contains("ZOOM"), "{zoomed}");
     // One panel: no watched panel's title, no list.
-    assert!(!zoomed.contains("claude sonnet · Planning"), "{zoomed}");
+    assert!(
+        !zoomed.contains("Planning · 0s · claude sonnet"),
+        "{zoomed}"
+    );
     assert!(!zoomed.contains("Needs you 2"), "{zoomed}");
     insta::assert_snapshot!("qol3_zoom", zoomed);
     // The layout is kept underneath, and z brings it back.
@@ -381,7 +384,7 @@ fn zoom_shows_the_focused_panel_alone_and_comes_back() {
     app.key(key('z'));
     assert!(!app.zoom);
     let back = screen(&mut app, 160, 40);
-    assert!(back.contains("claude sonnet · Planning"), "{back}");
+    assert!(back.contains("Planning · 0s · claude sonnet"), "{back}");
     // The focused one is outlined heavy (it reads without colour too).
     assert!(back.contains('┏') && back.contains('┛'), "{back}");
 }
@@ -439,13 +442,13 @@ fn a_narrow_window_is_one_column() {
     answer(&mut app, fx);
     let shown = screen(&mut app, 60, 26);
     assert!(shown.lines().next().unwrap().contains("NARROW"), "{shown}");
-    assert!(!shown.contains("claude sonnet · Planning"), "{shown}");
+    assert!(!shown.contains("Planning · 0s · claude sonnet"), "{shown}");
     assert!(!shown.contains("Needs you 2"), "{shown}");
     assert!(shown.contains("Live"), "{shown}");
     insta::assert_snapshot!("qol3_narrow", shown);
     // Wide again: everything back as it was.
     let wide = screen(&mut app, 160, 34);
-    assert!(wide.contains("claude sonnet · Planning") && !wide.contains("NARROW"));
+    assert!(wide.contains("Planning · 0s · claude sonnet") && !wide.contains("NARROW"));
 }
 
 #[test]

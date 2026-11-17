@@ -121,7 +121,9 @@ toolroll view reset              # default look; keys stay; a new timestamped ba
 ```
 
 Reset keeps your `[keys]` table and its comments. Each previous file is saved
-beside `tui.toml` as `tui.toml.bak.<timestamp>.<number>`; earlier backups stay.
+beside `tui.toml` as `tui.toml.bak-<date>T<time>` (UTC, for example
+`tui.toml.bak-2026-11-17T00-37-37`); earlier backups stay. A file that is
+already the defaults is left as it is, with no backup.
 
 ## Telegram
 
