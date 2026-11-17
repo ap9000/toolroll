@@ -6,11 +6,16 @@ name: Package build
 #
 #   - binary · <platform>: the terminal workbench's binary for each platform the package carries
 #     (scripts/tui-build.mjs --bundle), built, ad-hoc signed (macOS, checked with codesign -v) and self-checked ON its
-#     own platform, with a report of its sha256 and self-check line, uploaded as the artifact workbench-<platform>;
+#     own platform, with a report of its sha256 and self-check line, uploaded as the artifact workbench-<platform>.
+#     darwin-x64 is a job of its own on the Intel runner, run when the caller says `intel` (publish.yml always, by the
+#     default; tui-bundle.yml on release-* branches and by hand): an ordinary pull request proves the package with the
+#     other three and leaves the Intel Mac to the release (docs/plans/ci-speed-2.md: macOS runners are what pull requests
+#     wait for);
 #   - assemble: each downloaded binary matched to its report's sha256 BEFORE anything runs (--adopt), the package built
 #     (npm run prepublishOnly), every binary checked (--verify: architecture, mode, signature or static, the self-check
-#     naming this build's contract digest, `npm pack --dry-run` listing exactly the four), then `npm pack`: the tarball
-#     is uploaded as the artifact `package` and its sha256 is this workflow's output.
+#     naming this build's contract digest, `npm pack --dry-run` listing exactly the binaries built), then `npm pack`:
+#     the tarball is uploaded as the artifact `package` and its sha256 is this workflow's output. With `intel` it runs
+#     only once all four built; without it, once the three did.
 #
 # Called only, never triggered on its own. Read-only token, no secret, no OIDC token: nothing here can publish. Its checks
 # report as "<calling job's name> / binary · <platform>" and "<calling job's name> / assemble"; the matrix fills the
@@ -25,6 +30,10 @@ on:
         description: The commit to build (the caller's tested or tagged commit).
         type: string
         required: true
+      intel:
+        description: Also build darwin-x64 on the Intel runner, and pack all four (publish.yml always).
+        type: boolean
+        default: true
     outputs:
       tarball:
         description: The packed tarball's file name.
@@ -50,9 +59,6 @@ jobs:
           - platform: darwin-arm64
             runner: macos-latest
             target: aarch64-apple-darwin
-          - platform: darwin-x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
           - platform: linux-x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
@@ -86,9 +92,46 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # darwin-x64, written out (a matrix entry can't be skipped alone): the same steps as binary, on the Intel runner.
+  binary-intel:
+    name: binary · darwin-x64
+    if: ${{ inputs.intel }}
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PLATFORM: darwin-x64
+      TARGET: x86_64-apple-darwin
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+      - name: Toolchain (tui/rust-toolchain.toml's exact Rust)
+        run: |
+          toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' tui/rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --target "$TARGET"
+          cd tui && cargo --version && rustc --version
+      - name: Build, sign and self-check on its own platform
+        run: node scripts/tui-build.mjs --bundle "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workbench-darwin-x64
+          path: ${{ runner.temp }}/workbench
+          if-no-files-found: error
+          retention-days: 7
+
   assemble:
     name: assemble
-    needs: binary
+    needs: [binary, binary-intel]
+    # Every binary the caller asked for built: darwin-x64 too with `intel`, and skipped only without it.
+    if: ${{ always() && needs.binary.result == 'success' && (needs.binary-intel.result == 'success' || (!inputs.intel && needs.binary-intel.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -96,6 +139,8 @@ jobs:
     outputs:
       tarball: ${{ steps.pack.outputs.tarball }}
       sha256: ${{ steps.pack.outputs.sha256 }}
+    env:
+      TARGETS: ${{ inputs.intel && 'darwin-arm64,darwin-x64,linux-x64,linux-arm64' || 'darwin-arm64,linux-x64,linux-arm64' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -112,11 +157,11 @@ jobs:
           pattern: workbench-*
           path: ${{ runner.temp }}/workbench
           merge-multiple: true
-      - name: The four binaries, each the exact file its build reported, into the package (nothing runs yet)
-        run: node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports"
+      - name: The binaries, each the exact file its build reported, into the package (nothing runs yet)
+        run: node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$TARGETS"
       - run: npm run prepublishOnly
       - name: Refuse unless every bundled binary checks out
-        run: node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports"
+        run: node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports" --targets "$TARGETS"
       - name: Pack the package, and say its sha256
         id: pack
         run: |

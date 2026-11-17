@@ -59,6 +59,8 @@ jobs:
     uses: ./.github/workflows/package-build.yml
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The Intel Mac's binary only for a release-* branch and by hand; publish.yml always builds all four.
+      intel: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
 
   bundle:
     name: workbench bundle · ${{ matrix.os }}

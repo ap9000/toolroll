@@ -56,6 +56,10 @@ const RELEASE_BRANCH = "github.event_name != 'pull_request' || startsWith(github
 const LANE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}";
 const UPGRADE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.upgrade == 'skip') }}";
 const UNPROVEN = "${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}";
+/** package-build.yml (docs/plans/ci-speed-2.md): darwin-x64 builds when its caller says `intel` — publish.yml by default,
+ * tui-bundle.yml on a release-* branch or by hand — and assemble runs once every binary asked for built. */
+const INTEL = "${{ inputs.intel }}";
+const ASSEMBLE = "${{ always() && needs.binary.result == 'success' && (needs.binary-intel.result == 'success' || (!inputs.intel && needs.binary-intel.result == 'skipped')) }}";
 const CONDITIONS: Record<string, (event: Event) => boolean> = {
   "${{ always() }}": () => true,
   [`\${{ ${RELEASE_BRANCH} }}`]: event => event.kind !== "pull_request" || event.branch.startsWith("release-"),
@@ -66,6 +70,8 @@ const CONDITIONS: Record<string, (event: Event) => boolean> = {
   [UPGRADE]: event => event.kind !== "pull_request" || upgradeScope(event.paths).run,
   // main-push.yml: the full CI whenever the merge commit isn't proven tested (these tests take it unproven).
   [UNPROVEN]: () => true,
+  [INTEL]: event => event.kind !== "pull_request" || event.branch.startsWith("release-"),
+  [ASSEMBLE]: () => true,
 };
 
 type Check = { name: string; runner: string; runs: boolean; workflow: string };
@@ -123,6 +129,8 @@ const RUST = ["rust · ubuntu-latest"];
 const TUI_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"];
 /** package-build.yml's runner for each: its own platform. */
 const TUI_RUNNERS = { "darwin-arm64": "macos-latest", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-24.04", "linux-arm64": "ubuntu-24.04-arm" } as Record<string, string>;
+/** The Intel Mac's binary: built on release-* branches, by hand and at the tag, not on ordinary pull requests. */
+const INTEL_BINARY = "workbench bundle / binary · darwin-x64";
 /** tui-bundle.yml's packed-install smokes. */
 const TUI_BUNDLE_SMOKE = ["workbench bundle · macos-latest", "workbench bundle · ubuntu-24.04"];
 /** tui-bundle.yml: advisory too, on pull requests that touch the workbench, its launcher, what gets packed, or the proof:
@@ -351,6 +359,7 @@ describe("the CI workflows", () => {
       `ci.yml: git-247 ${LANE}`, `ci.yml: git-floor ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
       "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}",
       `main-push.yml: full ${UNPROVEN}`, `main-push.yml: native-lanes ${UNPROVEN}`,
+      `package-build.yml: assemble ${ASSEMBLE}`, `package-build.yml: binary-intel ${INTEL}`,
       `native-lanes.yml: linux-fence ${LANE}`, `native-lanes.yml: linux-native-containment ${LANE}`, `native-lanes.yml: native-windows ${LANE}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
       `release-candidate.yml: test \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: test-shard \${{ ${RELEASE_BRANCH} }}`,
@@ -402,8 +411,11 @@ describe("the CI workflows", () => {
     expect(proof.steps?.at(-1)?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
     expect(runsOf(proof).some(run => run.includes(`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`))).toBe(true);
     // Neither job nor any step may override failure, and the proof installs and runs nothing of the candidate's.
+    // assemble's one condition only waits for every binary its caller asked for (docs/plans/ci-speed-2.md); it never
+    // lets one that failed through.
+    expect(assemble.if).toBe(ASSEMBLE);
     for (const job of [proof, publisher, pkg, binary, assemble]) {
-      expect(job.if).toBeUndefined();
+      if (job !== assemble) expect(job.if).toBeUndefined();
       expect(job["continue-on-error"] ?? false).toBe(false);
       for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
     }
@@ -431,7 +443,7 @@ describe("the CI workflows", () => {
   test("the package is built with no publishing right, on each platform it ships for; the publish job only checks and publishes that exact tarball", () => {
     const publish = workflow("publish.yml");
     const pkg = publish.jobs["package"]!, publisher = publish.jobs["publish"]!;
-    const build = workflow("package-build.yml"), binary = build.jobs["binary"]!, assemble = build.jobs["assemble"]!;
+    const build = workflow("package-build.yml"), binary = build.jobs["binary"]!, intel = build.jobs["binary-intel"]!, assemble = build.jobs["assemble"]!;
     const tag = reported({ kind: "push", tag: "v0.9.80" });
     // Each binary on its own platform's runner, so its self-check runs natively there (and macOS signs on a Mac).
     expect(Object.fromEntries(tag.filter(one => WORKBENCH_BINARIES.includes(one.name)).map(one => [one.name, one.runner])))
@@ -439,12 +451,20 @@ describe("the CI workflows", () => {
     // One definition (package-build.yml), called only: never triggered on its own, so a pull request proves what publishes.
     expect(pkg.uses).toBe("./.github/workflows/package-build.yml");
     expect(build.on).toEqual({ workflow_call: {
-      inputs: { ref: { description: expect.any(String), type: "string", required: true } },
+      inputs: { ref: { description: expect.any(String), type: "string", required: true }, intel: { description: expect.any(String), type: "boolean", default: true } },
       outputs: { tarball: { description: expect.any(String), value: "${{ jobs.assemble.outputs.tarball }}" }, sha256: { description: expect.any(String), value: "${{ jobs.assemble.outputs.sha256 }}" } },
     } });
-    expect(Object.keys(build.jobs)).toEqual(["binary", "assemble"]);
+    expect(Object.keys(build.jobs)).toEqual(["binary", "binary-intel", "assemble"]);
     expect(binary.needs).toBeUndefined();
-    expect(assemble.needs).toBe("binary");
+    expect(assemble.needs).toEqual(["binary", "binary-intel"]);
+    // darwin-x64 is the binary job written out for the Intel runner: the same steps, its own artifact name. publish.yml
+    // passes no `intel`, so the tag always builds and packs all four.
+    expect(intel.name).toBe("binary · darwin-x64");
+    expect(intel["runs-on"]).toBe("macos-15-intel");
+    expect(intel.env).toEqual({ PLATFORM: "darwin-x64", TARGET: "x86_64-apple-darwin", CARGO_TERM_COLOR: "never" });
+    expect(JSON.stringify(intel.steps)).toBe(JSON.stringify(binary.steps).replace("workbench-${{ matrix.platform }}", "workbench-darwin-x64"));
+    expect((pkg as { with?: Record<string, unknown> }).with?.["intel"]).toBeUndefined();
+    expect(assemble.env).toEqual({ TARGETS: "${{ inputs.intel && 'darwin-arm64,darwin-x64,linux-x64,linux-arm64' || 'darwin-arm64,linux-x64,linux-arm64' }}" });
     // The release waits for every one by name (RELEASE_TAG_CHECKS): the matrix fills the names in only because neither
     // the caller nor the binary job can be skipped (no `if:`, no `needs:`); a skipped matrix job reports once, unexpanded.
     expect([...WORKBENCH_BINARIES, "package / assemble"].filter(name => !(RELEASE_TAG_CHECKS as readonly string[]).includes(name))).toEqual([]);
@@ -456,14 +476,14 @@ describe("the CI workflows", () => {
     expect(readFileSync(join(folder, "package-build.yml"), "utf8")).not.toMatch(/secrets\.|github\.token|id-token/);
     // Rust is the exact toolchain tui/rust-toolchain.toml pins, installed by name.
     expect(readFileSync(join(import.meta.dirname, "..", "tui", "rust-toolchain.toml"), "utf8")).toMatch(/^channel = "\d+\.\d+\.\d+"$/m);
-    for (const job of [binary, workflow("rust.yml").jobs["rust"]!]) expect(runsOf(job).find(run => run.includes("rustup toolchain install"))).toContain(`toolchain="$(sed -n 's/^channel = "\\(.*\\)"$/\\1/p' tui/rust-toolchain.toml)"`);
+    for (const job of [binary, intel, workflow("rust.yml").jobs["rust"]!]) expect(runsOf(job).find(run => run.includes("rustup toolchain install"))).toContain(`toolchain="$(sed -n 's/^channel = "\\(.*\\)"$/\\1/p' tui/rust-toolchain.toml)"`);
     // assemble: each binary matched to its report BEFORE anything runs, then the build, the check, and the pack.
     const steps = assemble.steps!;
     const at = (find: (step: Step) => boolean) => steps.findIndex(find);
     const download = at(step => step.uses?.startsWith("actions/download-artifact@") === true);
-    const adopted = at(step => step.run === `node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports"`);
+    const adopted = at(step => step.run === `node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$TARGETS"`);
     const built = at(step => step.run === "npm run prepublishOnly");
-    const verified = at(step => step.run === `node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports"`);
+    const verified = at(step => step.run === `node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports" --targets "$TARGETS"`);
     const packed = at(step => step.id === "pack");
     const uploaded = at(step => step.uses?.startsWith("actions/upload-artifact@") === true && step.with?.["name"] === "package");
     expect(steps[download]?.with).toMatchObject({ pattern: "workbench-*", path: "${{ runner.temp }}/workbench", "merge-multiple": true });
@@ -1232,7 +1252,8 @@ describe("the packed install's terminal workbench (.github/workflows/tui-bundle.
     const lane = workflow("tui-bundle.yml");
     expect(Object.keys(lane.jobs).sort()).toEqual(["binaries", "bundle"]);
     for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["src/tui-launch.ts"], ["src/trusted-path.ts"], ["package.json"], ["scripts/tui-build.mjs"], [".github/workflows/publish.yml"], [".github/workflows/package-build.yml"], ["tui/rust-toolchain.toml"]]) {
-      expect(executed(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([...TUI_BUNDLE].sort());
+      expect(executed(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual(TUI_BUNDLE.filter(name => name !== INTEL_BINARY).sort());
+      expect(executed(pr(paths, "release-9.9.9")).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([...TUI_BUNDLE].sort());
     }
     for (const paths of [["src/release.ts"], ["docs/a.md"], ["src/server/pages.ts"]]) expect(names(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([]);
     expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => TUI_BUNDLE.includes(name))).toEqual([]);
@@ -1257,7 +1278,7 @@ describe("the release's package build, proved on the pull request (package-build
     const caller = lane.jobs["binaries"]!;
     // The same called workflow publish.yml uses, on the pull request's head commit.
     expect(caller.uses).toBe(publish.jobs["package"]!.uses);
-    expect((caller as { with?: unknown }).with).toEqual({ ref: "${{ github.event.pull_request.head.sha || github.sha }}" });
+    expect((caller as { with?: unknown }).with).toEqual({ ref: "${{ github.event.pull_request.head.sha || github.sha }}", intel: "${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}" });
     expect(caller.if).toBeUndefined();
     expect(caller.needs).toBeUndefined();
     expect(caller.permissions).toEqual({ contents: "read" });
@@ -1271,7 +1292,9 @@ describe("the release's package build, proved on the pull request (package-build
     expect(tag.map(one => [one.name.replace(/^package \/ /, ""), one.runner]).sort()).toEqual(pull.map(one => [one.name.replace(/^workbench bundle \/ /, ""), one.runner]).sort());
     // Advisory, all of it: none is required, and the release verdict leaves each out only from tui-bundle.yml.
     expect(TUI_BUNDLE.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
-    expect(executed(pr(["src/tui-launch.ts"])).filter(name => TUI_BUNDLE.includes(name))).toEqual([...TUI_BUNDLE].sort());
+    // An ordinary pull request reports the Intel Mac's binary skipped (advisory); a release-* branch builds all four.
+    expect(executed(pr(["src/tui-launch.ts"])).filter(name => TUI_BUNDLE.includes(name))).toEqual(TUI_BUNDLE.filter(name => name !== INTEL_BINARY).sort());
+    expect(executed(pr(["src/tui-launch.ts"], "release-9.9.9")).filter(name => TUI_BUNDLE.includes(name))).toEqual([...TUI_BUNDLE].sort());
   });
 });
 
