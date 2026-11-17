@@ -290,6 +290,9 @@ pub const NOTES_TOO_LONG: &str =
 
 /// Said when a dialog closes because what it showed changed.
 pub const RESULT_CHANGED: &str = "This result changed — look again.";
+/// Said, and shown on the task's Live and Steps tabs, when this version can't read one task's steps.
+pub const STEPS_UNREADABLE: &str =
+    "This version can't show this task's steps. Update Toolroll, or press w to see it in your browser.";
 /// Said when Accept would approve something other than the changes on screen (another build, another file, or none).
 pub const DIFF_DISAGREES: &str =
     "The changes on screen aren't the result waiting — look at them again, then press a.";
@@ -805,6 +808,8 @@ pub struct App {
     pub tab: Tab,
     pub mode: Mode,
     pub steps: Option<StepCards>,
+    /// The selected task whose steps this version couldn't read (steps_unreadable): said once, shown on its tabs.
+    pub steps_unreadable: Option<String>,
     pub transcript: Transcript,
     /// Follow the newest record (scrolling up stops it; End starts it again).
     pub follow: bool,
@@ -968,6 +973,7 @@ impl App {
             tab: Tab::Live,
             mode: Mode::Normal,
             steps: None,
+            steps_unreadable: None,
             transcript: Transcript::default(),
             follow: true,
             scroll: 0,
@@ -1244,6 +1250,40 @@ impl App {
             && self.said_at.is_some_and(|t| t.elapsed() < STATUS_HOLD)
     }
 
+    /// One task's steps this version can't read (the answer isn't the contract's shape as this build knows it): that task
+    /// says so and the rest of the workbench goes on. Fail closed: nothing of its earlier read stays to act on, so its
+    /// steps are dropped (no Accept, Send back, Retry or Resume from them) and a dialog bound to them closes. Only the
+    /// session's own reads (the handshake, the work list) still end the screen on another contract.
+    fn steps_unreadable(&mut self, task: String) -> Vec<Effect> {
+        for w in self.panes.slots.iter_mut().flatten() {
+            if w.task == task {
+                w.steps = None;
+            }
+        }
+        if self.selected_id().as_deref() != Some(task.as_str()) {
+            return vec![];
+        }
+        self.steps = None;
+        self.check_pins();
+        if matches!(&self.mode, Mode::ConfirmRetry { task: t, .. } | Mode::ConfirmResume { task: t, .. } if *t == task)
+        {
+            self.mode = Mode::Normal;
+        }
+        if self.steps_unreadable.as_deref() != Some(task.as_str()) {
+            self.steps_unreadable = Some(task);
+            self.say(Tone::Refused, STEPS_UNREADABLE);
+        }
+        // (The rooms watched stay as they were: a change there reads these steps again.)
+        vec![]
+    }
+
+    /// The selected task's steps couldn't be read by this version (steps_unreadable).
+    pub fn steps_unreadable_here(&self) -> bool {
+        self.steps.is_none()
+            && self.steps_unreadable.is_some()
+            && self.steps_unreadable == self.selected_id()
+    }
+
     /// A background read failed: an ended session or another contract still ends the screen; anything else is said
     /// unless what is on the status line was just said to the person (status_held). The next poll reads again.
     fn read_failed(&mut self, e: ApiError) -> Vec<Effect> {
@@ -1340,6 +1380,7 @@ impl App {
                     self.row_refetched = Some((steps.task.id.clone(), situation));
                 }
                 self.steps = Some(steps);
+                self.steps_unreadable = None;
                 self.check_pins();
                 let mut fx = vec![];
                 if refetch_row {
@@ -1398,6 +1439,7 @@ impl App {
                 }
                 fx
             }
+            Msg::Steps(task, Err(ApiError::Contract(_))) => self.steps_unreadable(task),
             Msg::Steps(_, Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
@@ -2091,6 +2133,7 @@ impl App {
         let detached = self.drop_term();
         self.take_over_wanted = None;
         self.steps = None;
+        self.steps_unreadable = None;
         self.transcript = Transcript::default();
         self.diff = None;
         self.diff_index = 0;
