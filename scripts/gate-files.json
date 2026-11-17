@@ -1,0 +1,32 @@
+{
+  "about": [
+    "The judges: files that decide whether another change is good enough (scripts/gate-changes.mjs, .github/workflows/gate-changes.yml).",
+    "A pull request that changes one must disclose it in the trailer block (the last paragraph) of one of its commits: `Gate-change: <file or glob> — <reason>`. A trailer is a disclosure for the person reviewing, never an approval.",
+    "This list and the script are always read from the pull request's base, never from the pull request: a change can't loosen the judge that judges it.",
+    "path: a file or a glob (`*` within a folder name, `**` as a whole folder name: any number of folders). report: listed in the summary, never failed."
+  ],
+  "gates": [
+    { "path": "scripts/gate-files.json", "why": "this list" },
+    { "path": "scripts/gate-changes.mjs", "why": "the script that reads this list and the trailers" },
+    { "path": ".github/workflows/**", "why": "what CI runs, and how" },
+    { "path": "src/ci-workflow.test.ts", "why": "holds the workflows to the release's check lists" },
+    { "path": "src/release.ts", "why": "the checks a release waits for and the ones it leaves out (the whole file)" },
+    { "path": "scripts/ci-shards.mjs", "why": "the shard verifier: which files must run and which skips are allowed" },
+    { "path": "scripts/ci-no-skips.mjs", "why": "the git lanes' no-skip rule" },
+    { "path": "scripts/ci-scope.mjs", "why": "which pull requests skip the area lanes" },
+    { "path": "scripts/ci-native-wait.mjs", "why": "how the root lanes' verdicts are read" },
+    { "path": "scripts/release-proof.mjs", "why": "what publication trusts about the pull request's checks" },
+    { "path": "vitest.config.ts", "why": "which test files run" },
+    { "path": "test/destinations.json", "why": "every address a signed-in browser can land on" },
+    { "path": "src/server/password-policy.test.ts", "why": "the cookie-only and password-ceremony lists, kept apart from the route table" },
+    { "path": "src/password-freshness.test.ts", "why": "the tripwire pins on every authentication call" },
+    { "path": "src/server/adapter-inventory.test.ts", "why": "every way into the console, classified for the local owner" },
+    { "path": "test/perf/*ceilings.json", "why": "wire budget ceilings" },
+    { "path": "test/click-path-ceilings.json", "why": "click-path ceilings" },
+    { "path": "scripts/settings-journey/allowlist.json", "why": "known settings-journey findings that don't fail it" },
+    { "path": "test/fixtures/engine-api/**", "why": "the engine API contract the terminal workbench is built against" },
+    { "path": "test/timings.json", "report": true, "why": "shard timings, rewritten by tooling" },
+    { "path": "tui/crates/toolroll-tui/tests/snapshots/**", "report": true, "why": "the workbench's screen snapshots" },
+    { "path": "youi.baseline.json", "report": true, "why": "youiyoux's recorded design baseline" }
+  ]
+}

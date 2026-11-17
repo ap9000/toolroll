@@ -1,0 +1,62 @@
+name: Gate changes
+
+# Protect the judges: a pull request that changes a file that judges other changes (a check list, a ceiling, an
+# inventory, a workflow: scripts/gate-files.json) fails here unless one of its commits discloses it with a trailer,
+# `Gate-change: <file or glob> — <reason>`, in its trailer block, for each such file. A trailer is a disclosure for the
+# person reviewing, never an approval. Snapshots and timings are reported, never failed. The pull request's words are
+# printed inside a stop-commands block, so none of them is read as a workflow command.
+#
+# The rules are the base's: this job runs the pull request's base revision's scripts/gate-changes.mjs, which reads the
+# gate list from the base too (`git show <base>:scripts/gate-files.json`), so a pull request that edits the list or the
+# script is still judged by the base's. Nothing of the candidate runs: no install, no build, git reads only. Until the
+# base has the script (the change that introduces it) the candidate's own is used and said; with no list on the base,
+# no file is a gate yet.
+#
+# Advisory: not one of REQUIRED_PR_CHECKS, and the release verdict leaves this job out by name and workflow
+# (src/release.ts ADVISORY_PR_CHECKS). Every pull request runs it, documentation-only ones too. No secrets.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the run on its older head; never a release-* branch's run.
+concurrency:
+  group: gate-changes-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: gate changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # The merge base and every commit of the pull request (their trailer blocks).
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+      - name: Every changed gate file is declared
+        shell: bash
+        run: |
+          judge=.trusted-base/scripts/gate-changes.mjs
+          if [ ! -f "$judge" ]; then echo "::warning::the base revision has no gate-changes script yet; using this change's own (a person approves it)"; judge=scripts/gate-changes.mjs; fi
+          node "$judge" check --root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$TESTED_SHA" --summary "$GITHUB_STEP_SUMMARY"

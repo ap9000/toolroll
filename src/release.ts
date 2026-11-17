@@ -116,6 +116,9 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "workbench bundle / binary · linux-x64": ".github/workflows/tui-bundle.yml",
   "workbench bundle / binary · linux-arm64": ".github/workflows/tui-bundle.yml",
   "workbench bundle / assemble": ".github/workflows/tui-bundle.yml",
+  // Protect the judges (scripts/gate-changes.mjs): a pull request that changes a gate file without disclosing it in a
+  // Gate-change trailer fails it; the person deciding the release reads it, the release doesn't wait for it.
+  "gate changes": ".github/workflows/gate-changes.yml",
 };
 
 /**

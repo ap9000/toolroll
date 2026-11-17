@@ -363,6 +363,7 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     // A bound for a starved CI runner, not a latency measure: the fact waited on is the keys on screen, in order.
     run.wait_for(&format!("\u{2301} {typed}"), 20);
     engine.state.lock().unwrap().term_stream_stop = true;
+    // The same starved-runner bound: the fact is the stream's last line on screen (after every byte before it).
     run.wait_for("stream-end-7f3a", 20);
     // The stream ended; a last key's redraw comes after all of it, and is what the top line shows.
     run.press("!");

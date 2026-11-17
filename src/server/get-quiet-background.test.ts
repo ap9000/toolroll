@@ -29,17 +29,19 @@ test("the background pass asks this computer, lifts the sign-in pause, turns the
 });
 
 test("eight stranger 2: a signed-out Codex is never started for its servers; once signed in, the background pass lists them", async () => {
-  let later = 0, codexIn = false, listed = 0;
+  let later = 0, codexIn = false, listed = 0, passes = 0;
   const probe = async (file: string, args: readonly string[]) => {
     seen.push(`probe ${file} ${args.join(" ")}`);
     if (file === "codex") return codexIn ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : { code: 1, stdout: "Not logged in\n", stderr: "", timedOut: false, notFound: false };
     return { code: 1, stdout: JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false };
   };
   world = await openQuietWorld(what => seen.push(what), { backgroundChecks: true, backgroundChecksMs: 50, clock: () => new Date(Date.now() + later),
-    connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; } });
+    connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; }, onBackgroundPass: () => { passes += 1; } });
   await until(() => seen.filter(one => one === "probe codex login status").length >= 1);
-  // Several passes while it is signed out: never asked for its servers.
-  await new Promise(done => setTimeout(done, 400));
+  // Several passes while it is signed out, each started after the pass that heard it (passes run one at a time): never
+  // asked for its servers.
+  const heard = passes;
+  await until(() => passes >= heard + 3);
   expect(listed).toBe(0);
   codexIn = true;
   later = 60 * 60_000;
@@ -47,16 +49,19 @@ test("eight stranger 2: a signed-out Codex is never started for its servers; onc
 });
 
 test("eight stranger 2, review: signed in when last asked, signed out since: the fresh check before listing its servers sees it", async () => {
-  let codexAsked = 0, listed = 0;
+  let codexAsked = 0, listed = 0, passes = 0;
   const probe = async (file: string, args: readonly string[]) => {
     seen.push(`probe ${file} ${args.join(" ")}`);
     if (file === "codex") { codexAsked += 1; return codexAsked === 1 ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : { code: 1, stdout: "Not logged in\n", stderr: "", timedOut: false, notFound: false }; }
     return { code: 1, stdout: JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false };
   };
-  world = await openQuietWorld(what => seen.push(what), { backgroundChecks: true, backgroundChecksMs: 50, connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; } });
-  // The first pass saw it signed in; the next asks again, fresh, before listing, and hears signed out.
+  world = await openQuietWorld(what => seen.push(what), { backgroundChecks: true, backgroundChecksMs: 50, connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; },
+    onBackgroundPass: () => { passes += 1; } });
+  // The first pass saw it signed in; the next asks again, fresh, before listing, and hears signed out. That pass
+  // finished (a listing would have been part of it), and one more after it.
   await until(() => codexAsked >= 2);
-  await new Promise(done => setTimeout(done, 300));
+  const asked = passes;
+  await until(() => passes >= asked + 2);
   expect(listed).toBe(0);
 });
 

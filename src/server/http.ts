@@ -186,6 +186,9 @@ export type ServeOptions = {
    * how often they run and ask this computer's agents again. */
   backgroundChecks?: boolean;
   backgroundChecksMs?: number;
+  /** Injected by tests: told after each background pass has finished, every check it started included, so a test waits
+   * for passes (a fact), never for a stretch of time. */
+  onBackgroundPass?: () => void;
   /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
   folderLook?: FolderLookRunner;
   folderLookMs?: number;

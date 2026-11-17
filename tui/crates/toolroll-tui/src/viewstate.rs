@@ -253,7 +253,8 @@ impl ViewFile {
             .filter(|(k, _)| key_ok(k))
             .take(MAX_PROJECTS)
         {
-            let at = p.get("at").and_then(Value::as_i64).unwrap_or(0);
+            // As the writer keeps it: never before 1970 (a negative time would read back as 0, another view).
+            let at = p.get("at").and_then(Value::as_i64).unwrap_or(0).max(0);
             out.projects.insert(k.clone(), (View::from_json(p), at));
         }
         out
