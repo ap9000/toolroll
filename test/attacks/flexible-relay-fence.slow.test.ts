@@ -26,7 +26,7 @@ import { writeHeldSecret } from "../../src/tool-secret-store.js";
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 const scripted = vi.hoisted(() => ({ origin: "http://127.0.0.1:9" }));
 vi.mock("../../src/flexible-relay-upstreams.js", async importOriginal => {
   const real = await importOriginal<typeof import("../../src/flexible-relay-upstreams.js")>();
@@ -133,6 +133,7 @@ describe("attack: reaching the sign-in relay from inside the thread fence", () =
         id, network: { proxyPort: egress!.port, token: egress!.secret, ...(relayPort === undefined ? {} : { relayPort }) }, storage: STORAGE,
         proxyEnv: proxyEnv(egress!, "proxy-only"), launch: { provider: "claude", level: "full", turn: admitted.turn, holder: "h1" },
         agentEnvFor: launchId => ({ RELAY_URL: url, RELAY_TOKEN: relay!.issue({ thread: id, turn: admitted.turn, launch: launchId }).token, DIRECT_PORTS: JSON.stringify([upstream, other]) }),
+        beforeOpen: () => null,
       }, process.execPath, ["-e", PROBE]);
       if (!launch.ok) throw new Error(launch.message);
       launch.child.stdin!.end();

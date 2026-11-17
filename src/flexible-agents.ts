@@ -4,7 +4,9 @@
  * at runtime. The agent signs in only through its thread's sign-in relay (flexible-relay.ts, F2b).
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` first.
+ * - Starting a turn checks the interactive agent threads' switch (flexible-available.ts flexibleAvailable: off unless a
+ *   person turned them on) first; lowering a level and recovering a holder's launches never do (they only narrow or
+ *   stop).
  * - A turn starts only under exactly its admission (flexible-turns.ts beginFlexibleTurn re-checks the terms row, the
  *   day and every spend limit and withdraws the turn when any fails), at a level proven for its agent under the
  *   organisation's ceiling (flexible-levels.ts threadLevelAllowed), inside the thread fence (flexible-thread.ts). A
@@ -20,7 +22,7 @@
  */
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
 import { defaultCustodyIO, flexibleLaunch, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
@@ -56,7 +58,6 @@ const EMPTY_MCP = '{"mcpServers":{}}';
 export type FlexibleAgentSpec = { file: string; args: string[]; env: Record<string, string> };
 export function flexibleAgentLaunch(provider: FlexibleAgentProvider, level: FlexibleLevel, input: { model: string; relay: Pick<FlexibleRelayEndpoint, "url" | "token">; configHome: string }):
   { ok: true; spec: FlexibleAgentSpec } | FlexibleAgentRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.model !== "string" || !MODEL.test(input.model) || !isFlexibleLevel(level)) return refuse("invalid-request");
   if (provider === "codex" || provider === "openrouter") return refuse("codex-unsupported");
   if (level !== "full") return refuse("invalid-request", `${FLEXIBLE_LEVEL_WORDS[level]} isn't offered for any agent yet. Nothing was started.`);
@@ -125,7 +126,7 @@ function stillMayStart(store: Store, turnId: string, holder: string): string | n
  * holder watches its descendants while it runs. Handles the caller passed but the turn didn't use are closed.
  */
 export async function startFlexibleTurn(store: Store, input: FlexibleTurnStartInput): Promise<FlexibleTurnStarted | FlexibleAgentRefusal | FlexibleTurnRefusal | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const first = flexibleTurn(store, input.turn);
   if (first === null) return { ok: false, reason: "turn-unknown", message: "There's no such turn." };
   const unused = async () => { try { await input.network.close(); } catch { /* the caller's own proxy: its closer keeps it for a retry */ } };
@@ -236,7 +237,6 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
  */
 export async function lowerFlexibleThreadLevel(store: Store, input: { thread: string; by: { name: string; generation: number }; level: FlexibleLevel; clock?: FlexibleClock; io?: import("./flexible-custody.js").CustodyIO }):
   Promise<{ ok: true; level: FlexibleLevel; stopped: "none" | "stopped" | "pending"; message: string } | FlexibleAgentRefusal | FlexibleThreadRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!isFlexibleLevel(input.level) || typeof input.by?.name !== "string" || !Number.isSafeInteger(input.by.generation)) return refuse("invalid-request");
   return withFlexibleThreadLock(input.thread, () => lowerLocked(store, input)).then(result => result);
 }
@@ -286,7 +286,6 @@ async function lowerLocked(store: Store, input: { thread: string; by: { name: st
  */
 export async function recoverFlexibleLaunchesOf(store: Store, input: { holder: string; clock?: FlexibleClock; io?: import("./flexible-custody.js").CustodyIO }):
   Promise<{ ok: true; settled: number; unresolved: number; withdrawn: number; interrupted: number } | FlexibleAgentRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(input.holder)) return refuse("invalid-request");
   const launches = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited' ORDER BY started_at, id").all(input.holder)
     .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));

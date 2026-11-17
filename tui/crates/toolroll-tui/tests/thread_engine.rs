@@ -124,7 +124,7 @@ async fn an_answer_posts_exactly_what_the_screen_showed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn with_flexible_off_nothing_is_listed_and_a_new_thread_is_refused() {
+async fn with_threads_off_nothing_is_listed_and_t_says_where_to_turn_them_on() {
     let engine = FakeEngine::start(scenario(), 0).await;
     let client = redeem(&engine.link()).await.unwrap();
     let mut app = App::new(false, Some("/home/me/shop".into()));
@@ -132,25 +132,13 @@ async fn with_flexible_off_nothing_is_listed_and_a_new_thread_is_refused() {
     assert!(app.threads.off);
     assert!(app.items.iter().all(|i| !i.thread));
     assert_eq!(app.status, None);
-    app.key(key('T'));
-    for c in "Fix the README".chars() {
-        app.key(key(c));
-    }
-    let fx = app.key(code(KeyCode::Enter));
-    settle(&mut app, &client, fx).await;
+    // Never a dead key: T says threads are off and where to turn them on, and opens nothing.
+    assert_eq!(app.key(key('T')), vec![]);
     assert_eq!(
         app.status,
-        Some((
-            Tone::Refused,
-            "Flexible projects aren't available in this version. Nothing changed.".into()
-        ))
+        Some((Tone::Refused, toolroll_tui::thread::THREADS_OFF.into()))
     );
-    let started = engine.acts();
-    assert_eq!(started.last().unwrap().path, "/agents/live/thread");
-    assert_eq!(
-        started.last().unwrap().field("message"),
-        Some("Fix the README")
-    );
+    assert!(!matches!(app.mode, toolroll_tui::app::Mode::NewThread(_)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -15,7 +15,7 @@ import { runOperate, EXIT } from "./operate.js";
 import { createDecisionServer } from "./serve.js";
 import { flexibleStanding, proposedFlexibleTerms } from "./flexible.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date();
 let dir: string, repo: string, db: string, store: Store, lines: string[];

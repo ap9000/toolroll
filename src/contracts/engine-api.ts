@@ -10,9 +10,9 @@
  *
  *   GET  /agents/live/run/<id>       a run's LiveSession window (liveSessionWindow)
  *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window with its facts (liveSessionWindow + thread):
- *                                    its owner's only, refused while Flexible isn't available
- *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them (liveThreads): refused
- *                                    while Flexible isn't available
+ *                                    its owner's only
+ *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them, and whether
+ *                                    interactive agent threads are on (liveThreads)
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
  *   GET  /t/<task>/steps             a task's step cards (stepCards)
  *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile),
@@ -125,6 +125,8 @@ export const liveSessionWindowSchema = z.object({
  * list: its title, project, level, whether its agent is running, how many questions wait on them, its turn's cost. */
 export const liveThreadsSchema = z.object({
   version,
+  /** Whether interactive agent threads are on (Settings → General): off, the list still has the threads already made. */
+  on: z.boolean().optional(),
   threads: z.array(z.object({ id: hex32, title: z.string(), project: z.string().nullable(), level: flexibleLevelSchema.nullable(), live: z.boolean(), waiting: z.number().int(),
     costUsd: z.number().nullable() })),
 });

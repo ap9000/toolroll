@@ -1,5 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
+import { stopFlexibleThreadsEverywhere } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -381,7 +382,7 @@ import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, 
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "./flexible-available.js";
 import { enableFlexible, FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, flexibleTermsWords, isFlexibleLevel, lowerFlexible, proposedFlexibleTerms, turnFlexibleOff, type FlexibleChoice, type FlexibleLevel, type FlexibleStanding, type FlexibleTerms } from "./flexible.js";
 import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
@@ -784,6 +785,10 @@ Agents — which provider and model each phase runs on
       size each new task with a quick model call (Claude Haiku, on your
       plan) before you approve; off, the default, sizes from the words alone
       and plans anything uncertain (config show task-sizing says which)
+  toolroll config set flexible on|off --as <you> --token <t>
+      interactive agent threads (beta), off by default: T in the workbench
+      starts a Claude Code thread inside Toolroll's sandbox, with your Claude
+      sign-in relayed (config show flexible says which)
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
@@ -5572,6 +5577,8 @@ async function configCommand(
   if (phase === "quick-answers") return quickAnswersConfig(action ?? "show", repoGiven !== undefined, flags, context);
   // Settings → General's task sizing, the same switch and the same step-up.
   if (phase === "task-sizing") return taskSizingConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
+  // Settings → General's interactive agent threads (beta), the same switch and the same step-up.
+  if (phase === "flexible") return flexibleConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
 
   if (action === undefined || action === "show") {
     const installation = store.listPhaseConfig(INSTALLATION_SCOPE);
@@ -7108,7 +7115,7 @@ async function runWatchLoop(args: {
       // Admission resumes now: a loop dozing while paused looks again at once.
       if (recovered) wakes.poke();
       // Flexible Ships (flexible-ship.ts): settle interrupted imports, then complete each armed result once its check
-      // passed on the exact candidate and merge it. Refuses at once while Flexible isn't available in this build.
+      // passed on the exact candidate and merge it. An armed merge waits while interactive agent threads are off.
       if (!stopping()) {
         try {
           const shipped = await flexibleArmedPass(store, { root: context.evidenceRoot, ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
@@ -15155,13 +15162,13 @@ function shellCallerFacts(context: Context): ShellCaller {
  * `project flexible [show|enable|lower|off] --repo <p>` (flexible.ts, the Flexible plan v2 slice F1): a project's
  * Flexible terms. Turning it on is a person's password ceremony over exactly the terms shown (on a terminal it asks
  * before signing; otherwise pass the --digest that `enable` printed). Lowering (--max) and turning off are an approver's
- * one step. While this build doesn't offer Flexible (FLEXIBLE_AVAILABLE), every form refuses with `not-available`.
+ * one step. While interactive agent threads are off (flexible-available.ts), `enable` refuses with `not-available`;
+ * `show`, `lower` and `off` never do: turning something down is never blocked by the switch.
  */
 async function projectFlexibleCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const action = positional[1] ?? "show";
   const command = `project flexible ${action}`;
   const { write, json } = context;
-  if (!FLEXIBLE_AVAILABLE) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
   const options: Record<string, readonly string[]> = { show: [], enable: ["max", "default", "digest"], lower: ["max"], off: [] };
   const own = options[action];
   if (own === undefined || positional.length > 2) return fail(write, json, command, "usage", "Use project flexible [show | enable [--max <level>] [--default <level>] [--digest <d>] | lower --max <level> | off] --repo <project path>.", EXIT.usage);
@@ -15192,6 +15199,7 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const acting = await askCredentials(flags, context);
   if (acting === null) return refused(`${action === "enable" ? "Turning on Flexible needs your password" : "This needs your sign-in"}: pass --as and --token.`);
   if (action === "enable") {
+    if (!flexibleAvailable(store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
     const proved = credentialApprover(store, acting.name, acting.token, repo);
     if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on Flexible.");
     const choice: FlexibleChoice = { ...(max === undefined ? {} : { max }), ...(chosenDefault === undefined ? {} : { default: chosenDefault }) };
@@ -15251,4 +15259,50 @@ async function taskSizingConfig(action: string, value: string | undefined, repoG
   if (!saved) return fail(write, json, command, "unauthenticated", "an instance operator changes task sizing, with their password", EXIT.refused);
   const shown = said();
   return succeed(write, json, command, shown.payload, shown.lines);
+}
+
+/** `toolroll config set flexible on|off` and `config show flexible`: Settings → General's interactive agent threads
+ * (beta; flexible-available.ts), proved as its route is: an instance operator, as a person (a password typed for this
+ * command; never a lead's or remote token, a chat app or the lead), checked and written in one transaction with its
+ * ledger row. */
+async function flexibleConfig(action: string, value: string | undefined, repoGiven: boolean, flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = `config ${action}`;
+  if (repoGiven) return fail(write, json, command, "usage", "interactive agent threads are installation-wide: no --repo", EXIT.usage);
+  const said = () => {
+    const read = flexibleSetting(store);
+    return { payload: { flexible: { on: read.on, by: read.by, at: read.at } }, lines: () => [read.on
+      ? "Interactive agent threads (beta) are on: T in the workbench starts a Claude Code thread. Claude Code only for now; it runs inside Toolroll's sandbox with your Claude sign-in relayed, and Toolroll never gives the agent your key."
+      : "Interactive agent threads (beta) are off. Turn them on with `toolroll config set flexible on`."] };
+  };
+  if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
+  if (action !== "set" || (value !== "on" && value !== "off")) return fail(write, json, command, "usage", "`toolroll config set flexible on|off --as <you> --token <t>`", EXIT.usage);
+  const personOnly = value === "on"
+    ? "Only an instance operator, with their password typed for this command, turns interactive agent threads on; never a remembered sign-in, a token, the lead or a chat app."
+    : "Only an instance operator, as a person with their password, turns interactive agent threads off; never a token, the lead or a chat app.";
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "changing interactive agent threads takes `--as <you> --token <t>`", EXIT.usage);
+  const saved = store.transact(() => {
+    // On relays the person's Claude sign-in: a credential act (a password typed for this command). Off only narrows.
+    const verified = value === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token);
+    if (!verified.ok || !personProof(verified.method) || !store.isInstanceOperator(acting.name)) return false;
+    setFlexibleSetting(store, value === "on", acting.name, clock());
+    return true;
+  });
+  if (!saved) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
+  const shown = said();
+  if (value === "on") return succeed(write, json, command, shown.payload, shown.lines);
+  // Off: every thread's agent still running anywhere (a console's, or one a crashed console left) is stopped here, by
+  // its recorded process identities only, its exit verified and its turn interrupted. The console's upkeep stays the
+  // second line for what can't be proved gone yet.
+  const report = await stopFlexibleThreadsEverywhere(store, { reason: "interactive agent threads were turned off", clock });
+  const short = (thread: string) => thread.slice(0, 8);
+  const lines = [
+    ...shown.lines(),
+    ...(report.stopped.length === 0 ? [] : [`Stopped ${report.stopped.length === 1 ? "1 running thread" : `${report.stopped.length} running threads`}: every process of ${report.stopped.length === 1 ? "its agent" : "their agents"} is gone and ${report.stopped.length === 1 ? "its turn" : "their turns"} ended (${report.stopped.map(one => short(one.thread)).join(", ")}).`]),
+    ...(report.stopped.some(one => one.network) ? ["The console that started them closes their network on its next check, within a few seconds."] : []),
+    ...report.survivors.map(one => `Thread ${short(one.thread)} couldn't be stopped yet${one.pids.length === 0 ? "" : `: process${one.pids.length === 1 ? "" : "es"} ${one.pids.join(", ")} still running`} (${one.why}). A running console keeps trying every few seconds; run this command again to try now.`),
+  ];
+  return succeed(write, json, command, { ...shown.payload, stopped: report.stopped, survivors: report.survivors }, () => lines);
 }

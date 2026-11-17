@@ -7,9 +7,10 @@
  * result's diff as the task page. A handler re-proves only what can change after admission (the task still in view,
  * the run still this person's to see), and reads nothing for a caller it refuses.
  *
- * A LiveSession is a run or a Flexible thread: the same window and cursor. Every thread road refuses (not available),
- * before anything is looked up, while Flexible isn't available (flexible-available.ts), and this console opens no thread
- * host at all then. With it: a thread is its owner's only (the session re-read, the thread's creator, its project still
+ * A LiveSession is a run or a Flexible thread: the same window and cursor. While interactive agent threads are off
+ * (flexible-available.ts, read at each request) the roads that start or answer refuse (not available) before anything is
+ * looked up; a person's reads of their own past threads still answer (the list says threads are off). This console
+ * opens no thread host for an install that never made a thread. With them on: a thread is its owner's only (the session re-read, the thread's creator, its project still
  * theirs, before the read and again after it), and an answer goes only through F2d's decide and send with the person's
  * own session (flexible-session.ts answerFlexibleRequest), naming the card digest they were shown. A new thread is a
  * person's yes to its terms card (flexible-start.ts), named by the card's key and proved as an approval's yes is; its
@@ -21,10 +22,10 @@ import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow, type LiveThreads } from "../contracts/engine-api.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
-import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
+import { flexibleAvailable } from "../flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, openFlexibleSessions,
-  recoverFlexibleHolders, startFlexibleThread, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
+import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+  recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { flexibleStartCard } from "../flexible-start.js";
 import { summaryLines } from "../approval-summary.js";
@@ -156,23 +157,33 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "liveSessionWindow", body);
   }
 
-  /** This console's Flexible threads (flexible-session.ts): none at all while Flexible isn't available. Opened here, the
+  /** This console's Flexible threads (flexible-session.ts): opened the first time interactive agent threads are on, or
+   * at start when something of a thread may still run (so it can be stopped), and never while neither holds. Opened, the
    * holders a crashed console left behind are recovered once (launches, then answers), and the console's upkeep tick
-   * expires answers past their deadlines (`upkeep`, below). */
-  const flexible: FlexibleSessions | null = (() => {
-    if (!FLEXIBLE_AVAILABLE) return null;
+   * expires answers past their deadlines and, with threads turned off, stops every thread this host holds (`upkeep`). */
+  let flexible: FlexibleSessions | null = null;
+  /** This console's launcher for a thread's network and storage (flexible-launcher.ts), made with the host. Its proxies
+   * close with their launches, and all of them when the console stops (`close`, below). */
+  let launcher: FlexibleLauncher | null = null;
+  const openHost = (): FlexibleSessions | null => {
+    if (flexible !== null) return flexible;
     const opened = openFlexibleSessions(store);
     if (!opened.ok) return null;
+    flexible = opened.sessions;
     void recoverFlexibleHolders(store, opened.sessions).catch(() => { /* the next start tries again */ });
-    return opened.sessions;
-  })();
-  /** This console's launcher for a thread's network and storage (flexible-launcher.ts): none while Flexible isn't
-   * available. Its proxies close with their launches, and all of them when the console stops (`close`, below). */
-  const launcher: FlexibleLauncher | null = (() => {
-    if (!FLEXIBLE_AVAILABLE || flexible === null) return null;
     const made = createFlexibleLauncher(store);
-    return "prepare" in made ? made : null;
-  })();
+    launcher = "prepare" in made ? made : null;
+    return flexible;
+  };
+  if (flexibleAvailable(store) || flexibleWorkOpen(store)) openHost();
+  /** The host for a road that starts or answers: null (the road refuses, before anything is looked up) while interactive
+   * agent threads are off, read now. */
+  const threadsOn = (): FlexibleSessions | null => flexibleAvailable(store) ? openHost() : null;
+  /** The host for a person's read of their own threads, whatever the switch says: null only while no thread was ever
+   * made here (nothing to read, and no host opened for it). */
+  const threadsRead = (): FlexibleSessions | null => flexible ?? (flexibleAvailable(store) || flexibleThreadsExist(store) ? openHost() : null);
+  /** Threads turned off are being stopped (one pass at a time). */
+  let stopping = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -183,12 +194,13 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string): void => json(response, status, { outcome, words });
 
   /** GET /agents/live/thread/<id>[?file=&cursor=&known=]: a Flexible thread's LiveSession window and its facts, its
-   * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. Refused, before anything is
-   * looked up, while Flexible isn't available (flexible-available.ts). */
+   * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. A read: answered while
+   * interactive agent threads are off too (flexible-available.ts), under the same owner checks. */
   async function liveThread(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
-    if (!FLEXIBLE_AVAILABLE || flexible === null) return refusal(response, 404, "not-available");
+    const flexible = threadsRead();
+    if (flexible === null) return refusal(response, 404, "thread");
     const known = url.searchParams.get("known"), wait = url.searchParams.get("wait");
     const plain = new URL(url.href);
     plain.searchParams.delete("known");
@@ -218,27 +230,30 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "liveSessionWindow", body);
   }
 
-  /** GET /agents/live/threads: the person's own Flexible threads, as the work list shows them. Refused while Flexible
-   * isn't available. */
+  /** GET /agents/live/threads: the person's own Flexible threads, as the work list shows them, and whether interactive
+   * agent threads are on (`on`): a read, answered while they are off too (with the threads already made). */
   async function liveThreads(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
-    if (!FLEXIBLE_AVAILABLE || flexible === null) return refusal(response, 404, "not-available");
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     if (rereadBrowser(runtime, request, who) === null) return refusal(response, 403, "session");
+    const on = flexibleAvailable(store);
+    const flexible = threadsRead();
+    if (flexible === null) return sendChecked(response, 200, "liveThreads", { version: ENGINE_API_VERSION, on, threads: [] } satisfies LiveThreads);
     const read = flexibleThreadsOf(store, flexible, { owner: who.name });
-    if (!read.ok) return refusal(response, 404, "not-available");
-    const body: LiveThreads = { version: ENGINE_API_VERSION, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
+    if (!read.ok) return refusal(response, 404, "thread");
+    const body: LiveThreads = { version: ENGINE_API_VERSION, on, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
       .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null })) };
     return sendChecked(response, 200, "liveThreads", body);
   }
 
   /** POST /agents/live/thread/<id>/answer: the thread's owner answers one request of its agent, naming the request, the
    * card digest they were shown, and their choice; decided and sent only through F2d with their own session. Refused
-   * while Flexible isn't available. */
+   * while interactive agent threads are off. */
   async function threadAnswer(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, posted } = ctx;
-    if (!FLEXIBLE_AVAILABLE || flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
+    const flexible = threadsOn();
+    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
     if (who.via !== "cookie") return acted(response, 403, "refused", "Only a person signed in here can answer an agent.");
     const id = url.pathname.slice("/agents/live/thread/".length, -"/answer".length);
     if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
@@ -275,14 +290,18 @@ export function createEngineHandlers(runtime: ServerRuntime) {
    * exactly the one posted (anything that moved in between is a stale card, refused). The yes is proved as an approval's
    * is (scope.ts authenticateApprover: a password typed now, or, where the existing rules let it stand in, the person's
    * own session in a solo or Passwordless install, or the local owner's own act at this computer); the thread's first
-   * launch is held to the network the card showed. Refused while Flexible isn't available.
+   * launch is held to the network the card showed. Refused while interactive agent threads are off. Claude Code only for
+   * now: a thread asked for with any other agent is refused ("Codex threads come later").
    */
   async function threadStart(ctx: HandlerContext): Promise<void> {
     const { who, request, response, posted } = ctx;
-    if (!FLEXIBLE_AVAILABLE || flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
+    const flexible = threadsOn();
+    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
     if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can start a thread.");
     if (launcher === null) return acted(response, 409, "refused", "This console can't give a thread its network, so no thread was started.");
     const body = readForm(posted, CONSOLE_FORMS.threadStart);
+    const agent = body.get("agent");
+    if (agent !== null && agent !== "claude") return acted(response, 409, "refused", FLEXIBLE_CLAUDE_ONLY);
     const repo = body.get("repo") ?? "", message = body.get("message") ?? "";
     if (!store.accountCanAccess(who.name, repo)) return acted(response, 403, "refused", "That project is outside your access.");
     const by = { name: who.name, generation: who.session.generation };
@@ -398,13 +417,23 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   }
 
   return {
-    /** The console's upkeep tick (serve.ts): a thread's answers past their deadlines are settled. Nothing while off. */
-    upkeep: (): void => { if (flexible !== null) { try { tickFlexibleSessions(store, flexible); } catch { /* the next tick tries again */ } } },
+    /** The console's upkeep tick (serve.ts, every five seconds): a thread's answers past their deadlines are settled, and
+     * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
+     * now), every thread and launch of this host's. Nothing without a host. */
+    upkeep: (): void => {
+      const host = flexible;
+      if (host === null) return;
+      try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }
+      if (stopping) return;
+      stopping = true;
+      void settleFlexibleStops(store, host).catch(() => { /* the next tick tries again */ }).finally(() => { stopping = false; });
+    },
     /** Shutdown: every thread here stopped, its answers revoked and its relay closed, then every proxy the launcher still
      * holds. Nothing while off. */
     close: async (): Promise<void> => {
       // The launcher's proxies close whatever the threads' shutdown does (it may throw).
-      try { if (flexible !== null) await closeFlexibleSessions(store, flexible); } finally { await launcher?.close(); }
+      const host = flexible, made = launcher;
+      try { if (host !== null) await closeFlexibleSessions(store, host); } finally { await made?.close(); }
     },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
@@ -415,6 +444,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   };
 }
 
+/** Said when a thread is asked for with an agent other than Claude Code. */
+export const FLEXIBLE_CLAUDE_ONLY = "Interactive agent threads run Claude Code only for now. Codex threads come later. Nothing was started.";
 /** The proofs a thread start takes: an approval's own (never a token's, a lead's or a remembered CLI login). */
 const START_PROOFS: ReadonlySet<AuthMethod> = new Set<AuthMethod>(["password-now", "sso-now", "fresh-password", "fresh-sso", "session", "local-owner"]);
 /** The ones that are a fresh proof (a start above the terms' password-free level needs one): never a session standing in. */

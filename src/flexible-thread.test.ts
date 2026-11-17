@@ -13,7 +13,7 @@ import { agentFence, PROTECTED_DIRS, PROTECTED_FILES, srtTermsOf } from "./agent
 import { run, type ExecResult } from "./exec.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 // Whether this machine can sandbox, as exec.ts asks it (agent-fence.ts): a test turns it off to see a thread refuse.
 const fenceHere = vi.hoisted(() => ({ off: false }));
 vi.mock("./agent-fence.js", async importOriginal => {
@@ -319,7 +319,7 @@ describe("the thread fence's terms", () => {
     const { thread } = await made();
     world.store.setUnfencedAgentsAllowed(true, "alex", NOW);
     fenceHere.off = true;
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"]);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
     expect(launches()).toBe(0); // nothing was even recorded as spawning
     expect(flexibleThread(world.store, thread.id)!.livePid).toBeNull();
@@ -328,7 +328,7 @@ describe("the thread fence's terms", () => {
   test("a launch whose sandbox can't be read as the platform's refuses", async () => {
     const { thread } = await made();
     const other = process.platform === "darwin" ? "linux" : "darwin";
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"], other);
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"], other);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
     expect(launches()).toBe(0);
   });

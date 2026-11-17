@@ -355,6 +355,12 @@ fn the_new_thread_composer_says_where_and_with_whom() {
     assert!(shown.contains("In proj · with Claude Code"), "{shown}");
     assert!(shown.contains("New thread: "), "{shown}");
     insta::assert_snapshot!("new_thread_composer", shown);
+    // Threads run Claude Code only for now: said whole where it fits, and Enter's words never cut for it.
+    let wide = screen(&mut app, 200, 30);
+    assert!(
+        wide.contains("with Claude Code · Codex threads come later · ⏎ shows its terms first"),
+        "{wide}"
+    );
 }
 
 #[cfg(unix)]
@@ -375,7 +381,7 @@ fn the_settings_file_line_says_saved_after_a_save() {
         ..Default::default()
     };
     let text = |p: &Prefs| {
-        p.screen(80, 0)
+        p.screen(80, 0, None)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()

@@ -5,7 +5,9 @@
  * credential and charges it to the thread's current turn.
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: its entry point refuses with `not-available` first.
+ * - Starting the relay checks the interactive agent threads' switch (flexible-available.ts flexibleAvailable: off
+ *   unless a person turned them on) first, and each model call checks it again inside its own reservation transaction:
+ *   turned off, nothing more is sent.
  * - Where a call may go is data (flexible-relay-upstreams.ts), never a setting or an argument: a fixed origin
  *   (https://api.anthropic.com for Claude), exactly the routes listed (POST /v1/messages and /v1/messages/count_tokens),
  *   and never anywhere a redirect points (a redirect is refused, not followed).
@@ -42,7 +44,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Outgoi
 import { request as httpsRequest } from "node:https";
 import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { issueRelayGrant, revokeRelayGrant } from "./flexible-launch.js";
 import { onRelayCancel } from "./flexible-relay-cancel.js";
@@ -86,8 +88,9 @@ export const FLEXIBLE_RELAY_CREDENTIAL = Object.freeze({ name: "flexible-claude-
 
 // ---- refusals the agent reads -----------------------------------------------------------------------------------------
 
-type CallReason = "unsettled" | "check-failed" | "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
+type CallReason = "threads-off" | "unsettled" | "check-failed" | "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
 const CALL_WORDS: Readonly<Record<CallReason, { status: number; type: string; message: string }>> = Object.freeze({
+  "threads-off": { status: 403, type: "permission_error", message: "Interactive agent threads were turned off in Toolroll, so nothing was sent to the model." },
   unsettled: { status: 503, type: "api_error", message: "An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is." },
   "check-failed": { status: 503, type: "api_error", message: "Toolroll couldn't check this call's authority, so nothing was sent." },
   "credential-header": { status: 400, type: "invalid_request_error", message: "Toolroll's sign-in relay chooses the credential itself: a call can't carry its own key, sign-in or service override." },
@@ -131,7 +134,6 @@ function credentialOf(state: string, upstream: RelayUpstream): Credential | null
  * from a request. Only the kind leaves here, never the credential. No usable credential: refused.
  */
 export function flexibleRelayBilling(store: Store): { ok: true; billing: "subscription" | "api-key" } | FlexibleRelayRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const file = store.databaseFile();
   let state: string;
   try { if (file === null || file === "" || file === ":memory:") return refuse("no-state-folder"); state = dirname(realpathSync(file)); } catch { return refuse("no-state-folder"); }
@@ -438,7 +440,7 @@ type CallRecord = { turn: string | null; at: string; route: "messages" | "count-
  * token from `issue`. `log` hears one redacted line per call (never a credential, token or header value).
  */
 export async function startFlexibleRelay(store: Store, input: { thread: string; log?: (line: string) => void }): Promise<FlexibleRelayServer | FlexibleRelayRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input?.thread !== "string" || !THREAD_ID.test(input.thread) || (input.log !== undefined && typeof input.log !== "function")) return refuse("invalid-request");
   const thread = input.thread;
   const row = store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(thread);
@@ -661,9 +663,11 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       // earlier call of this thread left uncharged (one whose turn has ended is reconciled as unknown cost; one in the
       // running turn holds it), and this call's reservation written before anything is sent.
       let reservation: number | null = null;
-      let blocked: "unauthorized" | "no-turn" | "unsettled" | null = null;
+      let blocked: "unauthorized" | "no-turn" | "unsettled" | "threads-off" | null = null;
       try {
         store.transact(() => {
+          // Interactive agent threads still on (flexible-available.ts), read here: turned off, nothing more is sent.
+          if (!flexibleAvailable(store)) { blocked = "threads-off"; return; }
           if (!grantStillLive(store, authed.digest)) { blocked = "unauthorized"; return; }
           const now = currentTurn(store, thread, authed, "claude");
           if (now === null || now.id !== turn!.id) { blocked = "no-turn"; return; }
