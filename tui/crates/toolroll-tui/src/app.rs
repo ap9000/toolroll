@@ -476,6 +476,34 @@ pub fn settings_sig(path: &std::path::Path) -> SettingsSig {
     (m.len(), at, dev, ino)
 }
 
+/// What a list row says about where its task stands (unread: any change of it you didn't see). Its age and other
+/// clocks are left out: time passing is no news.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seen {
+    section: Section,
+    word: String,
+    asked: bool,
+    retry_at: Option<String>,
+    last_failure: Option<String>,
+}
+
+impl Seen {
+    fn of(i: &Item) -> Seen {
+        Seen {
+            section: i.section,
+            word: i.word.clone(),
+            asked: i.question().is_some(),
+            retry_at: i.waiting.as_ref().and_then(|w| w.retry_at.clone()),
+            last_failure: i.waiting.as_ref().and_then(|w| w.last_failure.clone()),
+        }
+    }
+}
+
+/// While a status line about a task shows, that task is read this often (fast_read)…
+pub const FAST_READ: std::time::Duration = std::time::Duration::from_millis(1500);
+/// …for at most this long after the line was said.
+pub const FAST_READ_FOR: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// How long a status said in answer to the person is held against background reads (status_held).
 pub const STATUS_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 /// Said when Ctrl-] leaves the terminal.
@@ -789,6 +817,12 @@ pub struct App {
     pub side: crate::viewstate::Side,
     /// The focused panel alone, everything else set aside (z again comes back).
     pub zoom: bool,
+    /// The last frame was narrow (below view::NARROW_WIDTH: one column), and, then, whether that column is the list
+    /// (b, or Esc from a panel) or the selected task's panel (Enter).
+    pub narrow: bool,
+    pub narrow_list: bool,
+    /// How many of Live's searched lines are its head (view::live_head), above the output.
+    pub live_head_lines: usize,
     /// When the divider was last pressed (a second press soon after resets the list's width).
     pub divider_down: Option<std::time::Instant>,
     /// Finished, failed or answered tasks not opened since (shown marked, counted in the top bar).
@@ -837,6 +871,12 @@ pub struct App {
     pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
     pub said_for: Option<(String, Option<String>)>,
+    /// The status line's task moved on while the line was held: it goes the moment the hold ends (tick).
+    pub status_stale: bool,
+    /// When the status line's task was last read on the fast road (tick: while a line about it shows).
+    pub fast_read_at: Option<std::time::Instant>,
+    /// The task an act's answer on the status line is about (fast_read follows it; anything said after ends it).
+    pub following: Option<String>,
     pub key_since_said: bool,
     /// The Settings screen's chosen row (settings.rs Choice::ALL).
     pub settings_row: usize,
@@ -911,6 +951,9 @@ impl App {
             list_state: crate::viewstate::ListState::Full,
             side: crate::viewstate::Side::Left,
             zoom: false,
+            narrow: false,
+            narrow_list: false,
+            live_head_lines: 0,
             divider_down: None,
             unread: std::collections::BTreeSet::new(),
             jump_from: None,
@@ -936,6 +979,9 @@ impl App {
             settings_sig: None,
             filed: None,
             said_for: None,
+            status_stale: false,
+            fast_read_at: None,
+            following: None,
             key_since_said: true,
             settings_row: 0,
             build_unfold: false,
@@ -1051,6 +1097,8 @@ impl App {
 
     pub(crate) fn say(&mut self, tone: Tone, words: impl Into<String>) {
         self.status = Some((tone, clean(&words.into())));
+        self.status_stale = false;
+        self.following = None;
         self.said_at = Some(std::time::Instant::now());
         self.key_since_said = false;
         // Which task it was said about, in which state: words about an old state go once it moves on.
@@ -1066,20 +1114,33 @@ impl App {
     /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it
     /// spoke in ("Building it." once it failed), the line goes, unless it is held (said just now, no key since).
     fn status_follows(&mut self, steps: &StepCards) {
+        self.state_seen(&steps.task.id, &steps.task.state);
+    }
+
+    /// Any read saw `task` in `state` (its steps, or its Work row's final word): when the status line spoke about that
+    /// task in another state ("Building it." once it failed), the line goes at once, or, while it is held (said just
+    /// now, no key since), the moment the hold ends (tick), never at the next poll.
+    fn state_seen(&mut self, task: &str, state: &str) {
         let Some((id, said_in)) = self.said_for.clone() else {
             return;
         };
-        if id != steps.task.id || self.status.is_none() || self.status_held() {
+        if id != task || self.status.is_none() {
             return;
         }
         let moved = match said_in {
-            Some(state) => state != steps.task.state,
+            Some(said) => said != state,
             // Said before its steps were read: only a final state is plainly news after it.
-            None => matches!(steps.task.state.as_str(), "failed" | "done" | "cancelled"),
+            None => matches!(state, "failed" | "done" | "cancelled"),
         };
-        if moved {
+        if !moved {
+            return;
+        }
+        if self.status_held() {
+            self.status_stale = true;
+        } else {
             self.status = None;
             self.said_for = None;
+            self.status_stale = false;
         }
     }
 
@@ -1277,6 +1338,8 @@ impl App {
             } => self.sent(task, run, text, kept, result),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
                 self.say(Tone::Said, words);
+                // An act's answer about this task: followed closely until it moves on (fast_read).
+                self.following = self.said_for.as_ref().map(|(t, _)| t.clone());
                 self.sent_thread();
                 self.refresh()
             }
@@ -1285,6 +1348,7 @@ impl App {
                 // fails or finishes, "Building it." goes).
                 self.say(Tone::Said, words);
                 self.said_for = Some((task.clone(), None));
+                self.following = Some(task.clone());
                 self.filed = Some(task);
                 self.sent_thread();
                 self.refresh()
@@ -1407,32 +1471,42 @@ impl App {
             .count() as i64;
         self.needs_count = (rows.needs_count - covered).max(0);
         self.spend = rows.spend.clone();
-        let was: std::collections::HashMap<String, (Section, String, bool)> = self
+        let was: std::collections::HashMap<String, Seen> = self
             .all_items
             .iter()
-            .map(|i| {
-                (
-                    i.id.clone(),
-                    (i.section, i.word.clone(), i.question().is_some()),
-                )
-            })
+            .map(|i| (i.id.clone(), Seen::of(i)))
             .collect();
         self.all_items = items_of(&rows);
         self.all_items.extend(self.threads.items());
         sort_sections(&mut self.all_items);
-        // Unread: a task that finished, failed, or had its question answered since the last read, unless it is the one
-        // open now. It stays marked until it is opened (viewstate.rs keeps it).
+        // Unread: any change of a task's state you didn't see (it isn't the one open now): it finished, failed, an
+        // attempt started or ended, a retry in the background failed (its next try moved), a question came or was
+        // answered. It stays marked until it is opened (viewstate.rs keeps it).
         if self.loaded {
             for i in self.all_items.iter().filter(|i| i.is_task && !i.thread) {
-                let Some((section, word, asked)) = was.get(&i.id) else {
+                let Some(seen) = was.get(&i.id) else {
                     continue;
                 };
-                let finished = *section != Section::Recent && i.section == Section::Recent;
-                let failed = i.word == "Failed" && word != "Failed";
-                let answered = *asked && i.question().is_none() && i.section != Section::NeedsYou;
-                if (finished || failed || answered) && before.as_deref() != Some(i.id.as_str()) {
+                if *seen != Seen::of(i) && before.as_deref() != Some(i.id.as_str()) {
                     self.unread.insert(i.id.clone());
                 }
+            }
+        }
+        // The status line's task, in its Work row: a final word there moves it on as its steps would (state_seen).
+        if let Some((task, _)) = self.said_for.clone() {
+            let ended = self.all_items.iter().find(|i| i.id == task).and_then(|i| {
+                if i.word == "Failed" || i.tone == "problem" {
+                    Some("failed")
+                } else if i.word == "Cancelled" {
+                    Some("cancelled")
+                } else if i.section == Section::Recent {
+                    Some("done")
+                } else {
+                    None
+                }
+            });
+            if let Some(state) = ended {
+                self.state_seen(&task, state);
             }
         }
         let first = !self.loaded;
@@ -1798,6 +1872,13 @@ impl App {
         if self.ticks.is_multiple_of(SETTINGS_EVERY) {
             self.watch_settings();
         }
+        // A status line about a task that has since moved on: gone as soon as it is no longer held.
+        if self.status_stale && !self.status_held() {
+            self.status = None;
+            self.said_for = None;
+            self.status_stale = false;
+        }
+        let fast = self.fast_read();
         let gathered = self
             .notifier
             .tick(&self.all_items, self.now)
@@ -1831,6 +1912,7 @@ impl App {
             fx.extend(self.poll_watches());
         }
         fx.extend(gathered);
+        fx.extend(fast);
         fx
     }
 
@@ -1855,6 +1937,29 @@ impl App {
                 }
             }
         }
+    }
+
+    /// While a status line about the selected task shows ("Building it."), that task is read every FAST_READ, for at
+    /// most FAST_READ_FOR after it was said: the line goes within one such read of its state changing, even when no
+    /// live signal comes. One steps read a time, the same read the screen makes anyway.
+    fn fast_read(&mut self) -> Vec<Effect> {
+        let Some((task, _)) = self.said_for.clone() else {
+            return vec![];
+        };
+        if self.following.as_deref() != Some(task.as_str()) {
+            return vec![];
+        }
+        let recent = self.said_at.is_some_and(|t| t.elapsed() < FAST_READ_FOR);
+        let due = self.fast_read_at.is_none_or(|t| t.elapsed() >= FAST_READ);
+        if self.status.is_none()
+            || !recent
+            || !due
+            || self.selected_id().as_deref() != Some(task.as_str())
+        {
+            return vec![];
+        }
+        self.fast_read_at = Some(std::time::Instant::now());
+        vec![Effect::FetchSteps(task)]
     }
 
     /// The rooms that say when what's on screen changed (the watched panels' too).
@@ -2499,6 +2604,12 @@ impl App {
         }
         match key.code {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
+            // Narrow, a task's panel showing: Esc goes back to the list.
+            KeyCode::Esc if self.narrow && !self.narrow_list => {
+                self.narrow_list = true;
+                self.status = None;
+                vec![]
+            }
             KeyCode::Esc => {
                 self.status = None;
                 vec![]
@@ -2590,6 +2701,12 @@ impl App {
         match action {
             Action::MoveDown => self.select(self.selected + 1),
             Action::MoveUp => self.select(self.selected.saturating_sub(1)),
+            // Narrow, the list showing: Enter opens the selected task's panel.
+            Action::Open if self.narrow && self.narrow_list => {
+                self.narrow_list = false;
+                self.status = None;
+                vec![]
+            }
             Action::Open => {
                 // On a hidden-lines marker in Diff: show them.
                 if diff_here && matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. })) {
@@ -2807,6 +2924,33 @@ impl App {
                 self.say(Tone::Said, "Even splits, and the list at its usual width.");
                 vec![]
             }
+            // Narrow (one column): b swaps between the list and the selected task's panel, and says which is drawn.
+            Action::ListCycle if self.narrow => {
+                self.narrow_list = !self.narrow_list;
+                self.say(
+                    Tone::Said,
+                    if self.narrow_list {
+                        "The list: ⏎ opens the selected task."
+                    } else {
+                        "The task: b shows the list."
+                    },
+                );
+                vec![]
+            }
+            // Zoomed: the list stays set aside until zoom ends, and says so (never "in full" over a panel).
+            Action::ListCycle if self.zoom => {
+                self.list_state = self.list_state.next();
+                let state = match self.list_state {
+                    crate::viewstate::ListState::Full => "in full",
+                    crate::viewstate::ListState::Rail => "a slim rail",
+                    crate::viewstate::ListState::Hidden => "hidden",
+                };
+                self.say(
+                    Tone::Said,
+                    format!("Zoomed: the list comes back {state} when you leave zoom (z)."),
+                );
+                vec![]
+            }
             Action::ListCycle => {
                 self.list_state = self.list_state.next();
                 let words = match self.list_state {
@@ -2984,15 +3128,54 @@ impl App {
             );
             return;
         }
+        if self.narrow {
+            self.say(
+                Tone::Said,
+                "The window is too narrow for the list beside a task: b shows the list.",
+            );
+            return;
+        }
+        if self.zoom {
+            self.say(Tone::Said, "Zoomed: the list is set aside (z comes back).");
+            return;
+        }
         if self.list_state != crate::viewstate::ListState::Full {
             self.say(Tone::Said, "The list isn't shown in full: b shows it.");
             return;
         }
-        let next = i64::from(self.split) + by * 2;
-        self.split = next.clamp(24, 120) as u16;
+        // What the layout can give at this window size (view.rs): the width said is the width drawn.
+        let body = self.areas.body.width;
+        let (min, max) = if body == 0 {
+            (crate::view::LIST_MIN, 120)
+        } else {
+            (crate::view::LIST_MIN, crate::view::list_width_max(body))
+        };
+        let now = if body == 0 {
+            self.split.clamp(min, max)
+        } else {
+            crate::view::list_width_drawn(self.split, body)
+        };
+        if by > 0 && now >= max {
+            self.split = now;
+            self.say(
+                Tone::Said,
+                format!("The list can't get wider at this window size ({now} columns)."),
+            );
+            return;
+        }
+        if by < 0 && now <= min {
+            self.split = now;
+            self.say(
+                Tone::Said,
+                format!("The list can't get narrower ({now} columns)."),
+            );
+            return;
+        }
+        let next = (i64::from(now) + by * 2).clamp(i64::from(min), i64::from(max)) as u16;
+        self.split = next;
         self.say(
             Tone::Said,
-            format!("List {} columns wide: = sets it back.", self.split),
+            format!("List {next} columns wide: = sets it back."),
         );
     }
 
@@ -3052,6 +3235,8 @@ impl App {
     /// Bring line `i` (of `total`) of the focused pane into view.
     fn show_line(&mut self, i: usize, total: usize) {
         match self.tab {
+            // Live: a line above the output is always on screen; one in the output is scrolled to.
+            Tab::Live if i < self.live_head_lines => {}
             Tab::Live => {
                 self.follow = false;
                 self.scroll = total.saturating_sub(i + 3);

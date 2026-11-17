@@ -38,7 +38,9 @@ export const startBuilderHref = (taskId: string | null): string =>
 export const START_BUILDER_COMMAND = "toolroll up";
 /** `build`: the run a sentence names; `provider`: the agent that signed out; `task`: another task it names (an
  * earlier version); `retry`: when Toolroll tries again, in words ("in 4 minutes"). */
-export type NeedContext = { build?: number | null; provider?: string | null; task?: string | null; retry?: string | null };
+export type NeedContext = { build?: number | null; provider?: string | null; task?: string | null; retry?: string | null;
+  /** Which attempt on its task that build was (1: the task's first): said with the build, "attempt 2 (build #5)". */
+  attempt?: number | null };
 
 /** `useReason`: which recorded reasons say what is needed better than the default words. */
 type Need = { sentence: (context: NeedContext) => string; action: NeedAction; useReason?: (reason: string) => boolean;
@@ -46,7 +48,8 @@ type Need = { sentence: (context: NeedContext) => string; action: NeedAction; us
   withReason?: (reason: string) => string };
 const always = (): boolean => true;
 
-const build = (context: NeedContext): string => context.build == null ? "the last build" : `build #${context.build}`;
+const build = (context: NeedContext): string => context.build == null ? "the last build"
+  : context.attempt == null ? `build #${context.build}` : `attempt ${context.attempt} (build #${context.build})`;
 const Build = (context: NeedContext): string => context.build == null ? "The last build" : `Build #${context.build}`;
 
 export const NEEDS: Readonly<Record<NeedKey, Need>> = {
@@ -154,7 +157,10 @@ export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> 
   "plan-next": () => "Waiting to plan.",
   "research-next": () => "Waiting to research.",
   "builders-busy": () => "Waiting its turn: builders are busy.",
-  "retry-later": context => `Waiting: Toolroll retries ${build(context)} ${context.retry ?? "soon"}.`,
+  // With the task's own attempt count (the workbench's words): the attempt that comes next, and the one it follows.
+  "retry-later": context => context.attempt != null && context.build != null
+    ? `Waiting: Toolroll tries attempt ${context.attempt + 1} ${context.retry ?? "soon"}, after attempt ${context.attempt} (build #${context.build}).`
+    : `Waiting: Toolroll retries ${build(context)} ${context.retry ?? "soon"}.`,
   "app-update": () => "Waiting: Toolroll is updating. New work starts after it.",
   "other-task": context => context.task == null ? "Waiting for another task to finish first." : `Waiting for ${context.task} to finish first.`,
 };

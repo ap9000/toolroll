@@ -4,6 +4,44 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.111 — 2026-11-16
+
+The terminal workbench, smoothed by five rounds of first-run testing: failures say why in the agent's own words,
+and you can stop, resume, cancel and retry from the keyboard. Plus a layout pass: resize, collapse, zoom, jump to
+what needs you.
+
+### New
+
+- **Stop, resume and cancel from the workbench.** `x` stops a task that keeps retrying and resumes it; `X` cancels.
+  Each asks first and refuses if the task changed since you looked.
+- **What the agent said.** When an agent fails, Live and Steps show its last lines, cleaned (no paths or keys);
+  they never leave Toolroll in chat, push, email or webhooks.
+- **Layout keys.** `<` `>` resize the list or a split, `=` evens them, `b` cycles the list full, slim rail or hidden,
+  `z` zooms a panel; the list can sit on the right. Your view is remembered per project.
+- **Jump to what needs you** with `!` and `@` (`'` jumps back), and finished tasks keep an unread dot until opened.
+- **Search and edit.** `/` searches the focused pane; `Ctrl-E` opens its text in your editor, with modelines off.
+- **Settings change in the workbench** (theme, density, glyphs, notifications), saved to `tui.toml`.
+- **Task sizing by a quick model call is opt-in** (Settings → General). Off, nothing calls a model before you
+  approve, and uncertain tasks plan first. On, the card says which model sized it.
+
+### Changed
+
+- **An agent that errors stops after one failure** and shows what it said; Retry starts it again. Machine
+  glitches still retry on their own, with "Last build failed · reason · next try in 40s".
+- **Attempts are counted per task** ("attempt 2") everywhere you read them.
+- **The approval card is shorter:** your usual settings are one line, `f` shows them all.
+- **A signed-out agent is never started** in the background; status says "Codex · signed out (run `codex login`)".
+- **Typing in a Terminal pane stays instant** while a build streams output (was up to a second behind).
+
+### Fixed
+
+- **A filed task no longer disappears** from the list while it waits to retry.
+- **First run** opens on "What would you like to work on?" instead of sending you to the browser.
+- **A config folder path too long for the socket** is refused at once with the fix, not after 90 seconds.
+- **Confirmations never take keys before they're drawn** (a tiny window could accept unseen).
+- **Upgrading from the old `standing-orders` package:** the installer removes it first; the docs lead with
+  `npm uninstall -g standing-orders`.
+
 ## 0.9.110 — 2026-11-15
 
 A real terminal screen: run `toolroll` in a terminal and watch, steer, review and accept your agents' work there, in a

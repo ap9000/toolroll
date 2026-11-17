@@ -36,11 +36,14 @@ pub fn unique() -> (Theme, HashMap<(u8, u8, u8), Ink>) {
 /// Everything drawn at w×h: the (text, background) pairs, and the cells whose colours are no role at all.
 pub fn found(app: &mut App, w: u16, h: u16) -> (BTreeSet<(Ink, Ink)>, Vec<String>) {
     let (t, back) = unique();
-    let saved = app.prefs.theme;
+    // The check's own frame leaves the app as the test's frame left it (its theme, and where things were drawn).
+    let saved = (app.prefs.theme, app.areas.clone());
     app.prefs.theme = t;
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
-    app.prefs.theme = saved;
+    (app.prefs.theme, app.areas) = saved;
+    // And the look the next text read outside a frame uses (search, export) is the test's own again.
+    theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
     let ink = |c: Color| match c {
         Color::Rgb(r, g, b) => back.get(&(r, g, b)).copied(),
         _ => None,
