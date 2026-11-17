@@ -5,8 +5,9 @@
  * sign-in relay (F2b) charges every call it forwards to it.
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false (flexible-available.ts): every writer refuses with
- *   `not-available` before it reads or writes anything.
+ * - Admitting or beginning a turn and setting the installation's limits check the interactive agent threads' switch
+ *   (flexible-available.ts flexibleAvailable: off unless a person turned them on) first and refuse `not-available`
+ *   before they read or write anything; charging, finishing, withdrawing and interrupting never do.
  * - One transaction proves the thread's terms still stand for this person at this level (flexible.ts
  *   flexibleDelegationAtUse: lapse, digest, approver standing and generation, starters, level, ceiling, fresh proof),
  *   that the thread is theirs and ready, and that every limit has room, then records the turn. Two admissions racing
@@ -36,7 +37,7 @@
  *   interrupted and still counts.
  */
 import { randomBytes } from "node:crypto";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { threadLevelAllowed } from "./flexible-levels.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
 import { budgetHoldWords, budgetLabel, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
@@ -274,7 +275,7 @@ function validRequest(input: FlexibleTurnRequest): boolean {
  * and its id is returned for the thread start and the relay.
  */
 export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): FlexibleTurnAdmission | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (!validRequest(input)) return refuse("invalid-request");
   return store.transact((): FlexibleTurnAdmission | FlexibleTurnRefusal => {
     const now = timeOf(input.clock);
@@ -416,7 +417,7 @@ function spendRefusal(store: Store, repo: string, owner: string, provider: Flexi
  * it was admitted in has passed, the turn is withdrawn (it counts toward nothing) and refused. It reserves nothing more.
  */
 export function beginFlexibleTurn(store: Store, input: { turn: string; holder: string; clock?: FlexibleClock }): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (!clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal => {
     const now = timeOf(input.clock);
@@ -473,7 +474,6 @@ function priced(store: Store, turn: FlexibleTurnRow, usage: FlexibleUsage, model
  * was cut off or unreadable): what it did read is added, and the call's cost is unknown, never what was read alone.
  */
 export function chargeFlexibleTurn(store: Store, input: { turn: string; usage: FlexibleUsage; model?: string; incomplete?: boolean }): { ok: true; costMicrousd: number; basis: FlexibleCostBasis } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!validUsage(input.usage) || (input.model !== undefined && (typeof input.model !== "string" || !MODEL.test(input.model)))
     || (input.incomplete !== undefined && typeof input.incomplete !== "boolean")) return refuse("invalid-request");
   return store.transact((): { ok: true; costMicrousd: number; basis: FlexibleCostBasis } | FlexibleTurnRefusal => {
@@ -497,7 +497,6 @@ export function chargeFlexibleTurn(store: Store, input: { turn: string; usage: F
  */
 export function finishFlexibleTurn(store: Store, input: { turn: string; holder: string; outcome: "finished" | "unknown"; usage: FlexibleUsage | null; detail?: string; clock?: FlexibleClock }):
   { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if ((input.outcome !== "finished" && input.outcome !== "unknown") || (input.usage !== null && !validUsage(input.usage)) || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal => {
     const turn = flexibleTurn(store, input.turn);
@@ -529,7 +528,6 @@ export function finishFlexibleTurn(store: Store, input: { turn: string; holder: 
  * charged), never $0. Nothing is resumed or replayed.
  */
 export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; clock?: FlexibleClock }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.holder !== "string" || !KEY.test(input.holder) || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal => {
     const at = timeOf(input.clock).toISOString();
@@ -562,7 +560,7 @@ const limitOk = (value: unknown, max: number) => value === null || (typeof value
 /** Set the installation's own Flexible limits across every project (null: none). An instance operator only; a surface
  * that offers it adds its own step-up. Written and recorded in one transaction. */
 export function setFlexibleInstallationCaps(store: Store, input: { by: string; caps: FlexibleInstallationCaps; clock?: FlexibleClock }): { ok: true; caps: FlexibleInstallationCaps } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const caps = input.caps;
   if (typeof caps !== "object" || caps === null || !limitOk(caps.liveThreads, INSTALLATION_LIMITS.liveThreads) || !limitOk(caps.turnsPerDay, INSTALLATION_LIMITS.turnsPerDay)
     || !limitOk(caps.measuredMicrousdPerDay, INSTALLATION_LIMITS.measuredMicrousdPerDay) || !clockOk(input.clock)) return refuse("invalid-request");
@@ -587,7 +585,6 @@ export function setFlexibleInstallationCaps(store: Store, input: { by: string; c
  * matched to the one running): it counts toward nothing and gives back an active mode's start. Only its holder may.
  */
 export function withdrawFlexibleTurn(store: Store, input: { turn: string; holder: string; detail: string; clock?: FlexibleClock }): { ok: true } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true } | FlexibleTurnRefusal => {
     const at = timeOf(input.clock).toISOString();
@@ -607,7 +604,6 @@ export function withdrawFlexibleTurn(store: Store, input: { turn: string; holder
  * transaction that records the verified exit.
  */
 export function interruptFlexibleThreadTurns(store: Store, input: { thread: string; detail: string; clock?: FlexibleClock; except?: string }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal => {
     const at = timeOf(input.clock).toISOString();
@@ -630,7 +626,6 @@ export function interruptFlexibleThreadTurns(store: Store, input: { thread: stri
  * and not yet started is withdrawn (it counts toward nothing). A running one is the stop's to end.
  */
 export function withdrawFlexibleTurnsAbove(store: Store, input: { thread: string; level: FlexibleLevel; detail: string; clock?: FlexibleClock }): { ok: true; withdrawn: number } | FlexibleTurnRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !isFlexibleLevel(input.level) || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; withdrawn: number } | FlexibleTurnRefusal => {
     const at = timeOf(input.clock).toISOString();

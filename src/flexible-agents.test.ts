@@ -27,7 +27,7 @@ import { deleteProject, projectRunning } from "./project-delete.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-14T12:00:00.000Z");
 const STORAGE = { names: [], denies: [] };
@@ -472,7 +472,7 @@ describe("after a crash, and before removal or a project's deletion", () => {
 const SECOND_HOLDER = `
 const env = JSON.parse(process.env.FLEXIBLE_SECOND);
 const { register } = await import("node:module");
-register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const flexibleAvailable = () => true; export const flexibleSetting = () => ({ on: true, by: null, at: null }); export const setFlexibleSetting = () => ({ changed: false }); export const FLEXIBLE_SETTING_ACTION = null;', shortCircuit: true }; return next(specifier, context); }"));
 const { openStore } = await import(env.modules.store);
 const { stopFlexibleThreadAgent } = await import(env.modules.thread);
 const store = openStore(env.file);

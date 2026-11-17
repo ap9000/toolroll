@@ -29,7 +29,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
 const at = (ms: number) => () => new Date(NOW.getTime() + ms);

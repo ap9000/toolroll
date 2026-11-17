@@ -30,7 +30,7 @@ import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, prepareFlexib
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { marker, needs, osFence, q, seatbelt, underSandbox, underSandboxAsync, write } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-14T12:00:00.000Z");
 const STORAGE = { names: [], denies: [] };

@@ -10,9 +10,9 @@
  *
  *   GET  /agents/live/run/<id>       a run's LiveSession window (liveSessionWindow)
  *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window with its facts (liveSessionWindow + thread):
- *                                    its owner's only, refused while Flexible isn't available
+ *                                    its owner's only, refused while interactive agent threads are off
  *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them (liveThreads): refused
- *                                    while Flexible isn't available
+ *                                    while interactive agent threads are off
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
  *   GET  /t/<task>/steps             a task's step cards (stepCards)
  *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile),

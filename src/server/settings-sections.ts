@@ -246,6 +246,8 @@ export type GeneralDeps = {
   readonly installMode: () => InstallModeRead;
   /** Task sizing by a quick model call, as saved (task-sizing.ts taskSizingSetting). */
   readonly taskSizing: () => { on: boolean; chosen: boolean; sizer: "claude" | "jev" | null; available: "claude" | "jev"; byEnv: boolean };
+  /** Interactive agent threads (beta), as saved (flexible-available.ts flexibleSetting). */
+  readonly flexible: () => { on: boolean };
 };
 
 const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
@@ -456,6 +458,33 @@ function taskSizingSection(deps: GeneralDeps): SectionImpl<TaskSizingSummary> {
   };
 }
 
+/** Settings → General's interactive agent threads, what they are and their limits, in one line. */
+export const FLEXIBLE_SETTING_WORDS = "Claude Code only for now. Runs inside Toolroll's sandbox with your Claude sign-in relayed; Toolroll never gives the agent your key.";
+type FlexibleSummary = { on: boolean; canSwitch: boolean };
+/** Interactive agent threads (beta): on or off in one line with what they are; an instance operator turns them on or
+ * off on its change document (a step-up). */
+function flexibleSection(deps: GeneralDeps): SectionImpl<FlexibleSummary> {
+  return {
+    loadSummary: ctx => ({ on: deps.flexible().on, canSwitch: ctx.can["switch"] === true }),
+    render: ({ summary, attrs }) => settingsSection({ id: "flexible", title: "Interactive agent threads (beta)", state: summary.on ? " · on" : " · off", attrs,
+      lead: `${summary.on ? "On" : "Off"}. ${FLEXIBLE_SETTING_WORDS}`,
+      ...(summary.canSwitch ? { right: btn(summary.on ? "Turn off" : "Turn on", { sm: true, href: "/settings/change/flexible" }) } : {}), body: html`` }),
+    refusal: "An instance operator turns interactive agent threads on or off.",
+    renderChange: ({ declaration, summary, problem }) => {
+      const home = sectionHref(declaration);
+      const on = summary?.on === true;
+      const title = "Interactive agent threads (beta)";
+      const words = joinHtml([
+        html`<p>${on ? "Turn them off. No new thread or turn starts, and any thread running now is stopped." : `Turn them on. Press T in the workbench to work with Claude Code in a thread. ${FLEXIBLE_SETTING_WORDS} Each project still needs its own Flexible terms, and each thread shows its terms before it starts.`}</p>`,
+        problem === null ? "" : notice(problem),
+        kitSectionForm({ proof: "flexible-switch", action: "/settings/flexible", id: "flexible-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off interactive agent threads" : "Turn on interactive agent threads", hidden: { enabled: on ? "off" : "on" }, body: html`` }),
+        html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+      ]);
+      return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };
+    },
+  };
+}
+
 /** General's sections, by id (settings-section-table.ts says who sees each). */
 export function generalSections(deps: GeneralDeps): SectionImpls {
   return {
@@ -465,6 +494,7 @@ export function generalSections(deps: GeneralDeps): SectionImpls {
     version: versionSection(deps),
     "install-mode": installModeSection(deps),
     "task-sizing": taskSizingSection(deps),
+    flexible: flexibleSection(deps),
     advanced: advancedSection(),
     "local-mode": localModeSection(deps),
   } as unknown as SectionImpls;

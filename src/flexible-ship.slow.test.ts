@@ -30,7 +30,7 @@ import { FLEXIBLE_CANDIDATE_FIXED, flexibleAdoption } from "./flexible-merge-gua
 import type { Store } from "./store.js";
 import { tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T12:00:00.000Z");
 let world: ThreadWorld, store: Store, token: string, samToken: string, root: string;

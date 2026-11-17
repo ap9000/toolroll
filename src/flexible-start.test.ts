@@ -1,5 +1,5 @@
 /**
- * A thread start's terms card (flexible-start.ts), with the constant mocked on (tests only): what it binds and when no
+ * A thread start's terms card (flexible-start.ts), with the switch mocked on (tests only): what it binds and when no
  * card can be made. The key moves with everything a person says yes to (the project's terms, the network, the person,
  * the model, the message) and with nothing else; an open network's risks are never folded; no card is made for a
  * project that isn't Flexible, whose terms lapsed, or whose terms don't let this person start threads.
@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { FLEXIBLE_RELAY_CREDENTIAL } from "./flexible-relay.js";
 import { writeHeldSecret } from "./tool-secret-store.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
 /** The relay's own Claude credential, of one kind (built here, never a real one). */

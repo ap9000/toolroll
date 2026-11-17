@@ -26,7 +26,7 @@ import { writeHeldSecret } from "../../src/tool-secret-store.js";
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 const scripted = vi.hoisted(() => ({ origin: "http://127.0.0.1:9" }));
 vi.mock("../../src/flexible-relay-upstreams.js", async importOriginal => {
   const real = await importOriginal<typeof import("../../src/flexible-relay-upstreams.js")>();

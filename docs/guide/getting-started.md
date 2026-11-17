@@ -125,7 +125,7 @@ settings. Actions without a key are available there too.
 | Enter | Open the changes for a result, otherwise its live output |
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
 | `n` | New task (in Diff, next note instead) |
-| `T` | New thread |
+| `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
 | `s` | Send the running agent a note |
 | `p` | Pause the build; press again to resume |
 | `x` | Stop a build or its retries; resume retries on a task you held |
@@ -263,6 +263,40 @@ for planning, building and review. Read the before-and-after confirmation
 before saving. These are the same saved choices as Settings → Models.
 Changing models here requires the operator on a solo install; otherwise
 open Settings → Models in the browser with `w`.
+
+### Interactive agent threads (beta)
+
+A thread is Claude Code working with you interactively, inside Toolroll's
+sandbox, instead of a task that plans, builds and stops. Press `T`, type
+your first message, read the thread's terms, then press Enter to start.
+Each thread works in its own copy of the project. Your repository changes
+only when you **Ship**, and only when the project's required check passes
+on that exact commit.
+
+Threads are **off by default**, including after an upgrade. To turn them
+on, open **Settings → General → Interactive agent threads (beta)** in the
+browser, or run `toolroll config set flexible on`. An instance operator
+makes this change. On a solo install, your signed-in session is enough; on
+a team install, enter your password. API tokens, the lead and chat apps
+cannot change it. `toolroll config show flexible` shows the current state.
+Each project also needs its own Flexible terms before threads can start
+there.
+
+Limits for now:
+
+- **Claude Code only.** Codex threads come later.
+- Your Claude sign-in is relayed: the agent's model calls go through
+  Toolroll, and Toolroll never gives the agent your key.
+- Turn limits and the project's network still apply.
+
+Turning threads off takes effect at once. No new thread or turn starts. A
+running thread's next model call is refused, and Toolroll stops its agent
+within a few seconds.
+
+Still being proven before threads can be on by default: permission prompts
+reaching you from Claude Code, Codex inside the sandbox, Linux sandbox
+escape tests in CI, and quarantine of imported work against the real
+sandbox.
 
 ### When a build fails
 

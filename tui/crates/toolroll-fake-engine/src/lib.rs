@@ -1031,7 +1031,7 @@ async fn act(
         if st.threads.is_none() {
             return json_answer(
                 404,
-                json!({ "outcome": "refused", "words": "Flexible projects aren't available in this version. Nothing changed." }),
+                json!({ "outcome": "refused", "words": "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`." }),
             );
         }
         if path.ends_with("/answer") {

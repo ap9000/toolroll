@@ -13,7 +13,7 @@ import { agentFence, PROTECTED_DIRS, PROTECTED_FILES, srtTermsOf } from "./agent
 import { run, type ExecResult } from "./exec.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 // Whether this machine can sandbox, as exec.ts asks it (agent-fence.ts): a test turns it off to see a thread refuse.
 const fenceHere = vi.hoisted(() => ({ off: false }));
 vi.mock("./agent-fence.js", async importOriginal => {

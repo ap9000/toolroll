@@ -209,7 +209,7 @@ fn a_question_that_changed_is_refused_and_nothing_is_sent() {
 }
 
 #[test]
-fn threads_refused_by_the_console_are_never_listed_or_asked_for_again() {
+fn threads_refused_by_the_console_are_not_listed_and_asked_for_again_with_the_next_work() {
     let mut app = App::new(false, None);
     let fx = app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
     assert!(fx.contains(&Effect::FetchThreads));
@@ -223,8 +223,29 @@ fn threads_refused_by_the_console_are_never_listed_or_asked_for_again() {
     assert!(app.threads.off);
     assert_eq!(app.items.len(), before);
     assert_eq!(app.status, None);
+    // Turned on meanwhile (the browser or the CLI): the next work read asks again.
     let fx = app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
-    assert!(!fx.contains(&Effect::FetchThreads));
+    assert!(fx.contains(&Effect::FetchThreads));
+}
+
+#[test]
+fn the_settings_screen_says_whether_threads_are_on_read_only_with_where_to_change_it() {
+    let words = |app: &App| {
+        app.prefs
+            .screen(200, 0, app.threads.answered.then_some(!app.threads.off))
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = App::new(false, None);
+    assert!(words(&app).contains("Agent threads     not known yet (beta). Change it in the browser or with `toolroll config set flexible on`"));
+    app.update(Msg::Threads(Ok(parse(fake::fixture("live-threads.json")))));
+    assert!(words(&app).contains("Agent threads     on (beta). Change it in the browser or with `toolroll config set flexible off`"));
+    app.update(Msg::Threads(Err(ApiError::Refused(
+        "Couldn't read your threads (not-available).".into(),
+    ))));
+    assert!(words(&app).contains("Agent threads     off (beta). Change it in the browser or with `toolroll config set flexible on`"));
 }
 
 #[test]

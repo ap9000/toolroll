@@ -20,7 +20,9 @@
  * expired on the console's existing upkeep tick (tickFlexibleSessions).
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` first.
+ * - Starting a thread, its session, a turn, attaching an agent and answering one check the interactive agent threads'
+ *   switch (flexible-available.ts flexibleAvailable: off unless a person turned them on) first; stopping, ending a
+ *   turn, lowering, the upkeep tick and holder recovery never do, so turning threads off can always stop what runs.
  * - A model never answers: nothing here decides anything. `answerFlexibleRequest` takes a person (`by.kind` "person",
  *   proved by the caller's own session) and the card digest they were shown; F2d re-checks both, the turn, the
  *   connection and the authority at the write.
@@ -34,7 +36,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn, type FlexibleTurnStartInput } from "./flexible-agents.js";
 import {
@@ -135,7 +137,6 @@ function holderLife(holder: string, io: Pick<CustodyIO, "table">): FlexibleHolde
  * runs until a thread's session starts.
  */
 export function openFlexibleSessions(store: Store, input: { pid?: number; io?: CustodyIO } = {}): { ok: true; sessions: FlexibleSessions } | FlexibleSessionRefusal | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const io = input.io ?? defaultCustodyIO();
   const holder = holderOf(input.pid ?? process.pid, io);
   if (holder === null) return refuse("no-holder");
@@ -146,7 +147,6 @@ export function openFlexibleSessions(store: Store, input: { pid?: number; io?: C
 
 /** Close the host: every thread's agent stopped, its answers revoked and its relay closed, then the catalog. */
 export async function closeFlexibleSessions(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): Promise<{ ok: true } | FlexibleSessionRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   for (const thread of [...sessions.threads.keys()]) {
     try { await stopFlexibleThreadSession(store, sessions, { thread, reason: "Toolroll stopped", ...(input.clock === undefined ? {} : { clock: input.clock }) }); } catch { /* recovery settles it */ }
   }
@@ -155,11 +155,36 @@ export async function closeFlexibleSessions(store: Store, sessions: FlexibleSess
   return { ok: true };
 }
 
+/** Whether anything of a thread may still run or be in flight anywhere (a launch not yet exited, a turn admitted or
+ * running): the console opens its host for that even while interactive agent threads are off, so it can stop it. */
+export function flexibleWorkOpen(store: Store): boolean {
+  try {
+    return store.handle.prepare(`SELECT 1 AS open FROM flexible_thread_launch WHERE state <> 'exited'
+      UNION ALL SELECT 1 AS open FROM thread_turn WHERE status IN ('admitted', 'running') LIMIT 1`).get() !== undefined;
+  } catch { return true; }
+}
+
+/**
+ * Interactive agent threads turned off (flexible-available.ts), read now: every thread this host holds is stopped as
+ * stopFlexibleThreadSession stops one (answers revoked, the agent's whole tree stopped and its exit verified, its turn
+ * interrupted, its relay closed). Nothing while they are on. The console's upkeep tick calls this.
+ */
+export async function stopFlexibleThreadsWhenOff(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): Promise<{ ok: true; stopped: number }> {
+  if (flexibleAvailable(store)) return { ok: true, stopped: 0 };
+  let stopped = 0;
+  for (const thread of [...sessions.threads.keys()]) {
+    try {
+      const done = await stopFlexibleThreadSession(store, sessions, { thread, reason: "interactive agent threads were turned off", ...(input.clock === undefined ? {} : { clock: input.clock }) });
+      if (done.ok) stopped++;
+    } catch { /* the next tick tries again; holder recovery settles it after a restart */ }
+  }
+  return { ok: true, stopped };
+}
+
 // ---- upkeep: the tick and holder recovery -------------------------------------------------------------------------------------
 
 /** The console's upkeep tick: answers past their deadlines are settled (F2d expireFlexibleAnswers). */
 export function tickFlexibleSessions(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): { ok: true; uncertain: number } | FlexibleSessionRefusal | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const expired = expireFlexibleAnswers(store, sessions.catalog, input.clock === undefined ? {} : { clock: input.clock });
   if (expired.ok && expired.uncertain > 0) bumpAll(sessions);
   return expired;
@@ -173,7 +198,6 @@ export function tickFlexibleSessions(store: Store, sessions: FlexibleSessions, i
  */
 export async function recoverFlexibleHolders(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}):
   Promise<{ ok: true; recovered: string[]; unresolved: string[]; unknown: string[] } | FlexibleSessionRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const holders = new Set([
     ...store.handle.prepare("SELECT DISTINCT holder FROM flexible_thread_launch WHERE state <> 'exited'").all().map(row => String(row["holder"])),
@@ -197,7 +221,7 @@ export async function recoverFlexibleHolders(store: Store, sessions: FlexibleSes
 
 /** Start a thread's session here: its sign-in relay listens (one per thread, until the session stops). */
 export async function startFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: { thread: string }): Promise<{ ok: true; relayPort: number } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
   const held = sessions.threads.get(input.thread);
   if (held?.relay != null) return { ok: true, relayPort: held.relay.port };
@@ -215,7 +239,6 @@ export async function startFlexibleThreadSession(store: Store, sessions: Flexibl
  */
 export async function stopFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: { thread: string; reason: string; clock?: FlexibleClock }):
   Promise<{ ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string }> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.reason !== "string" || input.reason.length < 1 || input.reason.length > 200) return refuse("invalid-request");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: input.reason, ...clocked });
@@ -371,7 +394,7 @@ function frameFor(session: ThreadSession, requestRef: string, answer: FlexibleAn
  */
 export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, input: { thread: string; turn: string | null; launch: string; stdout: Readable; stdin: Writable;
   exited: (listener: () => void) => void; clock?: FlexibleClock }): { ok: true } | FlexibleSessionRefusal | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.launch !== "string" || !ID.test(input.launch) || (input.turn !== null && (typeof input.turn !== "string" || !ID.test(input.turn)))) return refuse("invalid-request");
   const session = sessions.threads.get(input.thread);
   const thread = flexibleThread(store, input.thread);
@@ -452,7 +475,6 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
  * never the agent's), then every request of that turn still open is revoked. */
 export function endFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, input: { thread: string; turn: string; outcome: "finished" | "unknown"; detail?: string; clock?: FlexibleClock }):
   { ok: true; withdrawn: number; notSent: number } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string } {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.turn !== "string" || !ID.test(input.turn)) return refuse("invalid-request");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const finished = finishFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, outcome: input.outcome, usage: null, ...(input.detail === undefined ? {} : { detail: input.detail }), ...clocked });
@@ -469,7 +491,6 @@ export function endFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, 
  * thread: nothing asked under the old level is answered under the new one. */
 export async function lowerFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; level: FlexibleLevel; clock?: FlexibleClock }):
   Promise<{ ok: true; level: FlexibleLevel; stopped: "none" | "stopped" | "pending"; message: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || !isFlexibleLevel(input.level)) return refuse("invalid-request");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const lowered = await lowerFlexibleThreadLevel(store, { thread: input.thread, by: input.by, level: input.level, ...clocked, io: sessions.io });
@@ -489,7 +510,7 @@ export async function lowerFlexibleThreadSession(store: Store, sessions: Flexibl
  */
 export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, input: { turn: string; message: string; launcher: FlexibleLauncher | null; clock?: FlexibleClock;
   expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started" | "reused"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.turn !== "string" || !ID.test(input.turn) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
   const turn = flexibleTurn(store, input.turn);
@@ -562,7 +583,7 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
   /** The network digest of the terms card the person was shown (flexible-start.ts): the first launch is held to it. */
   expectNetwork?: string;
   seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; thread: string; turn: string; replayed: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.repo !== "string" || typeof input.digest !== "string" || typeof input.model !== "string" || typeof input.message !== "string" || input.message.trim() === ""
     || typeof input.startKey !== "string" || !/^[0-9a-f]{32}$/.test(input.startKey) || (input.billing !== "subscription" && input.billing !== "api-key")) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
@@ -586,6 +607,9 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
           return { ok: false as const, reason: "start-in-progress", message: "This thread is still starting. Nothing new was started; look at your threads in a moment." };
         }
       }
+      // Interactive agent threads still on, read again here, in the transaction that records the thread and admits its
+      // first turn (admitFlexibleTurn reads it once more).
+      if (!flexibleAvailable(store)) return refuse("not-available");
       const billing = flexibleRelayBilling(store);
       if (!billing.ok) return billing;
       if (billing.billing !== input.billing) return { ok: false as const, reason: "billing-changed", message: "Toolroll's Claude sign-in for Flexible threads changed since the terms were shown. Look at them again before starting. Nothing was started." };
@@ -644,7 +668,7 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
   /** The person's own session, still held (its saved authority, re-read): bound to the decision and checked again
    * inside F2d's decision and its final attempt transaction. */
   held: () => boolean }): Promise<{ ok: true; state: "sent" } | FlexibleSessionRefusal | FlexibleAnswerRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.request !== "string" || !ID.test(input.request) || typeof input.shownDigest !== "string"
     || typeof input.choice !== "object" || input.choice === null || typeof input.held !== "function") return refuse("invalid-request");
   // The thread's owner only, at their account's current generation, checked here before anything is decided; F2d
@@ -731,7 +755,6 @@ function ownThread(store: Store, thread: string, viewer: { name: string }) {
  */
 export function flexibleThreadLiveOf(store: Store, sessions: FlexibleSessions, input: { thread: string; viewer: { name: string }; file: "main" | "sub"; cursor: string | null }):
   { ok: true; live: boolean; window: FlexibleWindow; facts: FlexibleThreadFacts } | FlexibleSessionRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const thread = ownThread(store, input.thread, input.viewer);
   if (thread === null) return refuse("thread-unknown");
   const session = sessions.threads.get(thread.id);
@@ -752,7 +775,6 @@ export function flexibleThreadLiveOf(store: Store, sessions: FlexibleSessions, i
 /** The owner's ready threads, newest first, as the work list shows them. */
 export function flexibleThreadsOf(store: Store, sessions: FlexibleSessions, input: { owner: string }):
   { ok: true; threads: (FlexibleThreadFacts & { id: string; repo: string; live: boolean; waiting: number })[] } | FlexibleSessionRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.owner !== "string") return refuse("invalid-request");
   const rows = store.handle.prepare("SELECT id FROM flexible_thread WHERE created_by = ? AND state = 'ready' ORDER BY created_at DESC, id LIMIT 50").all(input.owner).map(row => String(row["id"]));
   const threads = rows.map(id => flexibleThread(store, id)).filter(one => one !== null).map(thread => {
@@ -767,7 +789,6 @@ export function flexibleThreadsOf(store: Store, sessions: FlexibleSessions, inpu
  * theirs (`canAccess`, the console's own access check). The same refusal for unseen and gone. */
 export function admitFlexibleThreadOwner(store: Store, sessions: FlexibleSessions, input: { thread: string; viewer: { name: string }; canAccess: (repo: string) => boolean }):
   { ok: true; repo: string } | FlexibleSessionRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const thread = ownThread(store, input.thread, input.viewer);
   return thread === null || !input.canAccess(thread.repo) ? refuse("thread-unknown") : { ok: true, repo: thread.repo };
 }
@@ -783,7 +804,6 @@ export const FLEXIBLE_WAITERS_MAX = 64;
 /** How many changes this host has seen for `thread` (0 before any): a read takes it BEFORE it reads, then waits for it
  * to move, so a change between the read and the wait is never missed. */
 export function flexibleThreadChangeOf(sessions: FlexibleSessions, input: { thread: string }): { ok: true; change: number } | FlexibleSessionRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
   return { ok: true, change: sessions.changes.get(input.thread) ?? 0 };
 }
@@ -795,7 +815,6 @@ export function flexibleThreadChangeOf(sessions: FlexibleSessions, input: { thre
  */
 export function waitFlexibleThreadChange(sessions: FlexibleSessions, input: { thread: string; since: number; ms: number; abandoned?: (stop: () => void) => void }):
   Promise<{ ok: true; woke: "changed" | "timeout" | "busy" | "abandoned" }> | FlexibleSessionRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || !Number.isSafeInteger(input.since) || !Number.isSafeInteger(input.ms) || input.ms < 0 || input.ms > FLEXIBLE_WAIT_MS) return refuse("invalid-request");
   if ((sessions.changes.get(input.thread) ?? 0) !== input.since) return Promise.resolve({ ok: true, woke: "changed" });
   const waiting = [...sessions.waiters.values()].reduce((sum, set) => sum + set.size, 0);

@@ -30,8 +30,9 @@
  *   the send failed and shippable again).
  *
  * The ledger records the press ("flexible ship approved"), the arming, the completion and the merge ("flexible
- * merged") apart. Nothing here works while FLEXIBLE_AVAILABLE is false. The only caller outside the engine is the watch
- * loop's pass (operate.ts), which refuses at once while it is false; no route, CLI, MCP tool or chat action reaches it.
+ * merged") apart. Ship's terms, the Ship itself and an armed merge check interactive agent threads' switch first
+ * (flexible-available.ts); settling, cancelling, sending back and removing never do. The only caller outside the engine
+ * is the watch loop's pass (operate.ts); no route, CLI, MCP tool or chat action reaches it.
  *
  * Not createCodingHandoff (coding-handoff.ts): that hand-off needs an installation operator and a desktop coding
  * session in the coding catalog, and proves a worktree sharing the project's git directory, none of which a thread has
@@ -40,7 +41,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE, flexibleNetworkOf, flexibleStanding, flexibleTwoPerson, type FlexibleNetwork } from "./flexible.js";
 import { flexibleThread, flexibleThreadBranch, withFlexibleThreadLock, type FlexibleThreadRow } from "./flexible-thread.js";
 import { flexibleImportRef, flexibleTaskBranch, importFlexibleCandidate, readFlexibleCandidate, removeFlexibleImportRefs, settleInterruptedImport, type FlexibleImportRefusal } from "./flexible-import.js";
@@ -229,7 +230,7 @@ export type FlexibleShipText = { title?: string; goal?: string; acceptance?: unk
  */
 export async function flexibleShipTerms(store: Store, input: { thread: string; by: string; text?: FlexibleShipText; runner?: Runner }):
   Promise<{ ok: true; terms: FlexibleShipTerms; digest: string; summary: ApprovalSummary } | FlexibleShipRefusal | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const thread = flexibleThread(store, input.thread);
   if (thread === null) return refuse("thread-unknown");
   const standing = ownerStanding(store, thread, input.by);
@@ -264,7 +265,7 @@ export type FlexibleShipped = { ok: true; ship: string; seq: number; taskId: str
  */
 export async function shipFlexible(store: Store, input: { thread: string; by: string; token: string; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner }):
   Promise<FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const first = flexibleThread(store, input.thread);
   if (first === null) return refuse("thread-unknown");
   const proved = personNow(store, input.by, input.token, first.repo);
@@ -392,7 +393,6 @@ function readRow(row: Record<string, unknown> | undefined): FlexibleShipRow | nu
 
 /** Every Ship of a thread, newest first: what the thread's Ship view shows (an imported Ship with no task among them). */
 export function flexibleShipsOf(store: Store, thread: string): { ok: true; ships: FlexibleShipRow[] } | FlexibleShipRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const rows = store.handle.prepare("SELECT * FROM flexible_ship WHERE thread = ? ORDER BY seq DESC").all(thread) as Record<string, unknown>[];
   return { ok: true, ships: rows.map(readRow).filter((one): one is FlexibleShipRow => one !== null) };
 }
@@ -486,7 +486,7 @@ export type FlexibleArmedStep = { ok: true; state: "waiting" | "completed" | "me
  * and the merge refuses; once reserved, the outcome is recorded, or read back from GitHub when it's uncertain.
  */
 export async function mergeArmedFlexible(store: Store, input: { taskId: string; root: string; exec?: PublishExec; clock?: () => Date; runner?: Runner }): Promise<FlexibleArmedStep> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const clock = input.clock ?? (() => new Date());
   const found = rowOfTask(store, input.taskId);
   if (found === null) return refuse("not-found");
@@ -672,7 +672,6 @@ async function settleUncertainMerges(store: Store, exec: PublishExec | undefined
  * where they hold this Ship's candidate, and the Ship ends `failed` (interrupted), shippable again as n+1.
  */
 export async function reconcileFlexibleShips(store: Store, input: { now: Date; runner?: Runner; lockWaitMs?: number }): Promise<{ ok: true; settled: number } | FlexibleShipRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const stuck = (store.handle.prepare("SELECT * FROM flexible_ship WHERE state = 'approved' ORDER BY thread, seq").all() as Record<string, unknown>[]);
   let settled = 0;
   for (const raw of stuck) {
@@ -703,10 +702,9 @@ export type FlexibleArmedReport = { ok: true; reconciled: number; completed: num
 
 /**
  * The watch loop's pass (operate.ts): settle interrupted Ships, then take one step on every armed or completed Ship.
- * Refuses at once while Flexible isn't available.
+ * An armed merge waits while interactive agent threads are off; settling runs whatever the switch says.
  */
 export async function flexibleArmedPass(store: Store, input: { root: string; exec?: PublishExec; clock?: () => Date; runner?: Runner }): Promise<FlexibleArmedReport | FlexibleShipRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const clock = input.clock ?? (() => new Date());
   const runner = input.runner === undefined ? {} : { runner: input.runner };
   const reconciled = await reconcileFlexibleShips(store, { now: clock(), ...runner });
@@ -741,7 +739,6 @@ function ownersShip(store: Store, taskId: string, by: { name: string; generation
 /** Cancel: the person stops a Ship's armed merge for good. Its check task is cancelled where it still can be; a pull
  * request already open stays open, unmerged. */
 export function cancelFlexibleShip(store: Store, input: { taskId: string; by: { name: string; generation: number }; now: Date }): { ok: true } | FlexibleShipRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (machineActing()) return refuse("machine-proof");
   return store.transact(() => {
     const ship = ownersShip(store, input.taskId, input.by);
@@ -759,7 +756,6 @@ export function cancelFlexibleShip(store: Store, input: { taskId: string; by: { 
  */
 export function sendBackFlexible(store: Store, input: { taskId: string; by: { name: string; generation: number }; feedback: string; now: Date }):
   { ok: true; thread: string; feedback: string } | FlexibleShipRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (machineActing()) return refuse("machine-proof");
   const feedback = input.feedback.trim();
   if (feedback === "" || feedback.length > 20_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(feedback)) return refuse("invalid-request");
@@ -782,7 +778,6 @@ export function sendBackFlexible(store: Store, input: { taskId: string; by: { na
  */
 export async function removeFlexibleImport(store: Store, input: { ship: string; by: { name: string; generation: number }; now: Date; runner?: Runner }):
   Promise<{ ok: true } | FlexibleShipRefusal | FlexibleImportRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (machineActing()) return refuse("machine-proof");
   const ship = readRow(store.handle.prepare("SELECT * FROM flexible_ship WHERE id = ?").get(input.ship) as Record<string, unknown> | undefined);
   if (ship === null) return refuse("not-found");

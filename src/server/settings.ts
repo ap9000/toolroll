@@ -67,7 +67,7 @@ import { resolvePhaseAgent } from "../agentconfig.js";
 import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
-import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
+import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "../flexible-available.js";
 import { enableFlexible, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleSettingsView, isFlexibleLevel, lowerFlexible, turnFlexibleOff } from "../flexible.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
@@ -2596,6 +2596,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-about": leadAbout,
     "settings.lead-quick": leadQuick,
     "settings.task-sizing": taskSizingAct,
+    "settings.flexible": flexibleSwitchAct,
     "settings.lead-promise-cancel": leadPromiseCancel,
     "settings.lead-on": leadOn,
     "settings.code-map": codeMapAct("switch"),
@@ -2839,6 +2840,29 @@ ${postForm("/settings/chat-approval/save", html`\
     const read = taskSizingSetting(store);
     return done("said", wanted === "on" ? `Task sizing is on. Each new task is sized by ${read.available === "jev" ? "Jev through your OpenRouter key" : "a quick call to Claude Haiku on your plan"} before you approve.` : "Task sizing is off. No model call before you approve; uncertain tasks get a plan first.");
   }
+  // Settings → General: interactive agent threads (beta), on or off. An instance operator's step-up from a browser sign-in
+  // (a solo session stands in, a team needs the password; a token never reaches this route), or the laptop owner's own
+  // `flexible-switch` act, proved and written in one transaction with its ledger row. Turned off, the console's upkeep
+  // tick stops any thread still running (engine-api.ts), and the sign-in relay refuses its next model call at once.
+  async function flexibleSwitchAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.flexibleSwitch);
+    const done = sayTo(response, "/settings/general?section=flexible");
+    const back = sayTo(response, "/settings/change/flexible");
+    if (["password", "enabled"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const wanted = body.get("enabled");
+    if (wanted !== "on" && wanted !== "off") return back("problem", "Choose on or off.");
+    const saved = store.transact((): boolean => {
+      if (!store.isInstanceOperator(who.name)) return false;
+      if (who.authority !== "full" && localActNow(store, "flexible-switch") === null) return false;
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+      setFlexibleSetting(store, wanted === "on", who.name, now);
+      return true;
+    });
+    if (!saved) return back("problem", "Enter your Toolroll password to change interactive agent threads.");
+    return done("said", wanted === "on" ? "Interactive agent threads are on. Press T in the workbench to start one with Claude Code." : "Interactive agent threads are off. Any thread still running is stopped.");
+  }
   // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
   // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a
   // second person, a token for someone else or a chat-app user added meanwhile refuses it.
@@ -2972,13 +2996,13 @@ ${postForm("/settings/chat-approval/save", html`\
     return back("said", on ? "Advanced features show in your menus." : "Advanced features are out of your menus. They still open from here.");
   }
   // Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Refused before anything is read
-  // while this build doesn't offer Flexible (FLEXIBLE_AVAILABLE). Turning it on is an approver's credential act over
+  // while interactive agent threads are off (flexible-available.ts). Turning it on is an approver's credential act over
   // exactly the terms the page showed (flexible.ts rebuilds them and compares the digest inside its write); lowering
   // and turning off are one click for an approver of the project.
   async function projectFlexible(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
-    if (!FLEXIBLE_AVAILABLE) return refuse(response, who, 403, FLEXIBLE_UNAVAILABLE, "/settings/project");
+    if (!flexibleAvailable(store)) return refuse(response, who, 403, FLEXIBLE_UNAVAILABLE, "/settings/project");
     const body = readForm(posted, CONSOLE_FORMS.projectFlexible);
     const repo = body.get("repo") ?? "";
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
@@ -3020,6 +3044,7 @@ ${postForm("/settings/chat-approval/save", html`\
     localModeOn: () => localModeOf(store)?.enabled === true,
     installMode: () => installModeNow(store),
     taskSizing: () => taskSizingSetting(store),
+    flexible: () => flexibleSetting(store),
   });
   /** What Computers' sections read (settings plan F2), none of it from the request. */
   const computersDeps = {

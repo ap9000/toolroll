@@ -23,7 +23,7 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../s
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence, q } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date();
 const STORAGE = { names: [], denies: [] };
