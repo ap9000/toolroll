@@ -4,6 +4,39 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.113 — 2026-11-17
+
+The terminal workbench for people coming from herdr: a clear first screen, a build shell that can't take your keys by
+mistake, approving a sent-back plan without leaving the terminal, and interactive agent threads as a beta switch.
+
+### New
+
+- **Interactive agent threads (beta).** Settings → General, or `toolroll config set flexible on` (your password).
+  Off by default; Claude Code only for now; `T` starts a thread. Turning it off stops running threads.
+- **Approve a sent-back plan in the workbench.** After you send a result back, press `a` on the revision to read its
+  terms and approve them; `w` still opens it in your browser.
+- **Watch running tasks** from the command palette (`:`): every running task in its own panel.
+- **Coming from herdr?** `docs/guide/from-herdr.md` maps the keys and says what differs.
+
+### Changed
+
+- **"Take over" is now "Open build shell"** and asks first: it opens a shell in a separate copy of the build and
+  never controls the running agent.
+- **Quitting asks** whether to stop the agents or keep them running, and prints how to reopen.
+- **Panel headers lead with the task,** its state and cost; long titles wrap instead of being cut.
+- **`toolroll view reset` keeps your keys** and names its backup by date; nothing is backed up when already default.
+- **The README opens with the terminal loop** and a real screenshot of the workbench.
+
+### Fixed
+
+- **Open build shell on a task with no saved build** refuses at once; your typing can no longer reach workbench keys.
+- **A sent-back task no longer closes the workbench** with "isn't what this version expects"; one task's
+  unreadable steps only affect that task.
+- **"Building it." clears** when a task moves on to waiting, retrying, Ready or failed.
+- **The mail inbox never skips an email** when two checks overlap.
+- **Threads start in a project `toolroll` added itself,** and the new-task box shows while a thread is open.
+- **`tui.toml` with both `list-side` and `list_side`** reads back the same after a change (the dashed spelling wins).
+
 ## 0.9.112 — 2026-11-16
 
 A security release: keys and folder paths in an agent's output never leave Toolroll. Plus asking your agent to restyle
