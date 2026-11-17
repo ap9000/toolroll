@@ -18,6 +18,34 @@ separately (never added together, and unknown never shown as $0) by project,
 model, role and person, with the most expensive runs and a CSV export. Your
 monthly limits are set there too.
 
+## Task sizing
+
+Task sizing by a quick model call is **off by default**, including on an
+upgrade if you never chose it. With it off, sizing makes no model call
+before you approve. On the automatic route, clearly tiny changes can build
+without a plan; anything uncertain plans first. The approval card says
+**Planned first: task sizing is off**. An explicit choice such as **Just code**
+still takes the route you chose.
+
+Turn it on in Settings → General to let the named classifier estimate a new
+task's size and risk before approval. This is a model call and may use your
+plan or credits. The approval card names the model that sized the task.
+Toolroll uses only the classifier you agreed to; it does not silently
+switch to another one if availability changes.
+
+The terminal command changes the same setting:
+
+```sh
+toolroll config set task-sizing on
+toolroll config set task-sizing off
+toolroll config show task-sizing
+```
+
+Set `TOOLROLL_NO_TASK_CLASSIFIER=1` in Toolroll's environment to prevent the
+classifier call in that process, whatever the saved setting says. It does
+not rewrite the saved choice. Task sizing is separate from the terminal's
+`tui.toml` appearance settings.
+
 ## Quality modes
 
 The **quality mode** setting selects routine or stronger configured agents.

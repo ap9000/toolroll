@@ -5,7 +5,8 @@ with a person in charge of every decision that matters.
 
 ## Start
 
-- [Getting started](getting-started.md): install, sign in, first project, first task, the terminal, the desktop app
+- [Getting started](getting-started.md): install, sign in, first project and task;
+  [terminal keys, settings and Agents](getting-started.md#the-terminal-workbench)
 - [Tasks, results and revisions](tasks.md): the loop, the lead, Ready and Complete, what is in the current build
 - [Chat and your phone](chat-and-phone.md): the lead, subagents, Telegram buttons, Slack, Discord and Teams
 
