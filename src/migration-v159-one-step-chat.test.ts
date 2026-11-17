@@ -14,7 +14,6 @@ const T0 = new Date("2026-11-09T00:00:00.000Z");
 
 describe("v159", () => {
   test("a fresh database has the column and tables; a v158 one gains them, keeps its rows (NULL), and may update in place", () => {
-    expect(SCHEMA_VERSION).toBe(171);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(159);
     expect(updateSafeSchema(158)).toBe(true);
     expect(V159_STEPS).toEqual(["one-step-chat-tables", "one-step-chat-columns"]);
@@ -45,10 +44,10 @@ describe("v159", () => {
     expect(steps).toEqual(expect.arrayContaining([...V159_STEPS]));
     for (const table of V159_TABLES) expect(tables(upgraded.handle)).toContain(table);
     expect(upgraded.handle.prepare("SELECT id, via, turn FROM fast_preview").get()).toEqual({ id: "p1", via: "console", turn: null });
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     upgraded.close();
     const again = openStore(file);
-    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     again.close();
   });
 });

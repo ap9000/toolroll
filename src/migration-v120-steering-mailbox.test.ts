@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { BUILT_IN, openStore, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V120_ADDED_COLUMNS, verifiedAuthor, type Store } from "./store.js";
+import { SCHEMA_VERSION, BUILT_IN, openStore, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V120_ADDED_COLUMNS, verifiedAuthor, type Store } from "./store.js";
 import { historySnapshot, changedHistory } from "./toolroll-update.js";
 
 let dir: string, store: Store | undefined;
@@ -31,7 +31,7 @@ test.each([119, -119])("v%s: a steering note's mailing and reading are added, an
   expect(updateSafeSchema(119)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(120);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
   expect(store.listSteerNotes(ref)).toMatchObject([{ note: "prefer the smaller diff", mailedRun: null, mailedAt: null, ackedAt: null, deliveredAt: null }]);
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });

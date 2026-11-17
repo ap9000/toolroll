@@ -44,7 +44,6 @@ describe("update-safe migrations", () => {
     // v126 only adds a table (task sources) and receipt, trigger and card columns, checked the same way.
     // v127 only adds a table (the running console's instance record).
     // v128 adds the personal lead queue (a table) and lead_message.pending (a column whose saved value is declared).
-    expect(SCHEMA_VERSION).toBe(171);
     // v129 adds how a run went: run.agent_turns and a lead request's cache tokens (saved rows NULL) and run_efficiency (a table).
     // v133 only adds a project's sandbox settings (a table) and the fence policy a flow was made under (saved rows NULL).
     // v134 only adds a vote's proof and a flow decision's authority (saved rows NULL), checked the same way.
@@ -209,7 +208,7 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     copy.close();
     const store = openStore(backup);
     try {
-      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(171);
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
       expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: seeded.chain.through, head: seeded.chain.head });
       const moved = store.handle.prepare(`SELECT f.name, t.state, t.next_at, json_extract(t.config_json, '$.schedule') AS schedule, json_extract(t.config_json, '$.order.goal') AS goal,
         json_extract(t.config_json, '$.order.costCeilingUsd') AS ceiling, json_extract(t.config_json, '$.order.routine') AS routine, t.last_outcome

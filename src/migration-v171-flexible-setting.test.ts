@@ -33,7 +33,6 @@ const version = (store: ReturnType<typeof openStore>) => store.handle.prepare("S
 
 describe("v171", () => {
   test("fresh: the table, no row, so interactive agent threads are off; update-safe", () => {
-    expect(SCHEMA_VERSION).toBe(171);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(171);
     expect(updateSafeSchema(170)).toBe(true);
     expect(V171_STEPS).toEqual(["flexible-setting"]);
@@ -48,7 +47,7 @@ describe("v171", () => {
     const file = v170File();
     const upgraded = openStore(file);
     try {
-      expect(version(upgraded)).toBe(171);
+      expect(version(upgraded)).toBe(SCHEMA_VERSION);
       expect(flexibleAvailable(upgraded)).toBe(false);
       expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM flexible_setting").get()?.["n"]).toBe(0);
       expect(upgraded.lookupRef("kept")).not.toBeNull();
@@ -60,7 +59,7 @@ describe("v171", () => {
     expect(() => openStore(file, { migrationStep: one => { if (one === "flexible-setting") throw new Error("crash"); } })).toThrow(/crash/);
     const resumed = openStore(file);
     try {
-      expect(version(resumed)).toBe(171);
+      expect(version(resumed)).toBe(SCHEMA_VERSION);
       expect(flexibleAvailable(resumed)).toBe(false);
     } finally { resumed.close(); }
   });
