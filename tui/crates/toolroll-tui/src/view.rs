@@ -189,23 +189,26 @@ fn upper_first(s: &str) -> String {
 }
 
 /// "claude sonnet · Building now · 4m 12s · $0.31 · attempt 2"; waiting, "Waiting to retry · 21s · after attempt 2".
-fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
+/// Short of room (`w` cells), its cost comes first and the model's name goes first: "$0.31 · Building now · 4m 12s ·
+/// attempt 2".
+fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
     let card = steps
         .cards
         .iter()
         .flatten()
         .find(|c| c.key == "build" && (c.state == "current" || !c.runs.is_empty()))?;
     let mut parts = vec![];
-    if let Some(agent) = &card.agent {
-        parts.push(
-            clean(&format!(
-                "{} {}",
-                agent.provider,
-                agent.model.as_deref().unwrap_or("")
-            ))
-            .trim()
-            .to_string(),
-        );
+    let agent = card.agent.as_ref().map(|agent| {
+        clean(&format!(
+            "{} {}",
+            agent.provider,
+            agent.model.as_deref().unwrap_or("")
+        ))
+        .trim()
+        .to_string()
+    });
+    if let Some(agent) = &agent {
+        parts.push(agent.clone());
     }
     let wait = build_wait(steps, card);
     if let Some(words) = wait {
@@ -216,8 +219,12 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     if let Some(secs) = build_clock(app, steps, card) {
         parts.push(duration(secs));
     }
-    if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
-        parts.push(format!("${cost:.2}"));
+    let cost = card
+        .cost_usd
+        .filter(|_| app.prefs.settings.show_costs)
+        .map(|c| format!("${c:.2}"));
+    if let Some(cost) = &cost {
+        parts.push(cost.clone());
     }
     // The task's own attempt number (the console's build ids count across tasks); waiting, the one it follows.
     if let Some(n) = card
@@ -230,6 +237,13 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
         } else {
             format!("attempt {n}")
         });
+    }
+    if width(&parts.join(" · ")) > w {
+        // Not all of it fits: the model's name goes, and the cost moves to the front.
+        parts.retain(|p| Some(p) != agent.as_ref() && Some(p) != cost.as_ref());
+        if let Some(cost) = cost {
+            parts.insert(0, cost);
+        }
     }
     Some(Line::from(Span::styled(parts.join(" · "), dim())))
 }
@@ -1087,7 +1101,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("  "),
         badge,
     ])];
-    match app.steps.as_ref().and_then(|s| facts_line(app, s)) {
+    match app.steps.as_ref().and_then(|s| facts_line(app, s, w)) {
         Some(l) => head_lines.push(fit_line(l, w)),
         None => head_lines.push(Line::from(Span::styled(fit(&item.detail, w), dim()))),
     }
@@ -2780,10 +2794,21 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[PreviousFile, NextFile], "file"));
             v
         }
+        Tab::Terminal
+            if app
+                .pane_here()
+                .is_some_and(|p| p.link == crate::term::Link::Live) =>
+        {
+            vec![
+                (&[TakeOver], "type in it"),
+                (&[ScrollUp, ScrollDown], "scroll"),
+                (&[Copy], "copy"),
+                (&[MoveDown, MoveUp], "task"),
+                (&[NextTab], "next tab"),
+            ]
+        }
         Tab::Terminal if app.pane_here().is_some() => vec![
             (&[TakeOver], "Open build shell"),
-            (&[ScrollUp, ScrollDown], "scroll"),
-            (&[Copy], "copy"),
             (&[MoveDown, MoveUp], "task"),
             (&[NextTab], "next tab"),
         ],
@@ -3819,6 +3844,16 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         spans.push(Span::styled(format!(" · {place}"), dim()));
     }
     f.render_widget(Paragraph::new(fit_line(Line::from(spans), w)), head);
+    // A terminal's window only while a shell is there (live, or its socket attaching to it): opening, ended or closed,
+    // the state above says so and nothing drawn looks like somewhere to type.
+    if !matches!(
+        pane.link,
+        crate::term::Link::Live | crate::term::Link::Attaching
+    ) {
+        pane.area = Rect::default();
+        pane.drawn = false;
+        return;
+    }
     // The terminal sits in its own window: a rounded outline, the ground behind its cells.
     let inset = if fills { ground() } else { base() };
     sheet::paint(f.buffer_mut(), frame, inset);
@@ -3830,9 +3865,6 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         height: frame.height.saturating_sub(2),
     };
     pane.area = body;
-    if matches!(pane.link, crate::term::Link::Opening) {
-        return;
-    }
     crate::term::draw(f.buffer_mut(), body, pane.parser.screen(), inset);
     pane.drawn = body.width > 0 && body.height > 0;
     if typing {
