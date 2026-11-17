@@ -48,7 +48,7 @@ import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO, flexibleTurnLaunched } from "./flexible-launch.js";
 import { flexibleRelayBilling, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
-import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
+import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
 import type { FlexibleLauncher } from "./flexible-launcher.js";
@@ -164,21 +164,98 @@ export function flexibleWorkOpen(store: Store): boolean {
   } catch { return true; }
 }
 
+/** Whether any thread was ever made here: the console opens its host for a person's read of past threads only then. */
+export function flexibleThreadsExist(store: Store): boolean {
+  try { return store.handle.prepare("SELECT 1 AS made FROM flexible_thread LIMIT 1").get() !== undefined; } catch { return true; }
+}
+
 /**
- * Interactive agent threads turned off (flexible-available.ts), read now: every thread this host holds is stopped as
- * stopFlexibleThreadSession stops one (answers revoked, the agent's whole tree stopped and its exit verified, its turn
- * interrupted, its relay closed). Nothing while they are on. The console's upkeep tick calls this.
+ * The console's upkeep (every tick): stops that must happen and haven't been verified yet, tried again until they are.
+ * - Interactive agent threads off (flexible-available.ts, read now): every thread this host holds, and every launch of
+ *   this holder not yet exited (the durable record, whatever this host's memory says), is stopped as
+ *   stopFlexibleThreadSession stops one: answers revoked, the agent's whole tree stopped and its exit verified, its turn
+ *   interrupted, its relay closed.
+ * - On: every launch of this holder a stop left unresolved (its exit not verified) is stopped again, that very launch
+ *   only (a replacement started since is left alone).
+ * A session whose stop isn't verified stays here (stopFlexibleThreadSession keeps it) and is tried again next tick; it
+ * goes only once its launch is proved exited. `stopped`: verified this time; `pending`: still not.
  */
-export async function stopFlexibleThreadsWhenOff(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): Promise<{ ok: true; stopped: number }> {
-  if (flexibleAvailable(store)) return { ok: true, stopped: 0 };
-  let stopped = 0;
-  for (const thread of [...sessions.threads.keys()]) {
-    try {
-      const done = await stopFlexibleThreadSession(store, sessions, { thread, reason: "interactive agent threads were turned off", ...(input.clock === undefined ? {} : { clock: input.clock }) });
-      if (done.ok) stopped++;
-    } catch { /* the next tick tries again; holder recovery settles it after a restart */ }
+export async function settleFlexibleStops(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): Promise<{ ok: true; stopped: number; pending: number }> {
+  const clocked = input.clock === undefined ? {} : { clock: input.clock };
+  let stopped = 0, pending = 0;
+  if (!flexibleAvailable(store)) {
+    const durable = store.handle.prepare("SELECT DISTINCT thread FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").all(sessions.holder).map(row => String(row["thread"]));
+    for (const thread of new Set([...sessions.threads.keys(), ...durable])) {
+      try {
+        const done = await stopFlexibleThreadSession(store, sessions, { thread, reason: "interactive agent threads were turned off", ...clocked });
+        if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
+      } catch { pending++; }
+    }
+    return { ok: true, stopped, pending };
   }
-  return { ok: true, stopped };
+  const unresolved = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state = 'unresolved' ORDER BY started_at, id").all(sessions.holder)
+    .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));
+  for (const one of unresolved) {
+    try {
+      const done = await stopFlexibleThreadAgent(store, { id: one.thread, reason: "its earlier stop wasn't verified", ...clocked, io: sessions.io, expect: { launch: one.launch, holder: sessions.holder } });
+      if (!("reason" in done) && done.ok) {
+        stopped++;
+        // A session kept only for this stop (no agent, no relay) goes once it is verified.
+        const kept = sessions.threads.get(one.thread);
+        if (kept !== undefined && kept.agent === null && kept.relay === null) { sessions.threads.delete(one.thread); bump(sessions, one.thread); }
+      } else pending++;
+    } catch { pending++; }
+  }
+  return { ok: true, stopped, pending };
+}
+
+/** What `toolroll config set flexible off` stopped: each thread whose agent's processes were proved gone (`network`: its
+ * console still holds the launch's network handles and closes them on its next tick), and each it couldn't stop, with
+ * the processes still running (by number) and why. */
+export type FlexibleStopReport = { stopped: { thread: string; network: boolean }[]; survivors: { thread: string; pids: number[]; why: string }[] };
+
+/**
+ * Interactive agent threads turned off from outside any console (the CLI): every launch on the record not yet exited is
+ * stopped here, through the same custody as everywhere else (flexible-thread.ts stopFlexibleThreadAgent: only that
+ * launch's recorded process identities, its whole tree stopped and its exit verified; never a process found by name),
+ * whoever holds it. A holder proved gone (a console that crashed) is settled as holder recovery settles it: its network
+ * marked closed, its turns interrupted, its open answers recovered. A live console's launch has its processes stopped
+ * and its turn interrupted here; that console closes its network handles on its next upkeep tick. Nothing here checks
+ * the switch: it only stops.
+ */
+export async function stopFlexibleThreadsEverywhere(store: Store, input: { reason: string; io?: CustodyIO; clock?: FlexibleClock }): Promise<FlexibleStopReport> {
+  const io = input.io ?? defaultCustodyIO();
+  const clocked = input.clock === undefined ? {} : { clock: input.clock };
+  const report: FlexibleStopReport = { stopped: [], survivors: [] };
+  const lives = new Map<string, FlexibleHolderLife>();
+  const lifeOf = (holder: string): FlexibleHolderLife => { if (!lives.has(holder)) lives.set(holder, holderLife(holder, io)); return lives.get(holder)!; };
+  const launches = store.handle.prepare("SELECT id, thread, holder FROM flexible_thread_launch WHERE state <> 'exited' ORDER BY started_at, id").all()
+    .map(row => ({ launch: String(row["id"]), thread: String(row["thread"]), holder: String(row["holder"]) }));
+  for (const one of launches) {
+    const gone = lifeOf(one.holder) === "gone";
+    let done: Awaited<ReturnType<typeof stopFlexibleThreadAgent>>;
+    try { done = await stopFlexibleThreadAgent(store, { id: one.thread, reason: input.reason, io, ...clocked, ...(gone ? { holderGone: true } : {}), expect: { launch: one.launch, holder: one.holder } }); }
+    catch (error) { report.survivors.push({ thread: one.thread, pids: [], why: error instanceof Error ? error.message : "its stop failed" }); continue; }
+    if ("reason" in done) { report.survivors.push({ thread: one.thread, pids: [], why: done.message }); continue; }
+    if (done.ok) { report.stopped.push({ thread: one.thread, network: false }); continue; }
+    if (done.survivors.length === 0 && done.blockers.length === 0) {
+      // Every process of it proved gone; only the live console's own network handles are left to it. The turn ends now.
+      interruptFlexibleThreadTurns(store, { thread: one.thread, detail: `the thread's agent was stopped (${input.reason})`, ...clocked });
+      report.stopped.push({ thread: one.thread, network: true });
+    } else report.survivors.push({ thread: one.thread, pids: [...done.survivors], why: done.why });
+  }
+  // A crashed console's turns and answers, once nothing of it is left running: settled as holder recovery settles them.
+  const holders = new Set(store.handle.prepare("SELECT DISTINCT holder FROM thread_turn WHERE status IN ('admitted', 'running')").all().map(row => String(row["holder"])));
+  const goneHolders = [...new Set([...holders, ...launches.map(one => one.holder)])].filter(holder => lifeOf(holder) === "gone"
+    && store.handle.prepare("SELECT 1 AS open FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").get(holder) === undefined);
+  if (goneHolders.length > 0) {
+    for (const holder of goneHolders) interruptFlexibleTurnsOf(store, { holder, ...clocked });
+    const opened = openFlexibleAnswerCatalog(store);
+    if (opened.ok) {
+      try { for (const holder of goneHolders) recoverFlexibleAnswersOf(store, opened.catalog, { holder, ...clocked }); } finally { opened.catalog.close(); }
+    }
+  }
+  return report;
 }
 
 // ---- upkeep: the tick and holder recovery -------------------------------------------------------------------------------------
@@ -246,11 +323,14 @@ export async function stopFlexibleThreadSession(store: Store, sessions: Flexible
   const session = sessions.threads.get(input.thread);
   if (session?.agent != null) { try { session.agent.stdin.end(); } catch { /* already closed */ } }
   const stopped = await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, ...clocked, io: sessions.io });
+  // Its exit not verified (custody left the launch unresolved): the session stays here as the retry target, with no
+  // agent and no relay, until the upkeep proves it gone (settleFlexibleStops). Anything else ends it.
+  const unverified = !("reason" in stopped) && !stopped.ok;
   if (session !== undefined) {
     session.agent = null;
     try { await session.relay?.close(); } catch { /* closed already */ }
     session.relay = null;
-    sessions.threads.delete(input.thread);
+    if (!unverified) sessions.threads.delete(input.thread);
   }
   bump(sessions, input.thread);
   if ("reason" in stopped) return stopped;

@@ -1,5 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
+import { stopFlexibleThreadsEverywhere } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -15276,17 +15277,32 @@ async function flexibleConfig(action: string, value: string | undefined, repoGiv
   };
   if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
   if (action !== "set" || (value !== "on" && value !== "off")) return fail(write, json, command, "usage", "`toolroll config set flexible on|off --as <you> --token <t>`", EXIT.usage);
-  const personOnly = "Only an instance operator, as a person with their password, turns interactive agent threads on or off; never a token, the lead or a chat app.";
+  const personOnly = value === "on"
+    ? "Only an instance operator, with their password typed for this command, turns interactive agent threads on; never a remembered sign-in, a token, the lead or a chat app."
+    : "Only an instance operator, as a person with their password, turns interactive agent threads off; never a token, the lead or a chat app.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
   const acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, command, "usage", "changing interactive agent threads takes `--as <you> --token <t>`", EXIT.usage);
   const saved = store.transact(() => {
-    const verified = authenticateApprover(store, acting.name, acting.token);
+    // On relays the person's Claude sign-in: a credential act (a password typed for this command). Off only narrows.
+    const verified = value === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token);
     if (!verified.ok || !personProof(verified.method) || !store.isInstanceOperator(acting.name)) return false;
     setFlexibleSetting(store, value === "on", acting.name, clock());
     return true;
   });
   if (!saved) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
   const shown = said();
-  return succeed(write, json, command, shown.payload, shown.lines);
+  if (value === "on") return succeed(write, json, command, shown.payload, shown.lines);
+  // Off: every thread's agent still running anywhere (a console's, or one a crashed console left) is stopped here, by
+  // its recorded process identities only, its exit verified and its turn interrupted. The console's upkeep stays the
+  // second line for what can't be proved gone yet.
+  const report = await stopFlexibleThreadsEverywhere(store, { reason: "interactive agent threads were turned off", clock });
+  const short = (thread: string) => thread.slice(0, 8);
+  const lines = [
+    ...shown.lines(),
+    ...(report.stopped.length === 0 ? [] : [`Stopped ${report.stopped.length === 1 ? "1 running thread" : `${report.stopped.length} running threads`}: every process of ${report.stopped.length === 1 ? "its agent" : "their agents"} is gone and ${report.stopped.length === 1 ? "its turn" : "their turns"} ended (${report.stopped.map(one => short(one.thread)).join(", ")}).`]),
+    ...(report.stopped.some(one => one.network) ? ["The console that started them closes their network on its next check, within a few seconds."] : []),
+    ...report.survivors.map(one => `Thread ${short(one.thread)} couldn't be stopped yet${one.pids.length === 0 ? "" : `: process${one.pids.length === 1 ? "" : "es"} ${one.pids.join(", ")} still running`} (${one.why}). A running console keeps trying every few seconds; run this command again to try now.`),
+  ];
+  return succeed(write, json, command, { ...shown.payload, stopped: report.stopped, survivors: report.survivors }, () => lines);
 }

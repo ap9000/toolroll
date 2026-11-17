@@ -20,7 +20,7 @@ import { flexibleDigestOf, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, type Flexibl
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
 import { FLEXIBLE_RELAY_CREDENTIAL, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
-import { answerFlexibleRequest, attachFlexibleAgent, openFlexibleSessions, startFlexibleThreadSession, stopFlexibleThreadsWhenOff, type FlexibleSessions } from "./flexible-session.js";
+import { answerFlexibleRequest, attachFlexibleAgent, openFlexibleSessions, startFlexibleThreadSession, settleFlexibleStops, type FlexibleSessions } from "./flexible-session.js";
 import { writeHeldSecret } from "./tool-secret-store.js";
 import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
@@ -117,14 +117,15 @@ describe("Settings → General, and a thread through the console", () => {
     expect(page).toContain('href="/settings/change/flexible"');
     expect(await (await fetch(`${base}/settings/change/flexible`, { headers: { cookie } })).text()).toContain('action="/settings/flexible"');
     expect(await start({})).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
-    expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
+    // A read: it answers, says threads are off, and lists none (none was ever made).
+    expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ version: 1, on: false, threads: [] });
     expect(FLEXIBLE_UNAVAILABLE).toBe(OFF);
     expect(held.starts).toEqual([]);
   });
 
   test("a team install: only the password typed now changes it; a token never reaches the switch", async () => {
     for (const typed of ["", "not-it"]) {
-      expect(said(await post("/settings/flexible", { enabled: "on", password: typed }))).toMatch(/^\/settings\/change\/flexible\?problem=Enter your Toolroll password/);
+      expect(said(await post("/settings/flexible", { enabled: "on", password: typed }))).toMatch(/^\/settings\/change\/flexible\?problem=Turning interactive agent threads on needs your Toolroll password, typed now/);
       expect(flexibleAvailable(world.store)).toBe(false);
     }
     expect(said(await post("/settings/flexible", { enabled: "maybe", password }))).toContain("Choose on or off");
@@ -142,11 +143,22 @@ describe("Settings → General, and a thread through the console", () => {
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
   });
 
-  test("solo: the session stands in for the step-up", async () => {
+  test("solo: turning on still needs the password typed now (it relays your Claude sign-in); turning off, the session stands in", async () => {
     expect(said(await post("/settings/install-mode/solo", { password }))).not.toContain("problem");
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
-    expect(said(await post("/settings/flexible", { enabled: "on", password: "" }))).toContain("Interactive agent threads are on");
+    // The change document asks for the password even here.
+    expect(await (await fetch(`${base}/settings/change/flexible`, { headers: { cookie } })).text()).toMatch(/name="password"/);
+    const before = ledger(world).length;
+    expect(said(await post("/settings/flexible", { enabled: "on", password: "" }))).toContain("needs your Toolroll password, typed now");
+    expect(flexibleAvailable(world.store)).toBe(false);
+    expect(ledger(world)).toHaveLength(before);
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
     expect(flexibleAvailable(world.store)).toBe(true);
+    expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
+    expect(said(await post("/settings/flexible", { enabled: "off", password: "" }))).toContain("Interactive agent threads are off");
+    expect(flexibleAvailable(world.store)).toBe(false);
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
     expect((await (await fetch(`${base}/settings/general`, { headers: { cookie } })).text())).toContain(`On. ${FLEXIBLE_SETTING_WORDS.replaceAll("'", "&#39;")}`);
   });
 
@@ -167,6 +179,24 @@ describe("Settings → General, and a thread through the console", () => {
     setFlexibleSetting(world.store, false, "alex", new Date());
     expect(await start({ terms: card.key })).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
     expect(held.starts).toHaveLength(1);
+  });
+
+  test("off: the person still reads their own threads already made (the list says off); nobody else's, and no answer goes", async () => {
+    // A thread made while they were on, then off again.
+    setFlexibleSetting(world.store, true, "alex", new Date());
+    const made = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW });
+    if (!made.ok) throw new Error(made.message);
+    setFlexibleSetting(world.store, false, "alex", new Date());
+    const read = async (path: string) => { const answer = await fetch(`${base}${path}`, { headers: { cookie } }); return { status: answer.status, body: await answer.json() as Record<string, unknown> }; };
+    const listed = await read("/agents/live/threads");
+    expect(listed).toMatchObject({ status: 200, body: { on: false, threads: [{ id: made.thread.id, live: false }] } });
+    const window = await read(`/agents/live/thread/${made.thread.id}`);
+    expect(window).toMatchObject({ status: 200, body: { session: { kind: "thread", id: made.thread.id }, live: false } });
+    expect(await read(`/agents/live/thread/${"b".repeat(32)}`)).toEqual({ status: 404, body: { error: "thread" } });
+    const answer = await fetch(`${base}/agents/live/thread/${made.thread.id}/answer`, { method: "POST", redirect: "manual", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place" },
+      body: new URLSearchParams({ csrf, request: "d".repeat(32), card: "1".repeat(64), decision: "decline" }).toString() });
+    expect(answer.status).toBe(404);
+    expect(await answer.json()).toEqual({ outcome: "refused", words: OFF });
   });
 
   test("the CLI twin: config show/set flexible, a person's password only, never a token or the lead", async () => {
@@ -273,7 +303,7 @@ describe("turned off while a thread runs: stopped safely", () => {
     expect(world.store.handle.prepare("SELECT status, reason FROM thread_relay_call ORDER BY id").all().map(row => ({ ...row }))).toEqual([{ status: "completed", reason: null }, { status: "refused", reason: "threads-off" }]);
   });
 
-  test("nothing new is recorded or answered, and the upkeep stops the agent: answers withdrawn, turn interrupted, relay closed", async () => {
+  test("session wiring with an agent that already ended: nothing new is recorded or answered, and the stop withdraws answers, interrupts the turn, closes the relay (flexible-stop.slow.test.ts stops a running tree)", async () => {
     const stdout = new PassThrough(), stdin = new PassThrough(), exit = new EventEmitter();
     expect(attachFlexibleAgent(world.store, sessions, { thread, turn, launch, stdout, stdin, exited: listener => { exit.once("exit", listener); }, clock: () => NOW })).toEqual({ ok: true });
     stdout.write(`${JSON.stringify(bash("r1"))}\n`);
@@ -281,7 +311,7 @@ describe("turned off while a thread runs: stopped safely", () => {
     expect(states()).toEqual([["r1", "pending"]]);
     const request = String(raw.prepare("SELECT id FROM thread_request WHERE request_ref = 'r1'").get()!["id"]);
     // On: the upkeep stops nothing.
-    expect(await stopFlexibleThreadsWhenOff(world.store, sessions)).toEqual({ ok: true, stopped: 0 });
+    expect(await settleFlexibleStops(world.store, sessions)).toEqual({ ok: true, stopped: 0, pending: 0 });
     expect(sessions.threads.has(thread)).toBe(true);
     setFlexibleSetting(world.store, false, "alex", new Date());
     stdout.write(`${JSON.stringify(bash("r2"))}\n`);
@@ -291,7 +321,7 @@ describe("turned off while a thread runs: stopped safely", () => {
       choice: { decision: "accept" } });
     expect(answered).toMatchObject({ ok: false, reason: "not-available", message: OFF });
     const relayPort = sessions.threads.get(thread)!.relay!.port;
-    expect(await stopFlexibleThreadsWhenOff(world.store, sessions)).toEqual({ ok: true, stopped: 1 });
+    expect(await settleFlexibleStops(world.store, sessions)).toEqual({ ok: true, stopped: 1, pending: 0 });
     expect(sessions.threads.has(thread)).toBe(false);
     expect(states()).toEqual([["r1", "withdrawn"]]);
     expect(stdin.writableEnded).toBe(true);

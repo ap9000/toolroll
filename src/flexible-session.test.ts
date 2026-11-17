@@ -138,9 +138,11 @@ describe("the relay's lifetime per thread", () => {
     await settled();
     expect(states()).toEqual([["r1", "pending"]]);
     const stopped = await stopFlexibleThreadSession(world.store, sessions, { thread: T1, reason: "the person stopped it", clock: () => NOW });
-    expect(stopped).toMatchObject({ ok: true });
+    // The stand-in launch isn't held by this process, so its network can't be proved closed: the stop isn't verified, and
+    // the session stays as the upkeep's retry target (settleFlexibleStops), with no agent and no relay.
+    expect(stopped).toMatchObject({ ok: true, stopped: false });
     expect(states()).toEqual([["r1", "withdrawn"]]);
-    expect(sessions.threads.has(T1)).toBe(false);
+    expect(sessions.threads.get(T1)).toMatchObject({ agent: null, relay: null });
     expect(await fetch(`http://127.0.0.1:${first.relayPort}/v1/messages`, { method: "POST" }).then(() => "answered", () => "closed")).toBe("closed");
     expect(agent.stdin.writableEnded).toBe(true);
   });

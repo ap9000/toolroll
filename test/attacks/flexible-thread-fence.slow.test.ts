@@ -63,7 +63,7 @@ const LAUNCH = { provider: "claude", level: "full", turn: null, holder: "attack"
  * group, behind the start gate), with `done` settling when it ends and the launch's custody settled (every process it
  * left found and stopped, the exit verified), so the thread can launch again. */
 async function startInThread(id: string, script: string, proxyPort = 1): Promise<{ pid: number; done: Promise<Ran> }> {
-  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", script]);
+  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", script]);
   if (!launch.ok) throw new Error(launch.message);
   const child = launch.child;
   child.stdin!.end(); // nothing more on its input: the gate line was all
@@ -446,7 +446,7 @@ describe("attack: a Flexible thread leaving its fence", () => {
     let pid = 0;
     const ran = join(paths.tmp, "agent-ran"); // a place the agent may write
     // The registration's write throws (as a full disk or a damaged database would), after the spawn.
-    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`],
+    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`],
       process.platform, { afterSpawn: spawned => {
         pid = spawned;
         // A slow registration (a busy disk): long enough for the agent to have run had nothing held it back.
@@ -478,7 +478,7 @@ describe("attack: a Flexible thread leaving its fence", () => {
     await done;
     // Called first, the removal holds the lock: the launch after it finds the thread gone and starts nothing.
     const removed = removeFlexibleThread(world.store, { id, by: "alex", now: NOW });
-    const late = flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
+    const late = flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"]);
     expect(await removed).toEqual({ ok: true, keepRef: "removed" });
     expect(await late).toMatchObject({ ok: false, reason: "thread-not-ready" });
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread_launch WHERE state <> 'exited'").get()!["n"]).toBe(0);

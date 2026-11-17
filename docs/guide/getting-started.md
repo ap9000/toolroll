@@ -276,8 +276,9 @@ on that exact commit.
 Threads are **off by default**, including after an upgrade. To turn them
 on, open **Settings → General → Interactive agent threads (beta)** in the
 browser, or run `toolroll config set flexible on`. An instance operator
-makes this change. On a solo install, your signed-in session is enough; on
-a team install, enter your password. API tokens, the lead and chat apps
+makes this change and types their password, on every install: turning
+threads on relays your Claude sign-in. Turning them off needs only your
+signed-in session on a solo install. API tokens, the lead and chat apps
 cannot change it. `toolroll config show flexible` shows the current state.
 Each project also needs its own Flexible terms before threads can start
 there.
@@ -289,9 +290,11 @@ Limits for now:
   Toolroll, and Toolroll never gives the agent your key.
 - Turn limits and the project's network still apply.
 
-Turning threads off takes effect at once. No new thread or turn starts. A
-running thread's next model call is refused, and Toolroll stops its agent
-within a few seconds. Turning down is never blocked: with threads off, a
+Turning threads off takes effect at once. No new thread or turn starts, and a
+running thread's next model call is refused. `toolroll config set flexible
+off` stops every running thread's agent itself and says what it stopped;
+an open console also stops them within a few seconds and keeps retrying any
+it couldn't confirm. Your past threads stay readable. Turning down is never blocked: with threads off, a
 project's Flexible terms still show and can be lowered or turned off
 (Settings → Project, or `toolroll project flexible lower|off`); only turning
 them on waits for the switch.

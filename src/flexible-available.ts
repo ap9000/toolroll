@@ -4,21 +4,25 @@
  *
  * - Off unless its one row says on: a new install and an upgraded one start with threads off, and a row that can't be
  *   read is off. No environment variable, config file, flag, token or request field reads or changes it.
- * - Only a person's ordinary setting step-up changes it (the Settings route and `toolroll config set flexible`: an
- *   instance operator; a solo session stands in, a team needs the password, never a token), proved and written in one
- *   transaction with its ledger row (setFlexibleSetting).
- * - Every entry point that starts something new checks it first (`if (!flexibleAvailable(store)) return refuse(...)`):
- *   a thread, a turn, an agent launch, the sign-in relay and each of its model calls, a request recorded from an agent,
- *   a person's answer, a project's Flexible terms turned on, the start's terms card, Ship and its merge. The thread
- *   start reads it again inside the transaction that records the thread and admits its first turn.
- * - What settles or stops what already exists never checks it, so turning threads off can always clean up: stopping an
- *   agent, revoking and expiring answers, finishing, withdrawing and interrupting turns, holder recovery, and narrowing a
- *   project's terms or a thread's level.
- * - Turned off while a thread runs, the thread is stopped safely: its relay refuses every new model call at once (the
- *   check is inside each call's own reservation transaction), nothing new is admitted, recorded or answered, and the
- *   console's next upkeep tick (every five seconds; engine-api.ts) stops each running agent: answers revoked, the whole
- *   process tree stopped and its exit verified, the turn interrupted, the relay closed. Wherever it was turned off: the
- *   browser or the CLI.
+ * - Only an instance operator, as a person, changes it (the Settings route and `toolroll config set flexible`; never a
+ *   token, the lead or a chat app), proved and written in one transaction with its ledger row (setFlexibleSetting). On
+ *   relays the person's Claude sign-in to agents, so it is a credential act: a password typed now on every install,
+ *   solo included. Off only narrows: the ordinary step-up (a solo session stands in, a team needs the password).
+ * - Every entry point that starts or grants something checks it first (`if (!flexibleAvailable(store)) return ...`): a
+ *   thread, a turn, the sign-in relay, a request recorded from an agent, a person's answer, a project's Flexible terms
+ *   turned on, the start's terms card, an armed merge. Where an await comes between that check and the write, the write's
+ *   own transaction reads it again: the thread start (the transaction that records the thread and admits its turn),
+ *   each relay call (its reservation), a launch's start gate (its final reservation, flexible-launch.ts
+ *   reserveLaunchOpen), arming a Ship, completing it and reserving its merge (flexible-ship.ts).
+ * - What settles, stops, narrows or reads never checks it: stopping an agent, revoking and expiring answers, finishing,
+ *   withdrawing and interrupting turns, holder recovery, settling Ships and merges, narrowing a project's terms, a
+ *   thread's level or the installation's limits, a person's reads of their own threads, inspecting a thread's candidate
+ *   and its quarantined import.
+ * - Turned off while a thread runs, the thread is stopped safely: its relay refuses every new model call at once, no
+ *   launch's gate opens, nothing new is admitted, recorded or answered, and the agent is stopped by its recorded
+ *   process identities (answers revoked, the whole tree stopped and its exit verified, the turn interrupted, the relay
+ *   closed): by `toolroll config set flexible off` itself (whoever holds it, a crashed console's included), and by every
+ *   console's upkeep tick (every five seconds; engine-api.ts), which keeps retrying any stop not yet verified.
  *
  * Claude Code only for now: a thread's agent is Claude (flexible-session.ts startFlexibleThread), and a Codex thread is
  * refused (flexible-thread.ts flexibleThreadCodexProfile; the engine API's thread start). Left before the default can

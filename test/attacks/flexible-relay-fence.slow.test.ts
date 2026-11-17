@@ -133,6 +133,7 @@ describe("attack: reaching the sign-in relay from inside the thread fence", () =
         id, network: { proxyPort: egress!.port, token: egress!.secret, ...(relayPort === undefined ? {} : { relayPort }) }, storage: STORAGE,
         proxyEnv: proxyEnv(egress!, "proxy-only"), launch: { provider: "claude", level: "full", turn: admitted.turn, holder: "h1" },
         agentEnvFor: launchId => ({ RELAY_URL: url, RELAY_TOKEN: relay!.issue({ thread: id, turn: admitted.turn, launch: launchId }).token, DIRECT_PORTS: JSON.stringify([upstream, other]) }),
+        beforeOpen: () => null,
       }, process.execPath, ["-e", PROBE]);
       if (!launch.ok) throw new Error(launch.message);
       launch.child.stdin!.end();

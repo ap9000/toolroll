@@ -477,7 +477,7 @@ function flexibleSection(deps: GeneralDeps): SectionImpl<FlexibleSummary> {
       const words = joinHtml([
         html`<p>${on ? "Turn them off. No new thread or turn starts, and any thread running now is stopped." : `Turn them on. Press T in the workbench to work with Claude Code in a thread. ${FLEXIBLE_SETTING_WORDS} Each project still needs its own Flexible terms, and each thread shows its terms before it starts.`}</p>`,
         problem === null ? "" : notice(problem),
-        kitSectionForm({ proof: "flexible-switch", action: "/settings/flexible", id: "flexible-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off interactive agent threads" : "Turn on interactive agent threads", hidden: { enabled: on ? "off" : "on" }, body: html`` }),
+        kitSectionForm({ proof: on ? "flexible-switch" : "flexible-switch-on", action: "/settings/flexible", id: "flexible-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off interactive agent threads" : "Turn on interactive agent threads", hidden: { enabled: on ? "off" : "on" }, body: html`` }),
         html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
       ]);
       return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };

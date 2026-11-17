@@ -2840,10 +2840,12 @@ ${postForm("/settings/chat-approval/save", html`\
     const read = taskSizingSetting(store);
     return done("said", wanted === "on" ? `Task sizing is on. Each new task is sized by ${read.available === "jev" ? "Jev through your OpenRouter key" : "a quick call to Claude Haiku on your plan"} before you approve.` : "Task sizing is off. No model call before you approve; uncertain tasks get a plan first.");
   }
-  // Settings → General: interactive agent threads (beta), on or off. An instance operator's step-up from a browser sign-in
-  // (a solo session stands in, a team needs the password; a token never reaches this route), or the laptop owner's own
-  // `flexible-switch` act, proved and written in one transaction with its ledger row. Turned off, the console's upkeep
-  // tick stops any thread still running (engine-api.ts), and the sign-in relay refuses its next model call at once.
+  // Settings → General: interactive agent threads (beta), on or off, by an instance operator from a browser sign-in (a
+  // token never reaches this route), proved and written in one transaction with its ledger row. On relays the person's
+  // Claude sign-in to agents: a credential act, a password typed now on every install (solo included; never a session
+  // standing in, the laptop owner's act or Passwordless). Off only narrows: the ordinary step-up (a solo session stands
+  // in, a team needs the password) or the laptop owner's own `flexible-switch` act. Turned off, the console's upkeep tick
+  // stops any thread still running (engine-api.ts), and the sign-in relay refuses its next model call at once.
   async function flexibleSwitchAct(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
@@ -2855,12 +2857,16 @@ ${postForm("/settings/chat-approval/save", html`\
     if (wanted !== "on" && wanted !== "off") return back("problem", "Choose on or off.");
     const saved = store.transact((): boolean => {
       if (!store.isInstanceOperator(who.name)) return false;
-      if (who.authority !== "full" && localActNow(store, "flexible-switch") === null) return false;
-      if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+      if (wanted === "on") {
+        if (!authenticateCredential(who, body.get("password") ?? "").ok) return false;
+      } else {
+        if (who.authority !== "full" && localActNow(store, "flexible-switch") === null) return false;
+        if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+      }
       setFlexibleSetting(store, wanted === "on", who.name, now);
       return true;
     });
-    if (!saved) return back("problem", "Enter your Toolroll password to change interactive agent threads.");
+    if (!saved) return back("problem", wanted === "on" ? "Turning interactive agent threads on needs your Toolroll password, typed now." : "Enter your Toolroll password to change interactive agent threads.");
     return done("said", wanted === "on" ? "Interactive agent threads are on. Press T in the workbench to start one with Claude Code." : "Interactive agent threads are off. Any thread still running is stopped.");
   }
   // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider

@@ -564,7 +564,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@13": 1,
     // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
     "src/server/engine-api.ts#<module>": 2,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@12": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@13": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
@@ -1041,6 +1041,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>telegramTokenSave@92": 1,
     "src/server/settings.ts#createSettingsHandlers@1>emailAct@93><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>googleAct@94><anonymous>@1": 1,
+    // Interactive agent threads on relays the person's Claude sign-in: a credential act, solo included (reviewed new site).
+    "src/server/settings.ts#createSettingsHandlers@1>flexibleSwitchAct@117>saved:store.transact(_)@2": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -1056,6 +1058,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#projectFallbackCommand@233": 1,
     // Flexible projects (flexible.ts, F1): turning it on is a credential act.
     "src/operate.ts#projectFlexibleCommand@256": 1,
+    // `config set flexible on`: a credential act (reviewed new site).
+    "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
     "src/operate.ts#projectWritesCommand@143": 1,
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).

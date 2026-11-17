@@ -7,9 +7,10 @@
  * result's diff as the task page. A handler re-proves only what can change after admission (the task still in view,
  * the run still this person's to see), and reads nothing for a caller it refuses.
  *
- * A LiveSession is a run or a Flexible thread: the same window and cursor. Every thread road refuses (not available),
- * before anything is looked up, while interactive agent threads are off (flexible-available.ts, read at each request),
- * and this console opens no thread host then unless something of a thread may still run (it stops it). With them on: a thread is its owner's only (the session re-read, the thread's creator, its project still
+ * A LiveSession is a run or a Flexible thread: the same window and cursor. While interactive agent threads are off
+ * (flexible-available.ts, read at each request) the roads that start or answer refuse (not available) before anything is
+ * looked up; a person's reads of their own past threads still answer (the list says threads are off). This console
+ * opens no thread host for an install that never made a thread. With them on: a thread is its owner's only (the session re-read, the thread's creator, its project still
  * theirs, before the read and again after it), and an answer goes only through F2d's decide and send with the person's
  * own session (flexible-session.ts answerFlexibleRequest), naming the card digest they were shown. A new thread is a
  * person's yes to its terms card (flexible-start.ts), named by the card's key and proved as an approval's yes is; its
@@ -23,8 +24,8 @@ import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPO
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { flexibleAvailable } from "../flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleWorkOpen, openFlexibleSessions,
-  recoverFlexibleHolders, startFlexibleThread, stopFlexibleThreadsWhenOff, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
+import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+  recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { flexibleStartCard } from "../flexible-start.js";
 import { summaryLines } from "../approval-summary.js";
@@ -175,9 +176,12 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return flexible;
   };
   if (flexibleAvailable(store) || flexibleWorkOpen(store)) openHost();
-  /** The host for a thread road: null (the road refuses, before anything is looked up) while interactive agent threads
-   * are off, read now. */
+  /** The host for a road that starts or answers: null (the road refuses, before anything is looked up) while interactive
+   * agent threads are off, read now. */
   const threadsOn = (): FlexibleSessions | null => flexibleAvailable(store) ? openHost() : null;
+  /** The host for a person's read of their own threads, whatever the switch says: null only while no thread was ever
+   * made here (nothing to read, and no host opened for it). */
+  const threadsRead = (): FlexibleSessions | null => flexible ?? (flexibleAvailable(store) || flexibleThreadsExist(store) ? openHost() : null);
   /** Threads turned off are being stopped (one pass at a time). */
   let stopping = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
@@ -190,13 +194,13 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string): void => json(response, status, { outcome, words });
 
   /** GET /agents/live/thread/<id>[?file=&cursor=&known=]: a Flexible thread's LiveSession window and its facts, its
-   * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. Refused, before anything is
-   * looked up, while interactive agent threads are off (flexible-available.ts). */
+   * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. A read: answered while
+   * interactive agent threads are off too (flexible-available.ts), under the same owner checks. */
   async function liveThread(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
-    const flexible = threadsOn();
-    if (flexible === null) return refusal(response, 404, "not-available");
+    const flexible = threadsRead();
+    if (flexible === null) return refusal(response, 404, "thread");
     const known = url.searchParams.get("known"), wait = url.searchParams.get("wait");
     const plain = new URL(url.href);
     plain.searchParams.delete("known");
@@ -226,18 +230,19 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "liveSessionWindow", body);
   }
 
-  /** GET /agents/live/threads: the person's own Flexible threads, as the work list shows them. Refused while interactive
-   * agent threads are off. */
+  /** GET /agents/live/threads: the person's own Flexible threads, as the work list shows them, and whether interactive
+   * agent threads are on (`on`): a read, answered while they are off too (with the threads already made). */
   async function liveThreads(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
-    const flexible = threadsOn();
-    if (flexible === null) return refusal(response, 404, "not-available");
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     if (rereadBrowser(runtime, request, who) === null) return refusal(response, 403, "session");
+    const on = flexibleAvailable(store);
+    const flexible = threadsRead();
+    if (flexible === null) return sendChecked(response, 200, "liveThreads", { version: ENGINE_API_VERSION, on, threads: [] } satisfies LiveThreads);
     const read = flexibleThreadsOf(store, flexible, { owner: who.name });
-    if (!read.ok) return refusal(response, 404, "not-available");
-    const body: LiveThreads = { version: ENGINE_API_VERSION, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
+    if (!read.ok) return refusal(response, 404, "thread");
+    const body: LiveThreads = { version: ENGINE_API_VERSION, on, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
       .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null })) };
     return sendChecked(response, 200, "liveThreads", body);
   }
@@ -412,15 +417,16 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   }
 
   return {
-    /** The console's upkeep tick (serve.ts): a thread's answers past their deadlines are settled, and with interactive
-     * agent threads turned off (read now) every thread this host holds is stopped. Nothing without a host. */
+    /** The console's upkeep tick (serve.ts, every five seconds): a thread's answers past their deadlines are settled, and
+     * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
+     * now), every thread and launch of this host's. Nothing without a host. */
     upkeep: (): void => {
       const host = flexible;
       if (host === null) return;
       try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }
-      if (stopping || host.threads.size === 0) return;
+      if (stopping) return;
       stopping = true;
-      void stopFlexibleThreadsWhenOff(store, host).catch(() => { /* the next tick tries again */ }).finally(() => { stopping = false; });
+      void settleFlexibleStops(store, host).catch(() => { /* the next tick tries again */ }).finally(() => { stopping = false; });
     },
     /** Shutdown: every thread here stopped, its answers revoked and its relay closed, then every proxy the launcher still
      * holds. Nothing while off. */

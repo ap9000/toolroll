@@ -125,7 +125,9 @@ export const PROOF_INVENTORY: readonly ProofRow[] = [
 
   // Credential acts: a password typed now or a one-use re-check; never Passwordless.
   { id: "install-solo", action: "Say it's just you", routes: ["/settings/install-mode/solo"], form: "justMe", field: "password", proof: "credential", ...CREDENTIAL, role: "operator", handlerRole: "a full session (never the local owner)", secrets: [], terms: [] },
-  { id: "flexible-switch", action: "Turn interactive agent threads on or off", routes: ["/settings/flexible"], form: "flexibleSwitch", field: "password", proof: "step-up", ...ACCEPT, role: "operator", secrets: [], terms: ["enabled"] },
+  { id: "flexible-switch", action: "Turn interactive agent threads off", routes: ["/settings/flexible"], form: "flexibleSwitch", field: "password", proof: "step-up", ...ACCEPT, role: "operator", secrets: [], terms: ["enabled"] },
+  // On relays the person's Claude sign-in to agents: a credential act, solo included.
+  { id: "flexible-switch-on", action: "Turn interactive agent threads on", routes: ["/settings/flexible"], select: { field: "enabled", value: "on" }, form: "flexibleSwitch", field: "password", proof: "credential", ...CREDENTIAL, role: "operator", handlerRole: "a full session (never the local owner)", secrets: [], terms: ["enabled"] },
   { id: "task-sizing", action: "Turn task sizing by a quick model call on or off", routes: ["/settings/task-sizing"], form: "taskSizing", field: "password", proof: "step-up", ...ACCEPT, role: "operator", secrets: [], terms: ["enabled", "sizer"] },
   // Solo or team (Codex round 2): saving a credential is a credential act, solo or not.
   { id: "provider-key", action: "Save an AI provider key", routes: ["/settings/provider-key"], form: "providerKey", field: "password", proof: "credential", ...CREDENTIAL, role: "any", secrets: ["value"], terms: [] },

@@ -249,6 +249,25 @@ fn the_settings_screen_says_whether_threads_are_on_read_only_with_where_to_chang
 }
 
 #[test]
+fn threads_already_made_are_listed_while_off_and_t_still_says_off() {
+    let mut app = App::new(false, None);
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    let mut list = fake::fixture("live-threads.json");
+    list["on"] = json!(false);
+    app.update(Msg::Threads(Ok(parse(list))));
+    assert!(app.threads.off);
+    assert!(app.items.iter().any(|i| i.thread));
+    assert_eq!(app.key(key('T')), vec![]);
+    assert_eq!(
+        app.status,
+        Some((Tone::Refused, toolroll_tui::thread::THREADS_OFF.into()))
+    );
+    // On again: the same list without `on: false` says on.
+    app.update(Msg::Threads(Ok(parse(fake::fixture("live-threads.json")))));
+    assert!(!app.threads.off);
+}
+
+#[test]
 fn agent_text_is_drawn_inert() {
     let mut w = window();
     w["thread"]["title"] = json!("Totals\u{1b}]0;owned\u{7} \u{1b}[31mred\u{202e}");

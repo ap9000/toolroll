@@ -30,9 +30,11 @@
  *   the send failed and shippable again).
  *
  * The ledger records the press ("flexible ship approved"), the arming, the completion and the merge ("flexible
- * merged") apart. Ship's terms, the Ship itself and an armed merge check interactive agent threads' switch first
- * (flexible-available.ts); settling, cancelling, sending back and removing never do. The only caller outside the engine
- * is the watch loop's pass (operate.ts); no route, CLI, MCP tool or chat action reaches it.
+ * merged") apart. Interactive agent threads' switch (flexible-available.ts) gates only what grants: arming a Ship,
+ * completing it and its merge, each read again inside its own transaction. Ship's terms and the press up to its
+ * quarantined import never check it (a person recovering past work while threads are off); settling, cancelling,
+ * sending back and removing never do. The only caller outside the engine is the watch loop's pass (operate.ts); no
+ * route, CLI, MCP tool or chat action reaches it.
  *
  * Not createCodingHandoff (coding-handoff.ts): that hand-off needs an installation operator and a desktop coding
  * session in the coding catalog, and proves a worktree sharing the project's git directory, none of which a thread has
@@ -230,7 +232,6 @@ export type FlexibleShipText = { title?: string; goal?: string; acceptance?: unk
  */
 export async function flexibleShipTerms(store: Store, input: { thread: string; by: string; text?: FlexibleShipText; runner?: Runner }):
   Promise<{ ok: true; terms: FlexibleShipTerms; digest: string; summary: ApprovalSummary } | FlexibleShipRefusal | FlexibleImportRefusal> {
-  if (!flexibleAvailable(store)) return refuse("not-available");
   const thread = flexibleThread(store, input.thread);
   if (thread === null) return refuse("thread-unknown");
   const standing = ownerStanding(store, thread, input.by);
@@ -265,7 +266,6 @@ export type FlexibleShipped = { ok: true; ship: string; seq: number; taskId: str
  */
 export async function shipFlexible(store: Store, input: { thread: string; by: string; token: string; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner }):
   Promise<FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal> {
-  if (!flexibleAvailable(store)) return refuse("not-available");
   const first = flexibleThread(store, input.thread);
   if (first === null) return refuse("thread-unknown");
   const proved = personNow(store, input.by, input.token, first.repo);
@@ -338,6 +338,9 @@ async function fileAndSeal(store: Store, input: { terms: FlexibleShipTerms; dige
   if (!await flexibleTaskBranch(store, { thread: terms.thread, branch, at: terms.base, make: true, ...runner })) return kept(refuse("handoff-failed", "its task's branch couldn't be made"));
   try {
     return store.transact(() => {
+      // Arming is a grant: only while interactive agent threads are on, read here, in the transaction that arms. Off, the
+      // quarantined import stays (shown, removable, shippable again once they are on).
+      if (!flexibleAvailable(store)) throw new ShipStop(refuse("not-available"));
       const row = store.handle.prepare("SELECT state FROM flexible_ship WHERE id = ?").get(digest);
       if (row?.["state"] !== "imported") throw new ShipStop(refuse("wrong-state"));
       const made = fileTaskProposal(store, { id: taskId, title: terms.title, repo: terms.repo, goal: terms.goal, outOfScope: terms.outOfScope, acceptance: terms.acceptance,
@@ -514,6 +517,8 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
     if (receipt === null || receipt.runId !== newest.id || (receipt.head !== null && receipt.head !== head)) return { ok: true, state: "waiting", why: "its result isn't ready to complete yet" };
     try {
       store.transact(() => {
+        // Interactive agent threads still on, read in the transaction that completes (the reads above were async).
+        if (!flexibleAvailable(store)) throw new ShipStop(refuse("not-available"));
         const again = rowOfTask(store, input.taskId);
         if (again === null || again.state !== "armed") throw new ShipStop(refuse("wrong-state"));
         const problem = authorityProblem(store, again);
@@ -587,6 +592,9 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
  * completion. A lapsed authority cancels the Ship in this same transaction; anything else waits. True when reserved.
  */
 function reserveMerge(store: Store, input: { ship: string; token: string; runId: number; root: string; now: Date; seen: { base: string | null; url: string | null; head: string | null }; prNumber: number }): boolean {
+  // Interactive agent threads still on, read in this reservation transaction (GitHub was read just before): off, nothing
+  // is reserved and the Ship waits.
+  if (!flexibleAvailable(store)) return false;
   const ship = readRow(store.handle.prepare("SELECT * FROM flexible_ship WHERE id = ?").get(input.ship) as Record<string, unknown> | undefined);
   if (ship === null || ship.state !== "completed" || ship.taskId === null) return false;
   // Where GitHub would actually merge it, read just before this: the pull request's own base branch and repository must

@@ -29,8 +29,7 @@ import { decideFlexibleAnswer, recordFlexibleRequest, sendFlexibleAnswer, type F
 import { answerFlexibleRequest, attachFlexibleAgent, beginFlexibleThreadTurn, startFlexibleThread, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { flexibleStartCard } from "./flexible-start.js";
 import * as upstreams from "./flexible-relay-upstreams.js";
-import { importFlexibleCandidate, readFlexibleCandidate } from "./flexible-import.js";
-import { flexibleShipTerms, mergeArmedFlexible, shipFlexible } from "./flexible-ship.js";
+import { mergeArmedFlexible } from "./flexible-ship.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -107,7 +106,7 @@ describe("off by default", () => {
       flexibleStartCard: flexibleStartCard(store, { repo, by, model: null, message: "hello" }),
       prepareFlexibleThread: await prepareFlexibleThread(store, { repo, base: "HEAD", by: "alex", now: NOW }),
       flexibleThreadFence: flexibleThreadFence(store, launch),
-      flexibleThreadSpawn: await flexibleThreadSpawn(store, { ...launch, proxyEnv: {}, launch: { provider: "claude", level: "full", turn: null, holder: "h1" } }, "/bin/sh", ["-c", `echo ran > ${marker}`]),
+      flexibleThreadSpawn: await flexibleThreadSpawn(store, { ...launch, proxyEnv: {}, launch: { provider: "claude", level: "full", turn: null, holder: "h1" }, beforeOpen: () => null }, "/bin/sh", ["-c", `echo ran > ${marker}`]),
       flexibleThreadCodexProfile: flexibleThreadCodexProfile(store, launch),
       admitFlexibleTurn: admitFlexibleTurn(store, { thread: id, starter: by, digest, level: "full", freshProof: true, provider: "claude", model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "h1", clock: () => NOW }),
       beginFlexibleTurn: beginFlexibleTurn(store, { turn, holder: "h1", clock: () => NOW }),
@@ -118,10 +117,6 @@ describe("off by default", () => {
       recordFlexibleRequest: recordFlexibleRequest(store, catalog, { thread: id, turn, connection: connection.id, holder: "h1", requestRef: "r1", kind: "permission", card: { title: "Allow?" } }),
       decideFlexibleAnswer: decideFlexibleAnswer(store, catalog, { request: "d".repeat(32), token: "0".repeat(64), shownDigest: "1".repeat(64), by: { kind: "person", ...by }, decision: "accept" }),
       sendFlexibleAnswer: await sendFlexibleAnswer(store, catalog, { request: "d".repeat(32), connection, holder: "h1" }),
-      readFlexibleCandidate: await readFlexibleCandidate(store, { thread: id }),
-      importFlexibleCandidate: await importFlexibleCandidate(store, { thread: id, seq: 1, expected: sha(), branchBefore: null, by: "alex", now: NOW }),
-      flexibleShipTerms: await flexibleShipTerms(store, { thread: id, by: "alex" }),
-      shipFlexible: await shipFlexible(store, { thread: id, by: "alex", token: tokens["alex"]!, shownDigest: "e".repeat(32), shownKey: "e".repeat(32), now: NOW }),
       mergeArmedFlexible: await mergeArmedFlexible(store, { taskId: `flexible-${"e".repeat(32)}`, root: join(dir, "evidence") }),
       startFlexibleThreadSession: await startFlexibleThreadSession(store, sessions, { thread: id }),
       attachFlexibleAgent: attachFlexibleAgent(store, sessions, { thread: id, turn, launch: "b".repeat(32), stdout, stdin, exited: () => { touched.push("exited"); } }),
@@ -221,8 +216,9 @@ describe("off by default", () => {
       expect(store.handle.prepare("SELECT ended_at FROM flexible_terms").all().every(row => row["ended_at"] !== null)).toBe(true);
       expect((await post({ action: "enable", digest, password: tokens["alex"]! })).status).toBe(403);
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_terms WHERE ended_at IS NULL").get()!["n"]).toBe(0);
-      expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
-      expect(await (await fetch(`${base}/agents/live/thread/${"a".repeat(32)}`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
+      // The reads answer (nothing was ever made here, so no host opens for them); everything that starts or answers refuses.
+      expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ version: 1, on: false, threads: [] });
+      expect(await (await fetch(`${base}/agents/live/thread/${"a".repeat(32)}`, { headers: { cookie } })).json()).toEqual({ error: "thread" });
       for (const [path, fields] of [[`/agents/live/thread/${"a".repeat(32)}/answer`, { request: "d".repeat(32), card: "1".repeat(64), decision: "accept" }], ["/agents/live/thread", { repo, message: "hello", terms: digest }],
         ["/agents/live/thread", { repo, message: "hello" }]] as const) {
         const answer = await fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
@@ -261,8 +257,9 @@ describe("the switch can't become an override", () => {
   test("only a person's step-up writes it: the Settings route and the CLI twin, each proving and writing in one transaction", () => {
     const writers = product.filter(one => /\bsetFlexibleSetting\(/.test(code(one.text)) && one.path !== join("src", "flexible-available.ts")).map(one => one.path).sort();
     expect(writers).toEqual([join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
-    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(who\.authority !== "full" && localActNow\(store, "flexible-switch"\) === null\) return false;\n {6}if \(!authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
-    expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\) => \{\n {4}const verified = authenticateApprover\(store, acting\.name, acting\.token\);\n {4}if \(!verified\.ok \|\| !personProof\(verified\.method\) \|\| !store\.isInstanceOperator\(acting\.name\)\) return false;\n {4}setFlexibleSetting\(store, value === "on", acting\.name, clock\(\)\);/);
+    // On is a credential act (a password typed now, every install); off the ordinary step-up or the laptop owner's act.
+    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(wanted === "on"\) \{\n {8}if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\} else \{\n {8}if \(who\.authority !== "full" && localActNow\(store, "flexible-switch"\) === null\) return false;\n {8}if \(!authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\}\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
+    expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\) => \{\n[^\n]*\n {4}const verified = value === "on" \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\);\n {4}if \(!verified\.ok \|\| !personProof\(verified\.method\) \|\| !store\.isInstanceOperator\(acting\.name\)\) return false;\n {4}setFlexibleSetting\(store, value === "on", acting\.name, clock\(\)\);/);
     // Every write is a browser sign-in's only (the change document is a page that reads); no token, MCP tool or chat
     // action reaches the switch or a project's terms.
     const writes = ROUTES.filter(row => row.method !== "GET" && (/flexible/i.test(row.id) || /flexible/i.test(row.pattern)));
@@ -297,11 +294,12 @@ describe("the switch can't become an override", () => {
       ["streamAnswerSender", "openFlexibleAnswerCatalog", "decideFlexibleAnswerByPolicy", "cancelFlexibleAnswer", "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers",
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
     decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest"],
-      ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "stopFlexibleThreadsWhenOff", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
+      ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
         "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange"]);
-    decided("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate"], ["foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"]);
-    decided("src/flexible-ship.ts", ["flexibleShipTerms", "shipFlexible", "mergeArmedFlexible"],
-      ["flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport"]);
+    // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated.
+    decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"]);
+    decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
+      ["flexibleShipTerms", "shipFlexible", "flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport"]);
     decided("src/flexible-start.ts", ["flexibleStartCard"], []);
     decided("src/flexible-launcher.ts", [], ["flexibleThreadNetwork", "flexibleNetworkDigest", "createFlexibleLauncher"]);
     // The thread start reads it again inside the transaction that records the thread; each model call through the relay
@@ -320,11 +318,25 @@ describe("the switch can't become an override", () => {
     const engineApi = readFileSync("src/server/engine-api.ts", "utf8");
     expect(engineApi).toMatch(/const threadsOn = \(\): FlexibleSessions \| null => flexibleAvailable\(store\) \? openHost\(\) : null;/);
     // Turned off mid-thread: the console's upkeep tick (every five seconds) stops what this host still holds.
-    expect(engineApi).toMatch(/upkeep: \(\): void => \{[^]*?void stopFlexibleThreadsWhenOff\(store, host\)/);
+    expect(engineApi).toMatch(/upkeep: \(\): void => \{[^]*?void settleFlexibleStops\(store, host\)/);
+    // Ship: arming, completing and the merge's reservation each read the switch inside their own transaction.
+    const ship = readFileSync("src/flexible-ship.ts", "utf8");
+    expect(ship).toMatch(/return store\.transact\(\(\) => \{\n(?: {6}\/\/[^\n]*\n)+ {6}if \(!flexibleAvailable\(store\)\) throw new ShipStop\(refuse\("not-available"\)\);\n {6}const row = store\.handle\.prepare\("SELECT state FROM flexible_ship WHERE id = \?"\)/);
+    expect(ship).toMatch(/store\.transact\(\(\) => \{\n {8}\/\/[^\n]*\n {8}if \(!flexibleAvailable\(store\)\) throw new ShipStop\(refuse\("not-available"\)\);\n {8}const again = rowOfTask/);
+    expect(ship).toMatch(/function reserveMerge\([^\n]*\n(?: {2}\/\/[^\n]*\n)+ {2}if \(!flexibleAvailable\(store\)\) return false;/);
+    // A launch's start gate opens only through its final reservation: the switch and the caller's re-check in one
+    // transaction, and the re-check is required.
+    expect(readFileSync("src/flexible-launch.ts", "utf8")).toMatch(/export function reserveLaunchOpen\([^\n]*\n {2}return store\.transact\(\(\): string \| null => \{\n {4}if \(!flexibleAvailable\(store\)\) return "interactive agent threads were turned off";\n {4}const why = input\.check\(\);/);
+    const threadEngine = readFileSync("src/flexible-thread.ts", "utf8");
+    expect(threadEngine).toMatch(/\n {2}beforeOpen: \(\) => string \| null;/);
+    expect(threadEngine).toMatch(/shut = reserveLaunchOpen\(store, \{ launch: record\.id, thread: input\.id, turn: input\.launch\.turn, check: input\.beforeOpen \}\);/);
+    expect(threadEngine).not.toMatch(/recordLaunchOpened/);
     expect(readFileSync("src/serve.ts", "utf8")).toMatch(/const flushBudget = \(\) => \{[^\n]*engineHandlers\.upkeep\(\); \};\n {4}const timer = setInterval\(flushBudget, REQUEST_BUDGET_FLUSH_MS\);/);
-    for (const name of ["liveThread", "liveThreads", "threadAnswer", "threadStart"]) {
+    // The roads that start or answer check it before anything is looked up; the person's reads of their own threads don't.
+    for (const name of ["threadAnswer", "threadStart"]) {
       expect(engineApi, name).toMatch(new RegExp(`async function ${name}\\(ctx: HandlerContext\\): Promise<void> \\{\\n[^\\n]*\\n(?:[^\\n]*\\n)?    const flexible = threadsOn\\(\\);\\n    if \\(flexible === null\\) return `));
     }
+    for (const name of ["liveThread", "liveThreads"]) expect(engineApi.slice(engineApi.indexOf(`async function ${name}(`)).split("\n  }\n")[0], name).toMatch(/const flexible = threadsRead\(\);/);
   });
 
   test("the relay's upstream is a constant: one frozen list, the production origin fixed, no environment, mocked only by tests", () => {
@@ -346,7 +358,9 @@ describe("the switch can't become an override", () => {
     for (const one of product.filter(engine("flexible-agents.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-start.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-answers.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-answers\.js"/);
-    for (const one of product.filter(engine("flexible-session.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-session\.js"/);
+    for (const one of product.filter(engine("flexible-session.ts", join("server", "engine-api.ts"), "operate.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-session\.js"/);
+    // The CLI's switch-off reaches the thread host's module only for the stop.
+    expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["stopFlexibleThreadsEverywhere"]);
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
     for (const one of product.filter(engine("flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);

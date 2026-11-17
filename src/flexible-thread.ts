@@ -44,7 +44,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, holdLaunch, recordGateShut, recordLaunchOpened, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, reserveLaunchOpen, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
@@ -627,9 +627,11 @@ export type FlexibleThreadSpawnInput = FlexibleThreadLaunchInput & { proxyEnv: R
   /** What the agent's own adapter adds to the thread's environment (its relay and its configuration folder); never
    * replaces a variable the thread's environment already sets. */
   agentEnv?: Record<string, string>;
-  /** Run under the thread's lock after the launch is registered and immediately before its start gate opens: a reason to
-   * keep the gate shut (the caller's authority or level no longer holds), or null. */
-  beforeOpen?: () => string | null;
+  /** Required: run under the thread's lock after the launch is registered, inside the launch's final reservation
+   * transaction (flexible-launch.ts reserveLaunchOpen, which reads the interactive agent threads switch in the same
+   * transaction) immediately before its start gate opens: a reason to keep the gate shut (the caller's turn, authority or
+   * level no longer holds), or null. */
+  beforeOpen: () => string | null;
   /** What the agent's adapter adds once the launch has its id (its relay grant, bound to exactly this launch): run after
    * the launch is recorded, before the spawn; never replaces a variable already set. */
   agentEnvFor?: (launchId: string) => Record<string, string> };
@@ -711,22 +713,19 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     try { recordNeverStarted(store, record.id, `stopped before it ran: ${error instanceof Error ? error.message : String(error)}`); } catch { /* left spawning: settleLaunch ends it */ }
     return refuse("containment", "the agent's process couldn't be registered, so it was stopped before it ran");
   }
-  // At the moment of use: the caller's own re-check (its turn, its level, its authority), with the gate still shut.
+  // At the moment of use, with the gate still shut: one reservation transaction reads the interactive agent threads
+  // switch, runs the caller's own re-check (its turn, its level, its authority) and records the launch as opened. Any
+  // refusal, or a record that can't be written, keeps the gate shut for good.
   let shut: string | null;
-  try { shut = input.beforeOpen?.() ?? null; } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
+  try {
+    if (typeof input.beforeOpen !== "function") throw new Error("the start has no last re-check");
+    shut = reserveLaunchOpen(store, { launch: record.id, thread: input.id, turn: input.launch.turn, check: input.beforeOpen });
+  } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
   if (shut !== null) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
     stopUnopenedLaunch(child);
     recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
     return refuse("thread-not-ready", shut);
-  }
-  // The launch is recorded as opened before the gate opens: a record that can't be written keeps it shut.
-  try { recordLaunchOpened(store, { launch: record.id, thread: input.id, turn: input.launch.turn }); }
-  catch {
-    try { child.stdin?.destroy(); } catch { /* already closed */ }
-    stopUnopenedLaunch(child);
-    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: "stopped before it ran: its launch couldn't be recorded" });
-    return refuse("thread-not-ready", "its launch couldn't be recorded");
   }
   child.stdin!.write("start\n");
   return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };

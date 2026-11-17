@@ -1586,7 +1586,8 @@ impl App {
         self.threads.fetching = false;
         match read {
             Ok(list) => {
-                self.threads.off = false;
+                // The threads already made are listed whatever the switch says; `on: false` says it is off.
+                self.threads.off = list.on == Some(false);
                 self.threads.answered = true;
                 self.threads.listed(list)
             }

@@ -319,7 +319,7 @@ describe("the thread fence's terms", () => {
     const { thread } = await made();
     world.store.setUnfencedAgentsAllowed(true, "alex", NOW);
     fenceHere.off = true;
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"]);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
     expect(launches()).toBe(0); // nothing was even recorded as spawning
     expect(flexibleThread(world.store, thread.id)!.livePid).toBeNull();
@@ -328,7 +328,7 @@ describe("the thread fence's terms", () => {
   test("a launch whose sandbox can't be read as the platform's refuses", async () => {
     const { thread } = await made();
     const other = process.platform === "darwin" ? "linux" : "darwin";
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"], other);
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"], other);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
     expect(launches()).toBe(0);
   });
