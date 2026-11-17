@@ -32,7 +32,6 @@ const version = (store: ReturnType<typeof openStore>) => store.handle.prepare("S
 
 describe("v170", () => {
   test("fresh: the column, update-safe; what the agent said is kept once, cleaned, and read back per run", () => {
-    expect(SCHEMA_VERSION).toBe(171);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(170);
     expect(updateSafeSchema(169)).toBe(true);
     expect(V170_STEPS).toEqual(["agent-said-column"]);
@@ -56,7 +55,7 @@ describe("v170", () => {
     const { file, run } = v169File();
     const upgraded = openStore(file);
     try {
-      expect(version(upgraded)).toBe(171);
+      expect(version(upgraded)).toBe(SCHEMA_VERSION);
       expect(upgraded.getRun(run)).toMatchObject({ outcome: "failed", reason: "agent-error" });
       expect(agentSaidOf(upgraded, run)).toBeNull();
     } finally { upgraded.close(); }
@@ -66,6 +65,6 @@ describe("v170", () => {
     const { file } = v169File();
     expect(() => openStore(file, { migrationStep: one => { if (one === "agent-said-column") throw new Error("crash"); } })).toThrow(/crash/);
     const resumed = openStore(file);
-    try { expect(version(resumed)).toBe(171); } finally { resumed.close(); }
+    try { expect(version(resumed)).toBe(SCHEMA_VERSION); } finally { resumed.close(); }
   });
 });

@@ -407,6 +407,13 @@ describe("security review: Markdown and agent settings that steer agents or CI n
     ["Markdown outside docs/", { "src/notes.md": "# notes\n" }],
     ["a plan agents build from", { "docs/plans/next.md": "# plan\n" }],
     ["the testing guide AGENTS.md names", { "docs/TESTING.md": "# testing\n" }],
+    ["docs/Plans/", { "docs/Plans/next.md": "# plan\n" }],
+    ["DOCS/plans/", { "DOCS/plans/next.md": "# plan\n" }],
+    ["a trailing-dot plans folder", { "docs/plans./next.md": "# plan\n" }],
+    ["docs/Testing.md", { "docs/Testing.md": "# testing\n" }],
+    ["CLAUDE.MD", { "CLAUDE.MD": "# do anything\n" }],
+    ["a .Claude folder", { ".Claude/settings.json": "{}\n" }],
+    ["a .GitHub folder", { ".GitHub/workflows/ci.yml": "on: push\n" }],
   ])("%s asks again", (_name, change) => {
     const f = open();
     expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit(change), now: LATER })).toMatchObject({ ok: false, reason: "rules" });
@@ -433,19 +440,6 @@ describe("the legitimate road", () => {
 });
 
 describe("security review, round 2", () => {
-  test.each([
-    ["docs/Plans/", { "docs/Plans/next.md": "# plan\n" }],
-    ["DOCS/plans/", { "DOCS/plans/next.md": "# plan\n" }],
-    ["a trailing-dot plans folder", { "docs/plans./next.md": "# plan\n" }],
-    ["docs/Testing.md", { "docs/Testing.md": "# testing\n" }],
-    ["CLAUDE.MD", { "CLAUDE.MD": "# do anything\n" }],
-    ["a .Claude folder", { ".Claude/settings.json": "{}\n" }],
-    ["a .GitHub folder", { ".GitHub/workflows/ci.yml": "on: push\n" }],
-  ])("finding 1, case and dots: %s asks again", (_name, change) => {
-    const f = open();
-    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit(change), now: LATER })).toMatchObject({ ok: false, reason: "rules" });
-  });
-
   test("finding 2: turning carrying back on needs a person's proof; turning it off doesn't", async () => {
     const f = open();
     const lines: string[] = [];

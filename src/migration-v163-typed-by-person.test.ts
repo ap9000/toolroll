@@ -29,7 +29,6 @@ function v162File(): string {
 
 describe("v163", () => {
   test("fresh: the table, no rows, update-safe", () => {
-    expect(SCHEMA_VERSION).toBe(171);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(163);
     expect(updateSafeSchema(162)).toBe(true);
     expect(V163_STEPS).toEqual(["typed-by-person"]);
@@ -61,7 +60,7 @@ describe("v163", () => {
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => steps.push(one) });
     expect(steps).toEqual(expect.arrayContaining([...V163_STEPS]));
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM typed_by_person").get()?.["n"]).toBe(0);
     expect(upgraded.accountOf("alex")).not.toBeNull();
     upgraded.close();
@@ -71,7 +70,7 @@ describe("v163", () => {
     const file = v162File();
     expect(() => openStore(file, { migrationStep: at => { if (at === "typed-by-person") throw new Error("crash"); } })).toThrow("crash");
     const resumed = openStore(file);
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     resumed.close();
   });
 
