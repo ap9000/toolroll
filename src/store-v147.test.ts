@@ -68,9 +68,8 @@ describe("the v147 migration", () => {
     db.close();
     expect(updateSafeSchema(146)).toBe(true);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(147);
-    expect(SCHEMA_VERSION).toBe(171);
     const store = opened(openStore(file));
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     // Every account has a password, whatever its role or standing (the SSO-only one's hash still never matches).
     expect(store.handle.prepare("SELECT name, password_set FROM approver ORDER BY name").all().map(row => ({ ...row }))).toEqual(
       ["alex", "carol", "dana", "robin"].map(name => ({ name, password_set: 1 })));
@@ -109,7 +108,7 @@ describe("the v147 migration", () => {
     const peek = new DatabaseSync(crashed, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-146); } finally { peek.close(); }
     const resumed = opened(openStore(crashed));
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(rowsOf(resumed)).toEqual(rowsOf(whole));
   });
 });

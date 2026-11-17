@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { attemptKeyOf } from "./agent-board.js";
-import { BUILT_IN, openStore, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V121_ADDED_COLUMNS, verifiedAuthor, type Store } from "./store.js";
+import { BUILT_IN, openStore, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V121_ADDED_COLUMNS, verifiedAuthor, type Store, SCHEMA_VERSION } from "./store.js";
 import { changedHistory, historySnapshot } from "./toolroll-update.js";
 
 let dir: string, store: Store | undefined;
@@ -41,7 +41,7 @@ test.each([120, -120])("v%s: the Agents board, live steering and landed cleanup 
   expect(UPDATE_SAFE_MIGRATIONS).toContain(121);
   store = openStore(file);
   const handle = store.handle;
-  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
   for (const table of V121_TABLES) expect(handle.prepare("SELECT count(*) AS n FROM " + table).get()?.["n"]).toBe(0);
   expect(attemptKeyOf(store, run)).toBeNull();
   expect(handle.prepare("SELECT live_input_opened_at, live_input_closed_at, live_pause_limit_ms FROM run WHERE id = ?").get(run))
@@ -63,7 +63,7 @@ test.each([120, -120])("v%s: the Agents board, live steering and landed cleanup 
   } finally { after.close(); }
   // Opening again changes nothing (the file is current), and what is admitted or filed now carries the new identities.
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(171);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
   const later = store.startRun({ taskRef: ref, leaseId: "lease-2", runner: "builder-1", branch: "feat/a", worktree: dir, provider: "claude", now, ...route });
   expect(attemptKeyOf(store, later)).toMatch(/^[0-9a-f]{24}$/);
   store.fileSteerNote("t-1", verifiedAuthor("alex"), "and keep the API", now);
