@@ -249,6 +249,11 @@ export const stepCardsSchema = z.object({
      * one-person approval, a fast start that grew). Display only: the completion decides again. */
     accept: z.object({ owed: z.enum(["person-check", "exception"]).nullable(), blockers: z.array(z.string()), needs: z.string().nullable() }),
   }).nullable(),
+  /** Open build shell's build: the result waiting for review, else the newest build (`run`), and why a terminal can't
+   * be opened on it (no saved result, no saved commit), in the words the start would refuse with; null `why` when it
+   * can be. A client refuses before asking anyone to confirm. Display only: the start proves it again. Null when the
+   * task has no build. */
+  shell: z.object({ run: z.number().int(), why: z.string().nullable() }).nullable(),
   /** Why a failed task stopped, as the task page and `task show` say it: the latest finished attempt's reason in one
    * plain line (needs-you.ts failedAttemptSentence), the build attempts that failed in a row, and one suggestion. Null
    * unless the task failed. */

@@ -298,6 +298,8 @@ describe("every answer is its contract's shape", () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
     expect(steps.review).toEqual({ run, receipt: expect.stringMatching(/^[0-9a-f]{64}$/), source: store.getScope("t-ready")!.digest,
       accept: { owed: null, blockers: [], needs: null } });
+    // The result waiting has its saved commit: a build shell can be opened on it.
+    expect(steps.shell).toEqual({ run, why: null });
   });
 
   test("a failed task's steps say why it stopped, what Retry binds to, and who approved it", async () => {
@@ -306,6 +308,8 @@ describe("every answer is its contract's shape", () => {
     const last = store.lastBuilderRun(store.lookupRef("t-fail")!.id)!;
     expect(steps.retry).toEqual({ run: last.id, digest: store.getScope("t-fail")!.digest });
     expect(steps.approval).toEqual({ by: "alex", you: true, automatic: false });
+    // Its newest build failed without a saved commit: Open build shell is refused up front, in the start's own words.
+    expect(steps.shell).toEqual({ run: last.id, why: "This build has no saved commit to open a terminal on." });
     // Another person reads who approved, not "you".
     expect(stepCardsSchema.parse((await read("approver", "/t/t-fail/steps")).body).approval).toEqual({ by: "alex", you: false, automatic: false });
     // A task that didn't fail has neither.

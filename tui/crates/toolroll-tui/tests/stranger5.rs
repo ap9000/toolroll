@@ -552,3 +552,115 @@ fn a_filed_task_wins_over_the_restored_selection() {
     assert!(fx.contains(&Effect::FetchSteps("t-new".into())), "{fx:?}");
     assert!(app.filed.is_none());
 }
+
+/// nine4: "Building it." went only when a steps read saw the task's state change, and the steps are read only when a
+/// signal comes. Through retry waits the Work list (read on its own clock) moved on while no steps read came, and the
+/// line stuck for minutes. Now the Work row moving on clears it too: building → waiting → building → ready, with no
+/// key pressed and only the Work poll's reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn building_it_goes_when_the_work_row_moves_on_through_retry_waits_with_no_key() {
+    let mut state = fake::scenario();
+    state.work = work_with(new_row("Building", "live", "building"));
+    state.steps.insert("t-new".into(), new_steps("running"));
+    let engine = fake::FakeEngine::start(state, 0).await;
+    let client = toolroll_api::redeem(&engine.link()).await.unwrap();
+    let mut app = App::new(false, None);
+    app.syntax_on = false;
+    pump(&mut app, &client, vec![Effect::FetchWork]).await;
+    app.mode = Mode::Build {
+        title: "Add a divide function".into(),
+        preview: "p1".into(),
+        digest: "d".repeat(64),
+        terms: vec![("Agent".into(), "claude haiku".into())],
+        scroll: 0,
+        seen_end: true,
+    };
+    screen(&mut app, 120, 34);
+    let fx = app.key(code(KeyCode::Enter));
+    pump(&mut app, &client, fx).await;
+    assert_eq!(status(&app), Some((Tone::Said, "Building it.".into())));
+    // The hold is over (3 s, no key); from here only the Work poll reads.
+    app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
+    let phases = [
+        ("Waiting to retry", "neutral", "queued"),
+        ("Building", "live", "building"),
+        ("Waiting to retry", "neutral", "queued"),
+        ("Ready", "attention", "review"),
+    ];
+    for (i, (word, tone, group)) in phases.into_iter().enumerate() {
+        engine.state.lock().unwrap().work = work_with(new_row(word, tone, group));
+        pump(&mut app, &client, vec![Effect::FetchWork]).await;
+        app.update(Msg::Tick);
+        assert!(
+            status(&app).is_none_or(|(_, w)| w != "Building it."),
+            "phase {i} ({word}): {:?}",
+            status(&app)
+        );
+        assert!(
+            !screen(&mut app, 160, 34).contains("Building it."),
+            "phase {i}"
+        );
+    }
+}
+
+/// While held (said just now, no key), a Work row moving on clears the line the moment the hold ends, not later.
+#[test]
+fn a_row_moving_on_inside_the_hold_clears_the_line_when_the_hold_ends() {
+    let mut app = App::new(false, None);
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(work_with(new_row(
+        "Building", "live", "building",
+    ))))));
+    app.update(Msg::Acted(Ok(ActOutcome::Filed {
+        words: "Building it.".into(),
+        task: "t-new".into(),
+    })));
+    app.update(Msg::Work(Ok(parse(work_with(new_row(
+        "Building", "live", "building",
+    ))))));
+    assert_eq!(status(&app), Some((Tone::Said, "Building it.".into())));
+    app.update(Msg::Work(Ok(parse(work_with(new_row(
+        "Waiting to retry",
+        "neutral",
+        "queued",
+    ))))));
+    // Inside the hold: kept.
+    assert_eq!(status(&app), Some((Tone::Said, "Building it.".into())));
+    app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
+    app.update(Msg::Tick);
+    assert_eq!(status(&app), None);
+}
+
+/// nine4: a row still saying "Building" while the task's steps say its build is over (a result waiting) is read again
+/// at once, once for that situation, so the row's word follows; then it says Ready.
+#[test]
+fn a_row_that_lags_its_finished_build_is_read_again_once() {
+    let mut app = App::new(false, None);
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(work_with(new_row(
+        "Building", "live", "building",
+    ))))));
+    let at = app.items.iter().position(|i| i.id == "t-new").unwrap();
+    while app.selected < at {
+        app.key(key('j'));
+    }
+    app.fetching_work = false;
+    let mut ready = fake::steps_for("t-new", "Add a divide function", None, Some(44));
+    ready["task"]["state"] = json!("queued");
+    let fx = app.update(Msg::Steps("t-new".into(), Ok(parse(ready.clone()))));
+    assert!(fx.contains(&Effect::FetchWork), "{fx:?}");
+    // The same situation again: not read a second time.
+    app.fetching_work = false;
+    let fx = app.update(Msg::Steps("t-new".into(), Ok(parse(ready))));
+    assert!(!fx.contains(&Effect::FetchWork), "{fx:?}");
+    // The read answers Ready: the row says so.
+    app.update(Msg::Work(Ok(parse(work_with(new_row(
+        "Ready",
+        "attention",
+        "review",
+    ))))));
+    assert_eq!(
+        app.items.iter().find(|i| i.id == "t-new").unwrap().word,
+        "Ready"
+    );
+}
