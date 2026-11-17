@@ -1,4 +1,5 @@
 /** Runtime verification's throwaway computer. No processes start on import. */
+import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
@@ -18,6 +19,17 @@ import { scriptedProvider } from './fixtures/scripted-provider.mjs';
 import { scriptedConsoleEnv } from './tui-e2e.mjs';
 
 export const MARKER = 'VERIFY_AGENT_WORDS_7f3a';
+export const WORLD_NEEDS = ['threads-on'];
+/** Literal replacement, including secrets containing regexp characters or terminal bytes. */
+export function redactPasswords(text, secrets = []) {
+  for (const secret of secrets) if (secret) {
+    text = text.split(secret).join('[REDACTED]');
+    // A rendered terminal may wrap an echoed password across rows. Match the whole secret across that whitespace too.
+    const wrapped = [...secret].map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+    text = text.replace(new RegExp(wrapped, 'g'), '[REDACTED]');
+  }
+  return text;
+}
 export const SCENARIOS = ['smoke', 'success', 'agent-error', 'never-initialized', 'signed-out', 'narrow'];
 const word = s => `'${String(s).replace(/'/g, "'\\''")}'`;
 export function checkedEnv(world) {
@@ -90,7 +102,7 @@ export function createWorld(root, scenario = 'smoke', outer = process.env) {
   writeFileSync(join(shop, 'src/math.js'), 'export const add = (a, b) => a + b;\n');
   writeFileSync(join(shop, 'package.json'), JSON.stringify({ name: 'verify-shop', version: '1.0.0', type: 'module', scripts: { test: 'node --test' } }));
   writeFileSync(join(world.home, '.gitconfig'), '[user]\n name = Runtime verifier\n email = verify@example.invalid\n');
-  Object.assign(world, { provider, shop, prefix, scenario });
+  Object.assign(world, { provider, shop, prefix, scenario, secrets: [] });
   for (const tool of ['node', 'sh', 'git', 'python3', 'mkfifo', 'ps']) {
     if (!existsSync(join(world.tools, tool))) throw new Error(`Runtime verification requires ${tool} on the approved tools PATH`);
   }
@@ -129,4 +141,35 @@ export function checkOutbound(world, markers = [MARKER]) {
     }
     return { status: leaks.length ? 'FAIL' : 'PASS', tables, markers, leaks };
   });
+}
+
+/** Only product commands write preparation state. The console records discover this install's owner; they never
+ * supply a password or bypass the product's own operator check. Called after first start, before a fresh workbench. */
+export async function prepareWorld(world, cli, needs, runCli) {
+  if (!needs.includes('threads-on')) return;
+  const owners = readConsole(world, `SELECT a.name FROM local_mode m JOIN approver a ON a.name=m.owner
+    WHERE m.id=1 AND m.enabled=1 AND a.revoked_at IS NULL AND a.role='approver'
+      AND a.projects_json IS NULL AND a.password_set=0`);
+  if (owners.length !== 1) throw new Error('Cannot prepare threads-on: this install has no unique passwordless local owner who is an instance operator. No settings were changed.');
+  const password = randomBytes(32).toString('hex');
+  world.secrets.push(password);
+  // askCredentials supports a hidden terminal prompt: never put the password in argv, env or a file.
+  await runCli(['password', 'set'], [
+    { prompt: /New password:/, answer: password },
+    { prompt: /Type it again:/, answer: password },
+  ]);
+  await runCli(['config', 'set', 'flexible', 'on', '--as', owners[0].name], [
+    { prompt: /password:/, answer: password },
+  ]);
+  const shown = JSON.parse(run(world, process.execPath, [cli, 'config', 'show', 'flexible', '--json']));
+  if (shown.flexible?.on !== true) throw new Error('Cannot prepare threads-on: config show flexible did not report on.');
+  // Threads start only in a Flexible project: the person reads its terms and agrees, as at a real terminal.
+  await runCli(['project', 'flexible', 'enable', '--repo', world.shop, '--as', owners[0].name], [
+    { prompt: /password:/, answer: password },
+    { prompt: /Turn on Flexible with these terms\? \[y\/N\]/, answer: 'y' },
+  ]);
+  const project = JSON.parse(run(world, process.execPath, [cli, 'project', 'flexible', 'show', '--repo', world.shop, '--json']));
+  if (project.flexible?.state !== 'on') {
+    throw new Error(`Cannot prepare threads-on: the project did not become Flexible (${JSON.stringify(project).slice(0, 200)}).`);
+  }
 }

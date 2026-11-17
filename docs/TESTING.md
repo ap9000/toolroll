@@ -420,6 +420,19 @@ the intersection runs. Unknown selectors and empty selections fail. Readiness
 waits use screen, process, file or database facts, with bounded deadlines; no
 fixed delay counts as verification.
 
+Features may declare world preparation with `needs` in the feature map. Only
+`threads`, `jumps` and `unread` currently need `threads-on` (including when run
+as dependencies). Those runs start and stop the workbench to initialize the
+laptop install, discover its local owner from read-only console records, then
+use the same PTY host to type a fresh random password twice into
+`toolroll password set` and answer the password prompt for
+`toolroll config set flexible on --as <owner>`. The password never enters argv
+or the environment. `toolroll config show flexible --json` must report on before
+the workbench is relaunched. Missing owner/operator or product refusals fail
+preparation; the driver never writes the switch directly. Captured text and
+reports redact the password; raw preparation logs stay in the throwaway world
+until redacted evidence is copied. Other selections keep their existing startup.
+
 Reports default to `evidence/verify-<time>-<pid>/`: `report.json`, `report.md`,
 `screens.txt` and each PTY's raw screen log and recorded process ids. Keep these
 out of Git. Output inside the checkout must be under `evidence/`. Every selected

@@ -8,9 +8,9 @@ import { excludedFolders, resolveLaunch, statusProbe } from './status-probe.js';
 // @ts-expect-error shared scripted provider contracts
 import { pickRule } from '../scripts/fixtures/scripted-provider.mjs';
 // @ts-expect-error plain ESM verification command
-import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap, expectedFailureReason, reportSummary, runFeatures, usage } from '../scripts/verify.mjs';
+import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap, expectedFailureReason, reportSummary, runFeatures, selectedNeeds, usage } from '../scripts/verify.mjs';
 // @ts-expect-error plain ESM world builder
-import { assertAgentStandIns, checkedEnv, checkOutbound, createWorld, readConsole } from '../scripts/verify-world.mjs';
+import { assertAgentStandIns, checkedEnv, checkOutbound, createWorld, readConsole, prepareWorld, redactPasswords } from '../scripts/verify-world.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'verify-contract-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -292,4 +292,34 @@ test.each([
     const feature = featureMap.features.find((f: any) => f.id === scenario);
     expect(new RegExp(feature.expected).test('the provider harness never initialized — exited before initialization')).toBe(true);
   }
+});
+
+test('feature needs are validated and only selected features and their dependencies prepare the world', async () => {
+  expect(validateMap(featureMap, keymap)).toBe(true);
+  const byId = (id: string) => featureMap.features.find((f: any) => f.id === id);
+  for (const id of ['threads', 'jumps', 'unread']) expect(selectedNeeds([byId(id)])).toEqual(['threads-on']);
+  expect(selectedNeeds([byId('result'), byId('welcome')])).toEqual([]);
+  const map = structuredClone(featureMap);
+  map.features.find((f: any) => f.id === 'result').dependsOn = ['threads'];
+  expect(selectedNeeds([map.features.find((f: any) => f.id === 'accept')], map)).toEqual(['threads-on']);
+  expect(selectedNeeds([byId('threads'), byId('jumps'), byId('unread')])).toEqual(['threads-on']);
+  for (const needs of ['threads-on', null, ['unknown'], [42]]) {
+    const invalid = structuredClone(featureMap);
+    invalid.features[0].needs = needs;
+    expect(() => validateMap(invalid, keymap)).toThrow(/world needs/);
+  }
+  // No preparation means no console read or CLI command, even on a world not yet initialized.
+  await prepareWorld({}, '', [], () => { throw new Error('unexpected CLI'); });
+});
+
+test('password redaction covers repeated secrets, terminal wrapping, errors and evidence without treating them as regexps', () => {
+  const password = 'a.b+$[secret]\\0123456789';
+  const text = `New password: ${password}\r\nerror: ${password}\nordinary text`;
+  expect(redactPasswords(text, [password])).toBe('New password: [REDACTED]\r\nerror: [REDACTED]\nordinary text');
+  expect(redactPasswords(password.slice(0, 8) + '\n' + password.slice(8), [password])).toBe('[REDACTED]');
+  expect(redactPasswords(text, [])).toBe(text);
+  expect(redactPasswords('ordinary text', [''])).toBe('ordinary text');
+  const report = { error: `failed: ${password}`, steps: [{ screen: text }] };
+  const serialized = JSON.stringify(report, (_key, value) => typeof value === 'string' ? redactPasswords(value, [password]) : value);
+  expect(JSON.parse(serialized)).toEqual({ error: 'failed: [REDACTED]', steps: [{ screen: 'New password: [REDACTED]\r\nerror: [REDACTED]\nordinary text' }] });
 });

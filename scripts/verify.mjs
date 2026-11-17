@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createServer } from 'node:net';
 import { Screen } from './first-result-kit.mjs';
 import { FILING_ANSWER } from './tui-e2e.mjs';
-import { MARKER, SCENARIOS, assertAgentStandIns, checkedEnv, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
+import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, assertAgentStandIns, checkedEnv, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const featureMap = JSON.parse(readFileSync(join(repo, 'docs/feature-map.json'), 'utf8'));
@@ -31,6 +31,9 @@ export function validateMap(map, source) {
     if (!SCENARIOS.includes(entry.scenario)) throw new Error(`Unknown scenario: ${entry.scenario}`);
     if (!entry.screen || !entry.reach || !entry.expected) throw new Error(`Incomplete feature: ${entry.id}`);
     new RegExp(entry.expected);
+    if (entry.needs !== undefined && (!Array.isArray(entry.needs) || entry.needs.some(need => !WORLD_NEEDS.includes(need)))) {
+      throw new Error(`Invalid world needs for ${entry.id}`);
+    }
     for (const action of entry.actions) {
       if (!actions.has(action)) throw new Error(`Unknown action: ${action}`);
       covered.add(action);
@@ -61,6 +64,18 @@ export function validateMap(map, source) {
   }
   for (const spec of specs) if (!covered.has(spec.action)) throw new Error(`Unmapped keymap action: ${spec.action}`);
   return true;
+}
+/** Include needs of prerequisites that run even when their own feature is not selected. */
+export function selectedNeeds(selected, map = featureMap) {
+  const needs = new Set(), visited = new Set();
+  const visit = feature => {
+    if (visited.has(feature.id)) return;
+    visited.add(feature.id);
+    for (const need of feature.needs ?? []) needs.add(need);
+    for (const id of feature.dependsOn ?? []) visit(map.features.find(f => f.id === id));
+  };
+  for (const feature of selected) visit(feature);
+  return [...needs];
 }
 export function parseArgs(args) {
   const options = { scenarios: [], features: [], keep: false, help: false, tarball: null, out: null };
@@ -158,17 +173,20 @@ async function freePort() {
   return port === 4180 ? freePort() : port;
 }
 class Terminal {
-  constructor(world, cli, binary, port, folder, cols) {
+  constructor(world, cli, binary, port, folder, cols, args = null) {
     Object.assign(this, { world, cli, binary, port, folder, cols, offset: 0, raw: '', answered: 0, started: Date.now(), steps: [], pids: new Set(), identities: new Map(), decoder: new StringDecoder('utf8'), screen: new Screen(40, cols) });
     mkdirSync(folder, { recursive: true });
     this.fifo = join(folder, 'keys'); this.log = join(folder, 'screen.log'); this.pidFile = join(folder, 'pid');
     run(world, 'mkfifo', [this.fifo]);
     this.keys = openSync(this.fifo, constants.O_RDWR);
+    this.exitFile = join(folder, 'exit-status');
     const command = ['python3', join(repo, 'scripts/fixtures/pty-host.py'), '40', String(cols), this.fifo, this.log, this.pidFile,
-      process.execPath, cli, '--port', String(port), ...(binary ? ['--tui-binary', binary] : [])].map(word).join(' ');
+      process.execPath, cli, ...(args ?? ['--port', String(port), ...(binary ? ['--tui-binary', binary] : [])])].map(word).join(' ');
     // Orphan the host, as tui-e2e does: a person's terminal has no coding agent ancestor.
     this.hostPidFile = join(folder, 'host-pid');
-    this.launcher = spawn(join(world.tools, 'sh'), ['-c', `${command} > ${word(join(folder, 'host.log'))} 2>&1 < /dev/null & printf '%s' "$!" > ${word(this.hostPidFile)}`],
+    const hosted = `${command} > ${word(join(folder, 'host.log'))} 2>&1 < /dev/null`;
+    const background = args === null ? hosted : `(${hosted}; printf '%s' "$?" > ${word(this.exitFile)})`;
+    this.launcher = spawn(join(world.tools, 'sh'), ['-c', `${background} & printf '%s' "$!" > ${word(this.hostPidFile)}`],
       { cwd: world.shop, env: checkedEnv(world), stdio: 'ignore', detached: true });
     this.launcherError = null;
     this.launcher.on('error', error => { this.launcherError = error; });
@@ -215,11 +233,16 @@ class Terminal {
         while (this.answered < count) { this.send('\x1b[?62c'); this.answered++; }
       }
     }
-    return this.screen.text();
+    return redactPasswords(this.screen.text(), this.world.secrets);
   }
   send(text) { writeSync(this.keys, text); }
   async wait(pattern) {
-    const shown = await until(() => { const text = this.text(); return pattern.test(text) && text; }, `screen ${pattern}`);
+    const shown = await until(() => {
+      const text = this.text();
+      if (pattern.test(text)) return text;
+      if (existsSync(this.exitFile)) throw new Error(`Terminal exited before ${pattern}: ${text}`);
+      return false;
+    }, `screen ${pattern}`);
     this.steps.push({ expected: pattern.source, atMs: Date.now() - this.started, screen: shown });
     return shown;
   }
@@ -244,7 +267,23 @@ class Terminal {
     closeSync(this.keys);
     writeFileSync(join(this.folder, 'pids.json'), JSON.stringify([...this.identities].map(([pid, started]) => ({ pid, started }))));
   }
+}
 
+/** Same orphaned PTY host, isolation checks and recorded-process cleanup as the workbench. */
+async function runCliInTerminal(world, cli, args, answers, folder, terms) {
+  const term = new Terminal(world, cli, null, null, folder, 140, args);
+  terms.push(term); // Also cleaned up on interruption or a failed prompt.
+  for (const { prompt, answer } of answers) {
+    await term.wait(prompt);
+    term.recordPids();
+    term.send(answer + '\r');
+  }
+  await until(() => {
+    term.text();
+    return existsSync(term.exitFile);
+  }, 'CLI PTY exit');
+  const code = readFileSync(term.exitFile, 'utf8');
+  if (code !== '0') throw new Error(`Preparation CLI exited ${code}: ${term.text()}`);
 }
 
 /** The composer scrolls horizontally: its final words, not its hidden prefix, acknowledge input. */
@@ -335,12 +374,14 @@ async function exercise(feature, context) {
   const ready = async () => {
     if (context.finished) { context.built = false; context.finished = false; }
     await build(); await until(() => lastRun()?.finished_at && ['built', 'no-change'].includes(lastRun()?.outcome), 'scripted build result');
+    // The task's title names src/math.js too: wait for the change summary itself, the fact that the result's changes loaded.
     await wait(/Ready|Result/); await press('enter', /src\/math.js|test\/math.test.js/); context.task = task().id;
   };
   const failed = async () => {
     await build(); await until(() => lastRun()?.finished_at && lastRun()?.outcome === 'failed', 'failed provider run');
     const tab = world.scenario === 'agent-error' ? 'live' : 'steps';
-    while (projectView()?.tab !== tab) {
+    for (let presses = 0; projectView()?.tab !== tab; presses++) {
+      if (presses >= 6) throw new Error(`The ${tab} tab never came into focus`);
       const before = projectView()?.tab;
       term.send('\t'); await until(() => projectView()?.tab !== before, 'failure tab changed');
     }
@@ -512,6 +553,17 @@ export async function verify(options) {
           term.recordPids(); if (!session.timings.workbenchMs) session.timings = { firstTextMs: term.firstTextMs, workbenchMs: Date.now() - term.started };
         } };
         await context.relaunch();
+        const needs = selectedNeeds(features);
+        if (needs.length) {
+          // First start creates the laptop's owner via the product. Enrollment invalidates sessions, so stop and
+          // relaunch the workbench after preparation instead of driving a stale local-owner session.
+          await context.term.quit();
+          let preparations = 0;
+          await prepareWorld(world, cli, needs, (args, answers) => runCliInTerminal(world, cli, args, answers,
+            join(root, scenario, `prepare-${preparations++}`), terms));
+          session.prepared = needs;
+          await context.relaunch();
+        }
         report.features.push(...await runFeatures(features, featureMap, context));
         await context.term.quit();
       } catch (error) {
@@ -522,7 +574,7 @@ export async function verify(options) {
           try { await term.cleanup(); } catch (error) { session.cleanupError = error.message; }
           session.steps = [...(session.steps ?? []), ...term.steps];
           const folder = join(out, `${scenario}-${terms.indexOf(term)}`); mkdirSync(folder);
-          for (const name of ['screen.log', 'pids.json', 'host.log']) if (existsSync(join(term.folder, name))) writeFileSync(join(folder, name), readFileSync(join(term.folder, name)));
+          for (const name of ['screen.log', 'pids.json', 'host.log']) if (existsSync(join(term.folder, name))) writeFileSync(join(folder, name), redactPasswords(readFileSync(join(term.folder, name), 'utf8'), world.secrets));
         }
         try { session.outbound = checkOutbound(world); } catch (error) { session.outbound = { status: 'FAIL', error: error.message }; }
       }
@@ -530,6 +582,9 @@ export async function verify(options) {
   } finally {
     process.off('SIGINT', sigint); process.off('SIGTERM', sigterm);
     if (report.sessions.some(s => s.cleanupError)) report.keptRoot = root;
+    // Redact every string (errors and captured steps included), even if a product failure echoed a password.
+    const secrets = terms.flatMap(term => term.world.secrets);
+    Object.assign(report, JSON.parse(JSON.stringify(report, (_key, value) => typeof value === 'string' ? redactPasswords(value, secrets) : value)));
     finishReport(report);
     writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
     writeFileSync(join(out, 'report.md'), reportMarkdown(report));

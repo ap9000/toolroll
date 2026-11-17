@@ -308,6 +308,9 @@
       ],
       "keys": [
         "T"
+      ],
+      "needs": [
+        "threads-on"
       ]
     },
     {
@@ -435,6 +438,9 @@
       "state": "selected task returns to jump origin",
       "dependsOn": [
         "result"
+      ],
+      "needs": [
+        "threads-on"
       ]
     },
     {
@@ -445,7 +451,10 @@
       "scenario": "success",
       "actions": [],
       "keys": [],
-      "state": "unread saved then cleared on visit"
+      "state": "unread saved then cleared on visit",
+      "needs": [
+        "threads-on"
+      ]
     },
     {
       "id": "restore",
