@@ -41,7 +41,7 @@
       "id": "agents",
       "screen": "Agents",
       "reach": "A; inspect detected agents; Esc",
-      "expected": "Agents",
+      "expected": "Agents\\s+checked",
       "scenario": "smoke",
       "actions": [
         "agents"

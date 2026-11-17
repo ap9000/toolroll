@@ -276,7 +276,13 @@ async function exercise(feature, context) {
   switch (feature.id) {
     case 'welcome': case 'narrow': shown = await wait(new RegExp(feature.expected)); state = `${term.cols} columns`; break;
     case 'new-task': shown = await press('n', /New task:/); await normal(); break;
-    case 'agents': case 'signed-out': shown = await press('A', new RegExp(feature.expected)); await normal(); break;
+    case 'agents': case 'signed-out': {
+      shown = await press('A', new RegExp(feature.expected));
+      // The expected text names the Agents screen itself (the first-run screen also says "Agents" on its button), so
+      // Esc here meets the open screen; wait for it to go.
+      term.send(esc); await until(() => !/check again\s+Esc\s+back/.test(term.text()), 'the Agents screen closed');
+      break;
+    }
     case 'palette': shown = await press(':', /Commands/); await normal(); break;
     case 'help': shown = await press('?', /Press s for settings/); await normal(); break;
     case 'settings': await press('?', /Press s for settings/); shown = await press('s', / Settings /); await normal(); break;
