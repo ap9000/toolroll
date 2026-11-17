@@ -951,9 +951,9 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   label = code === 'cancelled' && shared.headline === 'Stopped' && !shared.sentence.startsWith('Replaced by ') ? 'Cancelled' : shared.headline;
   detail = shared.sentence;
   // A person paused retries; use the workbench's words in CLI and engine rows too.
-  if (code === 'held') {
+  if (code === 'held' && s(row, 'hold_reason') === 'stopped retrying from the terminal') {
     label = 'On hold';
-    detail = s(row, 'hold_reason') === 'stopped retrying from the terminal' ? 'you stopped retrying' : detail;
+    detail = 'you stopped retrying';
   }
   // Every Needs you action wears its need's own words, except a first sign-in (no agent was ever signed in): it is
   // Sign in, never "Sign in again" (the task page's own rule, task-view.tsx).
