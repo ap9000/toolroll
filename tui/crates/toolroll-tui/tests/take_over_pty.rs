@@ -245,7 +245,8 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     run.press("\x1d");
     // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
     // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
-    run.wait_for("Open build shell", 5);
+    // Back on the workbench, the shell still running: the key bar says t types in it again.
+    run.wait_for("type in it", 5);
     run.wait_for("Back to the workbench", 5);
     let raw = run.quit();
     no_leaks(&raw);
@@ -371,7 +372,8 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     run.press("\x1d");
     // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
     // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
-    run.wait_for("Open build shell", 5);
+    // Back on the workbench, the shell still running: the key bar says t types in it again.
+    run.wait_for("type in it", 5);
     run.wait_for("Back to the workbench", 5);
     run.quit();
     let own: serde_json::Value =

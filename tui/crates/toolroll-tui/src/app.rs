@@ -557,6 +557,45 @@ pub struct LineCache {
     pub lines: Vec<ratatui::text::Line<'static>>,
 }
 
+/// A task's situation as its steps say it, for following a status line about it: its state, the build running, a wait
+/// to retry, a person's hold, a result waiting, a failure. Any change of any of them is the task moving on.
+pub fn situation_of(steps: &StepCards) -> String {
+    format!(
+        "{}|live {:?}|waiting {}|held {}|review {:?}|failed {}",
+        steps.task.state,
+        steps.live_run,
+        steps.waiting.is_some(),
+        steps.held.is_some(),
+        steps.review.as_ref().map(|r| r.run),
+        steps.failure.is_some()
+    )
+}
+
+/// A task's situation as its Work row says it: its section and its word (Working · Building, Up next · Waiting…).
+pub fn row_situation(item: &Item) -> String {
+    format!("{:?}|{}|{}", item.section, item.word, item.tone)
+}
+
+/// The keys that still work while a terminal pane is on screen and not being typed in (normal_key), besides the
+/// layout's: none of them acts on work.
+pub const TERMINAL_PANE_KEYS: &[Action] = &[
+    Action::TakeOver,
+    Action::MoveDown,
+    Action::MoveUp,
+    Action::NextTab,
+    Action::PreviousTab,
+    Action::ScrollUp,
+    Action::ScrollDown,
+    Action::Follow,
+    Action::Copy,
+    Action::Help,
+    Action::Palette,
+    Action::Quit,
+    Action::NextNeedsYou,
+    Action::PreviousNeedsYou,
+    Action::JumpBack,
+];
+
 /// How many places jump-back (') remembers.
 pub const JUMPS_KEPT: usize = 20;
 
@@ -861,6 +900,8 @@ pub struct App {
     pub filing: String,
     pub fetching_live: bool,
     pub fetching_work: bool,
+    /// The task and situation a row that lagged its steps was read again for (once each).
+    pub row_refetched: Option<(String, String)>,
     /// The agents on this computer (the first run's lines, shown while there are no tasks); None until read.
     pub agents: Option<AgentsRead>,
     pub fetching_agents: bool,
@@ -874,8 +915,12 @@ pub struct App {
     pub settings_sig: Option<SettingsSig>,
     /// A task just filed here: selected once the work list lists it (its detail shown).
     pub filed: Option<String>,
-    /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
+    /// The task the status line spoke about and its situation then as its steps said it (situation_of; None: not read
+    /// yet), for status_follows.
     pub said_for: Option<(String, Option<String>)>,
+    /// The same task's situation as its Work row said it then (row_situation; None: not listed since). The Work list is
+    /// read on its own clock, its steps only when something signals: either one moving on clears the line.
+    pub said_row: Option<String>,
     /// The status line's task moved on while the line was held: it goes the moment the hold ends (tick).
     pub status_stale: bool,
     /// When the status line's task was last read on the fast road (tick: while a line about it shows).
@@ -977,6 +1022,7 @@ impl App {
             thread_scroll: 0,
             fetching_live: false,
             fetching_work: false,
+            row_refetched: None,
             agents: None,
             fetching_agents: false,
             agents_screen: None,
@@ -985,6 +1031,7 @@ impl App {
             settings_sig: None,
             filed: None,
             said_for: None,
+            said_row: None,
             status_stale: false,
             fast_read_at: None,
             following: None,
@@ -1107,20 +1154,59 @@ impl App {
         self.following = None;
         self.said_at = Some(std::time::Instant::now());
         self.key_since_said = false;
-        // Which task it was said about, in which state: words about an old state go once it moves on.
+        // Which task it was said about, in which situation: words about an old one go once it moves on.
         self.said_for = self.selected_id().map(|id| {
             let state = self
                 .steps_here()
-                .map(|s| s.task.state.clone())
-                .filter(|_| self.steps_here().is_some_and(|s| s.task.id == id));
+                .filter(|s| s.task.id == id)
+                .map(situation_of);
             (id, state)
         });
+        // And as its Work row says it at this moment (the baseline a later change is measured from).
+        self.said_row = self.selected_item().map(row_situation);
     }
 
     /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it
     /// spoke in (including a wait to retry), the line goes, unless it is held (said just now, no key since).
     fn status_follows(&mut self, steps: &StepCards) {
-        self.state_seen(&steps.task.id, &steps.task.state);
+        self.state_seen(&steps.task.id, &situation_of(steps));
+    }
+
+    /// The status line's task as its Work row says it now (the list is read every few seconds, its steps only when a
+    /// signal comes): its first sight recorded, any later change (Working, Waiting to retry, Ready, Failed…) moves it on.
+    fn row_seen(&mut self) {
+        let Some((task, _)) = self.said_for.clone() else {
+            return;
+        };
+        if self.status.is_none() {
+            return;
+        }
+        let Some(now) = self
+            .all_items
+            .iter()
+            .find(|i| i.id == task)
+            .map(row_situation)
+        else {
+            return;
+        };
+        match self.said_row.as_deref() {
+            None => self.said_row = Some(now),
+            Some(was) if was == now => {}
+            Some(_) => self.status_moved_on(),
+        }
+    }
+
+    /// The task the status line spoke about moved on: the line goes now, or, while it is held (said just now, no key
+    /// since), the moment the hold ends (tick).
+    fn status_moved_on(&mut self) {
+        if self.status_held() {
+            self.status_stale = true;
+        } else {
+            self.status = None;
+            self.said_for = None;
+            self.said_row = None;
+            self.status_stale = false;
+        }
     }
 
     /// Any read saw `task` in `state` (its steps, or its Work row's final word): when the status line spoke about that
@@ -1135,22 +1221,18 @@ impl App {
         }
         let moved = match said_in {
             Some(said) => said != state,
-            // The first read establishes the state an acknowledgement preceded. Every later change matters,
+            // The first read establishes the situation an acknowledgement preceded. Every later change matters,
             // including a temporary failure queuing another attempt. A final first read is already stale.
             None => {
                 self.said_for = Some((id, Some(state.to_string())));
-                matches!(state, "failed" | "done" | "cancelled")
+                matches!(
+                    state.split('|').next(),
+                    Some("failed" | "done" | "cancelled")
+                )
             }
         };
-        if !moved {
-            return;
-        }
-        if self.status_held() {
-            self.status_stale = true;
-        } else {
-            self.status = None;
-            self.said_for = None;
-            self.status_stale = false;
+        if moved {
+            self.status_moved_on();
         }
     }
 
@@ -1240,9 +1322,30 @@ impl App {
                 {
                     i.waiting = wait.clone();
                 }
+                // Its row still says it is at work while its steps say the build is over (a result waiting, or nothing
+                // running): the work list is read again now, once for this situation, so the row's word follows.
+                let row_stale = self
+                    .all_items
+                    .iter()
+                    .find(|i| i.id == steps.task.id)
+                    .is_some_and(|i| i.section == Section::Working)
+                    && steps.live_run.is_none()
+                    && (steps.review.is_some() || steps.failure.is_some());
+                let situation = situation_of(&steps);
+                let refetch_row = row_stale
+                    && !self.fetching_work
+                    && self.row_refetched.as_ref()
+                        != Some(&(steps.task.id.clone(), situation.clone()));
+                if refetch_row {
+                    self.row_refetched = Some((steps.task.id.clone(), situation));
+                }
                 self.steps = Some(steps);
                 self.check_pins();
                 let mut fx = vec![];
+                if refetch_row {
+                    fx.push(Effect::FetchWork);
+                    self.fetching_work = true;
+                }
                 let run = self.transcript_run();
                 if run != before || self.transcript.run != run {
                     self.transcript = Transcript {
@@ -1358,6 +1461,7 @@ impl App {
                 // changes state, "Building it." goes).
                 self.say(Tone::Said, words);
                 self.said_for = Some((task.clone(), None));
+                self.said_row = None;
                 self.following = Some(task.clone());
                 self.filed = Some(task);
                 self.sent_thread();
@@ -1502,23 +1606,9 @@ impl App {
                 }
             }
         }
-        // The status line's task, in its Work row: a final word there moves it on as its steps would (state_seen).
-        if let Some((task, _)) = self.said_for.clone() {
-            let ended = self.all_items.iter().find(|i| i.id == task).and_then(|i| {
-                if i.word == "Failed" || i.tone == "problem" {
-                    Some("failed")
-                } else if i.word == "Cancelled" {
-                    Some("cancelled")
-                } else if i.section == Section::Recent {
-                    Some("done")
-                } else {
-                    None
-                }
-            });
-            if let Some(state) = ended {
-                self.state_seen(&task, state);
-            }
-        }
+        // The status line's task, in its Work row: any change there (Working, Waiting to retry, Ready, a final word)
+        // moves it on, as a change in its steps would (row_seen).
+        self.row_seen();
         let first = !self.loaded;
         // Where the last run left off: its filter and layout, then its task (state.rs).
         let restore = if first { self.restore.take() } else { None };
@@ -1892,6 +1982,7 @@ impl App {
         if self.status_stale && !self.status_held() {
             self.status = None;
             self.said_for = None;
+            self.said_row = None;
             self.status_stale = false;
         }
         let fast = self.fast_read();
@@ -2609,6 +2700,29 @@ impl App {
     /// the question on screen, else Esc clearing the last message. Every action runs through `run_action`, which the
     /// command palette runs too.
     fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // A terminal pane on screen and not being typed in: its keys go to the shell only once t says so, and never
+        // fall through to the workbench's acts (w, n, Enter, a, r…) that a person who thinks they are typing would
+        // set off. Moving, tabs, scrolling, copy, help, the palette and quit still work; anything else is refused.
+        if self.tab == Tab::Terminal && self.pane_here().is_some() {
+            let action = self.prefs.settings.keymap.lookup(Scope::Global, &key);
+            let layout = |a: Action| {
+                crate::keys::SPECS
+                    .iter()
+                    .any(|s| s.action == a && s.group == crate::keys::Group::Layout)
+            };
+            if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a)) {
+                if key.code == KeyCode::Esc {
+                    self.status = None;
+                    return vec![];
+                }
+                let t = self.prefs.settings.keymap.key_words(Action::TakeOver);
+                self.say(
+                    Tone::Refused,
+                    format!("The build shell isn't taking keys: press {t} to type in it."),
+                );
+                return vec![];
+            }
+        }
         // The Diff tab's keys are a task result's; a thread's panel has no Diff (its own keys come below).
         if self.tab == Tab::Diff && self.thread_selected().is_none() {
             if let Some(action) = self.prefs.settings.keymap.lookup(Scope::Diff, &key) {
@@ -5067,6 +5181,17 @@ impl App {
             .flat_map(|c| c.runs.first().copied())
             .next();
         let run = steps.review.as_ref().map(|r| r.run).or(newest_build);
+        // Nothing to open on (no saved result, no saved commit), as the console says: refused here, before anything is
+        // confirmed, and nothing that looks like a terminal is shown.
+        if let Some(why) = steps
+            .shell
+            .as_ref()
+            .filter(|s| Some(s.run) == run && Some(s.run) != steps.live_run)
+            .and_then(|s| s.why.clone())
+        {
+            self.say(Tone::Refused, clean(&why));
+            return vec![];
+        }
         match run {
             // The first time on a build, what opening it means is said first, and nothing starts until t again.
             Some(run)
@@ -5140,10 +5265,15 @@ impl App {
             }
             // Opened for a pane no longer wanted (another task, another build): let go of it.
             Ok((id, _, _)) => vec![Effect::TermDetach(id)],
+            // Couldn't open: the pane says why and draws no terminal window (view.rs: a window only while a shell is
+            // attached), and while it is on screen keys never fall through to the workbench (normal_key's gate).
             Err(e) if wanted => {
                 let words = e.to_string();
                 if let Some(pane) = self.term.as_mut() {
                     pane.link = Link::Closed(clean(&words));
+                }
+                if self.mode == Mode::TakeOver {
+                    self.mode = Mode::Normal;
                 }
                 if matches!(e, ApiError::SessionEnded) {
                     return self.failed(e);
