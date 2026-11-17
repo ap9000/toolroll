@@ -130,6 +130,9 @@
       "keys": [],
       "dialogKeys": [
         "f"
+      ],
+      "dependsOn": [
+        "approval"
       ]
     },
     {
@@ -142,6 +145,9 @@
       "keys": [],
       "dialogKeys": [
         "enter"
+      ],
+      "dependsOn": [
+        "approval"
       ]
     },
     {
@@ -155,6 +161,9 @@
       ],
       "keys": [
         "enter"
+      ],
+      "dependsOn": [
+        "build"
       ]
     },
     {
@@ -168,6 +177,9 @@
       ],
       "keys": [
         "/"
+      ],
+      "dependsOn": [
+        "result"
       ]
     },
     {
@@ -182,7 +194,10 @@
       "keys": [
         "ctrl-e"
       ],
-      "state": "editor contains subtract"
+      "state": "editor contains subtract",
+      "dependsOn": [
+        "result"
+      ]
     },
     {
       "id": "take-over",
@@ -195,6 +210,9 @@
       ],
       "keys": [
         "t"
+      ],
+      "dependsOn": [
+        "result"
       ]
     },
     {
@@ -215,7 +233,7 @@
       "scenario": "never-initialized",
       "actions": [],
       "keys": [],
-      "state": "run records no initialization"
+      "state": "run reason is retryable-infra; failure says the provider harness never initialized"
     },
     {
       "id": "retry-wait",
@@ -224,7 +242,10 @@
       "expected": "Last build failed.*next try",
       "scenario": "never-initialized",
       "actions": [],
-      "keys": []
+      "keys": [],
+      "dependsOn": [
+        "never-initialized"
+      ]
     },
     {
       "id": "stop-resume",
@@ -238,6 +259,9 @@
       ],
       "keys": [
         "x"
+      ],
+      "dependsOn": [
+        "never-initialized"
       ]
     },
     {
@@ -252,6 +276,9 @@
       ],
       "keys": [
         "r"
+      ],
+      "dependsOn": [
+        "agent-error"
       ]
     },
     {
@@ -265,6 +292,9 @@
       ],
       "keys": [
         "X"
+      ],
+      "dependsOn": [
+        "never-initialized"
       ]
     },
     {
@@ -278,6 +308,9 @@
       ],
       "keys": [
         "T"
+      ],
+      "needs": [
+        "threads-on"
       ]
     },
     {
@@ -334,7 +367,7 @@
       "keys": [
         "="
       ],
-      "state": "saved view changes, or equalize restores defaults"
+      "state": "saved split ratios are 50%; list has its usual width"
     },
     {
       "id": "list",
@@ -402,7 +435,13 @@
         "@",
         "'"
       ],
-      "state": "selected task returns to jump origin"
+      "state": "selected task returns to jump origin",
+      "dependsOn": [
+        "result"
+      ],
+      "needs": [
+        "threads-on"
+      ]
     },
     {
       "id": "unread",
@@ -412,7 +451,10 @@
       "scenario": "success",
       "actions": [],
       "keys": [],
-      "state": "unread saved then cleared on visit"
+      "state": "unread saved then cleared on visit",
+      "needs": [
+        "threads-on"
+      ]
     },
     {
       "id": "restore",
@@ -432,7 +474,10 @@
       "scenario": "success",
       "actions": [],
       "keys": [],
-      "state": "CLI reads the same task id"
+      "state": "CLI reads the same task id",
+      "dependsOn": [
+        "result"
+      ]
     },
     {
       "id": "send-back",
@@ -445,6 +490,9 @@
       ],
       "keys": [
         "r"
+      ],
+      "dependsOn": [
+        "result"
       ]
     },
     {
@@ -458,6 +506,9 @@
       ],
       "keys": [
         "a"
+      ],
+      "dependsOn": [
+        "result"
       ]
     }
   ],
