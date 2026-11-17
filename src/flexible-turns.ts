@@ -558,9 +558,10 @@ const INSTALLATION_LIMITS = { liveThreads: 1000, turnsPerDay: 1_000_000, measure
 const limitOk = (value: unknown, max: number) => value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= max);
 
 /** Set the installation's own Flexible limits across every project (null: none). An instance operator only; a surface
- * that offers it adds its own step-up. Written and recorded in one transaction. */
+ * that offers it adds its own step-up. Written and recorded in one transaction. While interactive agent threads are off
+ * (flexible-available.ts, read in that transaction) only a narrowing is taken: tightening a limit is never blocked by the
+ * switch, loosening one is. */
 export function setFlexibleInstallationCaps(store: Store, input: { by: string; caps: FlexibleInstallationCaps; clock?: FlexibleClock }): { ok: true; caps: FlexibleInstallationCaps } | FlexibleTurnRefusal {
-  if (!flexibleAvailable(store)) return refuse("not-available");
   const caps = input.caps;
   if (typeof caps !== "object" || caps === null || !limitOk(caps.liveThreads, INSTALLATION_LIMITS.liveThreads) || !limitOk(caps.turnsPerDay, INSTALLATION_LIMITS.turnsPerDay)
     || !limitOk(caps.measuredMicrousdPerDay, INSTALLATION_LIMITS.measuredMicrousdPerDay) || !clockOk(input.clock)) return refuse("invalid-request");
@@ -568,6 +569,9 @@ export function setFlexibleInstallationCaps(store: Store, input: { by: string; c
     const account = store.accountOf(input.by);
     if (account === null || account.revokedAt !== null || !store.isInstanceOperator(input.by)) return refuse("not-an-operator");
     const before = flexibleInstallationCaps(store);
+    const tighter = (now: number | null, was: number | null) => now !== null && (was === null || now <= was);
+    if (!flexibleAvailable(store) && !(tighter(caps.liveThreads, before.liveThreads) && tighter(caps.turnsPerDay, before.turnsPerDay)
+      && tighter(caps.measuredMicrousdPerDay, before.measuredMicrousdPerDay))) return refuse("not-available");
     const at = timeOf(input.clock).toISOString();
     store.handle.prepare(`INSERT INTO flexible_installation_caps (id, live_threads, turns_per_day, measured_microusd_per_day, updated_by, updated_at) VALUES (1, ?, ?, ?, ?, ?)
       ON CONFLICT (id) DO UPDATE SET live_threads = excluded.live_threads, turns_per_day = excluded.turns_per_day, measured_microusd_per_day = excluded.measured_microusd_per_day,

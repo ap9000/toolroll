@@ -2,8 +2,9 @@
  * Interactive agent threads are off by default (flexible-available.ts: Settings → General's switch, no row reads off).
  * With the real module and a fresh store: every entry point that starts something new refuses with the off words and
  * writes nothing (a project's terms turned on, the start's card, a thread, a turn, an agent launch, the relay, a request,
- * an answer, Ship), the CLI and the settings route refuse, and no page offers it; what settles or stops what exists
- * still works, so turning threads off can always clean up. And the switch can't become an override: one table, read
+ * an answer, Ship, a project's terms turned on), and no page offers threads; what settles, stops, turns down or reads
+ * still works, so turning threads off can always clean up: a project's Flexible terms are shown, lowered and turned off
+ * through the web and the CLI, never turned on. And the switch can't become an override: one table, read
  * and written only here, written only by a person's step-up in a transaction, every gated entry point checking it first.
  */
 import { fakePid } from "../test/fake-pid.js";
@@ -129,7 +130,8 @@ describe("off by default", () => {
       answerFlexibleRequest: await answerFlexibleRequest(store, sessions, { held: () => true, thread: id, request: "d".repeat(32), shownDigest: "1".repeat(64), by: { kind: "person", ...by }, choice: { decision: "accept" } }),
     };
     for (const [name, result] of Object.entries(off)) expect(result, name).toEqual(refused);
-    expect(flexibleSettingsView(store, repo, { name: "alex", canChange: true })).toBeUndefined();
+    // A read: the planted terms still show, with no way to turn them on.
+    expect(flexibleSettingsView(store, repo, { name: "alex", canChange: true })).toMatchObject({ standing: { state: "on" }, proposal: { problem: OFF } });
     expect(touched).toEqual([]);
     expect(stdin.writableLength).toBe(0);
     expect(counts(...TABLES)).toEqual(before);
@@ -157,17 +159,36 @@ describe("off by default", () => {
     expect(withdrawFlexibleTurn(store, { turn, holder: "h1", detail: "turned off", clock: () => NOW })).toEqual({ ok: true });
     expect(await stopFlexibleThreadAgent(store, { id, reason: "threads turned off", clock: () => NOW })).not.toMatchObject({ reason: "not-available" });
     expect(turnFlexibleOff(store, { repo, by: "alex", now: NOW })).toMatchObject({ ok: true, changed: true });
+    // The installation's own limits: tightened while off, never loosened.
+    const caps = (liveThreads: number | null) => setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads, turnsPerDay: 10, measuredMicrousdPerDay: 1_000_000 }, clock: () => NOW });
+    expect(caps(2)).toMatchObject({ ok: true });
+    expect(caps(1)).toMatchObject({ ok: true });
+    expect(caps(3)).toEqual(refused);
+    expect(caps(null)).toEqual(refused);
+    expect(store.handle.prepare("SELECT live_threads FROM flexible_installation_caps").get()!["live_threads"]).toBe(1);
   });
 
-  test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
-    const lines: string[] = [];
-    const code = await runOperate("project", ["flexible", action, "--repo", repo, "--json", ...(action === "show" ? [] : ["--as", "alex", "--token", tokens["alex"]!]), ...(action === "lower" ? ["--max", "auto"] : [])],
-      line => lines.push(line), { databaseFile: db });
-    expect(code).toBe(EXIT.refused);
-    expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "not-available", message: OFF });
+  test("the CLI with threads off: show, lower and off work; enable is refused", async () => {
+    const cli = async (action: string, more: string[] = []) => {
+      const lines: string[] = [];
+      const code = await runOperate("project", ["flexible", action, "--repo", repo, "--json", ...(action === "show" ? [] : ["--as", "alex", "--token", tokens["alex"]!]), ...more],
+        line => lines.push(line), { databaseFile: db });
+      return { code, out: JSON.parse(lines.join("\n")) as Record<string, unknown> };
+    };
+    // A project with no terms: show says Secure; enable is refused and writes nothing.
+    expect(await cli("show")).toMatchObject({ code: EXIT.ok, out: { ok: true, flexible: { state: "secure" } } });
+    const digest = plant();
+    expect(await cli("show")).toMatchObject({ code: EXIT.ok, out: { ok: true, flexible: { state: "on", digest } } });
+    expect(await cli("enable", ["--digest", digest])).toMatchObject({ code: EXIT.refused, out: { ok: false, reason: "not-available", message: OFF } });
+    expect(await cli("lower", ["--max", "auto"])).toMatchObject({ code: EXIT.ok, out: { ok: true, changed: true } });
+    expect(await cli("show")).toMatchObject({ code: EXIT.ok, out: { flexible: { state: "on", terms: { max: "auto" } } } });
+    expect(await cli("off")).toMatchObject({ code: EXIT.ok, out: { ok: true, changed: true, flexible: { state: "secure" } } });
+    expect(store.handle.prepare("SELECT ended_at FROM flexible_terms").all().every(row => row["ended_at"] !== null)).toBe(true);
+    expect(await cli("enable", ["--digest", digest])).toMatchObject({ code: EXIT.refused, out: { reason: "not-available" } });
+    expect(await cli("show")).toMatchObject({ code: EXIT.ok, out: { flexible: { state: "secure" } } });
   });
 
-  test("no page offers a project's Flexible terms, its route refuses, and every thread road refuses before anything is looked up", async () => {
+  test("a project with no terms shows none; one with terms can be lowered and turned off, never turned on; every thread road refuses", async () => {
     const server: Server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform: "darwin", fenceAvailable: () => true });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -183,12 +204,23 @@ describe("off by default", () => {
       expect(html).not.toContain("/settings/project/flexible");
       const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)![1]!;
       const digest = plant();
-      for (const fields of [{ action: "enable", digest, password: tokens["alex"]! }, { action: "lower", max: "auto" }, { action: "off" }]) {
-        const answer = await fetch(`${base}/settings/project/flexible`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, repo, ...fields }), redirect: "manual" });
-        expect(answer.status).toBe(403);
-        expect(await answer.text()).toContain("Interactive agent threads are off");
-      }
-      expect(store.handle.prepare("SELECT ended_at FROM flexible_terms").all().every(row => row["ended_at"] === null)).toBe(true);
+      const post = (fields: Record<string, string>) => fetch(`${base}/settings/project/flexible`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, repo, ...fields }), redirect: "manual" });
+      const said = (answer: Response) => decodeURIComponent(answer.headers.get("location") ?? "").replace(/\+/g, " ");
+      // With terms: the page shows them with Lower and Turn off, and no way to turn them on.
+      const shown = await (await fetch(`${base}/settings/project?repo=${encodeURIComponent(repo)}`, { headers: { cookie } })).text();
+      expect(shown).toContain('id="flexible"');
+      expect(shown).toContain("Turn off Flexible");
+      expect(shown).toContain('value="lower"');
+      expect(shown).not.toContain('value="enable"');
+      const enable = await post({ action: "enable", digest, password: tokens["alex"]! });
+      expect(enable.status).toBe(403);
+      expect(await enable.text()).toContain("Interactive agent threads are off");
+      expect(said(await post({ action: "lower", max: "auto" }))).toContain("Lowered to");
+      expect(JSON.parse(String(store.handle.prepare("SELECT terms_json FROM flexible_terms WHERE ended_at IS NULL").get()!["terms_json"]))).toMatchObject({ max: "auto" });
+      expect(said(await post({ action: "off" }))).toContain("Secure again");
+      expect(store.handle.prepare("SELECT ended_at FROM flexible_terms").all().every(row => row["ended_at"] !== null)).toBe(true);
+      expect((await post({ action: "enable", digest, password: tokens["alex"]! })).status).toBe(403);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_terms WHERE ended_at IS NULL").get()!["n"]).toBe(0);
       expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
       expect(await (await fetch(`${base}/agents/live/thread/${"a".repeat(32)}`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
       for (const [path, fields] of [[`/agents/live/thread/${"a".repeat(32)}/answer`, { request: "d".repeat(32), card: "1".repeat(64), decision: "accept" }], ["/agents/live/thread", { repo, message: "hello", terms: digest }],
@@ -249,15 +281,18 @@ describe("the switch can't become an override", () => {
         expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toMatch(/^ {2}if \(!flexibleAvailable\(store\)\) return (?:refuse\("not-available"\)|pre\("not-available"\)|undefined);$/);
       }
     };
-    decided("src/flexible.ts", ["enableFlexible", "flexibleDelegationAtUse", "flexibleSettingsView"],
-      ["flexibleCeilingAllows", "flexibleTermsJson", "flexibleDigestOf", "flexibleTermsFromJson", "flexibleNarrowerOrEqual", "flexibleTermsWords", "flexibleNetworkOf", "flexibleTwoPerson", "flexibleStanding",
+    decided("src/flexible.ts", ["enableFlexible", "flexibleDelegationAtUse"],
+      ["flexibleSettingsView", "flexibleCeilingAllows", "flexibleTermsJson", "flexibleDigestOf", "flexibleTermsFromJson", "flexibleNarrowerOrEqual", "flexibleTermsWords", "flexibleNetworkOf", "flexibleTwoPerson", "flexibleStanding",
         "proposedFlexibleTerms", "lowerFlexible", "turnFlexibleOff", "endLapsedFlexible"]);
     decided("src/flexible-thread.ts", ["prepareFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile"],
       ["flexibleThreadPaths", "flexibleThread", "removeFlexibleThread", "threadCredentialPaths", "flexibleThreadEnv", "withFlexibleThreadLock", "flexibleFenceDigest", "stopFlexibleThreadAgent"]);
-    decided("src/flexible-turns.ts", ["admitFlexibleTurn", "beginFlexibleTurn", "setFlexibleInstallationCaps"],
-      ["flexibleTurn", "flexibleInstallationCaps", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "withdrawFlexibleTurn", "interruptFlexibleThreadTurns", "withdrawFlexibleTurnsAbove"]);
+    expect(readFileSync("src/flexible-turns.ts", "utf8")).toMatch(/const before = flexibleInstallationCaps\(store\);\n[^\n]*\n {4}if \(!flexibleAvailable\(store\) && !\(tighter\(/);
+    decided("src/flexible-turns.ts", ["admitFlexibleTurn", "beginFlexibleTurn"],
+      ["setFlexibleInstallationCaps", "flexibleTurn", "flexibleInstallationCaps", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "withdrawFlexibleTurn", "interruptFlexibleThreadTurns", "withdrawFlexibleTurnsAbove"]);
     decided("src/flexible-agents.ts", ["startFlexibleTurn"], ["flexibleAgentLaunch", "lowerFlexibleThreadLevel", "recoverFlexibleLaunchesOf"]);
     decided("src/flexible-relay.ts", ["startFlexibleRelay"], ["relayUrlInside", "flexibleRelayBilling"]);
+    // Any answer reaching an agent continues its turn, so none goes while off (a decline included: the switch's stop
+    // withdraws every open request instead).
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
       ["streamAnswerSender", "openFlexibleAnswerCatalog", "decideFlexibleAnswerByPolicy", "cancelFlexibleAnswer", "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers",
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
@@ -273,10 +308,15 @@ describe("the switch can't become an override", () => {
     // reads it inside its own reservation transaction.
     expect(readFileSync("src/flexible-session.ts", "utf8")).toMatch(/reserve: id => \{[^]*?\n {6}if \(!flexibleAvailable\(store\)\) return refuse\("not-available"\);\n {6}const billing = flexibleRelayBilling\(store\);/);
     expect(readFileSync("src/flexible-relay.ts", "utf8")).toMatch(/store\.transact\(\(\) => \{\n[^\n]*\n {10}if \(!flexibleAvailable\(store\)\) \{ blocked = "threads-off"; return; \}\n {10}if \(!grantStillLive/);
-    // The surfaces: the settings route and the CLI check it before anything is read; every thread road before anything
-    // is looked up.
-    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/async function projectFlexible\(ctx: HandlerContext\): Promise<void> \{\n {4}const \{ response, now, posted \} = ctx;\n {4}const who = browserCaller\(ctx\.who\);\n {4}if \(!flexibleAvailable\(store\)\) return refuse/);
-    expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const \{ write, json \} = context;\n {2}if \(!flexibleAvailable\(context\.store\)\) return fail\(write, json, command, "not-available"/);
+    // The surfaces: a project's terms are turned on only with the switch on (the route and the CLI check it on `enable`
+    // alone; lower, off and show never), and every thread road checks it before anything is looked up.
+    const settingsRoute = readFileSync("src/server/settings.ts", "utf8");
+    expect(settingsRoute).toMatch(/if \(action !== "enable"\) return back\([^\n]*\n {4}if \(!flexibleAvailable\(store\)\) return refuse/);
+    expect(settingsRoute.match(/flexibleAvailable\(/g)).toHaveLength(1); // the enable gate, nothing else
+    const cliText = readFileSync("src/operate.ts", "utf8");
+    expect(cliText).toMatch(/if \(action === "enable"\) \{\n {4}if \(!flexibleAvailable\(store\)\) return fail\(write, json, command, "not-available"/);
+    const projectCli = cliText.slice(cliText.indexOf("async function projectFlexibleCommand("), cliText.indexOf("async function taskSizingConfig("));
+    expect(projectCli.match(/flexibleAvailable\(/g)).toHaveLength(1);
     const engineApi = readFileSync("src/server/engine-api.ts", "utf8");
     expect(engineApi).toMatch(/const threadsOn = \(\): FlexibleSessions \| null => flexibleAvailable\(store\) \? openHost\(\) : null;/);
     // Turned off mid-thread: the console's upkeep tick (every five seconds) stops what this host still holds.

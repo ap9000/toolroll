@@ -291,7 +291,10 @@ Limits for now:
 
 Turning threads off takes effect at once. No new thread or turn starts. A
 running thread's next model call is refused, and Toolroll stops its agent
-within a few seconds.
+within a few seconds. Turning down is never blocked: with threads off, a
+project's Flexible terms still show and can be lowered or turned off
+(Settings → Project, or `toolroll project flexible lower|off`); only turning
+them on waits for the switch.
 
 Still being proven before threads can be on by default: permission prompts
 reaching you from Claude Code, Codex inside the sandbox, Linux sandbox

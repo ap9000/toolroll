@@ -2995,14 +2995,14 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!done.ok) return refuse(response, who, 403, done.problem, "/settings/general?section=advanced");
     return back("said", on ? "Advanced features show in your menus." : "Advanced features are out of your menus. They still open from here.");
   }
-  // Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Refused before anything is read
-  // while interactive agent threads are off (flexible-available.ts). Turning it on is an approver's credential act over
+  // Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Turning it on is refused while
+  // interactive agent threads are off (flexible-available.ts); lowering and turning off never are: turning something
+  // down is never blocked by the switch. Turning it on is an approver's credential act over
   // exactly the terms the page showed (flexible.ts rebuilds them and compares the digest inside its write); lowering
   // and turning off are one click for an approver of the project.
   async function projectFlexible(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
-    if (!flexibleAvailable(store)) return refuse(response, who, 403, FLEXIBLE_UNAVAILABLE, "/settings/project");
     const body = readForm(posted, CONSOLE_FORMS.projectFlexible);
     const repo = body.get("repo") ?? "";
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
@@ -3020,6 +3020,7 @@ ${postForm("/settings/chat-approval/save", html`\
       return back(done.ok ? "said" : "problem", !done.ok ? done.message : done.changed ? `Lowered to ${FLEXIBLE_LEVEL_WORDS[done.terms.max]}. New threads start under these terms only.` : "Nothing changed.");
     }
     if (action !== "enable") return back("problem", "Choose to turn Flexible on, lower it or turn it off. Nothing changed.");
+    if (!flexibleAvailable(store)) return refuse(response, who, 403, FLEXIBLE_UNAVAILABLE, "/settings/project");
     const proved = authenticateCredential(who, body.get("password") ?? "", repo);
     if (!proved.ok) return back("problem", "Enter your Toolroll password to turn on Flexible.");
     const done = enableFlexible(store, { repo, by: who.name, proof: proved.method, shownDigest: body.get("digest") ?? "", now });

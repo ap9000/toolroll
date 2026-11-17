@@ -1,7 +1,7 @@
 /**
  * Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Drawn only when the page has a
- * Flexible view, which flexibleSettingsView gives only while interactive agent threads are on (flexible-available.ts);
- * the handler refuses every post otherwise. Turning it on shows the terms in full before the password, and signs exactly
+ * Flexible view: always while interactive agent threads are on, and while they are off only for a project that has
+ * terms (flexible-available.ts), then with Lower and Turn off but no way to turn them on (the handler refuses that). Turning it on shows the terms in full before the password, and signs exactly
  * those (the hidden digest). Lowering and turning off are one click.
  */
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, flexibleTermsWords, type FlexibleSettingsView, type FlexibleTerms } from "./flexible.js";

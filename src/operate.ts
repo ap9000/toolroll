@@ -15161,13 +15161,13 @@ function shellCallerFacts(context: Context): ShellCaller {
  * `project flexible [show|enable|lower|off] --repo <p>` (flexible.ts, the Flexible plan v2 slice F1): a project's
  * Flexible terms. Turning it on is a person's password ceremony over exactly the terms shown (on a terminal it asks
  * before signing; otherwise pass the --digest that `enable` printed). Lowering (--max) and turning off are an approver's
- * one step. While interactive agent threads are off (flexible-available.ts), every form refuses with `not-available`.
+ * one step. While interactive agent threads are off (flexible-available.ts), `enable` refuses with `not-available`;
+ * `show`, `lower` and `off` never do: turning something down is never blocked by the switch.
  */
 async function projectFlexibleCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const action = positional[1] ?? "show";
   const command = `project flexible ${action}`;
   const { write, json } = context;
-  if (!flexibleAvailable(context.store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
   const options: Record<string, readonly string[]> = { show: [], enable: ["max", "default", "digest"], lower: ["max"], off: [] };
   const own = options[action];
   if (own === undefined || positional.length > 2) return fail(write, json, command, "usage", "Use project flexible [show | enable [--max <level>] [--default <level>] [--digest <d>] | lower --max <level> | off] --repo <project path>.", EXIT.usage);
@@ -15198,6 +15198,7 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const acting = await askCredentials(flags, context);
   if (acting === null) return refused(`${action === "enable" ? "Turning on Flexible needs your password" : "This needs your sign-in"}: pass --as and --token.`);
   if (action === "enable") {
+    if (!flexibleAvailable(store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
     const proved = credentialApprover(store, acting.name, acting.token, repo);
     if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on Flexible.");
     const choice: FlexibleChoice = { ...(max === undefined ? {} : { max }), ...(chosenDefault === undefined ? {} : { default: chosenDefault }) };

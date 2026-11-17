@@ -461,11 +461,15 @@ export function flexibleDelegationAtUse(store: Store, input: { repo: string; sta
 // ---- the settings page's view ---------------------------------------------------------------------------------------
 
 /** Settings → Project → How work starts: the standing, and the terms this person would sign now (or why they can't).
- * Undefined while this build doesn't offer Flexible, so no page draws it. */
+ * A read, so never blocked by interactive agent threads' switch: while it is off, a project with terms still shows them
+ * with Lower and Turn off (turning something down is never blocked) and no way to turn them on; a project with none
+ * shows nothing (undefined). */
 export type FlexibleSettingsView = { repo: string; standing: FlexibleStanding; proposal: { terms: FlexibleTerms; digest: string } | { problem: string }; canChange: boolean };
 export function flexibleSettingsView(store: Store, repo: string, viewer: { name: string; canChange: boolean }): FlexibleSettingsView | undefined {
-  if (!flexibleAvailable(store)) return undefined;
-  const proposed = viewer.canChange ? proposedFlexibleTerms(store, repo, viewer.name) : refuse("not-an-approver");
-  return { repo, standing: flexibleStanding(store, repo), canChange: viewer.canChange,
+  const standing = flexibleStanding(store, repo);
+  const on = flexibleAvailable(store);
+  if (!on && standing.state === "secure") return undefined;
+  const proposed = !on ? refuse("not-available") : viewer.canChange ? proposedFlexibleTerms(store, repo, viewer.name) : refuse("not-an-approver");
+  return { repo, standing, canChange: viewer.canChange,
     proposal: proposed.ok ? { terms: proposed.terms, digest: proposed.digest } : { problem: proposed.message.replace(/ Nothing changed\.$/, "") } };
 }
