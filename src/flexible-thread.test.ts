@@ -308,6 +308,26 @@ describe("the thread fence's terms", () => {
     expect(flexibleThreadFence(world.store, { id: thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "thread-not-ready" });
   });
 
+  // `toolroll` started in a repository enrolls it in the machine's registry (operate.ts `up`), with no project row: a
+  // project `project flexible enable` already accepts must host its threads too. Only Toolroll's own registry counts,
+  // exactly, and one that can't be read counts nothing.
+  test("a project only in the registry beside the database is a project; leaving the registry, or a damaged one, refuses", async () => {
+    const registry = join(world.state, "repos.json");
+    world.store.handle.prepare("DELETE FROM project WHERE path = ?").run(world.project);
+    const prepared = () => prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW });
+    expect(await prepared()).toMatchObject({ ok: false, reason: "not-a-project" });
+    writeFileSync(registry, JSON.stringify({ version: 2, repos: [world.other, `${world.project}/`], roots: [world.project] }));
+    expect(await prepared()).toMatchObject({ ok: false, reason: "not-a-project" });
+    writeFileSync(registry, JSON.stringify({ version: 2, repos: [world.project], roots: [] }));
+    const thread = await prepared();
+    if (!thread.ok) throw new Error(thread.message);
+    expect(flexibleThreadFence(world.store, { id: thread.thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: true });
+    writeFileSync(registry, "{ not json");
+    expect(flexibleThreadFence(world.store, { id: thread.thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "not-a-project" });
+    writeFileSync(registry, JSON.stringify({ version: 2, repos: [], roots: [] }));
+    expect(flexibleThreadFence(world.store, { id: thread.thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "not-a-project" });
+  });
+
   test("the agent's environment is exactly the thread's: no SSH agent, token or provider key of Toolroll's", async () => {
     const { paths } = await made();
     const env = flexibleThreadEnv(paths, { HTTPS_PROXY: "http://x:t@127.0.0.1:41000" }, { PATH: "/usr/bin", SSH_AUTH_SOCK: "/tmp/agent.sock", GH_TOKEN: "t", ANTHROPIC_API_KEY: "k", AWS_SECRET_ACCESS_KEY: "s", OPENAI_API_KEY: "o", GIT_ASKPASS: "/x", LANG: "C" });

@@ -1214,14 +1214,19 @@ impl App {
         self.following = None;
         self.said_at = Some(std::time::Instant::now());
         self.key_since_said = false;
-        // Which task it was said about, in which situation: words about an old one go once it moves on.
-        self.said_for = self.selected_id().map(|id| {
-            let state = self
-                .steps_here()
-                .filter(|s| s.task.id == id)
-                .map(situation_of);
-            (id, state)
-        });
+        // Which task it was said about, in which situation: words about an old one go once it moves on. A thread has no
+        // steps to follow (fast_read would ask for a task's steps by its id, and be refused).
+        self.said_for = self
+            .selected_item()
+            .filter(|i| i.is_task)
+            .map(|i| i.id.clone())
+            .map(|id| {
+                let state = self
+                    .steps_here()
+                    .filter(|s| s.task.id == id)
+                    .map(situation_of);
+                (id, state)
+            });
         // And as its Work row says it at this moment (the baseline a later change is measured from).
         self.said_row = self.selected_item().map(row_situation);
     }

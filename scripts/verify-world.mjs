@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 // Suppress only SQLite's experimental notice in this reader, preserving every other warning.
 const emitWarning = process.emitWarning;
 process.emitWarning = function (warning, ...args) {
@@ -153,6 +153,8 @@ export async function prepareWorld(world, cli, needs, runCli) {
   if (owners.length !== 1) throw new Error('Cannot prepare threads-on: this install has no unique passwordless local owner who is an instance operator. No settings were changed.');
   const password = randomBytes(32).toString('hex');
   world.secrets.push(password);
+  // In memory only, for a later feature's own password prompt (the unread check completes a task as this person).
+  Object.assign(world, { owner: owners[0].name, password });
   // askCredentials supports a hidden terminal prompt: never put the password in argv, env or a file.
   await runCli(['password', 'set'], [
     { prompt: /New password:/, answer: password },
@@ -172,4 +174,31 @@ export async function prepareWorld(world, cli, needs, runCli) {
   if (project.flexible?.state !== 'on') {
     throw new Error(`Cannot prepare threads-on: the project did not become Flexible (${JSON.stringify(project).slice(0, 200)}).`);
   }
+  // No product step yet gives Toolroll a Claude sign-in for threads (flexible-relay.ts FLEXIBLE_RELAY_CREDENTIAL: "written
+  // only by a person's step (a later slice)"). The world holds a stand-in one, as the slow tests do.
+  standInRelayCredential(world);
+}
+
+/** A stand-in Claude sign-in for the threads' relay: a random value in a setup-token's shape, never a real credential, in
+ * the files store where Toolroll reads it (TOOLROLL_SECRET_STORE=files: <state>/flexible/claude-relay.json, owner-only,
+ * tool-secret-store.ts readHeldSecret). Its value is redacted like the password. The relay would send it only to the
+ * model service on a call through it: the stand-in agent makes none, and checkNoModelCalls proves that afterwards. */
+export function standInRelayCredential(world) {
+  checkedEnv(world);
+  if (world.env.TOOLROLL_SECRET_STORE !== 'files') throw new Error('Stand-in sign-in needs the files secret store');
+  const state = dirname(world.env.TOOLROLL_DB);
+  mkdirSync(join(state, 'flexible'), { recursive: true, mode: 0o700 });
+  const value = ['sk', 'ant', 'oat01', randomBytes(24).toString('hex')].join('-');
+  world.secrets.push(value);
+  writeFileSync(join(state, 'flexible', 'claude-relay.json'), JSON.stringify({ kind: 'setup-token', value }), { mode: 0o600, flag: 'wx' });
+}
+
+/** No call went to a model: the threads' sign-in relay records every call it answers, refused or forwarded (thread_relay_call). */
+export function checkNoModelCalls(world) {
+  return withConsoleDatabase(world, sql => {
+    const table = sql("SELECT name FROM sqlite_master WHERE type='table' AND name='thread_relay_call'");
+    if (!table.length) throw new Error('No thread_relay_call table: the no-model-calls check cannot establish coverage');
+    const calls = sql('SELECT count(*) AS n FROM thread_relay_call')[0].n;
+    return { status: calls === 0 ? 'PASS' : 'FAIL', relayCalls: calls };
+  });
 }

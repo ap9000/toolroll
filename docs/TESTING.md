@@ -432,6 +432,19 @@ the workbench is relaunched. Missing owner/operator or product refusals fail
 preparation; the driver never writes the switch directly. Captured text and
 reports redact the password; raw preparation logs stay in the throwaway world
 until redacted evidence is copied. Other selections keep their existing startup.
+The project is then opted in with `toolroll project flexible enable` (password,
+then the terms confirm). No product step yet gives Toolroll a Claude sign-in for
+threads (a later slice), so the world holds a stand-in one, as the slow tests
+do: a random setup-token-shaped value in the files store at
+`<state>/flexible/claude-relay.json`, redacted like the password. The stand-in
+agent never calls through the relay, and every session's report checks that the
+relay answered no call (`thread_relay_call` is empty); one call fails the run.
+
+`accept` accepts a fresh task's result. A sent-back revision waits for its
+person's yes; `send-back` approves it in the workbench, and waits for its build,
+only when the workbench's keymap says Accept also approves (branch
+revision-approve); otherwise it records that the revision waits. A workbench
+fatal dialog fails the waiting step at once, with its words.
 
 Reports default to `evidence/verify-<time>-<pid>/`: `report.json`, `report.md`,
 `screens.txt` and each PTY's raw screen log and recorded process ids. Keep these

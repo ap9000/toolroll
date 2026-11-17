@@ -8,7 +8,7 @@ import { excludedFolders, resolveLaunch, statusProbe } from './status-probe.js';
 // @ts-expect-error shared scripted provider contracts
 import { pickRule } from '../scripts/fixtures/scripted-provider.mjs';
 // @ts-expect-error plain ESM verification command
-import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap, expectedFailureReason, reportSummary, runFeatures, selectedNeeds, usage } from '../scripts/verify.mjs';
+import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap, expectedFailureReason, reportSummary, revisionApproval, runFeatures, selectedNeeds, usage } from '../scripts/verify.mjs';
 // @ts-expect-error plain ESM world builder
 import { assertAgentStandIns, checkedEnv, checkOutbound, createWorld, readConsole, prepareWorld, redactPasswords } from '../scripts/verify-world.mjs';
 
@@ -205,13 +205,14 @@ test('outbound reads WAL data before and after the console closes its last conne
   expect(checkOutbound(world).leaks).toEqual([{ table: 'notification', rows: 1 }]);
 });
 
-test('report fails closed on feature, outbound and cleanup failures, retaining excerpts and timing evidence', () => {
+test('report fails closed on feature, outbound, model-call and cleanup failures, retaining excerpts and timing evidence', () => {
   const base = { version: 1, features: [{ id: 'welcome', status: 'PASS', elapsedMs: 20, excerpt: 'screen evidence' }],
     sessions: [{ scenario: 'smoke', timings: { firstTextMs: 10, workbenchMs: 20 }, outbound: { status: 'PASS', tables: ['notification'] } }] };
   expect(finishReport(structuredClone(base)).ok).toBe(true);
-  for (const change of ['feature', 'outbound', 'cleanup', 'empty']) {
+  for (const change of ['feature', 'outbound', 'model-call', 'cleanup', 'empty']) {
     const report = structuredClone(base) as any;
     if (change === 'feature') report.features[0].status = 'FAIL';
+    if (change === 'model-call') report.sessions[0].modelCalls = { status: 'FAIL', relayCalls: 1 };
     if (change === 'outbound') report.sessions[0].outbound.status = 'FAIL';
     if (change === 'cleanup') report.sessions[0].cleanupError = 'process remains';
     if (change === 'empty') report.features = [];
@@ -275,8 +276,12 @@ test('only declared dependents fail with a prerequisite; independent features re
   ]);
   const all = await runFeatures(features, { features }, { term }, async (f: { id: string }) => ({ excerpt: f.id }), async () => {});
   expect(all.map((r: any) => r.status)).toEqual(['PASS', 'PASS', 'PASS', 'PASS']);
-  expect(featureMap.features.find((f: any) => f.id === 'accept').dependsOn).toContain('result');
-  for (const dependency of ['missing', 'accept']) {
+  expect(featureMap.features.find((f: any) => f.id === 'send-back').dependsOn).toContain('result');
+  // Accept takes a fresh task's result; approving a sent-back revision runs only where the workbench offers it.
+  expect(featureMap.features.find((f: any) => f.id === 'accept').dependsOn).toBeUndefined();
+  expect(revisionApproval('    Accept = "accept", Global, Act, "Accept the result", ["a"];')).toBe(false);
+  expect(revisionApproval('    Accept = "accept", Global, Act, "Accept the result, or approve a plan", ["a"];')).toBe(true);
+  for (const dependency of ['missing', 'send-back']) {
     const invalid = structuredClone(featureMap);
     invalid.features.find((f: any) => f.id === 'result').dependsOn = [dependency];
     expect(() => validateMap(invalid, keymap)).toThrow(/dependency/);
@@ -301,7 +306,7 @@ test('feature needs are validated and only selected features and their dependenc
   expect(selectedNeeds([byId('result'), byId('welcome')])).toEqual([]);
   const map = structuredClone(featureMap);
   map.features.find((f: any) => f.id === 'result').dependsOn = ['threads'];
-  expect(selectedNeeds([map.features.find((f: any) => f.id === 'accept')], map)).toEqual(['threads-on']);
+  expect(selectedNeeds([map.features.find((f: any) => f.id === 'send-back')], map)).toEqual(['threads-on']);
   expect(selectedNeeds([byId('threads'), byId('jumps'), byId('unread')])).toEqual(['threads-on']);
   for (const needs of ['threads-on', null, ['unknown'], [42]]) {
     const invalid = structuredClone(featureMap);

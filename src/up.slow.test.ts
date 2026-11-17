@@ -399,8 +399,10 @@ describe("toolroll up", () => {
   });
 
   test("under a coding agent, even at a terminal, it prints the handoff and never the password", async () => {
-    const [p16] = await freePorts(1);
-    for (const env of [{ CLAUDECODE: "1" }, { CODEX_SANDBOX: "seatbelt" }]) {
+    // One port per start: the first console may still hold its port while the second starts (exit 3, port busy).
+    const ports = await freePorts(2);
+    for (const [index, env] of [{ CLAUDECODE: "1" }, { CODEX_SANDBOX: "seatbelt" }].entries()) {
+      const p16 = ports[index]!;
       rmSync(join(base, ".toolroll-secrets", "up-login.txt"), { force: true });
       for (const file of [db, `${db}-wal`, `${db}-shm`]) rmSync(file, { force: true });
       lines = [];

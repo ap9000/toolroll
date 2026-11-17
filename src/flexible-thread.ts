@@ -47,6 +47,7 @@ import type { FlexibleClock } from "./flexible-turns.js";
 import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, reserveLaunchOpen, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
+import { readProjectRegistryNow } from "./repos.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
 // ---- records ----------------------------------------------------------------------------------------------------------
@@ -238,7 +239,7 @@ export async function prepareFlexibleThread<R extends { ok: false; reason: strin
   if (!flexibleAvailable(store)) return refuse("not-available");
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
-  if (!projectRowKnown(store, input.repo)) return refuse("not-a-project");
+  if (!flexibleProjectKnown(store, input.repo)) return refuse("not-a-project");
   if (!BASE_NAME.test(input.base) || input.base.includes("..")) return refuse("base-unknown");
   const inner = input.runner ?? run;
   const read = gitIn(inner, "read");
@@ -458,7 +459,7 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
   const thread = flexibleThread(store, input.id);
   if (thread === null) return refuse("thread-unknown");
   if (thread.state !== "ready") return refuse("thread-not-ready");
-  if (!projectRowKnown(store, thread.repo)) return refuse("not-a-project");
+  if (!flexibleProjectKnown(store, thread.repo)) return refuse("not-a-project");
   let project: string, objects: string;
   try {
     project = realpathSync(thread.repo);
@@ -762,4 +763,19 @@ export function flexibleThreadCodexProfile(store: Store, input: FlexibleThreadLa
   if (!flexibleAvailable(store)) return refuse("not-available");
   void store; void input;
   return refuse("codex-unsupported");
+}
+
+/**
+ * Whether `repo` is a project Toolroll has added now, as `project flexible enable` counts one (operate.ts knownProject):
+ * its row (an admission: the console's Add a project, `repos add`), or its line in this machine's project registry
+ * beside the database (repos.json: the project `toolroll` itself enrolls when it starts there, which has no row). Both
+ * are Toolroll's own state, never the project's, and removing a project drops both. A registry that can't be read
+ * counts nothing: only the row can then say yes.
+ */
+export function flexibleProjectKnown(store: Store, repo: string): boolean {
+  if (projectRowKnown(store, repo)) return true;
+  const file = store.databaseFile();
+  if (file === null || file === "" || file === ":memory:") return false;
+  const registry = readProjectRegistryNow(join(dirname(file), "repos.json"));
+  return !("error" in registry) && registry.repos.includes(repo);
 }
