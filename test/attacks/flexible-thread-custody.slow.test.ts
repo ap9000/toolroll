@@ -23,13 +23,15 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../s
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence, q } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+// The switch as the test sets it (on unless a test turns it off), read where the product reads it.
+const switched = vi.hoisted(() => ({ on: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => switched.on }));
 
 const NOW = new Date();
 const STORAGE = { names: [], denies: [] };
 const LAUNCH = { provider: "claude", level: "full", turn: null, holder: "attack" } as const;
 let world: ThreadWorld;
-beforeEach(() => { world = threadWorld(); });
+beforeEach(() => { world = threadWorld(); switched.on = true; });
 afterEach(() => { world.store.close(); rmSync(world.dir, { recursive: true, force: true }); });
 
 async function thread(): Promise<{ id: string; paths: FlexibleThreadPaths }> {
@@ -60,14 +62,14 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     needs(ctx, osFence());
     const { id, paths } = await thread();
     const beat = join(paths.tmp, "beat");
-    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH },
+    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null },
       "/bin/sh", ["-c", `${survivor(beat, false)}; sleep 1`]);
     if (!launch.ok) throw new Error(launch.message);
     launch.child.stdin!.end();
     await new Promise(done => launch.child.once("exit", done)); // the agent's own process is gone (its output may stay open in the survivor)
     expect(existsSync(beat)).toBe(true);
     // The launch is unsettled: no replacement, whatever is or isn't left.
-    const again = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
+    const again = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"]);
     expect(again).toMatchObject({ ok: false, reason: "thread-running" });
     if (process.platform === "darwin") {
       // Seatbelt has no pid namespace: it lives on. Found only by working in the thread's folder, it isn't proven the
@@ -76,7 +78,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       const pid = Number(readFileSync(`${beat}.pid`, "utf8"));
       expect(await stopFlexibleThreadAgent(world.store, { id, reason: "attack" })).toMatchObject({ ok: false, blockers: [{ pid, why: "in-folder" }] });
       expect(await beating(beat)).toBe(true);
-      expect(await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"])).toMatchObject({ ok: false, reason: "thread-running" });
+      expect(await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"])).toMatchObject({ ok: false, reason: "thread-running" });
       process.kill(pid, "SIGKILL");
     }
     const settled = await stopFlexibleThreadAgent(world.store, { id, reason: "attack" });
@@ -85,7 +87,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     expect(flexibleLaunch(world.store, launch.launchId)).toMatchObject({ state: "exited" });
     expect(flexibleThread(world.store, id)!.livePid).toBeNull();
     // Settled, the thread launches again.
-    const next = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
+    const next = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null }, "/bin/sh", ["-c", "echo ran"]);
     expect(next).toMatchObject({ ok: true });
     if (next.ok) { next.child.stdin!.end(); await new Promise(done => next.child.once("close", done)); }
     expect(await stopFlexibleThreadAgent(world.store, { id, reason: "attack" })).toMatchObject({ ok: true });
@@ -95,7 +97,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     needs(ctx, osFence());
     const { id, paths } = await thread();
     const beat = join(paths.tmp, "far-beat");
-    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH },
+    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null },
       "/bin/sh", ["-c", `${survivor(beat, true)}; sleep 3`]);
     if (!launch.ok) throw new Error(launch.message);
     launch.child.stdin!.end();
@@ -114,7 +116,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     needs(ctx, osFence());
     const { id, paths } = await thread();
     const beat = join(paths.tmp, "unseen-beat");
-    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH },
+    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH, beforeOpen: () => null },
       "/bin/sh", ["-c", `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; chdir "/"; POSIX::close($_) for 0..255; for (1..300) { open(my $f, ">>", $ARGV[0]); print $f "."; close $f; select(undef, undef, undef, 0.1) }' ${q(beat)}; sleep 1`]);
     if (!launch.ok) throw new Error(launch.message);
     launch.child.stdin!.end();
@@ -138,6 +140,23 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     expect(existsSync(ran)).toBe(false);
     expect(world.store.handle.prepare("SELECT state, end_detail FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual([{ state: "exited", end_detail: "stopped before it ran: the thread was lowered to Supervised" }]);
     expect(flexibleThread(world.store, id)!.livePid).toBeNull();
+  }, 60_000);
+
+  test("native: interactive agent threads turned off after the launch was admitted keep its gate shut: the reservation reads the switch, nothing runs", async ctx => {
+    needs(ctx, osFence());
+    const { id, paths } = await thread();
+    const ran = join(paths.tmp, "gate-ran");
+    let pid = 0;
+    // Admitted and spawned behind its shut gate; the switch goes off before the reservation; the caller's own re-check passes.
+    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH,
+      beforeOpen: () => null }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`], process.platform, { afterSpawn: spawned => { pid = spawned; switched.on = false; } });
+    expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("interactive agent threads were turned off") });
+    expect(pid).toBeGreaterThan(1);
+    await until(() => { try { process.kill(-pid, 0); return false; } catch { return true; } });
+    await sleep(1_000); // guard: bound a gate that opened would have written the file by now; the fact checked is its absence
+    expect(existsSync(ran)).toBe(false);
+    expect(world.store.handle.prepare("SELECT state, end_detail FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual([{ state: "exited", end_detail: "stopped before it ran: interactive agent threads were turned off" }]);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible agent launched'").get()!["n"]).toBe(0);
   }, 60_000);
 
   describe("a turn's agent at Full access, signed in through its thread's relay, lowered mid-turn", () => {

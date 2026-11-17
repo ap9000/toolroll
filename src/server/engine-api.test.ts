@@ -417,9 +417,9 @@ describe("every answer is its contract's shape", () => {
     expect(liveSessionWindowSchema.parse((await read("operator", `/agents/live/run/${liveRun}?file=sub`)).body)).toMatchObject({ file: "sub", window: { ok: false, reason: "missing" } });
   });
 
-  test("a Flexible thread is refused before anything is looked up while Flexible isn't available", async () => {
+  test("a Flexible thread nobody made is not found, and nothing else is looked up, while interactive agent threads are off", async () => {
     LOADERS.forEach(one => one.mockClear());
-    expect(await read("operator", THREAD)).toEqual({ status: 404, body: { error: "not-available" } });
+    expect(await read("operator", THREAD)).toEqual({ status: 404, body: { error: "thread" } });
     expect(loaderCalls()).toBe(0);
   });
 });
@@ -443,7 +443,7 @@ describe("the local owner reads them with the session a terminal client redeems"
     stepCardsSchema.parse(steps.body);
     expect(resultDiffSchema.parse((await get("/t/one/diff")).body)).toMatchObject({ run: null, problem: "No result yet." });
     expect((await get("/agents/live/run/1")).status).toBe(404);
-    expect((await get(THREAD)).body).toEqual({ error: "not-available" });
+    expect((await get(THREAD)).body).toEqual({ error: "thread" });
   });
   test("a terminal client's New task hears Build's offer as data: the terms, and the preview and digest Build posts", async () => {
     const link = world.server.mintLocalLink()!;

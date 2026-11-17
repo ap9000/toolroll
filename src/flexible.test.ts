@@ -3,7 +3,7 @@
  * Flexible, lower it and turn it off; when signed terms stop counting; the delegation check a thread start makes at
  * the moment of use; and stored terms this build can't read exactly allowing nothing.
  *
- * The enabled behaviour is reachable only by replacing flexible-available.ts here (the build ships it false;
+ * The enabled behaviour is reachable only by turning flexible-available.ts's switch on here (the default is off;
  * flexible-disabled.test.ts proves every writer refuses then).
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -17,7 +17,7 @@ import {
   OPEN_NETWORK_WORDS, proposedFlexibleTerms, turnFlexibleOff, type FlexibleChoice, type FlexibleTerms,
 } from "./flexible.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 let dir: string;

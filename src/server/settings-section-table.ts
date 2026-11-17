@@ -113,6 +113,11 @@ export const SETTINGS_SECTIONS: readonly SectionDeclaration[] = Object.freeze([
   { id: "task-sizing", area: "general", title: "Size tasks with a quick model call (Claude Haiku, on your plan)", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
     read: ["installation"], scope: {}, act: { switch: ["cookie-session", "operator"] }, changes: [{ id: "task-sizing", act: "switch", proof: "task-sizing" }],
     opens: false, scripts: [], oldIds: [] },
+  // Interactive agent threads (beta; flexible-available.ts): off by default; an instance operator's step-up turns them on
+  // or off on its own change document (a local owner's own act on a laptop install).
+  { id: "flexible", area: "general", title: "Interactive agent threads (beta)", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
+    read: ["installation"], scope: {}, act: { switch: ["cookie-session", "operator"] }, changes: [{ id: "flexible", act: "switch", proof: "flexible-switch" }],
+    opens: false, scripts: [], oldIds: [] },
   // Settings → Advanced retired to here (F0): the person's own switch, and every advanced page on request.
   { id: "advanced", area: "general", title: "Show advanced features", pinnedFrom: "settings.group-advanced", policy: GROUP_PAGE,
     read: [], scope: { "operator-pages": ["operator"] }, act: { switch: ["cookie-session"] }, changes: [], opens: true, scripts: [], oldIds: ["show-advanced"] },

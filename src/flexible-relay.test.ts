@@ -28,7 +28,7 @@ import { writeHeldSecret } from "./tool-secret-store.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 // The scripted upstream: the shipped list, with only its origin pointed at the stand-in.
 const scripted = vi.hoisted(() => ({ origin: "http://127.0.0.1:9" }));
 vi.mock("./flexible-relay-upstreams.js", async importOriginal => {

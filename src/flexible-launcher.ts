@@ -5,8 +5,8 @@
  * this launcher for them, once per turn that may launch an agent.
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` first, and the
- *   console makes no launcher then.
+ * - The console always makes its launcher; it prepares a launch only for a turn the thread start admitted, and that
+ *   checks interactive agent threads' switch (flexible-available.ts) first.
  * - A thread's network is the project's own, read from Toolroll's records (store.projectNetwork) at each launch, never
  *   from a checkout or a request, and always through a run proxy of the launch's own (the thread fence admits that proxy
  *   and nothing else, flexible-thread.ts). Confined: the project's hosts and its ecosystems' package registries, and no
@@ -24,7 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { NETWORK_POLICY_VERSION, proxyEnv, REGISTRY_HOSTS, repositoryEcosystems, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { prepareProtectedStorage, storageRefusalOf, type ProtectedStorage } from "./protected-storage.js";
@@ -61,7 +61,6 @@ export type FlexibleLauncher = {
  * repository's package registries when confined, never a provider's own host, never local services.
  */
 export function flexibleThreadNetwork(store: Pick<Store, "projectNetwork">, repo: string): NetworkProfile | FlexibleLauncherRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const project = store.projectNetwork(repo);
   if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback: "proxy-only" };
   const hosts = new Set<string>([...repositoryEcosystems(repo).flatMap(one => REGISTRY_HOSTS[one]), ...project.hosts]);
@@ -81,9 +80,8 @@ export type FlexibleLauncherSeams = {
   platform?: NodeJS.Platform;
 };
 
-/** The console's launcher (engine-api.ts makes one beside its thread host); refused while Flexible isn't available. */
+/** The console's launcher (engine-api.ts makes one beside its thread host). */
 export function createFlexibleLauncher(store: Pick<Store, "projectNetwork">, seams: FlexibleLauncherSeams = {}): FlexibleLauncher | FlexibleLauncherRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const startProxy = seams.startProxy ?? ((options: { hosts: readonly string[]; open?: true }) => startEgressProxy(options));
   const storageNow = seams.storage ?? (() => prepareProtectedStorage(homedir()));
   // Each open proxy and its one closing (shared by the launch's own close and the launcher's): closed once, however asked.

@@ -28,7 +28,7 @@ import { flexibleAgentLaunch } from "../../src/flexible-agents.js";
 import { SEATBELT_NO_KEYCHAIN } from "../../src/sandbox-runtime.js";
 import { needs } from "./harness.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 
 export const VERIFIED_CLAUDE = "2.1.321";
 

@@ -4,37 +4,37 @@ expression: "text(&draw(&mut app, 110, 36))"
 ---
  Toolroll   shop   $1.84 today · plan 62%                                          ◐ 2 working    2 need you  
                                                                                                               
-                                                                                                              
-   Work  ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
-         │ File  /home/me/.config/toolroll/tui.toml                                                │          
-   Needs │       read                                                                              │          
-         │                                                                                         │tempt 1   
-   ● Fix │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
-     shop│                     background)                                                         │─ Ready   
-         │   Density           compact                                                             │───────── 
-   ● Add │   Glyphs            unicode                                                             │          
-     shop│   List side         left                                                                │          
-         │   Notify: asks      on                                                                  │          
-   Workin│   Notify: finished  off                                                                 │          
-         │   Notify: failed    on                                                                  │          
-   ◐ Upgr│                                                                                         │          
-     shop│   Colour            full colour                                                         │s         
-         │   Key bar           on                                                                  │          
-   ◐ Rate│   Costs             shown                                                               │          
-     shop│   Columns           step                                                                │          
-         │   Keys              default preset                                                      │          
-   Recent│   Bell              on                                                                  │          
-         │   Reduced motion    off                                                                 │          
-   ✓ Bump│   Delivered         desktop notifications (OSC 9)                                       │          
-     shop│                                                                                         │fig       
+         ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
+   Work  │ File  /home/me/.config/toolroll/tui.toml                                                │          
+         │       read                                                                              │          
+   Needs │                                                                                         │          
+         │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │tempt 1   
+   ● Fix │                     background)                                                         │          
+     shop│   Density           compact                                                             │─ Ready   
+         │   Glyphs            unicode                                                             │───────── 
+   ● Add │   List side         left                                                                │          
+     shop│   Notify: asks      on                                                                  │          
+         │   Notify: finished  off                                                                 │          
+   Workin│   Notify: failed    on                                                                  │          
+         │                                                                                         │          
+   ◐ Upgr│   Colour            full colour                                                         │          
+     shop│   Key bar           on                                                                  │s         
+         │   Costs             shown                                                               │          
+   ◐ Rate│   Columns           step                                                                │          
+     shop│   Keys              default preset                                                      │          
+         │   Bell              on                                                                  │          
+   Recent│   Reduced motion    off                                                                 │          
+         │   Delivered         desktop notifications (OSC 9)                                       │          
+   ✓ Bump│   Agent threads     not known yet (beta). Change it in the browser or with `toolroll    │          
+     shop│                     config set flexible on`                                             │fig       
+         │                                                                                         │          
          │ Not used                                                                                │          
          │   tui.toml: Line 3: themes isn't a setting, so it was ignored.                          │          
          │   Your colour for running (#3dd68c) wasn't used: running and passed would look alike.   │          
          │                                                                                         │          
-         │ j/k choose  Enter change it (saved to tui.toml)  t next theme, this session only        │          
-         │ Other settings and keys: edit tui.toml ([keys] preset = "vim"). Esc closes.             │──────╮   
-         ╰─────────────────────────────────────────────────────────────────────────────────────────╯      │   
-                                                  ╰───────────────────────────────────────────────────────╯   
+         │ j/k choose  Enter change it (saved to tui.toml)  t next theme, this session only        │──────╮   
+         │ Other settings and keys: edit tui.toml ([keys] preset = "vim"). Esc closes.             │      │   
+         ╰─────────────────────────────────────────────────────────────────────────────────────────╯──────╯   
                                                                                                               
                                                                                                               
    j/k  move   ⏎  open   s  steer   n  new   :  all actions
