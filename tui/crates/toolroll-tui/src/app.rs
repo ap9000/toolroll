@@ -1107,14 +1107,19 @@ impl App {
         self.following = None;
         self.said_at = Some(std::time::Instant::now());
         self.key_since_said = false;
-        // Which task it was said about, in which state: words about an old state go once it moves on.
-        self.said_for = self.selected_id().map(|id| {
-            let state = self
-                .steps_here()
-                .map(|s| s.task.state.clone())
-                .filter(|_| self.steps_here().is_some_and(|s| s.task.id == id));
-            (id, state)
-        });
+        // Which task it was said about, in which state: words about an old state go once it moves on. A thread has no
+        // steps to follow (fast_read would ask for a task's steps by its id, and be refused).
+        self.said_for = self
+            .selected_item()
+            .filter(|i| i.is_task)
+            .map(|i| i.id.clone())
+            .map(|id| {
+                let state = self
+                    .steps_here()
+                    .map(|s| s.task.state.clone())
+                    .filter(|_| self.steps_here().is_some_and(|s| s.task.id == id));
+                (id, state)
+            });
     }
 
     /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it

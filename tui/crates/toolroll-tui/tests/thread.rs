@@ -663,3 +663,24 @@ fn a_new_task_typed_while_a_thread_is_open_is_shown() {
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
     }
 }
+
+/// An act answered while a thread is open (another thread started) is said about no task: nothing then asks for "the
+/// task's steps" by the thread's id, which the engine refuses ("Couldn't read the task's steps").
+#[test]
+fn an_answer_while_a_thread_is_open_follows_no_task() {
+    let mut app = thread_app(window());
+    let fx = app.update(Msg::Acted(Ok(ActOutcome::Done(
+        "The thread started.".into(),
+    ))));
+    let ticks: Vec<Effect> = (0..3).flat_map(|_| app.update(Msg::Tick)).collect();
+    for e in fx.iter().chain(ticks.iter()) {
+        assert!(
+            !matches!(e, Effect::FetchSteps(id) if id == fake::THREAD),
+            "{fx:?} {ticks:?}"
+        );
+    }
+    assert_eq!(
+        app.status.as_ref().map(|(_, w)| w.as_str()),
+        Some("The thread started.")
+    );
+}
