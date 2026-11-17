@@ -282,7 +282,7 @@ describe("the switch can't become an override", () => {
       ["flexibleSettingsView", "flexibleCeilingAllows", "flexibleTermsJson", "flexibleDigestOf", "flexibleTermsFromJson", "flexibleNarrowerOrEqual", "flexibleTermsWords", "flexibleNetworkOf", "flexibleTwoPerson", "flexibleStanding",
         "proposedFlexibleTerms", "lowerFlexible", "turnFlexibleOff", "endLapsedFlexible"]);
     decided("src/flexible-thread.ts", ["prepareFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile"],
-      ["flexibleThreadPaths", "flexibleThread", "removeFlexibleThread", "threadCredentialPaths", "flexibleThreadEnv", "withFlexibleThreadLock", "flexibleFenceDigest", "stopFlexibleThreadAgent"]);
+      ["flexibleThreadPaths", "flexibleThread", "removeFlexibleThread", "threadCredentialPaths", "flexibleThreadEnv", "withFlexibleThreadLock", "flexibleFenceDigest", "stopFlexibleThreadAgent", "flexibleProjectKnown"]);
     expect(readFileSync("src/flexible-turns.ts", "utf8")).toMatch(/const before = flexibleInstallationCaps\(store\);\n[^\n]*\n {4}if \(!flexibleAvailable\(store\) && !\(tighter\(/);
     decided("src/flexible-turns.ts", ["admitFlexibleTurn", "beginFlexibleTurn"],
       ["setFlexibleInstallationCaps", "flexibleTurn", "flexibleInstallationCaps", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "withdrawFlexibleTurn", "interruptFlexibleThreadTurns", "withdrawFlexibleTurnsAbove"]);
