@@ -331,52 +331,75 @@ fn new_steps(state: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_filed_task_is_selected_and_its_status_goes_once_it_fails_with_no_key() {
-    let mut state = fake::scenario();
-    state.work = work_with(new_row("Building", "live", "building"));
-    state.steps.insert("t-new".into(), new_steps("running"));
-    let engine = fake::FakeEngine::start(state, 0).await;
-    let client = toolroll_api::redeem(&engine.link()).await.unwrap();
-    let mut app = App::new(false, None);
-    app.syntax_on = false;
-    pump(&mut app, &client, vec![Effect::FetchWork]).await;
-    let before = app.selected_item().unwrap().id.clone();
-    assert_ne!(before, "t-new");
-    // Build's terms, read to the end, then Enter: the console files it and answers with its page.
-    app.mode = Mode::Build {
-        title: "Add a divide function".into(),
-        preview: "p1".into(),
-        digest: "d".repeat(64),
-        terms: vec![("Agent".into(), "claude haiku".into())],
-        scroll: 0,
-        seen_end: true,
-    };
-    // (Drawn first: a dialog acts only once it was on screen.)
-    screen(&mut app, 120, 34);
-    let fx = app.key(code(KeyCode::Enter));
-    pump(&mut app, &client, fx).await;
-    // Selected and shown: its detail read.
-    assert_eq!(app.selected_item().unwrap().id, "t-new");
-    assert_eq!(app.steps_here().map(|s| s.task.id.as_str()), Some("t-new"));
-    assert_eq!(status(&app), Some((Tone::Said, "Building it.".into())));
-    let shown = screen(&mut app, 160, 34);
-    assert!(shown.contains("Add a divide function"), "{shown}");
-    assert!(shown.contains("attempt 1"), "{shown}");
-    // It fails in the console. No key is pressed; the next reads (the poll's own) find it failed, and the line goes.
-    {
-        let mut st = engine.state.lock().unwrap();
-        st.work = work_with(new_row("Failed", "problem", "failed"));
-        st.steps.insert("t-new".into(), new_steps("failed"));
+    for next in ["queued", "failed", "done", "cancelled"] {
+        let mut state = fake::scenario();
+        state.work = work_with(new_row("Building", "live", "building"));
+        state.steps.insert("t-new".into(), new_steps("running"));
+        let engine = fake::FakeEngine::start(state, 0).await;
+        let client = toolroll_api::redeem(&engine.link()).await.unwrap();
+        let mut app = App::new(false, None);
+        app.syntax_on = false;
+        pump(&mut app, &client, vec![Effect::FetchWork]).await;
+        let before = app.selected_item().unwrap().id.clone();
+        assert_ne!(before, "t-new");
+        // Build's terms, read to the end, then Enter: the console files it and answers with its page.
+        app.mode = Mode::Build {
+            title: "Add a divide function".into(),
+            preview: "p1".into(),
+            digest: "d".repeat(64),
+            terms: vec![("Agent".into(), "claude haiku".into())],
+            scroll: 0,
+            seen_end: true,
+        };
+        // (Drawn first: a dialog acts only once it was on screen.)
+        screen(&mut app, 120, 34);
+        let fx = app.key(code(KeyCode::Enter));
+        pump(&mut app, &client, fx).await;
+        // Selected and shown: its detail read.
+        assert_eq!(app.selected_item().unwrap().id, "t-new");
+        assert_eq!(app.steps_here().map(|s| s.task.id.as_str()), Some("t-new"));
+        assert_eq!(status(&app), Some((Tone::Said, "Building it.".into())));
+        let shown = screen(&mut app, 160, 34);
+        assert!(shown.contains("Add a divide function"), "{shown}");
+        assert!(shown.contains("attempt 1"), "{shown}");
+        // It fails in the console. No key is pressed; the next reads (the poll's own) find it failed, and the line goes.
+        {
+            let mut st = engine.state.lock().unwrap();
+            st.work = work_with(new_row(
+                if next == "failed" {
+                    "Failed"
+                } else {
+                    "Waiting to retry"
+                },
+                if next == "failed" {
+                    "problem"
+                } else {
+                    "neutral"
+                },
+                next,
+            ));
+            st.steps.insert("t-new".into(), new_steps(next));
+        }
+        app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
+        pump(
+            &mut app,
+            &client,
+            vec![Effect::FetchWork, Effect::FetchSteps("t-new".into())],
+        )
+        .await;
+        assert_eq!(app.steps_here().unwrap().task.state, next);
+        assert_eq!(status(&app), None, "a stale 'Building it.' stayed");
+        assert!(!screen(&mut app, 160, 34).contains("Building it."));
+        // Another attempt starts without a key: the acknowledgement must not reappear.
+        engine
+            .state
+            .lock()
+            .unwrap()
+            .steps
+            .insert("t-new".into(), new_steps("running"));
+        pump(&mut app, &client, vec![Effect::FetchSteps("t-new".into())]).await;
+        assert_eq!(status(&app), None);
     }
-    app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
-    pump(
-        &mut app,
-        &client,
-        vec![Effect::FetchWork, Effect::FetchSteps("t-new".into())],
-    )
-    .await;
-    assert_eq!(app.steps_here().unwrap().task.state, "failed");
-    assert_eq!(status(&app), None, "a stale 'Building it.' stayed");
-    assert!(!screen(&mut app, 160, 34).contains("Building it."));
 }
 
 #[test]

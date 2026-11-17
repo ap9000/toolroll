@@ -182,6 +182,15 @@ repo_here() {
     "$top"/*) printf '%s' "$top" ;;
   esac
 }
+# Explanation only: never use a linked worktree to authorize autostart.
+start_hint() {
+  hinted_top=$(g rev-parse --show-toplevel 2>/dev/null) || hinted_top=""
+  if [ -n "$hinted_top" ] && [ -f "$hinted_top/.git" ]; then
+    say "Linked git worktree detected; autostart is disabled here. Run $cli from the main checkout."
+  else
+    say "Start it in a project: cd into a git repository and run $cli"
+  fi
+}
 here=""
 if [ -z "${SO_PROJECTS:-}" ]; then here=$(repo_here); fi
 
@@ -189,7 +198,7 @@ if [ "${SO_NO_START:-}" = "1" ]; then
   say ""
   if [ -n "$here" ]; then say "Start it in $here with: $cli"
   elif [ -n "$projects" ]; then say "Start it with: $cli --project-root $(q "$projects")"
-  else say "Start it in a project: cd into a git repository and run $cli"; fi
+  else start_hint; fi
   exit 0
 fi
 
@@ -208,7 +217,7 @@ fi
 # Outside a repository with no SO_PROJECTS: nothing to start on yet (an empty ~/Projects isn't your project).
 if [ -z "$projects" ]; then
   say ""
-  say "Start it in a project: cd into a git repository and run $cli"
+  start_hint
   exit 0
 fi
 mkdir -p "$projects"

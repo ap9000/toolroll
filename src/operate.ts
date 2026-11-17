@@ -10158,7 +10158,7 @@ function showTask(positional: readonly string[], context: Context): number {
     `${task.id}  ${task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
-      `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : ` — ${shared.sentence}`}`,
+      `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
       ...(primaryAction === null ? [] : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
     ]),
     // The closed machine-authored verdict (Priority 2), computed once at

@@ -13,7 +13,7 @@ expression: shown
 " │                                            │ │ Build ✓ ─── Checks – ─── Ready ●                                    │ "
 " │ Up next 2                                  │ ├─────────────────────────────────────────────────────────────────────┤ "
 " │ ○ Rename the config loader         Waiting │ │ A temporary problem on the machine stopped it · 3 consecutive       │ "
-" │   proj · 4m ago                            │ │ failures                                                            │ "
+" │   proj · 4m ago                            │ │   failures                                                          │ "
 " │   Last build failed · The agent stopped    │ │ If it stops the same way, try another agent.                        │ "
 " │   with an error · next try in 1m 40s       │ │                                                                     │ "
 " │ ○ Add a changelog entry             Queued │ │ r  Retry                                                            │ "

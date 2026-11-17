@@ -258,6 +258,7 @@ function rustTestRanges(tokens, pairs) {
   return ranges;
 }
 
+const jsPath = path => /\.(?:[cm]?[jt]sx?)$/.test(path);
 /** Diff hunks only provide line membership; source comes from git blobs, so +++ inside a hunk is ordinary text. */
 export function addedLines(diff) {
   const added = new Set();
@@ -349,9 +350,11 @@ export function checkFiles({ files, messages = [], all = false }) {
       };
       if (sourcePath(path)) {
         const short = seq("if", "false") || seq("if", "(", "false", ")") || seq("&&", "false") || seq("debugger", ";")
-          || seq(".", "only", "(") || (["fit", "fdescribe"].includes(value) && seq(value, "("))
-          || (["describe", "it", "test"].includes(value) && seq(value, ".", "only"))
-          || (["dbg", "todo"].includes(value) && seq(value, "!", "("));
+          // Focused-test calls are JavaScript's; dbg!/todo! are Rust's. Each language's patterns only in its own files,
+          // so a Rust helper named fit() is not a focused test.
+          || (jsPath(path) && (seq(".", "only", "(") || (["fit", "fdescribe"].includes(value) && seq(value, "("))
+            || (["describe", "it", "test"].includes(value) && seq(value, ".", "only"))))
+          || (path.endsWith(".rs") && ["dbg", "todo"].includes(value) && seq(value, "!", "("));
         if (short) emit(1, hitLine);
       }
       if ((sourcePath(path) || shellPath(path)) && seq("||", "true")) {

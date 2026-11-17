@@ -117,8 +117,11 @@ Undo from the terminal:
 ```sh
 toolroll view                    # the theme in use and your saved themes
 toolroll view theme set dark     # switch theme (built in, or one you saved)
-toolroll view reset              # back to the defaults; the old file is kept as tui.toml.bak
+toolroll view reset              # default look; keys stay; a new timestamped backup is kept
 ```
+
+Reset keeps your `[keys]` table and its comments. Each previous file is saved
+beside `tui.toml` as `tui.toml.bak.<timestamp>.<number>`; earlier backups stay.
 
 ## Telegram
 

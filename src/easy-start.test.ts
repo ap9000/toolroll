@@ -356,6 +356,7 @@ describe("ask once, and quitting", () => {
     await runEasyStart("start", bare, kept.seams);
     expect(kept.calls).toEqual(["spawn --laptop --no-open", "tui", `background ${fakePid(2)}`]);
     expect(kept.children[0]!.stopped).toBe(0);
+    expect(kept.lines.at(-1)).toBe("Reopen with: toolroll");
     const failed = scripted({ proofs: [NONE, LIVE], local: ["absent", "on"], backgroundOk: false, tui: async () => "keep" });
     await runEasyStart("start", bare, failed.seams);
     expect(failed.children[0]!.stopped).toBe(1);
@@ -518,7 +519,8 @@ describe("the `up` it started stops on its own (stranger test, Linux stall 1)", 
   test("a stop the person or Toolroll asked for (Stop on quit, a signal), or a clean exit, is never said; the exit is 0", async () => {
     const quit = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"], tui: async () => "stop" });
     expect(await runEasyStart("start", bare, quit.seams)).toBe(0);
-    expect(quit.lines.at(-1)).toBe("Toolroll stopped.");
+    expect(quit.lines).toContain("Toolroll stopped.");
+    expect(quit.lines.at(-1)).toBe("Reopen with: toolroll");
     expect(quit.lines).not.toContain(STOPPED);
     for (const code of [0, null]) {
       const heard: (string | null)[] = [];

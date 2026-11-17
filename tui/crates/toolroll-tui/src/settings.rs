@@ -402,6 +402,21 @@ pub(crate) fn write_within(
     private: bool,
     change: &dyn Fn(&str) -> String,
 ) -> Result<(), String> {
+    write_with_backup(path, home, fresh, max, private, false, change).map(|_| ())
+}
+
+/// The same descriptor walk and lock as every settings write. A reset's backup is made from the locked read,
+/// exclusively created (never replacing an earlier backup), before the settings file is replaced.
+#[cfg(unix)]
+pub(crate) fn write_with_backup(
+    path: &Path,
+    home: Option<&Path>,
+    fresh: &str,
+    max: u64,
+    private: bool,
+    backup: bool,
+    change: &dyn Fn(&str) -> String,
+) -> Result<Option<String>, String> {
     use std::ffi::CString;
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -474,6 +489,41 @@ pub(crate) fn write_within(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let backup_name = if backup {
+        let mut number = 0u32;
+        let (backup_name, fd) = loop {
+            let backup_name = format!("{}.bak.{nanos}.{number}", name.to_string_lossy());
+            let backup_c = c(backup_name.as_bytes())?;
+            // SAFETY: dfd is the judged, locked folder; the name is valid, and creation is exclusive, no links.
+            let fd = unsafe {
+                libc::openat(
+                    dfd.as_raw_fd(),
+                    backup_c.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    0o600 as libc::c_uint,
+                )
+            };
+            if fd >= 0 {
+                break (backup_name, fd);
+            }
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err("the backup couldn't be created; nothing was reset".into());
+            }
+            number = number.checked_add(1).ok_or("no unused backup name")?;
+        };
+        // SAFETY: fd is owned by this call, successfully opened just above.
+        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        file.write_all(text.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "the backup couldn't be written; nothing was reset".to_string())?;
+        Some(backup_name)
+    } else {
+        None
+    };
     let tmp_c = c(format!(
         ".{}.{}.{nanos}.tmp",
         name.to_string_lossy(),
@@ -516,7 +566,7 @@ pub(crate) fn write_within(
         unsafe { libc::unlinkat(dfd.as_raw_fd(), tmp_c.as_ptr(), 0) };
         return Err("it couldn't be written".into());
     }
-    Ok(())
+    Ok(backup_name)
 }
 
 #[cfg(not(unix))]
@@ -695,7 +745,7 @@ fn quoted(s: &str) -> Option<(String, &str)> {
 }
 
 /// What's left of a line once a comment is taken off (a `#` outside a string).
-fn without_comment(s: &str) -> &str {
+pub(crate) fn without_comment(s: &str) -> &str {
     let mut quote: Option<char> = None;
     let mut escaped = false;
     for (i, c) in s.char_indices() {

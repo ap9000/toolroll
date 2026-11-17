@@ -46,7 +46,7 @@ ACP agents). Flexible supports agents in two tiers, and the screen says which ti
 | Every agent, which needs you | primary | yes (Work) | push |
 | Live transcript of a run | primary (rich records, subagents) | read-and-steer panel | — |
 | Steer, pause, stop, answer a question | primary | yes | answer |
-| Take over (real terminal in the run's worktree) | primary (`/term` pane) | yes (/term) | — |
+| Open build shell (separate copy of the latest build) | primary (`/term` pane) | yes (/term) | — |
 | Pick steps (chain preset) | primary | yes | — |
 | Diff review, line comments → one send back | primary (files → hunks, syntax, side-by-side on wide) | yes, plus very large diffs | — |
 | Accept / send back / retry | primary | yes | one tap |
@@ -101,9 +101,9 @@ Accept / Send back / Retry with terms shown whole, kitty images (else `w`). A4: 
 terminal OSC 9 / bell; tab badge; "idle while waiting on a command" test. A5: cost per run/result on rows and panes.
 Stream C: F2d answers.
 
-**Week 6 — T4 steps + take over**: step-chain presets on the sealed route — four fields {plan, approvePlan,
+**Week 6 — T4 steps + open build shell**: step-chain presets on the sealed route — four fields {plan, approvePlan,
 review provider, reviseRounds ≤ 2}; Check not pickable; cards = the existing stepper rows; cost shown before starting.
-Take over = Stop + resume the agent in a `/term` PTY in the run's worktree (tui-term pane; /term allowed for the local
+Open build shell = a `/term` PTY in a separate copy of the latest build; it does not control the running agent (tui-term pane; /term allowed for the local
 owner in solo mode, Codex-reviewed). Web A3-min (picker) and A5. Stream C: F3 on A0 (threads as LiveSessions).
 
 **Week 7 — 10 strangers, LAUNCH** (owner): Show HN / r/ClaudeAI / r/ChatGPTCoding, a 90-second terminal + phone video,
@@ -173,8 +173,8 @@ packages; OpenCode #6172 long-session render loop); Bubble Tea (second language,
 - Reads: JSON for work rows, a task's step cards, a run's live-record window (today only 3 `?format=json` routes exist;
   zod contracts in src/contracts/console-api.ts → generate serde models; fixture tests; `hello` build handshake).
 - Live work: default = rich transcript from sanitised LiveRecords (live.ts / live-records.ts kinds session|message|edit|
-  command|read|search|lookup|plan|delegate|tool + .sub.jsonl subagents); "take over" = a `/term` PTY pane in the run's
-  worktree, rendered via tui-term/vt100 (libghostty-vt 1.0 later if fidelity demands), survives the TUI quitting because
+  command|read|search|lookup|plan|delegate|tool + .sub.jsonl subagents); "Open build shell" = a `/term` PTY pane in a separate copy of the latest
+  build, rendered via tui-term/vt100 (libghostty-vt 1.0 later if fidelity demands), survives the TUI quitting because
   the console owns the PTY. Build agents in a PTY = later engine/fence change, not v1.
 - Acts: same POST routes the browser uses (steer/pause/stop/complete/revise) with CSRF + `x-toolroll-key`.
 
@@ -222,7 +222,7 @@ live size each frame; bracketed paste; kitty keyboard per screen; panic hook res
 │ ✓ bump deps              merged  │ STEPS  Plan ✓ 1m · Code ◐ 4m · Check · Review(codex)    │
 │                                  │ › steer: keep the alias, add a deprecation log line_   │
 ├──────────────────────────────────┴──────────────────────────────────────────────────────┤
-│ j/k move  ⏎ open  s steer  p pause  x stop  t take over  d diff  a accept  r revise  1-9 answer  n new  ? help  q │
+│ j/k move  ⏎ open  s steer  p pause  x stop  t open build shell  d diff  a accept  r revise  1-9 answer  n new  ? help  q │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 (Use ink for needs-you per DESIGN.md — no amber.) Diff `d`: files → hunks, syntect, `[`/`]`, accept/revise with a note.

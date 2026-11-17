@@ -14,7 +14,7 @@ expression: shown
 " │ Up next 2                                  │ ├─────────────────────────────────────────────────────────────────────┤ "
 " │ ○ Rename the config loader         Waiting │ │ Failed                                                              │ "
 " │   proj · 4m ago                            │ │ A temporary problem on the machine stopped it · 3 consecutive       │ "
-" │   Last build failed · The agent stopped    │ │ failures                                                            │ "
+" │   Last build failed · The agent stopped    │ │   failures                                                          │ "
 " │   with an error · next try in 1m 40s       │ │ If it stops the same way, try another agent.                        │ "
 " │ ○ Add a changelog entry             Queued │ │                                                                     │ "
 " │   proj · just now                          │ │ r  Retry                                                            │ "

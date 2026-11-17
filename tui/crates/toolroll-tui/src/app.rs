@@ -405,7 +405,7 @@ pub enum Mode {
 
 /// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
 pub fn take_over_scope(attempt: &str) -> String {
-    format!("Opens your shell in a separate copy of {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
+    format!("A shell in a separate copy of this task's latest build. It does not control the running agent. Build: {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -513,7 +513,7 @@ pub const OFF_SCREEN: &str =
     "The terminal isn't on screen, so typing stopped. Press t to type in it again.";
 /// Said when there is no saved build to take over yet.
 pub const STILL_BUILDING: &str =
-    "This build is still running. Stop it (x) or wait for its result, then press t to take over.";
+    "This build is still running. Stop it (x) or wait for its result, then press t to open the build shell.";
 
 /// A take-over's socket, as the loop holds it: what the screen sends that one terminal. (Effects and messages name the
 /// terminal by id; the loop sends only to the one the pane shows.)
@@ -614,7 +614,7 @@ pub enum Effect {
     },
     Notify(String),
     Exit(i32),
-    /// Take over (T4): find this session's terminal on that task's build (GET /term/state), else start one
+    /// Open build shell (T4): find this session's terminal on that task's build (GET /term/state), else start one
     /// (POST /term/start), then attach (GET /term/<id>/socket).
     TermOpen {
         task: String,
@@ -1118,13 +1118,13 @@ impl App {
     }
 
     /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it
-    /// spoke in ("Building it." once it failed), the line goes, unless it is held (said just now, no key since).
+    /// spoke in (including a wait to retry), the line goes, unless it is held (said just now, no key since).
     fn status_follows(&mut self, steps: &StepCards) {
         self.state_seen(&steps.task.id, &steps.task.state);
     }
 
     /// Any read saw `task` in `state` (its steps, or its Work row's final word): when the status line spoke about that
-    /// task in another state ("Building it." once it failed), the line goes at once, or, while it is held (said just
+    /// task in another state (including a wait to retry), the line goes at once, or, while it is held (said just
     /// now, no key since), the moment the hold ends (tick), never at the next poll.
     fn state_seen(&mut self, task: &str, state: &str) {
         let Some((id, said_in)) = self.said_for.clone() else {
@@ -1135,8 +1135,12 @@ impl App {
         }
         let moved = match said_in {
             Some(said) => said != state,
-            // Said before its steps were read: only a final state is plainly news after it.
-            None => matches!(state, "failed" | "done" | "cancelled"),
+            // The first read establishes the state an acknowledgement preceded. Every later change matters,
+            // including a temporary failure queuing another attempt. A final first read is already stale.
+            None => {
+                self.said_for = Some((id, Some(state.to_string())));
+                matches!(state, "failed" | "done" | "cancelled")
+            }
         };
         if !moved {
             return;
@@ -1351,7 +1355,7 @@ impl App {
             }
             Msg::Acted(Ok(ActOutcome::Filed { words, task })) => {
                 // The new task is opened once it is listed, and what was said is about it (status_follows: once it
-                // fails or finishes, "Building it." goes).
+                // changes state, "Building it." goes).
                 self.say(Tone::Said, words);
                 self.said_for = Some((task.clone(), None));
                 self.following = Some(task.clone());
@@ -3043,6 +3047,7 @@ impl App {
             Action::LayoutFocused => self.set_layout(crate::panes::Layout::Focused),
             Action::LayoutSideBySide => self.set_layout(crate::panes::Layout::SideBySide),
             Action::LayoutGrid => self.set_layout(crate::panes::Layout::Grid),
+            Action::WatchRunning => self.watch_running(),
             Action::FilterAll => self.set_filter(Filter::All),
             Action::FilterThisProject => self.set_filter(Filter::ThisProject),
             Action::FilterNeedsMe => self.set_filter(Filter::NeedsMe),
@@ -5033,7 +5038,7 @@ impl App {
     /// for review, else the newest finished build; a build still running has nothing saved to open on.
     fn take_over(&mut self) -> Vec<Effect> {
         let Some(item) = self.selected_item().filter(|i| i.is_task).cloned() else {
-            self.say(Tone::Refused, "Choose a task to take over.");
+            self.say(Tone::Refused, "Choose a task for the build shell.");
             return vec![];
         };
         self.tab = Tab::Terminal;
@@ -5080,7 +5085,7 @@ impl App {
             _ => {
                 self.say(
                     Tone::Refused,
-                    "This task has no finished build to take over yet.",
+                    "This task has no finished build for a shell yet.",
                 );
                 vec![]
             }

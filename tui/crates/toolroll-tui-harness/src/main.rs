@@ -864,7 +864,7 @@ fn drive_term_once(args: &[String]) -> Result<serde_json::Value> {
     wait_for(&screen, "The build finished", 10)?;
     writer.write_all(b"t")?;
     writer.flush()?;
-    wait_for(&screen, "Opens your shell", 10)?;
+    wait_for(&screen, "A shell in a separate copy", 10)?;
     writer.write_all(b"t")?;
     writer.flush()?;
     wait_for(&screen, "Typing", 10)?;
