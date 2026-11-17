@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createServer } from 'node:net';
 import { Screen } from './first-result-kit.mjs';
 import { FILING_ANSWER } from './tui-e2e.mjs';
-import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, assertAgentStandIns, checkedEnv, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
+import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, assertAgentStandIns, checkedEnv, checkNoModelCalls, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const featureMap = JSON.parse(readFileSync(join(repo, 'docs/feature-map.json'), 'utf8'));
@@ -149,12 +149,12 @@ export async function runFeatures(selected, map, context, exerciseFeature = exer
 }
 export function finishReport(report) {
   report.ok = report.sessions.length > 0 && report.features.length > 0 && report.features.every(f => f.status === 'PASS')
-    && report.sessions.every(s => s.outbound?.status === 'PASS' && !s.error && !s.cleanupError);
+    && report.sessions.every(s => s.outbound?.status === 'PASS' && s.modelCalls?.status !== 'FAIL' && !s.error && !s.cleanupError);
   return report;
 }
 export function reportMarkdown(report) {
   return `# Runtime verification\n\n${reportSummary(report)}\n\nOverall: ${report.ok ? 'PASS' : 'FAIL'}\n\n`
-    + report.sessions.map(s => `- ${s.scenario}: first text ${s.timings.firstTextMs ?? 'unseen'} ms; workbench ${s.timings.workbenchMs ?? 'unseen'} ms; outbound ${s.outbound?.status ?? 'FAIL'}${s.error ? `; ${s.error}` : ''}${s.cleanupError ? `; cleanup: ${s.cleanupError}` : ''}`).join('\n') + '\n\n'
+    + report.sessions.map(s => `- ${s.scenario}: first text ${s.timings.firstTextMs ?? 'unseen'} ms; workbench ${s.timings.workbenchMs ?? 'unseen'} ms; outbound ${s.outbound?.status ?? 'FAIL'}; model calls ${s.modelCalls?.relayCalls ?? s.modelCalls?.status ?? 'unchecked'}${s.error ? `; ${s.error}` : ''}${s.cleanupError ? `; cleanup: ${s.cleanupError}` : ''}`).join('\n') + '\n\n'
     + report.features.map(f => `## ${f.id}: ${f.status}\n\n${f.error ?? f.state ?? ''}\n\n\`\`\`text\n${f.excerpt}\n\`\`\`\n`).join('\n');
 }
 /** Poll only until an observable fact holds. The ceiling bounds a starved CI runner; it is never a success delay. */
@@ -297,13 +297,18 @@ async function runCliInTerminal(world, cli, args, answers, folder, terms) {
 }
 
 /** The composer scrolls horizontally: its final words, not its hidden prefix, acknowledge input. */
-export async function taskApproval(term) {
+export const TASK_TEXT = 'Add a subtract(a, b) function next to add in src/math.js, with a test.';
+/** A second, separately named task (its list row reads differently): the scripted provider writes the same change. */
+export const FRESH_TASK_TEXT = 'Add a multiply(a, b) function next to add in src/math.js, with a test.';
+export const UNREAD_TASK_TEXT = 'Add a divide(a, b) function next to add in src/math.js, with a test.';
+export async function taskApproval(term, text = TASK_TEXT) {
   if (/Build approves exactly this:/.test(term.text())) return;
   await term.press('n', /New task:[^\n]*Send[^\n]*Cancel[^\n]*\n[^\n]*╰/);
-  term.send('Add a subtract(a, b) function next to add in src/math.js, with a test.');
+  term.send(text);
   await term.wait(/New task:[^\n]*with a test\.[^\n]*Send[^\n]*Cancel/);
   const answer = await term.press('enter', FILING_ANSWER);
-  if (/Refused: /.test(answer)) throw new Error(`Filing refused: ${answer}`);
+  // The filing's own answer: a terms card or "Filed." is no refusal, whatever an older status line still says.
+  if (!/Build approves exactly this:|Filed\. /.test(answer)) throw new Error(`Filing refused: ${/Refused: [^\n]*/.exec(answer)?.[0] ?? answer}`);
 }
 
 /** Only confirm after the end of the terms and the actionable Build control were drawn. */
@@ -333,9 +338,32 @@ export async function retryAttempt(term, lastRun, taskId, waitFor = until) {
   return shown;
 }
 
+/** A thread starts only after its terms card was read to the end (thread.rs start_key): read on, then Enter. */
+export async function startThread(term, message) {
+  await term.press('T', /New thread:/);
+  term.send(message);
+  await term.wait(new RegExp(`New thread:[^\\n]*${message.split(' ').slice(-2).join(' ').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  let shown = await term.press('enter', /The thread started\.|already started\.|Starting this thread agrees to exactly this:|Refused: /);
+  while (/Starting this thread agrees to exactly this:/.test(shown) && !/Enter\s+Start the thread/.test(shown)) {
+    const remaining = /\d+ more lines: j or Space reads on/.exec(shown)?.[0];
+    if (!remaining) throw new Error('The thread terms card shows neither more lines nor its Start control');
+    term.send(' ');
+    shown = await until(() => { const next = term.text(); return !next.includes(remaining) && next; }, 'the thread terms read on');
+  }
+  if (/Starting this thread agrees to exactly this:/.test(shown)) shown = await term.press('enter', /The thread started\.|already started\.|Refused: /);
+  // The same message under the same terms is the same start: it answers that it already started, and starts nothing.
+  if (!/The thread started\./.test(shown)) throw new Error(`No thread started: ${/Refused: [^\n]*|[^\n]*already started\./.exec(shown)?.[0]}`);
+  return shown;
+}
+
+/** Whether this workbench approves a sent-back revision (its Accept also approves a plan: keys.rs, branch revision-approve). */
+export function revisionApproval(source = readFileSync(join(repo, featureMap.keymap), 'utf8')) {
+  return /Accept = "accept", \w+, \w+, "[^"]*approve[^"]*"/.test(source);
+}
+
 /** Back to the workbench's own screen between features: Esc out of any screen or dialog a feature left open (the
  * Agents screen, help, the palette, Settings, a composer), waiting on the screen fact each time, never a fixed sleep. */
-const OVERLAY = /Search: |Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels/;
+const OVERLAY = /Search: |Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels|Esc starts nothing\./;
 async function toBase(term, world = null) {
   if (FATAL.test(term.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(term.text())}`);
   for (let tries = 0; tries < 4 && OVERLAY.test(term.text()); tries++) {
@@ -357,51 +385,75 @@ async function toBase(term, world = null) {
 
 async function exercise(feature, context) {
   const { world, term } = context;
+  // Every wait here also ends at a fatal dialog, with its words: nothing waited for comes after one.
+  const seen = (fact, description) => until(() => {
+    const text = term.text();
+    if (FATAL.test(text)) throw new Error(`The workbench stopped with an error while waiting for ${description}: ${fatalWords(text)}`);
+    return fact();
+  }, description);
   const wait = pattern => term.wait(pattern);
   const press = (key, pattern) => term.press(key, pattern);
-  const normal = async () => { term.send(esc); await until(() => !/New task:|New thread:| Commands | Keys | Settings |Send back .*saying/.test(term.text()), 'dialog closed'); };
-  const palette = async label => { await press(':', /Commands/); term.send(label); await wait(new RegExp(label.split(' ')[0], 'i')); await press('enter', /Toolroll/); };
+  const normal = async () => { term.send(esc); await seen(() => !/New task:|New thread:| Commands | Keys | Settings |Send back .*saying/.test(term.text()), 'dialog closed'); };
+  // Enter picks the palette's top match only once the whole query was echoed on its line (": <query>▏").
+  const palette = async label => {
+    await press(':', / Commands /); term.send(label);
+    await wait(new RegExp(`: ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}▏`));
+    term.send('\r'); await seen(() => !/ Commands /.test(term.text()), 'the palette closed');
+  };
+  /** Open a task or thread by its title's first words, as a person finds it in the palette, and wait for its selection. */
+  const open = async (title, id) => {
+    if (projectView()?.task === id) return;
+    await palette(title.split(' ').slice(0, 3).join(' '));
+    await seen(() => projectView()?.task === id, `${title.split(' ').slice(0, 3).join(' ')} selected`);
+  };
+  const newestThread = () => sql('SELECT id FROM flexible_thread ORDER BY rowid DESC LIMIT 1')[0]?.id;
   const viewFile = join(world.env.XDG_STATE_HOME, 'toolroll/view.json');
   const view = () => { try { return JSON.parse(readFileSync(viewFile, 'utf8')); } catch { return null; } };
   const sql = query => readConsole(world, query);
   const task = () => sql('SELECT id, state FROM task ORDER BY rowid DESC LIMIT 1')[0];
   const lastRun = () => sql("SELECT r.id, ref.external_id AS task_id, r.outcome, r.reason, r.finished_at FROM run r JOIN task_ref ref ON ref.id=r.task_ref WHERE r.role='builder' ORDER BY r.id DESC LIMIT 1")[0];
+  /** The newest builder run of one task (another task's run may be newer). */
+  const runOf = id => sql(`SELECT r.id, r.outcome, r.finished_at FROM run r JOIN task_ref ref ON ref.id=r.task_ref WHERE r.role='builder' AND ref.external_id='${id}' ORDER BY r.id DESC LIMIT 1`)[0];
   const projectView = () => Object.values(view()?.projects ?? {})[0];
   const stableView = () => { const v = structuredClone(view()); for (const project of Object.values(v?.projects ?? {})) delete project.at; return v; };
-  const approval = async () => {
+  const approval = async (text = TASK_TEXT) => {
     if (context.built) return;
-    await taskApproval(term);
+    await taskApproval(term, text);
   };
-  const build = async () => {
+  const build = async (text = TASK_TEXT) => {
     if (context.built) return;
     const previousTask = task()?.id;
-    await approval();
+    await approval(text);
     // Like tui-e2e: Just code may file directly; only a terms card needs Build.
     if (/Build approves exactly this:/.test(term.text())) await confirmBuild(term);
-    await until(() => task() && task().id !== previousTask, 'new task saved'); context.task = task().id;
-    await until(() => lastRun()?.task_id === context.task && lastRun(), 'builder run appeared for the filed task');
+    await seen(() => task() && task().id !== previousTask, 'new task saved'); context.task = task().id;
+    await seen(() => runOf(context.task), 'builder run appeared for the filed task');
     context.built = true;
   };
-  const ready = async () => {
+  const focusTab = async name => {
+    for (let presses = 0; projectView()?.tab !== name; presses++) {
+      if (presses >= 6) throw new Error(`The ${name} tab never came into focus`);
+      const before = projectView()?.tab;
+      term.send('\t'); await seen(() => projectView()?.tab !== before, `the tab moved toward ${name}`);
+    }
+  };
+  const ready = async (text = TASK_TEXT) => {
     if (context.finished) { context.built = false; context.finished = false; }
-    await build(); await until(() => lastRun()?.finished_at && ['built', 'no-change'].includes(lastRun()?.outcome), 'scripted build result');
+    await build(text);
+    await seen(() => runOf(context.task)?.finished_at && ['built', 'no-change'].includes(runOf(context.task).outcome), 'scripted build result');
+    // Enter opens the selected row: this task's, which a later feature may have moved away from.
+    await open(text, context.task);
     // A finished run is not yet a result to review: until its build process is recorded as exited, the row still reads
     // Building and Enter opens Live (app.rs Action::Open opens Diff only for a review ask). The pipeline's "Ready" stage
-    // is drawn on every row, and the title names src/math.js: wait for the list row to read Result, as a person would,
-    // then open it and wait for its change list.
-    await wait(/●[^\n]*\sResult\b/);
+    // is drawn on every row, and the title names src/math.js: wait for this task's own list row to read Result, as a
+    // person would, then open it and wait for its change list.
+    await wait(new RegExp(`●\\s+${text.slice(0, 14).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\n]*\\sResult\\b`));
     await press('enter', /\d+ files?\s+\+\d+/);
-    await until(() => projectView()?.tab === 'diff', 'Enter opened the result on the Diff tab');
-    context.task = task().id;
+    await seen(() => projectView()?.tab === 'diff', 'Enter opened the result on the Diff tab');
   };
   const failed = async () => {
-    await build(); await until(() => lastRun()?.finished_at && lastRun()?.outcome === 'failed', 'failed provider run');
-    const tab = world.scenario === 'agent-error' ? 'live' : 'steps';
-    for (let presses = 0; projectView()?.tab !== tab; presses++) {
-      if (presses >= 6) throw new Error(`The ${tab} tab never came into focus`);
-      const before = projectView()?.tab;
-      term.send('\t'); await until(() => projectView()?.tab !== before, 'failure tab changed');
-    }
+    await build(); await seen(() => lastRun()?.finished_at && lastRun()?.outcome === 'failed', 'failed provider run');
+    await focusTab(world.scenario === 'agent-error' ? 'live' : 'steps');
     const expected = expectedFailureReason(world.scenario);
     if (!lastRun().reason?.includes(expected)) throw new Error(`Expected ${expected}, got ${lastRun().reason}`);
   };
@@ -413,7 +465,7 @@ async function exercise(feature, context) {
       shown = await press('A', new RegExp(feature.expected));
       // The expected text names the Agents screen itself (the first-run screen also says "Agents" on its button), so
       // Esc here meets the open screen; wait for it to go.
-      term.send(esc); await until(() => !/check again\s+Esc\s+back/.test(term.text()), 'the Agents screen closed');
+      term.send(esc); await seen(() => !/check again\s+Esc\s+back/.test(term.text()), 'the Agents screen closed');
       break;
     }
     case 'palette': shown = await press(':', /Commands/); await normal(); break;
@@ -423,9 +475,9 @@ async function exercise(feature, context) {
     case 'approval-fold': {
       await approval();
       while (!/f shows all/.test(term.text()) && /more lines: j or Space/.test(term.text())) {
-        const before = term.text(); term.send(' '); await until(() => term.text() !== before, 'read to Usual settings');
+        const before = term.text(); term.send(' '); await seen(() => term.text() !== before, 'read to Usual settings');
       }
-      await wait(/f shows all/); term.send('f'); await until(() => !/f shows all/.test(term.text()), 'unfold Usual');
+      await wait(/f shows all/); term.send('f'); await seen(() => !/f shows all/.test(term.text()), 'unfold Usual');
       shown = term.text(); term.send('f'); await wait(/f shows all/); break;
     }
     case 'build': await build(); shown = term.text(); break;
@@ -436,7 +488,7 @@ async function exercise(feature, context) {
       await ready(); await press('/', /Search: ▏/); term.send('subtract');
       shown = await wait(/Search: subtract▏\s+\d+ of \d+/);
       await press('enter', /Search: subtract\s+\d+ of \d+\s+n next/);
-      term.send(esc); await until(() => !/Search: /.test(term.text()), 'search closed'); break;
+      term.send(esc); await seen(() => !/Search: /.test(term.text()), 'search closed'); break;
     }
     case 'export': {
       await ready();
@@ -445,28 +497,65 @@ async function exercise(feature, context) {
       for (let presses = 0; projectView()?.tab !== 'diff'; presses++) {
         if (presses >= 6) throw new Error('The Diff tab never came into focus');
         const before = projectView()?.tab;
-        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab changed');
+        term.send('\t'); await seen(() => projectView()?.tab !== before, 'export tab changed');
       }
       await wait(/src\/math.js|test\/math.test.js/);
       const output = join(world.root, 'editor.txt');
       rmSync(output, { force: true });
       term.send('\x05');
-      await until(() => {
+      await seen(() => {
         if (/Nothing here to open in an editor/.test(term.text())) throw new Error('Focused pane refused editor export');
         return existsSync(output) && /subtract/.test(readFileSync(output, 'utf8'));
       }, 'editor export output file');
-      shown = term.text(); state = 'editor contains subtract';
+      // The editor runs with the workbench's screen handed over: a key sent before it is back goes to the editor.
+      shown = await wait(/Back from your editor/); state = 'editor contains subtract';
       // Leave the Live tab focused again, as every later feature expects (n does not open the composer from Diff).
       for (let presses = 0; projectView()?.tab !== 'live'; presses++) {
         if (presses >= 6) throw new Error('The Live tab never came back into focus');
         const before = projectView()?.tab;
-        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab restored');
+        term.send('\t'); await seen(() => projectView()?.tab !== before, 'export tab restored');
       }
       break;
     }
     case 'take-over': await ready(); shown = await press('t', / Open build shell /); await press('t', /back to the workbench/); term.send('printf \"VERIFY_TERMINAL_OK\\n\"\r'); await wait(/VERIFY_TERMINAL_OK/); term.send('\x1d'); await wait(/Toolroll/); break;
-    case 'send-back': await ready(); await press('r', /Send back/); term.send('Please add a test for negative numbers.'); shown = await press('enter', /Build #.*goes back/); await press('enter', /Sent back\. The revision is filed\./); context.built = true; await until(() => task().id !== context.task, 'revision task saved'); context.task = task().id; break;
-    case 'accept': await ready(); shown = await press('a', /Accept the result of/); await press('enter', /Marked complete\.|Accepted\./); await until(() => task()?.state === 'done', 'task completion'); context.finished = true; break;
+    case 'send-back': {
+      await ready(); await press('r', /Send back/); term.send('Please add a test for negative numbers.');
+      shown = await press('enter', /Build #.*goes back/); await press('enter', /Sent back\. The revision is filed\./);
+      const original = context.task;
+      await seen(() => task().id !== original && task(), 'revision task saved'); context.task = task().id;
+      // The task's row now stands for its family (the revision under the original's place, or beside it): with it still
+      // selected, the workbench reads the revision's steps. Wait until it has (a fatal answer fails here).
+      await seen(() => [original, context.task].includes(projectView()?.task), "the task's family is selected");
+      await focusTab('steps');
+      await seen(() => !/Reading…/.test(term.text()), "the revision's steps were read");
+      // A sent-back revision waits for its person's yes. Approving it in the workbench is newer than some builds
+      // (keys.rs: Accept also approves a plan); with it, approve exactly as a person would and wait for its build.
+      if (revisionApproval()) {
+        await focusTab('live'); await wait(/a\s+approve/);
+        await press('a', /Approve exactly this:/);
+        while (!/Enter\s+Approve/.test(term.text())) {
+          const before = term.text(); term.send(' ');
+          await seen(() => term.text() !== before, 'the approval terms read on');
+        }
+        await press('enter', /Approved\./);
+        await seen(() => runOf(context.task)?.finished_at && ['built', 'no-change'].includes(runOf(context.task).outcome), 'the approved revision built');
+        state = 'revision filed, approved and built';
+      } else state = "revision filed; it waits for a person's approval, which this workbench doesn't offer yet";
+      // Nothing later reuses the revision (accept takes a fresh task: the revision's requirement needs project checks).
+      context.built = false; context.finished = false;
+      break;
+    }
+    case 'accept': {
+      // A fresh task's result: a revision's rewritten requirement needs the project's checks, which this world has none of.
+      const kept = { task: context.task, built: context.built, finished: context.finished };
+      try {
+        context.built = false; context.finished = false;
+        await ready(FRESH_TASK_TEXT);
+        shown = await press('a', /Accept the result of/); await press('enter', /Marked complete\.|Accepted\./);
+        await seen(() => sql(`SELECT state FROM task WHERE id='${context.task}'`)[0]?.state === 'done', 'the fresh task completed');
+      } finally { Object.assign(context, kept); } // Later features keep working on the first result.
+      break;
+    }
     case 'agent-error':
       await failed();
       shown = await wait(new RegExp(`The agent stopped with an error\\.[\\s\\S]*What the agent said[\\s\\S]*${MARKER}`));
@@ -475,11 +564,11 @@ async function exercise(feature, context) {
     case 'stop-resume': await failed(); await press('x', /Stop retrying this task\?/); await press('enter', /Stopped retrying|Resume retrying/); shown = await press('x', /Resume retrying this task\?/); await press('enter', /Resumed|[Rr]etrying/); break;
     case 'retry': await failed(); await wait(/The agent stopped with an error\.[\s\S]*What the agent said/); shown = await retryAttempt(term, lastRun, context.task); break;
     case 'cancel': await failed(); shown = await press('X', /Cancel/); await press('enter', /[Cc]ancelled|[Cc]anceled/); break;
-    case 'threads': shown = await press('T', /New thread:/); term.send('Review the subtraction change.'); await press('enter', /The thread started\./); break;
+    case 'threads': shown = await startThread(term, 'Review the subtraction change.'); break;
     case 'task-show': await ready(); shown = run(world, process.execPath, [context.cli, 'task', 'show', context.task]); if (!shown.includes(context.task)) throw new Error('task show did not identify the selected task'); break;
     case 'restore': {
       const before = JSON.stringify(stableView()); term.send('L');
-      await until(() => JSON.stringify(stableView()) !== before, 'changed layout saved');
+      await seen(() => JSON.stringify(stableView()) !== before, 'changed layout saved');
       const saved = stableView(); await term.quit(); await context.relaunch();
       shown = await context.term.wait(/Toolroll/);
       const restored = () => { try { const v = JSON.parse(readFileSync(viewFile, 'utf8')); for (const p of Object.values(v.projects)) delete p.at; return v; } catch { return null; } };
@@ -491,27 +580,41 @@ async function exercise(feature, context) {
     }
     case 'jumps': {
       await ready();
-      await press('T', /New thread:/); term.send('Review the subtraction change.'); await press('enter', /The thread started\./);
-      await until(() => projectView()?.task && projectView().task !== context.task, 'thread selected');
-      const origin = projectView().task;
-      term.send('!'); await until(() => projectView()?.task === context.task, 'next needs-you selects result');
+      // A thread's start keeps the selection where it was (no thread id comes back): open it, as a person would.
+      const message = 'Review the subtraction change, then jump.';
+      await startThread(term, message);
+      const origin = newestThread(); await open(message, origin);
+      term.send('!'); await seen(() => projectView()?.task === context.task, 'next needs-you selects result');
       term.send('@'); await wait(/waiting on you/);
-      term.send("'"); await until(() => projectView()?.task === origin, 'jump returns to thread');
+      term.send("'"); await seen(() => projectView()?.task === origin, 'jump returns to thread');
       shown = term.text(); state = 'jump returned to original thread'; break;
     }
     case 'unread': {
-      // A second task gives the first result a stable place to leave from. No timed provider delays.
-      context.built = false; await build();
-      await press('T', /New thread:/); term.send('Review the second subtraction change.'); await press('enter', /The thread started\./);
-      await until(() => projectView()?.unread?.includes(context.task), 'task became unread while another thread was selected');
-      shown = await wait(/[●•·]/); term.send('!');
-      await until(() => projectView()?.task === context.task && !projectView()?.unread?.includes(context.task), 'visiting task clears unread dot');
+      // A change the person didn't see: with a thread open, a finished task is completed from the command line (as
+      // from another terminal: the local owner's own road). Nothing races a build; every step waits on its fact.
+      const message = 'Review the second subtraction change.';
+      await startThread(term, message);
+      const thread = newestThread();
+      const kept = { task: context.task, built: context.built, finished: context.finished };
+      try {
+        context.built = false; context.finished = false;
+        await ready(UNREAD_TASK_TEXT);
+        const result = JSON.parse(run(world, process.execPath, [context.cli, 'task', 'show', context.task, '--json'])).assignment?.result;
+        if (!result?.digest || !result?.runId) throw new Error('task show named no result to complete');
+        await open(message, thread);
+        // The person's own sign-in, typed at the prompt as at a real terminal (never in argv or the environment).
+        await context.runCli(['task', 'complete', context.task, '--digest', result.digest, '--as', world.owner], [{ prompt: /password:/, answer: world.password }]);
+        await seen(() => projectView()?.unread?.includes(context.task), 'the completed task became unread while the thread was open');
+        shown = await wait(/[●•·]/);
+        await open(UNREAD_TASK_TEXT, context.task);
+        await seen(() => !projectView()?.unread?.includes(context.task), 'visiting task clears unread dot');
+      } finally { Object.assign(context, kept); }
       state = 'unread task id saved then cleared on visit'; break;
     }
     case 'equalize': {
       // Assert the saved outcome: equal splits can already be the current state.
       term.send('=');
-      await until(() => projectView()?.ratioX === 50 && projectView()?.ratioY === 50
+      await seen(() => projectView()?.ratioX === 50 && projectView()?.ratioY === 50
         && /Even splits, and the list at its usual width/.test(term.text()), 'equal splits restored');
       shown = await wait(new RegExp(feature.expected)); state = 'saved splits are 50%'; break;
     }
@@ -519,7 +622,7 @@ async function exercise(feature, context) {
       const action = feature.actions[0]; const before = JSON.stringify(stableView()), screenBefore = term.text();
       if (feature.keys.length) term.send(keyBytes[feature.keys[0]] ?? feature.keys[0]);
       else await palette('Move the list to the other side');
-      await until(() => action === 'zoom' ? term.text() !== screenBefore : JSON.stringify(stableView()) !== before, `${action} changed the view`);
+      await seen(() => action === 'zoom' ? term.text() !== screenBefore : JSON.stringify(stableView()) !== before, `${action} changed the view`);
       shown = await wait(new RegExp(feature.expected)); state = 'saved view changed';
     }
   }
@@ -568,8 +671,8 @@ export async function verify(options) {
         const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
         session.candidate = { cliSha256: hash(cli), workbenchSha256: hash(binary ?? join(dirname(cli), 'tui', `${process.platform}-${process.arch}`, 'toolroll-tui')),
           ...(options.tarball ? { tarballSha256: hash(options.tarball) } : {}) };
-        const port = await freePort(); let launches = 0;
-        context = { world, cli, relaunch: async () => {
+        const port = await freePort(); let launches = 0, commands = 0;
+        context = { world, cli, runCli: (args, answers) => runCliInTerminal(world, cli, args, answers, join(root, scenario, `command-${commands++}`), terms), relaunch: async () => {
           if (interrupted) throw new Error(interrupted);
           const term = new Terminal(world, cli, binary, port, join(root, scenario, `terminal-${launches++}`), scenario === 'narrow' ? 60 : 140);
           context.term = term; terms.push(term);
@@ -603,6 +706,7 @@ export async function verify(options) {
           for (const name of ['screen.log', 'pids.json', 'host.log']) if (existsSync(join(term.folder, name))) writeFileSync(join(folder, name), redactPasswords(readFileSync(join(term.folder, name), 'utf8'), world.secrets));
         }
         try { session.outbound = checkOutbound(world); } catch (error) { session.outbound = { status: 'FAIL', error: error.message }; }
+        try { session.modelCalls = checkNoModelCalls(world); } catch (error) { session.modelCalls = { status: 'FAIL', error: error.message }; }
       }
     }
   } finally {

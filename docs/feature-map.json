@@ -300,8 +300,8 @@
     {
       "id": "threads",
       "screen": "Work",
-      "reach": "T; describe thread; Enter files it",
-      "expected": "New thread:",
+      "reach": "T; describe thread; Enter; read its terms to the end; Enter starts it",
+      "expected": "The thread started\\.",
       "scenario": "success",
       "actions": [
         "new-thread"
@@ -480,6 +480,19 @@
       ]
     },
     {
+      "id": "accept",
+      "screen": "Diff",
+      "reach": "File a fresh task; open its Ready result; a; inspect attempt; Enter accepts",
+      "expected": "Accept the result of",
+      "scenario": "success",
+      "actions": [
+        "accept"
+      ],
+      "keys": [
+        "a"
+      ]
+    },
+    {
       "id": "send-back",
       "screen": "Diff",
       "reach": "r; write feedback; Enter reviews exact feedback; Enter sends",
@@ -490,22 +503,6 @@
       ],
       "keys": [
         "r"
-      ],
-      "dependsOn": [
-        "result"
-      ]
-    },
-    {
-      "id": "accept",
-      "screen": "Diff",
-      "reach": "Open Ready result; a; inspect attempt; Enter accepts",
-      "expected": "Accept the result of",
-      "scenario": "success",
-      "actions": [
-        "accept"
-      ],
-      "keys": [
-        "a"
       ],
       "dependsOn": [
         "result"
