@@ -228,6 +228,21 @@ describe("install.sh's repository, with real git", () => {
   const startLine = (out: string) => out.split("\n").find(one => one.startsWith("Start it"));
   const projectsLine = () => "Start it in a project: cd into a git repository and run toolroll";
 
+  test("a linked checkout explains why it does not autostart, including SO_NO_START", async () => {
+    const linked = join(base, "linked");
+    mkdirSync(linked);
+    // Message-only fixture: git reports this top, but .git is a worktree pointer.
+    writeFileSync(join(linked, ".git"), "gitdir: /placeholder/main/.git/worktrees/linked\n");
+    writeFileSync(join(stubs, "git"), `#!/bin/sh\n[ "$1" = --version ] && { echo "git version 2.43.0"; exit 0; }\nprintf '%s\n' '${linked}'\n`);
+    chmodSync(join(stubs, "git"), 0o755);
+    for (const env of [{}, { SO_NO_START: "1" }]) {
+      const result = await run("sh", [INSTALL], env, "pipe", linked);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain("Linked git worktree detected; autostart is disabled here. Run toolroll from the main checkout.");
+      expect(existsSync(record)).toBe(false);
+    }
+  });
+
   test("run from a folder inside a repository: that repository's top", async () => {
     const repo = makeRepo(join(base, "shop"));
     mkdirSync(join(repo, "src", "deep"), { recursive: true });

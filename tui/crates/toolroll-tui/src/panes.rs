@@ -6,7 +6,7 @@
 //! the panel left behind and makes the next one the workbench's, so keys only ever reach the focused panel; the
 //! Terminal tab's rule from T4 holds as before (only a drawn, focused terminal takes input).
 use crate::app::{App, Effect, Section, Transcript, RECORDS_KEPT};
-use crate::text::{clean, fit};
+use crate::text::{clean, fit as fit_text};
 use crate::theme::{dim, ink, needs_you};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -229,6 +229,42 @@ impl App {
         fx
     }
 
+    /// Watch up to four running or retry-waiting tasks, even when a list filter hid them.
+    pub fn watch_running(&mut self) -> Vec<Effect> {
+        let tasks: Vec<String> = self
+            .all_items
+            .iter()
+            .filter(|i| {
+                i.is_task && !i.thread && (i.section == Section::Working || i.waiting.is_some())
+            })
+            .map(|i| i.id.clone())
+            .take(4)
+            .collect();
+        let Some(first) = tasks.first() else {
+            self.say(crate::app::Tone::Said, "No running or waiting tasks.");
+            return vec![];
+        };
+        let mut fx = self.set_filter(crate::app::Filter::All);
+        self.selected = self.items.iter().position(|i| &i.id == first).unwrap_or(0);
+        fx.extend(self.selection_changed());
+        self.zoom = false;
+        self.panes.layout = Layout::Grid;
+        self.panes.focus = 0;
+        self.panes.slots = vec![None];
+        self.panes.areas.clear();
+        for task in tasks.into_iter().skip(1) {
+            fx.push(Effect::FetchSteps(task.clone()));
+            self.panes.slots.push(Some(Watch {
+                task,
+                ..Watch::default()
+            }));
+        }
+        self.panes.slots.resize(4, None);
+        self.line_cache = None;
+        fx.push(Effect::Watch(self.rooms()));
+        fx
+    }
+
     /// Move focus to another panel (`by` places on, wrapping): the panel left behind is pinned to its task, and the
     /// one moved to becomes the workbench's own, showing its pinned task (an empty one keeps the selection).
     pub fn move_focus(&mut self, by: i64) -> Vec<Effect> {
@@ -414,17 +450,51 @@ pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
         .or_else(|| watch.steps.as_ref().map(|s| clean(&s.task.title)))
         .unwrap_or_else(|| watch.task.clone());
     let waits = item.is_some_and(|i| i.section == Section::NeedsYou);
-    // The first row, level with the focused panel's tabs: what this panel is.
-    let mut lines = vec![
-        Line::from(Span::styled(fit("Pinned · Live", w), dim())),
-        Line::from(Span::styled(
-            fit(&title, w),
-            if waits { needs_you() } else { ink() },
-        )),
-    ];
-    match &watch.steps {
-        Some(steps) => lines.push(crate::view::strip(app, steps, w)),
-        None => lines.push(Line::from(Span::styled("Reading…", dim()))),
+    let mut lines = vec![Line::from(Span::styled(
+        fit_text(&title, w),
+        if waits { needs_you() } else { ink() },
+    ))];
+    let mut facts = vec![];
+    if let Some(agent) = app.facts.agent(&watch.task) {
+        facts.push(agent.to_string());
+    }
+    let state = if waits {
+        "Needs you".to_string()
+    } else if let Some(wait) = item.and_then(|i| i.waiting.as_ref()) {
+        match wait.retry_at.as_deref().and_then(crate::view::epoch) {
+            Some(at) if at > app.now => format!(
+                "Waiting to retry · next try in {}",
+                crate::view::duration(at - app.now)
+            ),
+            Some(_) => "Waiting to retry · trying again now".to_string(),
+            None => "Waiting · for a builder".to_string(),
+        }
+    } else {
+        let mut state = item
+            .map(|i| i.word.clone())
+            .unwrap_or_else(|| "Reading…".into());
+        if let Some(steps) = &watch.steps {
+            if let Some(card) = steps.cards.iter().flatten().find(|c| c.key == "build") {
+                if let Some(secs) = crate::view::build_clock(app, steps, card) {
+                    state.push_str(&format!(" · {}", crate::view::duration(secs)));
+                }
+            }
+        }
+        state
+    };
+    facts.push(state);
+    if app.prefs.settings.show_costs {
+        if let Some(cost) = app.facts.cost(&watch.task) {
+            facts.push(format!("${cost:.2}"));
+        }
+    }
+    lines.extend(
+        crate::text::wrap(&facts.join(" · "), w)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, dim()))),
+    );
+    if let Some(steps) = &watch.steps {
+        lines.push(crate::view::strip(app, steps, w));
     }
     let h = (area.height as usize).saturating_sub(lines.len());
     let t = &watch.transcript;

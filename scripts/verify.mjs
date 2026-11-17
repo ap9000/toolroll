@@ -299,7 +299,7 @@ async function exercise(feature, context) {
     case 'result': await ready(); shown = term.text(); break;
     case 'search': await ready(); shown = await press('/', /Search:/); term.send('subtract'); await wait(/subtract/); term.send('\r'); await normal(); break;
     case 'export': await ready(); term.send('\x05'); await until(() => existsSync(join(world.root, 'editor.txt')) && /subtract/.test(readFileSync(join(world.root, 'editor.txt'), 'utf8')), 'editor export'); shown = term.text(); state = 'editor contains subtract'; break;
-    case 'take-over': await ready(); shown = await press('t', / Take over /); await press('t', /back to the workbench/); term.send('printf \"VERIFY_TERMINAL_OK\\n\"\r'); await wait(/VERIFY_TERMINAL_OK/); term.send('\x1d'); await wait(/Toolroll/); break;
+    case 'take-over': await ready(); shown = await press('t', / Open build shell /); await press('t', /back to the workbench/); term.send('printf \"VERIFY_TERMINAL_OK\\n\"\r'); await wait(/VERIFY_TERMINAL_OK/); term.send('\x1d'); await wait(/Toolroll/); break;
     case 'send-back': await ready(); await press('r', /Send back/); term.send('Please add a test for negative numbers.'); shown = await press('enter', /Build #.*goes back/); await press('enter', /Sent back\. The revision is filed\./); context.built = true; await until(() => task().id !== context.task, 'revision task saved'); context.task = task().id; break;
     case 'accept': await ready(); shown = await press('a', /Accept the result of/); await press('enter', /Marked complete\.|Accepted\./); await until(() => task()?.state === 'done', 'task completion'); context.finished = true; break;
     case 'agent-error':

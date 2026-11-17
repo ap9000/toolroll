@@ -200,7 +200,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const family = runtime.familyOf(taskId);
     if (family === null || family.problem !== null) return "No such task.";
     const run = resultRunsOf(store, family).filter(one => runtime.runVisible(one)).find(one => one.id === runId) ?? null;
-    if (run === null) return "This build has no saved result yet. Wait for it to finish (or stop it), then take over.";
+    if (run === null) return "This build has no saved result yet. Wait for it to finish (or stop it), then open the build shell.";
     const revision = run.headRevision;
     if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return "This build has no saved commit to open a terminal on.";
     const repo = runtime.taskRepoOf(run.taskRef);

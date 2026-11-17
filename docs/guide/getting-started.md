@@ -2,10 +2,15 @@
 
 ## Install
 
-On macOS or Linux, with Node.js 22.20 or newer, git 2.41 or newer, and
-Claude Code (`claude`) or Codex (`codex`) signed in on this computer (on
-Linux, also `sudo apt update && sudo apt install bubblewrap socat ripgrep`; see
-[Linux](linux.md)):
+| Platform | Native terminal workbench | Sandbox requirements | Node / git minimum |
+|---|---|---|---|
+| macOS | Yes | Built-in Seatbelt (`sandbox-exec`); agent sandbox support | Node 22.20+, git 2.41+ |
+| Linux | Yes | `bubblewrap`, `socat`, `ripgrep`; working user namespaces (see [Linux](linux.md)) | Node 22.20+, git 2.41+ |
+| Windows | No native workbench; use WSL or `npx toolroll up` for the browser | No default agent fence: builds refuse to start; use WSL for confined builds | Node 22.20+, git 2.41+ |
+| WSL | Linux workbench | Same Linux tools and kernel sandbox requirements | Node 22.20+, git 2.41+ |
+
+Sign in to Claude Code (`claude`) or Codex (`codex`) on the builder.
+On Linux/WSL: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
@@ -13,8 +18,9 @@ curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | s
 
 Run it inside one of your projects (a git repository): it installs the
 `toolroll` command and opens Toolroll on that project, in this terminal.
-Anywhere else, or without a terminal (a script, CI), it prints how to start
-it instead. `standing-orders`, the older
+Inside a linked git worktree (`.git` is a file), the installer deliberately
+does not autostart: use the main checkout and run `toolroll` there. Without a
+terminal (a script, CI), or outside a repository, it prints how to start. `standing-orders`, the older
 name, still works (the script removes the older `standing-orders` package
 first, saying so). With npm instead:
 
@@ -58,8 +64,10 @@ each agent is doing and what needs you.
   `toolroll welcome sample` makes a tiny sample repository (available while
   no password is set). Or add your own with `toolroll repos add <folder>`.
   Press `A` to open Agents and sign in there; `w` opens the browser.
-- **Approve and collect.** Open the plan and read its approval card before
-  confirming. The result comes back **Ready**: press `a` to inspect and accept
+- **Build and collect.** In the new-task composer, Enter submits **Just code**
+  by default. Tab switches to **Plan first**; Enter submits that choice.
+  Read any proposed build terms before confirming. Plan first asks you to
+  review and approve the scope before it builds. The result comes back **Ready**: press `a` to inspect and accept
   it, or `r` to send it back with a note. On a failed task, `r` reviews and
   retries it. `?` lists the keys in use. See [The terminal workbench](#the-terminal-workbench).
 - **The browser.** Press `w`, or run `toolroll --web`. It opens signed in.
@@ -73,6 +81,17 @@ each agent is doing and what needs you.
 Toolroll is at `http://127.0.0.1:4180`. If another program already uses that
 port when you first start, a new install takes the next free one and keeps
 it.
+
+### What survives what
+
+| What you do | What survives / how to return |
+|---|---|
+| Close the terminal | Saved tasks and results remain. A foreground worker loses its parent and drains; an installed background service keeps running. Run `toolroll` to reopen. |
+| Quit → Keep agents running | Toolroll hands work to its background service, which starts when you log in. A failed handoff is reported; it does not promise continued work. Reopen with `toolroll`. |
+| Quit → Stop agents and quit | The worker owned by this terminal stops, saving running work. Saved tasks/results remain. Run `toolroll` to start again. A screen attached to an existing server only disconnects. |
+| Restart the computer | Live processes end; saved tasks/results remain. An enabled background service starts when you log in; otherwise run `toolroll`. Interrupted work recovers from saved state, not an attached PTY. |
+
+[Coming from herdr](from-herdr.md) walks through two tasks side by side.
 
 ### Other ways to install
 
@@ -110,6 +129,9 @@ or Codex (`codex`). Settings → AI providers shows which are connected.
 
 ## Your first task
 
+In the terminal: `n` → describe → Enter for **Just code** (Tab for
+**Plan first**). Review the result when it is Ready.
+
 Open **Chat** and say what you want in plain words. Toolroll drafts a plan
 with a goal, boundaries and checks for you to approve. Nothing is built until
 you approve it, and every result waits for you to accept it.
@@ -126,7 +148,10 @@ progress and failures, **Diff** shows the result and your notes, and
 These are the default keys from the workbench's keymap. Press `?` for help
 generated from the keys you actually use, including your custom bindings.
 Press `:` or `Ctrl-K` for the command palette: actions, tasks, projects and
-settings. Actions without a key are available there too.
+settings. Actions without a key are available there too. **Watch running tasks**
+opens up to four running or retry-waiting tasks in a grid. Unfocused headers
+show the task title, agent/model, current state or retry wait, and known cost.
+This is a local layout action; use the terminal palette to reach it from chat.
 
 | Key | Action |
 |---|---|
@@ -141,7 +166,7 @@ settings. Actions without a key are available there too.
 | `X` | Cancel the task |
 | `a` | Inspect and accept the result |
 | `r` | Send back with a note; on a failed task, review and retry |
-| `t` | Take over in a terminal on the latest build |
+| `t` | Open build shell (separate copy of the latest build) |
 | `L` | Cycle one panel, two side by side, or a grid of four |
 | `o` / `O` | Focus the next / previous pane |
 | `<` / `>` | Narrow / widen the list with one panel, or the focused panel in a split |
@@ -466,7 +491,7 @@ See [Chat and your phone](chat-and-phone.md).
 upgrades itself on the first start; back it up first if you like:
 `sqlite3 ~/.config/toolroll/orders.db ".backup orders-backup.db"`.
 
-## Step by step in the console
+## Step by step in the browser console
 
 There is one normal road: keep Toolroll running on the machine (`toolroll`
 at your terminal, or `toolroll up`). It is the app and the builder for every

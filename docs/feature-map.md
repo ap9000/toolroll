@@ -33,3 +33,9 @@ outbound-table scan and cleanup errors. A failed or unavailable check is a
 failure, never an implied pass. These are synthetic journeys, not agent output
 from real work. Screen evidence is text; there is no terminal PNG renderer in
 this harness.
+
+**Open build shell** keeps the stable `take-over` action id and `t` binding for
+existing keymaps. It opens a separate build copy, never the running agent.
+**Watch running tasks** (`watch-running`, palette only) opens a grid with up
+to four running/retry-waiting tasks, clearing old pinned results and list filters.
+It is listed as a runtime harness gap; Rust tests cover its layout contract.
