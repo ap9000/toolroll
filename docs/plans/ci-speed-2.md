@@ -90,7 +90,12 @@ when it reaches a changed path, is one, or always runs.
   attack suite's test files (setup, shared helpers, fixtures, timings), `.github/**`, `scripts/**`, `src/contracts/**`,
   the generated `src/design/**`, `Cargo.lock` or `rust-toolchain.toml`, or `THIRD_PARTY_NOTICES.md`;
 - a changed file outside the inert set (`docs/`, root `*.md`, `tui/`, `design/`, `.gitignore`, `LICENSE`) is reached by
-  nothing in the graph: a file read only through a computed path can't be matched to its readers, so it runs everything.
+  nothing in the graph — source included: a module nothing imports by a readable path is loaded some other way.
+
+And a test that reaches a load the graph can't read — `import()`, `require()` or `new URL(…, import.meta.url)` of
+anything but one plain string (or two behind a condition), or a relative path that isn't in the tree — always runs: that
+file may load any file. The reader blanks comments, strings and regular expressions first, so an `import(` in a comment
+or a fixture module inside a template string is neither an edge nor a computed load.
 
 **Backtest.** The last 50 merged pull requests (#394–#446): 134 distinct `ci.yml` runs, each planned on its own head
 commit and its diff from the merge base. Failures from that pull request's own runs, every attempt: 121 failed shard jobs
@@ -104,6 +109,8 @@ unattributed.
 - **Mode:** 101 of 134 runs plan the full suite (43 touch `scripts/`, 33 a contract, 7 a workflow, 7 test setup or
   helpers, 4 the notices, 4 are release branches, 2 delete a source file, 1 the lock file). 33 select: 25 of them 94–96%
   of the suite, 8 (workbench-only and documentation-only changes) 23%.
+- *These savings are from before the Codex review; with the conservative graph they shrink to ~4 s (Linux) and ~3 s
+  (macOS) per run — see "After the Codex review".*
 - **Savings, Linux: about 4.5 s per run** on the slowest shard's estimate (median 347 → 346 s), 267 worker-seconds of
   6206 on average. The 8 small selections: 343 → 283 s; the other 25 save about 5 s.
 - **Savings, macOS lane** (lane ∩ selection, 3 shards): **12 s per run on average** on the slowest shard (602 → 589 s).
@@ -121,9 +128,10 @@ unattributed.
 
 **Wired, advisory.** `ci.yml` has one switch, `env: TEST_SELECTION: advisory`. Each Linux shard runs the trusted base
 revision's selector before the candidate's copy is made and logs its plan; the join plans again by itself, from the
-same base and diff, and writes the plan to its job summary. Under `enforce` the shard writes the files to
-`.ci-test-selection` (read by `vitest.config.ts` only when `CI=true`; any copy the candidate committed is deleted first),
-and the join passes `--plan` to the verifier, so "every planned file ran exactly once" still holds: the shards must run
+same base and diff, and writes the plan to its job summary. Under `enforce` the shard's selection step puts the files in
+the test step's environment (`TEST_SELECTION_LIST`), the harness hands them to the candidate as `TOOLROLL_TEST_SELECTION`
+(on its allowlist; `vitest.config.ts` reads nothing else, never a file from the checkout), and the join passes `--plan` to
+the verifier, so "every planned file ran exactly once" still holds: the shards must run
 exactly the join's own plan, no file missing and none extra (`scripts/ci-shards.mjs` `plannedFiles`). A full plan owes
 every file, as today. The macOS lane works the same way: its shards plan `--lane macos` (the lane's files the selection
 holds, or the whole lane when the selection holds none), and its join plans the same and, under `enforce`, holds the
@@ -338,8 +346,8 @@ Today: ~17 minutes median, set by the macOS lane (queue + ~12 minutes of job). M
 pull request on its own still takes that; what drops is macOS demand (at most 5 at once per pull request, 6–9 for two
 at once instead of 10–15), so the ~10-minute p90 queue should shrink, and advisory jobs get shorter (Rust cache, one
 binary build instead of two, no Intel Mac on ordinary pull requests).
-With `TEST_SELECTION: enforce`, the expected macOS critical path: unchanged for ~94% of pull requests (12 s on average),
-and about 3 minutes shorter (597 → 407 s of tests) for workbench- and documentation-only ones. Linux never sets the path.
+With `TEST_SELECTION: enforce`, the expected macOS critical path barely moves: 3 s on average since the Codex review made
+the graph conservative (below). Linux never sets the path.
 
 Decisions for the owner:
 
@@ -354,11 +362,37 @@ Decisions for the owner:
    src/password-freshness.test.ts's pinned ordinals and wants its own review; and whether two concurrent pull requests'
    3+3 macOS shards (over 5) are worth fewer lane shards once the selection is enforced.
 
+## After the Codex review (NO-GO at 0f1a7366, two findings fixed)
+
+**High: a planted `.ci-test-selection` could narrow other lanes.** Nothing reads a file from the checkout any more:
+`vitest.config.ts` takes a selection only from `TOOLROLL_TEST_SELECTION` (`scripts/ci-shards.mjs` `selectedFiles`), which
+only the harness passes (its allowlist, `scripts/ci-candidate.mjs`), only when the base revision's selection step put the
+list in the test step's environment under `enforce`. A checkout that holds a `.ci-test-selection` fails the shards'
+joins (`ci-shards.mjs verify`) and every lane with a list (`ci-no-skips.mjs --expect`), so a pull request can't add one.
+The special lanes now have their own trusted lists in the base revision's `scripts/ci-no-skips.mjs`: the git lanes
+(package.json's test:git filters, held equal by a test), the floor's partial-clone file, and the Node 26 SQLite lane (which
+now writes a report). Each report must hold exactly the lane's files, each passing whole; a passing subset fails. A test
+loads `vitest.config.ts` as Vitest does, in CI, beside a planted list: the whole suite.
+
+**Medium: the graph wasn't conservative.** Computed loads and unresolved paths now mean "may load any file" (every test
+reaching one runs), and an unreached source change runs everything (section 2). Regression rows cover a template
+`import()`, an `import()` of a variable, a comment inside `import()`, `require(variable)`, `new URL(variable,
+import.meta.url)` and a path not in the tree. 65 files have such a load; in product code `src/learning-look.ts` and
+`src/eval-oracle.ts` (child processes started by a computed name) are reached by ~260 tests, so those now run for every
+pull request.
+
+**What it costs.** Backtest re-run: **0 misses** on Linux (123 failing pairs) and macOS (32). But the selection is now
+worth ~4 s per run on Linux (mean 67 worker-seconds) and ~3 s on macOS; the 8 workbench- and documentation-only runs now
+select ~85% (Linux 343 → 325 s, macOS 597 → 581 s) instead of ~22%. The way back is in product code: have
+`learning-look.ts` and `eval-oracle.ts` name their children in plain strings (a lookup table of literals instead of
+`./${name}.ts`), which the reader can follow. Advisory stays the default.
+
 ## Checks run on this branch
 
 `src/ci-select.test.ts`, `src/ci-shards.test.ts`, `src/ci-workflow.test.ts`, `src/ci-candidate.test.ts` (one Vitest
 process, all passing), each new rule reverted in the working tree to see its test fail (attacks always run, product
-literals, the whole tree as nodes, `plannedFiles`, the shards' `rm -f .ci-test-selection`, the cache key's toolchain,
+literals, the whole tree as nodes, `plannedFiles`, the selection only from the harness's variable, the joins' and lanes'
+refusal of a planted `.ci-test-selection`, a lane's passing subset, computed loads, unreached source, the cache key's toolchain,
 the scripts trigger, the macOS lane's `--lane`, `ALWAYS_FILES`, the walk rule, the empty-lane fallback, the oxlint
 advisory name and `--deny-warnings`), `oxlint --deny-warnings` clean on the baseline and failing a new file, and
 `node --check` on the edited journey. Not run here: the full suite, the journey itself, any CI run of these workflows
