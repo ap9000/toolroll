@@ -8,7 +8,8 @@ with a person in charge of every decision that matters.
 - [Coming from herdr](from-herdr.md): task panels, parallel work, persistence and differences
 
 - [Getting started](getting-started.md): install, sign in, first project and task;
-  [terminal keys, settings and Agents](getting-started.md#the-terminal-workbench)
+  [terminal keys, settings and Agents](getting-started.md#the-terminal-workbench),
+  [interactive agent threads (beta)](getting-started.md#interactive-agent-threads-beta)
 - [Tasks, results and revisions](tasks.md): the loop, the lead, Ready and Complete, what is in the current build
 - [Chat and your phone](chat-and-phone.md): the lead, subagents, Telegram buttons, Slack, Discord and Teams
 

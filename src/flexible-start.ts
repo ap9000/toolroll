@@ -12,10 +12,11 @@
  * cost holds); what Ship will do (one press, a merge only on a passing required check of that exact commit); and the
  * disclosures (history beyond the base, secrets in what it writes, the open network's risks when the network is open).
  *
- * Nothing here works while FLEXIBLE_AVAILABLE is false: the one entry point refuses first.
+ * The one entry point checks the interactive agent threads' switch (flexible-available.ts flexibleAvailable: off unless
+ * a person turned them on) first.
  */
 import { createHash } from "node:crypto";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
 import { flexibleRelayBilling } from "./flexible-relay.js";
@@ -60,7 +61,7 @@ export const FLEXIBLE_UNKNOWN_COST_WORDS = "If Toolroll can't measure what a tur
  * the same records, person, model and message give the same card, and so the same key.
  */
 export function flexibleStartCard(store: Store, input: { repo: string; by: { name: string; generation: number }; model: string | null; message: string }): { ok: true; card: FlexibleStartCard } | FlexibleStartRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   const model = input.model === null || input.model === "" ? FLEXIBLE_DEFAULT_MODEL : input.model;
   if (typeof input.repo !== "string" || input.repo === "" || typeof model !== "string" || !RELAY_MODEL.test(model) || typeof input.message !== "string"
     || typeof input.by?.name !== "string" || !Number.isSafeInteger(input.by.generation)) return refuse("invalid-request");

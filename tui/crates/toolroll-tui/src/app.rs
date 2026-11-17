@@ -1576,23 +1576,29 @@ impl App {
         }
         // No tasks yet: the first run's lines about this computer's agents (who the first task goes to, or how to sign in).
         fx.extend(self.fetch_agents());
-        // The person's Flexible threads, read with the work (never again once the console said they aren't available).
-        if !self.threads.off && !self.threads.fetching {
+        // The person's Flexible threads, read with the work (asked again each time: they can be turned on or off meanwhile).
+        if !self.threads.fetching {
             self.threads.fetching = true;
             fx.push(Effect::FetchThreads);
         }
         fx
     }
 
-    /// The threads list: merged into the left column (the selection kept); a refusal means Flexible is off here, said
-    /// by nothing (threads are simply not listed) and never asked again.
+    /// The threads list: merged into the left column (the selection kept); a refusal means interactive agent threads are
+    /// off here, said by nothing on the list (threads are simply not listed; `T` says it) until a later read lists them.
     fn got_threads(&mut self, read: Result<LiveThreads, ApiError>) -> Vec<Effect> {
         self.threads.fetching = false;
         match read {
-            Ok(list) => self.threads.listed(list),
+            Ok(list) => {
+                // The threads already made are listed whatever the switch says; `on: false` says it is off.
+                self.threads.off = list.on == Some(false);
+                self.threads.answered = true;
+                self.threads.listed(list)
+            }
             Err(e) if fatal(&e) => return self.failed(e),
             Err(_) => {
                 self.threads.off = true;
+                self.threads.answered = true;
                 self.threads.rows.clear();
             }
         }
@@ -2807,12 +2813,12 @@ impl App {
                 }
             },
             Action::NewThread => {
-                self.mode = Mode::NewThread(String::new());
-                // Its agent is said on the line above: read it when it isn't known yet.
-                if self.agents.is_none() && !self.fetching_agents {
-                    self.fetching_agents = true;
-                    return vec![Effect::FetchAgents];
+                // Never a dead key: with threads off, it says so and where to turn them on.
+                if self.threads.off {
+                    self.say(Tone::Refused, crate::thread::THREADS_OFF);
+                    return vec![];
                 }
+                self.mode = Mode::NewThread(String::new());
                 vec![]
             }
             Action::Accept => {

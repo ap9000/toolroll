@@ -29,7 +29,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
 const at = (ms: number) => () => new Date(NOW.getTime() + ms);
@@ -138,9 +138,11 @@ describe("the relay's lifetime per thread", () => {
     await settled();
     expect(states()).toEqual([["r1", "pending"]]);
     const stopped = await stopFlexibleThreadSession(world.store, sessions, { thread: T1, reason: "the person stopped it", clock: () => NOW });
-    expect(stopped).toMatchObject({ ok: true });
+    // The stand-in launch isn't held by this process, so its network can't be proved closed: the stop isn't verified, and
+    // the session stays as the upkeep's retry target (settleFlexibleStops), with no agent and no relay.
+    expect(stopped).toMatchObject({ ok: true, stopped: false });
     expect(states()).toEqual([["r1", "withdrawn"]]);
-    expect(sessions.threads.has(T1)).toBe(false);
+    expect(sessions.threads.get(T1)).toMatchObject({ agent: null, relay: null });
     expect(await fetch(`http://127.0.0.1:${first.relayPort}/v1/messages`, { method: "POST" }).then(() => "answered", () => "closed")).toBe("closed");
     expect(agent.stdin.writableEnded).toBe(true);
   });

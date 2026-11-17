@@ -1,5 +1,5 @@
 {
-  "digest": "1bddda70d18e01a34604df7c618d5d6e5a16e0e0623690fd4339eda2c053e83b",
+  "digest": "54fe6e2c53072fd55f32e2202a0c5987020605097795c811df98cfdf0abe1a74",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -655,6 +655,9 @@
         "version": {
           "type": "number",
           "const": 1
+        },
+        "on": {
+          "type": "boolean"
         },
         "threads": {
           "type": "array",

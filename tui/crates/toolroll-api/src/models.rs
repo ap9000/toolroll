@@ -237,11 +237,14 @@ pub struct ThreadRow {
     pub cost_usd: Option<f64>,
 }
 
-/// `GET /agents/live/threads`: the person's own Flexible threads (refused while Flexible isn't available).
+/// `GET /agents/live/threads`: the person's own Flexible threads, and whether interactive agent threads are on (`on`;
+/// an older engine leaves it out, and refused the whole list while they were off).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveThreads {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<bool>,
     pub threads: Vec<ThreadRow>,
 }
 

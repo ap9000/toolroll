@@ -29,7 +29,7 @@ import { checkedEnv, ownRoot } from "../scripts/e2e-kit.mjs";
 // @ts-expect-error plain ESM script without declarations
 import { isolatedEnvironment } from "../scripts/isolated-env.mjs";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-14T10:00:00.000Z");
 const at = (ms: number) => () => new Date(NOW.getTime() + ms);
@@ -872,7 +872,7 @@ describe("policy and the agent's own decisions", () => {
 const RACE_SEND = `
 const job = JSON.parse(process.argv.at(-1));
 const { register } = await import("node:module");
-register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const flexibleAvailable = () => true; export const flexibleSetting = () => ({ on: true, by: null, at: null }); export const setFlexibleSetting = () => ({ changed: false }); export const FLEXIBLE_SETTING_ACTION = null;', shortCircuit: true }; return next(specifier, context); }"));
 const { existsSync, writeFileSync } = await import("node:fs");
 // The test's database must already be there: a process that finds none never makes one.
 if (!existsSync(job.file)) { process.stderr.write("no database at " + job.file); process.exit(3); }
@@ -895,7 +895,7 @@ process.stdout.write(JSON.stringify(result));
 const CRASH = `
 const job = JSON.parse(process.argv.at(-1));
 const { register } = await import("node:module");
-register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const flexibleAvailable = () => true; export const flexibleSetting = () => ({ on: true, by: null, at: null }); export const setFlexibleSetting = () => ({ changed: false }); export const FLEXIBLE_SETTING_ACTION = null;', shortCircuit: true }; return next(specifier, context); }"));
 const { existsSync, writeFileSync } = await import("node:fs");
 if (!existsSync(job.file)) { process.stderr.write("no database at " + job.file); process.exit(3); }
 const { openStore } = await import(job.modules.store);

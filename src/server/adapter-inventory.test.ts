@@ -37,7 +37,9 @@ test("every route row is marked for the local owner; an allow names one of its a
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
     "engine.agents-check=check-agents", "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
-    "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch", "settings.knowledge-note=memory-review", "settings.knowledge-tidy=memory-review", "settings.lead-on=choose-default-agent",
+    "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
+    // Settings → General: interactive agent threads on or off (the handler re-checks `flexible-switch` in its write).
+    "settings.flexible=flexible-switch", "settings.knowledge-note=memory-review", "settings.knowledge-tidy=memory-review", "settings.lead-on=choose-default-agent",
     // Results routing: lowering only, each in its exact act (route-store.ts proveRuleDoor re-checks it in the write).
     "settings.models-agent=change-models", "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).

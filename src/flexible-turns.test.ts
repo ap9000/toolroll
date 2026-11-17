@@ -3,7 +3,7 @@
  * admitted in one transaction against the thread's terms and every limit, with an id the thread start runs and the
  * relay charges; repeated requests never take a second turn, before or after a restart; unknown cost is never $0.
  *
- * The enabled behaviour is reachable only by replacing flexible-available.ts here (the build ships it false;
+ * The enabled behaviour is reachable only by turning flexible-available.ts's switch on here (the default is off;
  * flexible-disabled.test.ts proves every entry point refuses then). The race runs in separate processes, each with its
  * own database handle, with the same replacement made by a module hook in the child.
  */
@@ -22,7 +22,7 @@ import {
 } from "./flexible-turns.js";
 import { spendItems } from "./spend.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-14T10:00:00.000Z");
 const LATER = new Date("2026-11-14T23:30:00.000Z");
@@ -463,7 +463,7 @@ describe("an admission is for exactly that request, under exactly those terms, o
 const RACE = `
 const env = JSON.parse(process.env.FLEXIBLE_RACE);
 const { register } = await import("node:module");
-register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const flexibleAvailable = () => true; export const flexibleSetting = () => ({ on: true, by: null, at: null }); export const setFlexibleSetting = () => ({ changed: false }); export const FLEXIBLE_SETTING_ACTION = null;', shortCircuit: true }; return next(specifier, context); }"));
 const { existsSync, writeFileSync } = await import("node:fs");
 const { openStore } = await import(env.modules.store);
 const { admitFlexibleTurn } = await import(env.modules.turns);
