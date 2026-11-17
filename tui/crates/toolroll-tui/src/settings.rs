@@ -345,6 +345,28 @@ pub(crate) fn walk_trusted(
     Ok(Some(fd))
 }
 
+/// A backup's time in its name: UTC, `2026-11-17T00-37-37` (colons left out, for every file system).
+pub fn backup_stamp(secs: u128) -> String {
+    let secs = secs as i64;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}-{:02}-{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
 /// An exclusive lock (flock) on an open folder, waited for up to two seconds; released when the descriptor closes.
 #[cfg(unix)]
 pub(crate) fn lock_dir(fd: &std::os::fd::OwnedFd) -> Result<(), String> {
@@ -495,10 +517,17 @@ pub(crate) fn write_with_backup(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let backup_name = if backup {
-        let mut number = 0u32;
+    // A backup only of a file that changes (one already as it would be written needs none), named for when it was
+    // made, readably: tui.toml.bak-2026-11-17T00-37-37 (UTC), then -2, -3… if that second is taken.
+    let stamp = backup_stamp(nanos / 1_000_000_000);
+    let backup_name = if backup && new != text {
+        let mut number = 1u32;
         let (backup_name, fd) = loop {
-            let backup_name = format!("{}.bak.{nanos}.{number}", name.to_string_lossy());
+            let backup_name = if number == 1 {
+                format!("{}.bak-{stamp}", name.to_string_lossy())
+            } else {
+                format!("{}.bak-{stamp}-{number}", name.to_string_lossy())
+            };
             let backup_c = c(backup_name.as_bytes())?;
             // SAFETY: dfd is the judged, locked folder; the name is valid, and creation is exclusive, no links.
             let fd = unsafe {
@@ -1909,6 +1938,13 @@ pub fn settings_changes(a: &Settings, b: &Settings) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_stamps_are_utc_and_readable() {
+        assert_eq!(backup_stamp(0), "1970-01-01T00-00-00");
+        assert_eq!(backup_stamp(1_794_875_857), "2026-11-17T00-37-37");
+        assert_eq!(backup_stamp(951_782_400), "2000-02-29T00-00-00");
+    }
 
     /// A private folder chain under the system's temp folder (its real path): base/a/b/c, each 0700.
     #[cfg(unix)]

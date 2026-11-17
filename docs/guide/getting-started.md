@@ -286,7 +286,8 @@ toolroll view reset              # default look; keep your keys and back up the 
 ```
 
 Reset preserves `[keys]`, including comments, and keeps each previous file
-as `tui.toml.bak.<timestamp>.<number>` beside `tui.toml`.
+as `tui.toml.bak-<date>T<time>` (UTC) beside `tui.toml`; a file already at the
+defaults is left alone, with no backup.
 You can also [ask chat to restyle the workbench](chat-and-phone.md#restyle-the-workbench-by-asking-your-agent).
 
 Desktop notifications inside tmux need both `tmux-passthrough = true` and

@@ -281,9 +281,18 @@ fn reset_restores_the_defaults_and_keeps_a_backup() {
     );
     let env = env_of(&h);
     let before = std::fs::read_to_string(file(&h)).unwrap();
-    for _ in 0..2 {
+    for round in 0..2 {
         let said = view_cli::reset(&env).unwrap();
-        assert!(said.contains("tui.toml.bak."), "{said}");
+        // The first reset changes the file and keeps it as a readable backup; the second finds the defaults and
+        // keeps nothing (nine4).
+        if round == 0 {
+            assert!(said.contains("tui.toml.bak-20"), "{said}");
+        } else {
+            assert_eq!(
+                said,
+                "Already the defaults; nothing was changed or backed up."
+            );
+        }
         let after = std::fs::read_to_string(file(&h)).unwrap();
         assert_eq!(after, format!("{}{keys}", settings::FRESH_HEAD));
         let (s, warnings) = settings::parse(&after);
@@ -298,10 +307,27 @@ fn reset_restores_the_defaults_and_keeps_a_backup() {
             p.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("tui.toml.bak.")
+                .starts_with("tui.toml.bak-")
         })
         .collect();
-    assert_eq!(backups.len(), 2);
+    assert_eq!(backups.len(), 1);
+    // Named for when it was made, readably: tui.toml.bak-2026-11-17T00-37-37.
+    let name = backups[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let stamp = name.strip_prefix("tui.toml.bak-").unwrap();
+    assert_eq!(stamp.len(), 19, "{name}");
+    assert!(
+        stamp.chars().enumerate().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            10 => c == 'T',
+            13 | 16 => c == '-',
+            _ => c.is_ascii_digit(),
+        }),
+        "{name}"
+    );
     assert!(backups
         .iter()
         .any(|p| std::fs::read_to_string(p).unwrap() == before));

@@ -107,6 +107,10 @@
       "needs": null
     }
   },
+  "shell": {
+    "run": 2,
+    "why": null
+  },
   "failure": null,
   "waiting": null,
   "held": null,
