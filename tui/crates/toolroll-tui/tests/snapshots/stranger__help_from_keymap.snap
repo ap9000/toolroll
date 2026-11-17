@@ -11,7 +11,7 @@ expression: shown
 " ││ p              Pause the build (again to resume)        y              Copy to your terminal's scrollback       │ │ "
 " ││ x              Stop the build, or its retries           w              Open Toolroll in your browser            │ │ "
 " ││ X              Cancel task (asks first)                 ?              These keys                               │─┤ "
-" ││ a              Accept the result                        q              Quit                                     │ │ "
+" ││ a              Accept the result, or approve a plan     q              Quit                                     │ │ "
 " ││ r              Send back with a note; retry if failed   L              Next layout (one, two or four panels)    │ │ "
 " ││ t              Open build shell                         o/O            Next / previous pane                     │ │ "
 " ││ n              New task                                 </>            Narrower / wider list (or split)         │ │ "

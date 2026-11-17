@@ -9,7 +9,9 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use toolroll_api::Client;
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Mode, Msg, Tab, STEPS_UNREADABLE};
+use toolroll_tui::app::{
+    App, Effect, Mode, Msg, Tab, APPROVAL_CHANGED, APPROVAL_WAITS, STEPS_UNREADABLE, TERMS_CHANGED,
+};
 use toolroll_tui::review::{Kind, Row};
 
 fn key(c: char) -> KeyEvent {
@@ -26,6 +28,10 @@ async fn run_fx(client: &Client, fx: Effect) -> Option<Msg> {
         Effect::FetchSteps(task) => {
             let r = client.steps(&task).await;
             Msg::Steps(task, r)
+        }
+        Effect::FetchApproval(task) => {
+            let r = client.approval(&task).await;
+            Msg::Approval(task, r)
         }
         Effect::FetchLive { run, file, cursor } => Msg::Live(
             run,
@@ -396,4 +402,198 @@ async fn one_tasks_unreadable_steps_never_end_the_workbench() {
         "{fx:?} {:?}",
         app.mode
     );
+}
+
+fn said(app: &App) -> String {
+    app.status
+        .as_ref()
+        .map(|(_, w)| w.clone())
+        .unwrap_or_default()
+}
+
+/// t-done sent back with a note from the workbench: the revision is filed and waits for this person's yes.
+async fn sent_back() -> (fake::FakeEngine, Client, App) {
+    let (engine, client, mut app) = open_review().await;
+    let fx = app.key(key('r'));
+    pump(&mut app, &client, fx).await;
+    for c in "Round the tax to cents.".chars() {
+        app.key(key(c));
+    }
+    assert_eq!(app.key(enter()), vec![]);
+    screen(&mut app, 120, 34);
+    let fx = app.key(enter());
+    pump(&mut app, &client, fx).await;
+    assert_eq!(engine.acts().last().unwrap().path, "/r/2/comment");
+    assert!(
+        app.approval_waiting(),
+        "the revision waits for its approval"
+    );
+    (engine, client, app)
+}
+
+/// Send back, the revision appears waiting for a yes, and the workbench approves it: the Live tab and the key bar say
+/// so (never "Nothing is building" or "stop retrying"), `a` reads the exact terms whole, and Enter posts the task page's
+/// own approval with the card's digest, the nonce minted for it and no password; then the build is next.
+#[tokio::test(flavor = "multi_thread")]
+async fn send_back_then_approve_the_revision_in_the_workbench() {
+    let (engine, client, mut app) = sent_back().await;
+    app.tab = Tab::Live;
+    let shown = screen(&mut app, 160, 40);
+    assert!(shown.contains("Waiting for your approval."), "{shown}");
+    assert!(!shown.contains("Nothing is building"), "{shown}");
+    assert!(
+        shown.contains("a approve") && shown.contains("w browser"),
+        "{shown}"
+    );
+    assert!(!shown.contains("stop retrying"), "{shown}");
+    let acts_before = engine.acts().len();
+    // a reads the card (the console mints its nonce): the terms, whole.
+    let fx = app.key(key('a'));
+    assert!(
+        matches!(fx.as_slice(), [Effect::FetchApproval(t)] if t == "t-done"),
+        "{fx:?}"
+    );
+    pump(&mut app, &client, fx).await;
+    assert!(matches!(app.mode, Mode::Approve { .. }), "{:?}", app.mode);
+    let shown = screen(&mut app, 160, 50);
+    assert!(shown.contains("Approve exactly this:"), "{shown}");
+    assert!(
+        shown.contains("This revises build #1. It keeps the same limits."),
+        "{shown}"
+    );
+    assert!(shown.contains("Round the tax to cents. (alex)"), "{shown}");
+    assert!(shown.contains("Enter  Approve"), "{shown}");
+    assert!(
+        !format!("{:?}", app.mode).contains(&engine.state.lock().unwrap().nonces[0].2),
+        "the nonce is never printed"
+    );
+    assert_eq!(
+        engine.acts().len(),
+        acts_before,
+        "reading the terms sends nothing"
+    );
+    // y (or Enter) approves exactly them.
+    let fx = app.key(key('y'));
+    pump(&mut app, &client, fx).await;
+    let acts = engine.acts();
+    let act = acts.last().unwrap();
+    assert_eq!(act.path, "/t/t-done-v2/approve");
+    assert!(act.keyed && act.csrf_ok && act.cookie_ok && act.in_place);
+    let (digest, nonce) = {
+        let st = engine.state.lock().unwrap();
+        (st.nonces[0].1.clone(), st.nonces[0].2.clone())
+    };
+    assert_eq!(act.field("digest"), Some(digest.as_str()));
+    assert_eq!(act.field("nonce"), Some(nonce.as_str()));
+    assert_eq!(act.field("token"), Some(""));
+    assert_eq!(act.fields.len(), 3, "{:?}", act.fields);
+    assert_eq!(said(&app), "Approved.");
+    // The steps read again: approved, the build next; nothing waits for a yes any more.
+    assert!(!app.approval_waiting());
+    let build = app
+        .steps
+        .as_ref()
+        .and_then(|s| s.cards.as_ref())
+        .and_then(|c| c.iter().find(|c| c.key == "build"))
+        .map(|c| c.state.clone());
+    assert_eq!(build.as_deref(), Some("current"));
+    // a now has nothing to approve or accept: nothing is sent.
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert_eq!(engine.acts().len(), acts.len());
+    // The revision's build is ready: Accept completes the version that holds the receipt (t-done-v2), never the
+    // sent-back task the list names (the console refuses that as a changed result).
+    {
+        let mut st = engine.state.lock().unwrap();
+        let steps = st.steps.get_mut("t-done").unwrap();
+        steps["review"] = serde_json::json!({ "run": 2, "receipt": "a".repeat(64), "source": "b".repeat(64),
+            "accept": { "owed": null, "blockers": [], "needs": null } });
+    }
+    pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
+    app.tab = Tab::Live;
+    let fx = app.key(enter());
+    pump(&mut app, &client, fx).await;
+    assert_eq!(app.tab, Tab::Diff);
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert!(matches!(app.mode, Mode::ConfirmAccept(_)), "{:?}", app.mode);
+    screen(&mut app, 160, 50);
+    let fx = app.key(enter());
+    pump(&mut app, &client, fx).await;
+    let acts = engine.acts();
+    assert_eq!(
+        acts.last().unwrap().path,
+        "/t/t-done-v2/complete",
+        "{}",
+        said(&app)
+    );
+}
+
+/// What is shown is what is approved: any other key approves nothing; unread terms can't be approved; terms that change
+/// while the card is open (the task still waiting for a yes) close it before anything is sent; and a card whose task no
+/// longer waits closes too. Nothing is ever posted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_or_unread_approval_is_never_sent() {
+    let (engine, client, mut app) = sent_back().await;
+    let acts = engine.acts().len();
+    // Any other key: nothing approved, nothing sent.
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    screen(&mut app, 160, 50);
+    assert!(app.key(key('x')).is_empty());
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(said(&app), "Nothing approved.");
+    // Not read to the end (a window too small to show the terms): Enter is refused, nothing sent.
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    screen(&mut app, 120, 12);
+    assert!(app.key(enter()).is_empty());
+    assert!(matches!(app.mode, Mode::Approve { .. }));
+    // Read to the end, then the terms change on the console while the card is open; the task still waits for a yes.
+    screen(&mut app, 160, 50);
+    {
+        let mut st = engine.state.lock().unwrap();
+        let steps = st.steps.get_mut("t-done").unwrap();
+        steps["cards"][1]["terms"]["key"] = serde_json::json!("f".repeat(32));
+        steps["cards"][1]["terms"]["rows"][0]["words"] =
+            serde_json::json!("Any file in the project");
+    }
+    pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
+    assert!(app.approval_waiting(), "the plan still waits for a yes");
+    assert_eq!(app.mode, Mode::Normal, "the card on the old terms closes");
+    assert_eq!(said(&app), TERMS_CHANGED);
+    // An Enter that arrives after it closed sends nothing either.
+    assert!(app
+        .key(enter())
+        .iter()
+        .all(|e| !matches!(e, Effect::Act { .. })));
+    // A card read on terms the steps no longer show doesn't open (the console's card still has the old key).
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(said(&app), TERMS_CHANGED);
+    // The console's card catches up: it opens; then the steps say the approval no longer waits (approved in the
+    // browser, say): it closes.
+    engine
+        .state
+        .lock()
+        .unwrap()
+        .approvals
+        .get_mut("t-done")
+        .unwrap()["key"] = serde_json::json!("f".repeat(32));
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert!(matches!(app.mode, Mode::Approve { .. }), "{:?}", app.mode);
+    engine
+        .state
+        .lock()
+        .unwrap()
+        .steps
+        .get_mut("t-done")
+        .unwrap()["cards"][1]["state"] = serde_json::json!("done");
+    pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(said(&app), APPROVAL_CHANGED);
+    assert_eq!(engine.acts().len(), acts, "nothing was posted");
+    let _ = APPROVAL_WAITS;
 }

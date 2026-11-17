@@ -132,6 +132,11 @@ pub struct State {
     pub threads: Option<Value>,
     /// Each thread's LiveSession window (GET /agents/live/thread/<id>).
     pub thread_windows: HashMap<String, Value>,
+    /// The approval waiting on a task (GET /t/<task>/approval, by the address's task), as the console's card says it;
+    /// absent: nothing waits. A send back of t-done files one (as the console's revision, planned with the terms kept).
+    pub approvals: HashMap<String, Value>,
+    /// Every nonce a card minted, with the task and digest it was minted for and whether a yes spent it.
+    pub nonces: Vec<(String, String, String, bool)>,
 }
 
 /// A new thread's terms card key (32 hex, as the console's summary keys are).
@@ -530,6 +535,8 @@ pub fn scenario() -> State {
         models: fixture("models.json"),
         refuse_complete: None,
         notes_saved: Vec::new(),
+        approvals: HashMap::new(),
+        nonces: Vec::new(),
         session_ended: false,
         redeemed: false,
         reads: HashMap::new(),
@@ -598,6 +605,7 @@ impl FakeEngine {
             .route("/engine/agents", get(agents))
             .route("/engine/models", get(models))
             .route("/t/{task}/steps", get(steps))
+            .route("/t/{task}/approval", get(approval))
             .route("/t/{task}/diff", get(diff))
             .route("/agents/live/run/{run}", get(live_window))
             .route("/agents/live/threads", get(threads))
@@ -745,6 +753,77 @@ async fn steps(
     match found {
         Some(v) => json_answer(200, v),
         None => json_answer(404, json!({ "error": "task" })),
+    }
+}
+
+/// GET /t/<task>/approval: the card for the approval waiting there, a fresh nonce minted for its digest each read (the
+/// console mints one each time the form is read); with nothing waiting, the card's problem.
+async fn approval(
+    AxState(s): AxState<Shared>,
+    Path(task): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = admitted(&s, &headers, &format!("/t/{task}/approval")) {
+        return r;
+    }
+    let mut st = s.state.lock().unwrap();
+    let Some(mut card) = st.approvals.get(&task).cloned() else {
+        return json_answer(
+            200,
+            json!({ "version": 1, "task": task, "key": null, "digest": null, "nonce": null, "terms": [], "problem": "Nothing on this task is waiting for your approval." }),
+        );
+    };
+    if card["nonce"].is_string() {
+        let nonce = format!("{:032x}", st.nonces.len() as u128 + 0x5eed);
+        card["nonce"] = json!(nonce);
+        let (id, digest) = (
+            card["task"].as_str().unwrap_or("").to_string(),
+            card["digest"].as_str().unwrap_or("").to_string(),
+        );
+        st.nonces.push((id, digest, nonce, false));
+    }
+    json_answer(200, card)
+}
+
+/// A sent-back revision of t-done (t-done-v2), planned with the terms kept and waiting for its approval: t-done's steps
+/// say so (the contract's sent-back fixture) and its card offers the terms.
+pub fn revision_waiting(st: &mut State) {
+    let mut steps = fixture("step-cards-sent-back.json");
+    steps["task"]["id"] = json!("t-done-v2");
+    steps["task"]["root"] = json!("t-done");
+    steps["task"]["title"] = json!("Add CSV export");
+    steps["room"] = json!("task:t-done");
+    let key = steps["cards"][1]["terms"]["key"].clone();
+    st.steps.insert("t-done".into(), steps);
+    let mut card = fixture("approval-card.json");
+    card["task"] = json!("t-done-v2");
+    card["key"] = key;
+    st.approvals.insert("t-done".into(), card);
+}
+
+/// The revision approved: its Approval step done and its build next (the console requeues it for a builder).
+fn approved(st: &mut State) {
+    st.approvals.remove("t-done");
+    if let Some(steps) = st.steps.get_mut("t-done") {
+        for card in steps["cards"].as_array_mut().unwrap().iter_mut() {
+            match card["key"].as_str().unwrap() {
+                "approve" => {
+                    card["state"] = json!("done");
+                    card["mark"] = json!("done");
+                    card["needsYou"] = json!(false);
+                    card["sentence"] = json!("Approved by you");
+                    card.as_object_mut().unwrap().remove("terms");
+                }
+                "build" => {
+                    card["state"] = json!("current");
+                    card["mark"] = json!("wait");
+                    card["sentence"] = json!("Waiting to start");
+                }
+                _ => {}
+            }
+        }
+        steps["headline"] = json!("Queued");
+        steps["approval"] = json!({ "by": "alex", "you": true, "automatic": false });
     }
 }
 
@@ -1021,6 +1100,41 @@ async fn act(
         st.terms.push(session);
         return json_answer(200, json!({ "ok": true, "id": TERM_ID }));
     }
+    if let Some(task) = path
+        .strip_prefix("/t/")
+        .and_then(|p| p.strip_suffix("/approve"))
+    {
+        // As the console's approval: the nonce minted for this person, this task and this digest, spent at once;
+        // then the digest as the form showed it, still the approval waiting; never a password from a terminal here.
+        let last = st.acts.last().cloned().unwrap();
+        let (digest, nonce) = (
+            last.field("digest").unwrap_or("").to_string(),
+            last.field("nonce").unwrap_or("").to_string(),
+        );
+        let minted = st
+            .nonces
+            .iter_mut()
+            .find(|(t, d, n, spent)| t == task && *d == digest && *n == nonce && !spent);
+        let Some(minted) = minted else {
+            return json_answer(
+                409,
+                json!({ "outcome": "refused", "words": "that approval form is stale — read it again" }),
+            );
+        };
+        minted.3 = true;
+        let waiting = st
+            .approvals
+            .get("t-done")
+            .is_some_and(|c| c["task"] == json!(task) && c["digest"] == json!(digest));
+        if !waiting || last.field("token") != Some("") {
+            return json_answer(
+                409,
+                json!({ "outcome": "refused", "words": "the scope or plan changed while this form was open — read the latest version and approve again" }),
+            );
+        }
+        approved(&mut st);
+        return json_answer(200, json!({ "outcome": "approved", "words": "Approved." }));
+    }
     if path.ends_with("/complete") {
         return json_answer(
             200,
@@ -1091,6 +1205,7 @@ async fn act(
             .into_response();
     }
     if path.ends_with("/comment") {
+        revision_waiting(&mut st);
         return json_answer(
             200,
             json!({ "outcome": "done", "words": "Sent back. The revision is filed." }),

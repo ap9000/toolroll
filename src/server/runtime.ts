@@ -79,6 +79,8 @@ export interface ServerRuntime {
   dockedConversation: (who: Who, focusTask: TaskChatFocus | null, chatProject: string | null, now: Date, back: string, resultRunId?: number | null) => import("../browser-workspace.js").BrowserConversation | null;
   planViewOf: (taskRef: number) => { document: string; sha256: string; run: number; } | null;
   mintApprovalNonce: (name: string, taskId: string, digest: string) => string;
+  /** The nonce still held for this person, task and digest, else a new one (the approval card's read). */
+  heldApprovalNonce: (name: string, taskId: string, digest: string) => string;
   planContractViewOf: (taskRef: number, scope: Scope | null) => PlanContractView | null;
   familiesInView: (project: string | null, options?: Parameters<Store["taskFamiliesAdmitted"]>[2]) => TaskFamily[];
   runIsTaskResult: (run: Pick<Run, "role" | "finishedAt">) => boolean;

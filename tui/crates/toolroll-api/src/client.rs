@@ -383,6 +383,15 @@ impl Client {
         )
     }
 
+    /// The approval waiting on a task (asked when the person presses Approve: it mints the form's one-time nonce).
+    pub async fn approval(&self, task: &str) -> Result<ApprovalCard, ApiError> {
+        versioned(
+            self.get::<ApprovalCard>(&format!("/t/{}/approval", encode(task)), "the approval")
+                .await?,
+            |r| r.version,
+        )
+    }
+
     pub async fn diff(&self, task: &str, run: Option<i64>) -> Result<ResultDiff, ApiError> {
         let q = run.map(|r| format!("?run={r}")).unwrap_or_default();
         versioned(
