@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, plannedFiles, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
 import { FILE_OVERHEAD_SECONDS, medianTimes, planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
@@ -101,8 +101,8 @@ describe("pipeline-speed A: the shards' join", () => {
   test("the include policy is vitest.config.ts's, and finds exactly its files without following a symlinked folder", () => {
     const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
     // The whole suite, unless TOOLROLL_TEST_LANE names a lane: then exactly that lane's files.
-    expect(JSON.parse(/include:[^\[]*\?\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
-    expect(config).toContain(`: laneFiles(import.meta.dirname, lane),`);
+    expect(JSON.parse(/const suite: string\[\] =[^\[]*\?\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
+    expect(config).toContain(`: laneFiles(import.meta.dirname, lane);`);
     const tree = join(scratch, "tree");
     for (const one of ["src/a.test.ts", "src/deep/b.test.ts", "src/helper.ts", "test/attacks/c.test.ts", "test/other.test.ts", "src/node_modules/x.test.ts"]) write(tree, one, "");
     mkdirSync(join(scratch, "outside"), { recursive: true });
@@ -289,5 +289,26 @@ describe("Codex review round 1, P1: what Linux skips, the macOS lane runs", () =
     write(lin, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/plain.test.ts"), status: "passed", assertionResults: [{ status: "passed" }] }])));
     const passed = cli(["--linux-reports", lin, "--linux-shards", "1"]);
     expect(passed.status, passed.stderr).toBe(0);
+  });
+});
+
+describe("ci-speed-2: the join under a test selection (--plan)", () => {
+  const at = (name: string, plan: unknown) => { const path = join(scratch, name); writeFileSync(path, typeof plan === "string" ? plan : JSON.stringify(plan)); return path; };
+  test("a full plan owes every file; a selected one exactly its files; anything else is an error, never a smaller suite", () => {
+    expect(plannedFiles(listed, undefined)).toBe(listed);
+    expect(plannedFiles(listed, at("full.json", { mode: "full", files: [] }))).toBe(listed);
+    expect(plannedFiles(listed, at("some.json", { mode: "selected", files: ["test/attacks/d.test.ts", "src/a.test.ts", "src/a.test.ts"] }))).toEqual(["src/a.test.ts", "test/attacks/d.test.ts"]);
+    expect(() => plannedFiles(listed, at("stray.json", { mode: "selected", files: ["src/a.test.ts", "src/gone.test.ts"] }))).toThrow(/names src\/gone\.test\.ts/);
+    for (const [name, plan] of [["empty.json", { mode: "selected", files: [] }], ["shape.json", { mode: "some", files: ["src/a.test.ts"] }], ["bad.json", "{"], ["number.json", { mode: "selected", files: [1] }]] as const) {
+      expect(() => plannedFiles(listed, at(name, plan)), name).toThrow(/plan/);
+    }
+    expect(() => plannedFiles(listed, join(scratch, "missing.json"))).toThrow(/can't be read/);
+  });
+  test("the shards must run exactly the selected files: one left out or one extra fails the join", () => {
+    const owed = plannedFiles(listed, at("two.json", { mode: "selected", files: ["src/a.test.ts", "src/b.test.ts"] }));
+    const ran = (names: string[]) => new Map<number, unknown>([[1, report(names.map(name => file(name)))]]);
+    expect(shardsProblem(ran(["src/a.test.ts", "src/b.test.ts"]), owed, { shards: 1, root, base })).toBeNull();
+    expect(shardsProblem(ran(["src/a.test.ts"]), owed, { shards: 1, root, base })).toMatch(/ran in no shard/);
+    expect(shardsProblem(ran(["src/a.test.ts", "src/b.test.ts", "test/attacks/d.test.ts"]), owed, { shards: 1, root, base })).toMatch(/include policy doesn't find/);
   });
 });

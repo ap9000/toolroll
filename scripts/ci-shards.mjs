@@ -8,6 +8,7 @@
  *
  *   node <trusted copy>/scripts/ci-shards.mjs verify <shards-folder> --root <candidate checkout> --base <trusted checkout>
  *     --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]
+ *     [--plan <ci-select plan.json>]
  *
  * `--lane macos` (docs/plans/ci-speed.md): the macOS shards ran the macOS lane, not the whole suite (`--lane all`, as the
  * nightly runs it, is the whole suite) — every file
@@ -219,6 +220,24 @@ export function linuxSkipsProblem(linuxReports, macRan, { shards, root }) {
   return `${missed.length} file${missed.length === 1 ? "" : "s"} Linux skipped part of ran in no macOS shard (${missed.slice(0, 3).join(", ")}${missed.length > 3 ? ", …" : ""}): the macOS lane must run them`;
 }
 
+/**
+ * What the shards owe under a test selection (scripts/ci-select.mjs, docs/plans/ci-speed-2.md): with `--plan <file>`, the
+ * plan this trusted copy's own selector wrote for the tested commit. A `full` plan owes every listed file; a `selected`
+ * one exactly its files, each of which must be among them. Anything else about the plan (unreadable, another shape, a
+ * file the inventory doesn't hold) is an error, never a smaller suite.
+ */
+export function plannedFiles(listed, planFile) {
+  if (planFile === undefined) return listed;
+  let plan;
+  try { plan = JSON.parse(readFileSync(planFile, "utf8")); } catch { throw new Error(`the test selection's plan ${planFile} can't be read`); }
+  if (plan?.mode === "full") return listed;
+  if (plan?.mode !== "selected" || !Array.isArray(plan.files) || plan.files.length === 0 || plan.files.some(one => typeof one !== "string")) throw new Error("the test selection's plan isn't one");
+  const have = new Set(listed);
+  const stray = plan.files.find(one => !have.has(one));
+  if (stray !== undefined) throw new Error(`the test selection names ${stray}, which the include policy doesn't find here`);
+  return [...new Set(plan.files)].sort();
+}
+
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };
 
 /**
@@ -242,12 +261,12 @@ export function reportsIn(folder, node) {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, folder, ...args] = process.argv.slice(2);
   try {
-    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]"); process.exit(2); }
+    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>] [--plan <file>]"); process.exit(2); }
     const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native"), lane = flag(args, "lane");
     if (!SHA.test(sha ?? "")) throw new Error("no tested commit");
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
     if (args.includes("--lane") && lane !== "all" && !Object.hasOwn(LANES, lane ?? "")) throw new Error(`--lane takes all or ${Object.keys(LANES).join(" or ")}`);
-    const listed = lane === undefined || lane === "all" ? inventory(root) : laneFiles(root, lane);
+    const listed = plannedFiles(lane === undefined || lane === "all" ? inventory(root) : laneFiles(root, lane), flag(args, "plan"));
     const reports = reportsIn(folder, node);
     if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
     const problem = shardsProblem(reports, listed, { shards, root, base, native });
@@ -261,6 +280,6 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       if (skips !== null) { console.error(`node ${node}: ${skips}`); process.exit(1); }
     }
     const executed = [...reports.values()].reduce((n, one) => n + one.numPassedTests, 0);
-    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}, ${executed} tests executed`);
+    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}${flag(args, "plan") === undefined ? "" : " as the test selection planned"}, ${executed} tests executed`);
   } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
 }

@@ -34,6 +34,13 @@ on:
 permissions:
   contents: read
 
+# The test selection (scripts/ci-select.mjs, docs/plans/ci-speed-2.md): what a pull request's diff can reach, by the
+# trusted base revision's selector. `advisory`: the Linux shards and their join only record it, and every file runs.
+# `enforce`: a pull request's Linux shards run only the selected files, and the join holds them to its own copy of the
+# plan. Pushes, the nightly, calls and release-* branches always plan the whole suite. The macOS lane is unaffected.
+env:
+  TEST_SELECTION: advisory
+
 # A newer push to a pull request cancels the run on its older head (docs/plans/ci-speed.md, item 5). Never a release-*
 # branch's (each of its runs stands on its own head, and none waits behind another), never a call from main-push.yml or
 # nightly.yml: those get a group of their own run id, so nothing ever cancels them.
@@ -127,6 +134,23 @@ jobs:
           have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
           bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Before the candidate's copy is made: the trusted base revision's selector over this diff (docs/plans/ci-speed-2.md).
+      # Advisory, it only says what it would run; enforce, .ci-test-selection holds the files (vitest.config.ts) and the
+      # join judges the shards against its own copy of the plan. A base without the selector runs every file.
+      - name: Test selection
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          rm -f .ci-test-selection
+          selector=.trusted-base/scripts/ci-select.mjs
+          if [ ! -f "$selector" ]; then echo "::notice::the base revision has no test selector yet; every file runs"; exit 0; fi
+          plan() { node "$selector" plan --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" --list "$RUNNER_TEMP/selected.txt"; }
+          if [ "$TEST_SELECTION" != enforce ]; then plan || echo "::warning::the test selector failed; advisory, so every file runs as always"; exit 0; fi
+          plan
+          cp "$RUNNER_TEMP/selected.txt" .ci-test-selection
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
       - name: The candidate's user and its copy of the checkout
@@ -177,6 +201,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
+          # The test selection reads the diff from the merge base.
+          fetch-depth: 0
+          persist-credentials: false
       - name: Tested commit
         shell: bash
         run: |
@@ -206,12 +233,27 @@ jobs:
           harness=.trusted-base/scripts/ci-candidate.mjs
           if [ ! -f "$harness" ]; then echo "::warning::the base revision has no candidate harness yet; using this change's own (a person approves it)"; harness=scripts/ci-candidate.mjs; fi
           node "$harness" join --from "$RUNNER_TEMP/downloads" --to "$RUNNER_TEMP/shards"
+      # The join's own copy of the plan, by the same trusted selector over the same diff (docs/plans/ci-speed-2.md): written
+      # to this job's summary; under enforce, the files the shards owe.
+      - name: Test selection
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          selector=.trusted-base/scripts/ci-select.mjs
+          if [ ! -f "$selector" ]; then echo "::notice::the base revision has no test selector yet; the shards owe every file"; exit 0; fi
+          plan() { node "$selector" plan --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/selection.json" --summary "$GITHUB_STEP_SUMMARY"; }
+          if [ "$TEST_SELECTION" != enforce ]; then plan || echo "::warning::the test selector failed; advisory, so the shards owe every file as always"; exit 0; fi
+          plan
       - name: Every shard ran the whole suite
         shell: bash
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 6 --native linux
+          planned=(); if [ "$TEST_SELECTION" = enforce ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 6 --native linux "${planned[@]}"
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
   # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). On a pull

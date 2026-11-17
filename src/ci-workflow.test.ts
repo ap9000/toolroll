@@ -533,7 +533,9 @@ describe("the CI workflows", () => {
         // macOS runs its lane (the nightly every file), and its join judges that lane.
         expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""} --report`);
         expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
-        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}$`));
+        // ci.yml's Linux join also takes the test selection's plan when TEST_SELECTION is enforce (docs/plans/ci-speed-2.md).
+        const planned = file === "ci.yml" && platform === "linux" ? ' "\\$\\{planned\\[@\\]\\}"' : "";
+        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}${planned}$`));
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
     }
@@ -1278,5 +1280,49 @@ describe("the wire budgets (.github/workflows/wire-budgets.yml)", () => {
     expect(wire.permissions).toEqual({ contents: "read", actions: "read" });
     expect(readFileSync(join(folder, "wire-budgets.yml"), "utf8")).not.toMatch(/secrets\./);
     expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
+  });
+});
+
+describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until ci.yml says enforce", () => {
+  const raw = parse(readFileSync(join(folder, "ci.yml"), "utf8")) as { env?: Record<string, string> };
+  const shard = workflow("ci.yml").jobs["test-shard"]!, joinJob = workflow("ci.yml").jobs["test"]!;
+  const step = (job: Job, name: string) => (job.steps ?? []).find(one => one.name === name);
+
+  test("one switch: the workflow's TEST_SELECTION, advisory today", () => {
+    expect(raw.env).toEqual({ TEST_SELECTION: "advisory" });
+    // Nothing else reads a selection: the macOS lane, the release candidate's Node 22 and the git lanes run as before.
+    for (const id of ["macos-shard", "macos", "node-latest", "git-floor", "git-247"]) expect(JSON.stringify(workflow("ci.yml").jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
+    expect(JSON.stringify(workflow("release-candidate.yml"))).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
+  });
+
+  test("each Linux shard plans with the base revision's selector before the candidate's copy is made, and writes the list only under enforce", () => {
+    const steps = shard.steps ?? [];
+    const at = steps.findIndex(one => one.name === "Test selection");
+    expect(at).toBeGreaterThan(steps.findIndex(one => one.with?.["path"] === ".trusted-base"));
+    expect(at).toBeLessThan(steps.findIndex(one => (one.run ?? "").includes(" prepare ")));
+    const run = step(shard, "Test selection")!.run!;
+    // A list the candidate committed never stands: it is removed first, and only the trusted plan can put one back.
+    expect(run.split("\n")[0]).toBe("rm -f .ci-test-selection");
+    expect(run).toContain("selector=.trusted-base/scripts/ci-select.mjs");
+    expect(run).toContain('if [ "$TEST_SELECTION" != enforce ]; then plan || echo');
+    expect(run.trimEnd().split("\n").at(-1)).toBe('cp "$RUNNER_TEMP/selected.txt" .ci-test-selection');
+    expect(step(shard, "Test selection")!.env).toEqual({ EVENT: "${{ github.event_name }}", HEAD_REF: "${{ github.head_ref }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
+  });
+
+  test("the join plans again by itself and, under enforce, holds the shards to exactly that plan", () => {
+    const steps = joinJob.steps ?? [];
+    expect(steps[0]?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "fetch-depth": 0, "persist-credentials": false });
+    const run = step(joinJob, "Test selection")!.run!;
+    expect(run).toContain("selector=.trusted-base/scripts/ci-select.mjs");
+    expect(run).toContain('--out "$RUNNER_TEMP/selection.json" --summary "$GITHUB_STEP_SUMMARY"');
+    expect(steps.findIndex(one => one.name === "Test selection")).toBeLessThan(steps.findIndex(one => one.name === "Every shard ran the whole suite"));
+    expect(runsOf(joinJob).at(-1)).toContain('planned=(); if [ "$TEST_SELECTION" = enforce ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi');
+  });
+
+  test("vitest.config.ts reads the list only in CI, and an empty or missing list is the whole suite", () => {
+    const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
+    expect(config).toContain('process.env["CI"] === "true" && existsSync(join(import.meta.dirname, ".ci-test-selection"))');
+    expect(config).toContain("include: selection.length > 0 ?");
+    expect(readFileSync(join(import.meta.dirname, "..", ".gitignore"), "utf8").split("\n")).toContain("/.ci-test-selection");
   });
 });
