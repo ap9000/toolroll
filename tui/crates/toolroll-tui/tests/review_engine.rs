@@ -9,7 +9,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use toolroll_api::Client;
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Msg, Tab};
+use toolroll_tui::app::{App, Effect, Mode, Msg, Tab, STEPS_UNREADABLE};
 use toolroll_tui::review::{Kind, Row};
 
 fn key(c: char) -> KeyEvent {
@@ -336,4 +336,64 @@ async fn a_lost_or_refused_answer_never_saves_the_notes_twice() {
     );
     assert_eq!(engine.state.lock().unwrap().notes_saved.len(), 1);
     assert!(app.notes_of("t-done", 2).is_empty());
+}
+
+/// One task's steps in a shape this version doesn't know (as a sent-back task's Approval terms once were) never end the
+/// workbench: that task says so on its own tabs, nothing of its earlier read stays to accept, and the other tasks read
+/// and act as before (q still asks first).
+#[tokio::test(flavor = "multi_thread")]
+async fn one_tasks_unreadable_steps_never_end_the_workbench() {
+    let (engine, client, mut app) = open_review().await;
+    app.owned = true;
+    // Accept is open on t-done's result when its steps come back with a field this version doesn't know.
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert!(matches!(app.mode, Mode::ConfirmAccept(_)), "{:?}", app.mode);
+    engine
+        .state
+        .lock()
+        .unwrap()
+        .steps
+        .get_mut("t-done")
+        .unwrap()["cards"][0]["surprise"] = serde_json::json!(true);
+    pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
+    assert_eq!(app.mode, Mode::Normal, "the dialog on the old read closes");
+    assert!(app.steps.is_none(), "nothing of the old read stays");
+    assert_eq!(
+        app.status.as_ref().map(|(_, w)| w.as_str()),
+        Some(STEPS_UNREADABLE)
+    );
+    // Fail closed: Accept has nothing to accept, so nothing is sent.
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert!(
+        !matches!(app.mode, Mode::ConfirmAccept(_)),
+        "{:?}",
+        app.mode
+    );
+    assert!(engine.acts().is_empty(), "{:?}", engine.acts());
+    // Its Steps and Live tabs say so plainly, never "Reading…".
+    for tab in [Tab::Steps, Tab::Live] {
+        app.tab = tab;
+        let shown = screen(&mut app, 200, 34);
+        assert!(
+            shown.contains("This version can't show this task's steps."),
+            "{shown}"
+        );
+        assert!(!shown.contains("Reading…"), "{shown}");
+    }
+    // Another task reads and shows as before.
+    app.tab = Tab::Steps;
+    let fx = app.key(key('k'));
+    pump(&mut app, &client, fx).await;
+    let here = app.steps.as_ref().map(|s| s.task.id.clone());
+    assert_eq!(here.as_deref(), Some("t-ask"));
+    assert!(!screen(&mut app, 200, 34).contains("This version can't show"));
+    // And q asks before leaving, as it always does.
+    let fx = app.key(key('q'));
+    assert!(
+        fx.is_empty() && app.mode == Mode::Quit,
+        "{fx:?} {:?}",
+        app.mode
+    );
 }

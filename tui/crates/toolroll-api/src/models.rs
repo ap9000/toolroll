@@ -396,6 +396,40 @@ pub struct StepCard {
     pub finished_at: Option<String>,
     pub cost_usd: Option<f64>,
     pub runs: Vec<i64>,
+    /// The Approval step's terms while an approval waits (absent on every other card): a task sent back with a note
+    /// waits for its revision's yes, and its Approval card carries them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<StepTerms>,
+}
+
+/// A waiting approval's terms (approval-summary.ts, the summary every surface shows): `key` is what a yes pins, so a
+/// change to what was shown refuses. Display only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepTerms {
+    pub key: String,
+    pub revision: Option<String>,
+    pub rows: Vec<TermsRow>,
+    pub warnings: Vec<String>,
+    pub usual_label: String,
+    pub usual: Vec<UsualTerm>,
+}
+
+/// A decision or difference in the terms, with its lines when it has more than one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermsRow {
+    pub label: String,
+    pub words: String,
+    pub lines: Vec<String>,
+}
+
+/// One of the project's usual settings, by name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsualTerm {
+    pub label: String,
+    pub words: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
