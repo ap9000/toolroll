@@ -38,3 +38,6 @@ portable-pty = "0.9"
 serde = { version = "1" }
 toolroll-fake-engine = { path = "../toolroll-fake-engine" }
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util", "rt-multi-thread"] }
+# Property tests (tests/properties.rs): tui.toml, view.json and search over generated input. Exact version; no fork or
+# timeout features (no extra processes).
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
