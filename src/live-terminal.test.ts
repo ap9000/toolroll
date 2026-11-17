@@ -2,7 +2,7 @@
  * Live terminals (docs/plans/live-terminal.md): a real pty in its own worktree, scrollback replay, strict frames,
  * the session cap, and a close that takes the whole process group.
  */
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { CLOSE_GRACE_MS, MIRROR_PAUSE_CHARS, trustedPath, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, dropPendingInput, MIRROR_PAUSE_CHARS, VIEWER_PAUSE_BYTES, trustedPath, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -175,11 +175,15 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
       let received = 0, backlog = 0, overflowed = 0;
       // A page whose connection takes nothing while `backlog` says so (a socket's buffered amount).
       flowHost.attach(started.id, { output: data => { received += data.byteLength; backlog += data.byteLength; }, control: () => {}, backlog: () => backlog, overflow: () => { overflowed += 1; } });
-      await until(() => flowHost.paused(started.id));
-      // Paused: nothing more arrives, and the mirror's unparsed output stays under its mark.
-      await new Promise(resolve => setTimeout(resolve, 150));
+      // Paused because the page is backed up (the fact this checks; not the brief pause while it attaches, after which
+      // the program rightly resumes for a page that has taken nothing yet): the page holds past the high mark.
+      await until(() => flowHost.paused(started.id) && backlog > VIEWER_PAUSE_BYTES);
+      // What reached the page is bounded by the mark plus the one read that crossed it (a pty read is at most 64 KiB).
+      expect(backlog).toBeLessThanOrEqual(VIEWER_PAUSE_BYTES + 64 * 1024);
+      // Paused: nothing more arrives while it stays backed up, and the mirror's unparsed output stays under its mark.
       const held = received;
       await new Promise(resolve => setTimeout(resolve, 300));
+      expect(flowHost.paused(started.id)).toBe(true);
       expect(received - held).toBeLessThan(256 * 1024);
       expect(flowHost.mirrorPending(started.id)).toBeLessThanOrEqual(MIRROR_PAUSE_CHARS + 1024 * 1024);
       // Drained: it resumes, and with a page that keeps up the stream flows while the mirror stays bounded.
@@ -332,15 +336,35 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(existsSync(started.worktree)).toBe(true);
   });
 
-  test("typing into a program that doesn't read stops at the cap (round 2, finding 5)", async () => {
+  test("typing into a program that doesn't read stops at the cap (round 2, finding 5); what it never read is let go at close, never written to a closed terminal", async () => {
     const deaf = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "deaf"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }) });
+    // node-pty reports a failed queued write (EIO, EBADF once the terminal closed) with console.error, unhandled.
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args[0]); });
     try {
       const started = await deaf.start(ALEX, repo, "shell");
       const chunk = "x".repeat(60_000);
       let refused = false;
       for (let n = 0; n < 40 && !refused; n += 1) refused = !deaf.input(started.id, chunk);
       expect(refused).toBe(true);
-    } finally { await deaf.stop(); }
+      await deaf.stop();
+      // The retries node-pty had scheduled would have run by now.
+      await new Promise(resolve => setImmediate(resolve));
+      expect(errors.filter(one => String(one).includes("pty write"))).toEqual([]);
+    } finally { spy.mockRestore(); await deaf.stop(); }
+  });
+
+  test("a program's unread input is dropped from the pinned pty's queue, its next retry cancelled", () => {
+    const native = (createRequire(import.meta.url)("@lydell/node-pty") as typeof import("@lydell/node-pty")).spawn("/bin/sleep", ["5"], { cols: 80, rows: 24, env: { PATH: "" } });
+    try {
+      for (let n = 0; n < 40; n += 1) native.write("x".repeat(60_000));
+      expect(pendingInputOf(native)).toBeGreaterThan(0);
+      expect(dropPendingInput(native)).toBe(true);
+      expect(pendingInputOf(native)).toBe(0);
+      expect((native as unknown as { _writeStream: { _writeImmediate?: unknown } })._writeStream._writeImmediate).toBeUndefined();
+      // Another shape is never touched.
+      expect(dropPendingInput({})).toBe(false);
+    } finally { native.kill(); }
   });
 
   test("the pinned pty's write queue is measurable (an upgrade that hides it fails here, and input is refused)", () => {
