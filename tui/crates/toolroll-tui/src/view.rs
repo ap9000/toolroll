@@ -527,7 +527,24 @@ fn draw_rail(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// The top bar, on the ground: Toolroll and the project, the cost line, then what's working and what needs you.
+/// The top bar's items, each with its place in the keep order when the bar is short of room (highest kept first). The
+/// same items and the same order on every screen (the list, a task, narrow or wide), so what a screen shows depends
+/// only on the room, never on which screen it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TopItem {
+    /// Dropped first.
+    Working,
+    Unread,
+    Cost,
+    Project,
+    /// What is set aside: ZOOM, NARROW, RAIL, LIST HIDDEN.
+    Marks,
+    /// Never dropped (with "Toolroll").
+    Needs,
+}
+
+/// The top bar, on the ground: Toolroll, the project and the cost line on the left; what's working, what's set aside,
+/// unread tasks and what needs you on the right. Short of room, items are kept in TopItem's order, the same everywhere.
 fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     let needs = if !app.loaded {
         Span::styled("Reading…", dim())
@@ -543,56 +560,99 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .filter(|i| i.section == Section::Working && !i.paused)
         .count();
-    let mut right = vec![];
-    if working > 0 && app.loaded {
-        right.push(sheet::badge(
-            &format!("{} {working} working", marks().running),
-            crate::theme::Role::Running,
+    // (item, spans, on the right)
+    let mut items: Vec<(TopItem, Vec<Span<'static>>, bool)> = vec![];
+    if !app.project_name.is_empty() {
+        let name = fit(&app.project_name, 32);
+        items.push((
+            TopItem::Project,
+            vec![if crate::theme::fills() {
+                Span::styled(format!(" {name} "), ink().patch(crate::theme::fill()))
+            } else {
+                Span::styled(format!("· {name}"), Style::default())
+            }],
+            false,
         ));
-        right.push(Span::raw("  "));
     }
-    // What is set aside, said where it can't be missed: zoomed, the list as a rail or hidden, unread tasks.
+    // The cost line: "$1.84 today · plan 62%" (show-costs = false hides it).
+    if let Some(c) = cost_line(app) {
+        items.push((TopItem::Cost, vec![Span::styled(c, dim())], false));
+    }
+    if working > 0 && app.loaded {
+        items.push((
+            TopItem::Working,
+            vec![sheet::badge(
+                &format!("{} {working} working", marks().running),
+                crate::theme::Role::Running,
+            )],
+            true,
+        ));
+    }
+    // What is set aside, said where it can't be missed: zoomed, narrow, the list as a rail or hidden.
     let narrow = f.area().width < NARROW_WIDTH;
-    let mut marks_on: Vec<String> = vec![];
+    let mut marks_on: Vec<Span<'static>> = vec![];
+    let mut mark = |m: &str| {
+        if !marks_on.is_empty() {
+            marks_on.push(Span::raw("  "));
+        }
+        marks_on.push(sheet::chip(m));
+    };
     if app.zoom {
-        marks_on.push("ZOOM".into());
+        mark("ZOOM");
     }
     if narrow {
-        marks_on.push("NARROW".into());
+        mark("NARROW");
     } else if !app.zoom {
         match app.list_state {
-            crate::viewstate::ListState::Rail => marks_on.push("RAIL".into()),
-            crate::viewstate::ListState::Hidden => marks_on.push("LIST HIDDEN".into()),
+            crate::viewstate::ListState::Rail => mark("RAIL"),
+            crate::viewstate::ListState::Hidden => mark("LIST HIDDEN"),
             crate::viewstate::ListState::Full => {}
         }
     }
-    for m in marks_on {
-        right.push(sheet::chip(&m));
-        right.push(Span::raw("  "));
+    if !marks_on.is_empty() {
+        items.push((TopItem::Marks, marks_on, true));
     }
     if !app.unread.is_empty() && app.loaded {
-        right.push(Span::styled(format!("{} unread", app.unread.len()), ink()));
-        right.push(Span::raw("  "));
+        items.push((
+            TopItem::Unread,
+            vec![Span::styled(format!("{} unread", app.unread.len()), ink())],
+            true,
+        ));
     }
-    right.push(needs);
-    let right_w = sheet::spans_width(&right) as u16;
-    let mut left = vec![Span::raw(" "), Span::styled("Toolroll", ink())];
-    if !app.project_name.is_empty() {
-        left.push(Span::raw("  "));
-        let room = (area.width as usize).saturating_sub(right_w as usize + 16);
-        let name = fit(&app.project_name, room.min(32));
-        left.push(if crate::theme::fills() {
-            Span::styled(format!(" {name} "), ink().patch(crate::theme::fill()))
-        } else {
-            Span::styled(format!("· {name}"), Style::default())
-        });
-    }
-    // The cost line, after the project: "$1.84 today · plan 62%" (show-costs = false hides it), when there's room.
-    if let Some(c) = cost_line(app) {
-        if sheet::spans_width(&left) + width(&c) + right_w as usize + 6 <= area.width as usize {
-            left.push(Span::styled(format!("  {c}"), dim()));
+    items.push((TopItem::Needs, vec![needs], true));
+    // Short of room: items are kept highest first (TopItem's order), each only if it still fits, so the lowest go
+    // first, and one that fits after a wider one is left out is still shown. " Toolroll", two cells between items.
+    let mut room = (area.width as usize).saturating_sub(1 + width("Toolroll") + 1);
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|i| std::cmp::Reverse(items[*i].0));
+    let mut keep = vec![false; items.len()];
+    for i in order {
+        let need = sheet::spans_width(&items[i].1) + 2;
+        if items[i].0 == TopItem::Needs || need <= room {
+            room = room.saturating_sub(need);
+            keep[i] = true;
         }
     }
+    let items: Vec<_> = items
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(item, _)| item)
+        .collect();
+    let mut left = vec![Span::raw(" "), Span::styled("Toolroll", ink())];
+    let mut right: Vec<Span<'static>> = vec![];
+    for (_, spans, on_right) in items {
+        if on_right {
+            if !right.is_empty() {
+                right.push(Span::raw("  "));
+            }
+            right.extend(spans);
+        } else {
+            left.push(Span::raw("  "));
+            left.extend(spans);
+        }
+    }
+    let right_w = sheet::spans_width(&right) as u16;
     f.render_widget(Paragraph::new(Line::from(left)), area);
     let r = Rect {
         x: area.right().saturating_sub(right_w + 1),
@@ -1461,26 +1521,68 @@ fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
 /// What Live shows above the agent's output, or instead of it: why a failed task stopped and what the agent said
 /// (with a rule under it when output follows), a waiting task's words, or one line saying what there is. The bool: the
 /// agent's output follows it. One source for drawing, search and export (search.rs pane_text).
-pub fn live_head(app: &App, item: &Item, w: usize) -> (Vec<Line<'static>>, bool) {
+/// How a pane's content is laid out: for the screen (wrapped and cut to its width, with its key hints and rules), or
+/// whole for export (no width to cut to, no key hints, no rules). One content, laid out either way: what is drawn,
+/// searched and exported can't drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Room {
+    pub w: usize,
+    /// Key hints ("r  Retry") and rules drawn.
+    pub hints: bool,
+}
+
+/// The width an export is laid out at: wide enough that no line is ever cut.
+pub const EXPORT_WIDTH: usize = 10_000;
+
+impl Room {
+    /// As drawn, `w` cells wide.
+    pub fn screen(w: usize) -> Room {
+        Room { w, hints: true }
+    }
+    /// Whole, for export: no width, no key hints, no rules.
+    pub fn export() -> Room {
+        Room {
+            w: EXPORT_WIDTH,
+            hints: false,
+        }
+    }
+    /// Laid out whole (never cut, never padded out to a width).
+    pub fn whole(self) -> bool {
+        self.w >= EXPORT_WIDTH
+    }
+}
+
+/// The task's situation now, when it has one: why it failed and how to retry, or that it is on hold, or waiting to try
+/// again (why the last build stopped, when the next starts, what the agent said, and its keys). Live puts it above
+/// the output, Steps above the steps.
+pub fn situation_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    let failed = failure_lines(app, room);
+    if !failed.is_empty() {
+        return failed;
+    }
+    waiting_lines(app, room)
+}
+
+/// Live's head: the task's situation (situation_lines) when it has one, above its output; else, with no output, what
+/// the pane says instead. The bool: the output follows.
+pub fn live_head(app: &App, item: &Item, room: Room) -> (Vec<Line<'static>>, bool) {
+    let w = room.w;
     let t = &app.transcript;
     let has_output = t.run.is_some() && !(t.main.is_empty() && t.sub.is_empty());
-    let failed = app.steps_here().is_some_and(|s| s.failure.is_some());
+    let situation = situation_lines(app, room);
     if has_output {
-        if !failed {
+        if situation.is_empty() {
             return (vec![], true);
         }
-        let mut top = failure_lines(app, w);
-        top.push(Line::from(Span::styled("─".repeat(w), line())));
+        let mut top = situation;
+        if room.hints {
+            top.push(Line::from(Span::styled("─".repeat(w), line())));
+        }
         return (top, true);
     }
-    // A failed task: why it stopped and how to retry, before anything else.
-    if failed {
-        return (failure_lines(app, w), false);
-    }
-    // Waiting to try again: why the last build stopped and when the next one starts, never a blank pane.
-    let waiting = waiting_lines(app, w);
-    if !waiting.is_empty() {
-        return (waiting, false);
+    // Failed, on hold or waiting to try again: never a blank pane.
+    if !situation.is_empty() {
+        return (situation, false);
     }
     let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
     let words = if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
@@ -1508,7 +1610,7 @@ pub fn live_head(app: &App, item: &Item, w: usize) -> (Vec<Line<'static>>, bool)
 fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let w = area.width as usize;
     // Why it stopped and what the agent said first (live_head), the output under it.
-    let (head, output) = live_head(app, item, w);
+    let (head, output) = live_head(app, item, Room::screen(w));
     if !output {
         f.render_widget(Paragraph::new(head), area);
         return;
@@ -1597,22 +1699,26 @@ fn outcome_of(card: &StepCard) -> (&'static str, Style) {
 /// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
 /// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
 fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
-    f.render_widget(Paragraph::new(steps_lines(app, area.width as usize)), area);
+    f.render_widget(
+        Paragraph::new(steps_lines(app, Room::screen(area.width as usize))),
+        area,
+    );
 }
 
 /// Everything the Steps tab shows, at width `w`: one source for drawing, search and export (search.rs pane_text).
-pub fn steps_lines(app: &App, w: usize) -> Vec<Line<'static>> {
+pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    let w = room.w;
     let Some(steps) = &app.steps else {
         return vec![Line::raw("Reading…")];
     };
     let mut lines = vec![];
-    let why = failure_lines(app, w);
+    let why = failure_lines(app, room);
     if !why.is_empty() {
         lines.push(Line::from(Span::styled("Failed", crate::theme::failed())));
         lines.extend(why);
         lines.push(Line::raw(""));
-    } else if !waiting_lines(app, w).is_empty() {
-        lines.extend(waiting_lines(app, w));
+    } else if !waiting_lines(app, room).is_empty() {
+        lines.extend(waiting_lines(app, room));
         lines.push(Line::raw(""));
     } else if let Some(headline) = &steps.headline {
         for l in wrap(&clean(headline), w) {
@@ -1627,7 +1733,8 @@ pub fn steps_lines(app: &App, w: usize) -> Vec<Line<'static>> {
             dim(),
         )));
     }
-    let fills = crate::theme::fills();
+    // Laid out whole (export): no raised blocks, so nothing is padded out to a width.
+    let fills = crate::theme::fills() && !room.whole();
     // Each step a raised block (without fills, its lines with a blank line between).
     let w = if fills { w.saturating_sub(4) } else { w };
     for (i, card) in cards.iter().enumerate() {
@@ -1666,7 +1773,11 @@ pub fn steps_lines(app: &App, w: usize) -> Vec<Line<'static>> {
             ink()
         };
         let name = fit(&step_label(card), w.saturating_sub(right_w + 4).max(4));
-        let gap = w.saturating_sub(2 + width(&name) + right_w).max(1);
+        let gap = if room.whole() {
+            2
+        } else {
+            w.saturating_sub(2 + width(&name) + right_w).max(1)
+        };
         let mut head = vec![
             Span::styled(format!("{mark} "), mark_style),
             Span::styled(name, name_style),
@@ -1709,17 +1820,16 @@ pub fn steps_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         // The result waiting for you: what Accept and Send back act on, said on the Ready card.
         if card.key == "ready" {
             if let Some(review) = &steps.review {
+                let who = upper_first(&app.attempt_words(review.run));
                 c.push(fit_line(
-                    Line::from(vec![
-                        Span::styled(
-                            format!(
-                                "  {} waits for you: ",
-                                upper_first(&app.attempt_words(review.run))
-                            ),
-                            ink(),
-                        ),
-                        Span::styled("a accepts · r sends back · t takes over", dim()),
-                    ]),
+                    Line::from(if room.hints {
+                        vec![
+                            Span::styled(format!("  {who} waits for you: "), ink()),
+                            Span::styled("a accepts · r sends back · t takes over", dim()),
+                        ]
+                    } else {
+                        vec![Span::styled(format!("  {who} waits for you."), ink())]
+                    }),
                     w,
                 ));
                 for blocker in &review.accept.blockers {
@@ -1778,7 +1888,8 @@ pub fn failure_words(f: &toolroll_api::Failure) -> String {
 }
 
 /// A failed task's Live and Steps words: why it stopped, what to change, and how to retry (when it can be).
-fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
+fn failure_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    let w = room.w;
     let Some(steps) = app.steps_here() else {
         return vec![];
     };
@@ -1796,11 +1907,14 @@ fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(agent_said_lines(failure.agent_said.as_ref(), w));
-    lines.push(Line::raw(""));
     let retry = key_name(app, Action::SendBack);
     if steps.retry.is_some() && !retry.is_empty() {
-        lines.push(Line::from(sheet::act(&retry, "Retry", true)));
+        if room.hints {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act(&retry, "Retry", true)));
+        }
     } else {
+        lines.push(Line::raw(""));
         for l in wrap(
             "It can't be retried here as it stands: press w to review it in the browser.",
             w,
@@ -1821,7 +1935,8 @@ type WaitingWords<'a> = (
 /// A held or waiting task's Live and Steps words. Held (a person stopped it): "On hold · you stopped retrying", its last
 /// failure, and Resume; never a next try. Waiting: why the last build stopped, when the next one starts, what the agent
 /// said, and the keys that stop it.
-fn waiting_lines(app: &App, w: usize) -> Vec<Line<'static>> {
+fn waiting_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    let w = room.w;
     let Some(steps) = app.steps_here() else {
         return vec![];
     };
@@ -1867,6 +1982,9 @@ fn waiting_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(agent_said_lines(said, w));
+    if !room.hints {
+        return lines;
+    }
     lines.push(Line::raw(""));
     let mut keys = vec![];
     for (action, words) in acts {

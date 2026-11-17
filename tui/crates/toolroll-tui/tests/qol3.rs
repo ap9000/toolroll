@@ -171,19 +171,56 @@ fn needs_you_steps_both_ways_without_reordering_and_jumps_back() {
     answer(&mut app, fx);
     assert_eq!(selected(&app), "t-ask");
     assert_eq!(ids(&app), order, "the list's order never changes");
-    // ' goes back to where the jumps started, and again returns.
+    // ' goes back to where the newest jump left from, and right away again goes forward (a swap, like vim's '').
     let fx = app.key(key('\''));
     answer(&mut app, fx);
-    assert_eq!(selected(&app), "t-live");
+    assert_eq!(selected(&app), "t-done");
     assert_eq!(said(&app), "Back where you were.");
     let fx = app.key(key('\''));
     answer(&mut app, fx);
     assert_eq!(selected(&app), "t-ask");
+    assert_eq!(said(&app), "Forward again.");
     // Nothing to go back to before any jump.
     let mut fresh = on("t-live");
     fresh.key(key('\''));
     assert_eq!(selected(&fresh), "t-live");
     assert!(said(&fresh).contains("Nowhere to go back to"));
+}
+
+/// Every needs-you jump remembers where it left from, a needs-you task too (nine2: ' used to forget those).
+#[test]
+fn jump_back_remembers_needs_you_jumps_and_goes_further_back() {
+    // Start on a needs-you task, ! to the other, ' back.
+    let mut app = on("t-ask");
+    let fx = app.key(key('!'));
+    answer(&mut app, fx);
+    let other = selected(&app).to_string();
+    assert_ne!(other, "t-ask");
+    let fx = app.key(key('\''));
+    answer(&mut app, fx);
+    assert_eq!(selected(&app), "t-ask");
+    // A history, not one slot: t-live → (!) → (!) → (!), then ' after moving on walks back one jump at a time.
+    let mut app = on("t-live");
+    let mut seen = vec![selected(&app).to_string()];
+    for _ in 0..3 {
+        let fx = app.key(key('!'));
+        answer(&mut app, fx);
+        seen.push(selected(&app).to_string());
+    }
+    for back in (0..3).rev() {
+        let fx = app.key(key('\''));
+        answer(&mut app, fx);
+        assert_eq!(selected(&app), seen[back], "back to jump {back}");
+        // Moving on (here: the forward swap and back again) keeps the rest of the history.
+        app.jump_forward = None;
+    }
+    // At most JUMPS_KEPT places.
+    let mut app = on("t-live");
+    for _ in 0..(toolroll_tui::app::JUMPS_KEPT + 10) {
+        let fx = app.key(key('!'));
+        answer(&mut app, fx);
+    }
+    assert!(app.jumps.len() <= toolroll_tui::app::JUMPS_KEPT);
 }
 
 #[test]
@@ -563,6 +600,8 @@ fn a_sign_in_pane_is_never_searched_or_exported() {
         app.term = Some(pane);
         app.tab = Tab::Terminal;
         assert!(toolroll_tui::search::pane_text(&mut app).is_none());
+        // Nor laid out whole for export (nine2's export road).
+        assert!(toolroll_tui::search::export_text(&mut app).is_none());
         assert_eq!(app.key(key('/')), vec![]);
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.key(ctrl('e')), vec![]);

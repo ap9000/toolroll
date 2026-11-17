@@ -4,6 +4,7 @@
  * review phase agent, HIGH sends the work back once, everything else and
  * every failure reaches the person.
  */
+import { runWords } from "./needs-you.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { htmlString } from "./html.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -285,6 +286,17 @@ describe("HIGH findings (c2)", () => {
   });
 });
 
+describe("task show's runs (nine2)", () => {
+  test("a build is said as the task's attempt with its id, counted oldest first with scouts and repairs; other runs by id", () => {
+    const runs = [{ id: 12, role: "reviewer" }, { id: 9, role: "repair" }, { id: 7, role: "builder" }, { id: 4, role: "builder" }, { id: 2, role: "planner" }];
+    expect(runWords(runs, 4)).toBe("attempt 1 (build #4)");
+    expect(runWords(runs, 7)).toBe("attempt 2 (build #7)");
+    expect(runWords(runs, 9)).toBe("attempt 3 (build #9)");
+    expect(runWords(runs, 12)).toBe("build #12");
+    expect(runWords(runs, 2)).toBe("build #2");
+  });
+});
+
 describe("MEDIUM and LOW never block (c3)", () => {
   test("they reach the person as suggested follow-ups on task show, assignment show --json and the result page", async () => {
     store.setReviewSwitch(REPO, true, "alex", now());
@@ -305,6 +317,10 @@ describe("MEDIUM and LOW never block (c3)", () => {
     };
     expect(JSON.parse(await cli("task", ["show", "work"]))).toMatchObject({ automaticReview: { state: "reviewed", followUps: [medium, low] } });
     expect(await cli("task", ["show", "work"], false)).toContain(`suggested follow-up: MEDIUM src/payouts.ts:1 — ${medium.scenario}`);
+    // Its runs said as everywhere else: the build as the task's attempt, its id beside it; the review by its id alone.
+    const shown = await cli("task", ["show", "work"], false);
+    expect(shown).toContain(`  attempt 1 (build #${run})  builder`);
+    expect(shown).not.toMatch(/^ {2}build #\d+ {2}builder/m);
     expect(JSON.parse(await cli("assignment", ["show", "work"]))).toMatchObject({ result: { state: "ready-to-check", review: { followUps: [medium, low] } } });
     expect(JSON.parse(await cli("task", ["review", String(run)]))).toMatchObject({ ok: true, review: { followUps: [medium, low] } });
     store = openStore(db);

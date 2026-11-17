@@ -528,6 +528,9 @@ pub struct LineCache {
     pub lines: Vec<ratatui::text::Line<'static>>,
 }
 
+/// How many places jump-back (') remembers.
+pub const JUMPS_KEPT: usize = 20;
+
 /// What the loop does for an update.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -798,8 +801,10 @@ pub struct App {
     pub divider_down: Option<std::time::Instant>,
     /// Finished, failed or answered tasks not opened since (shown marked, counted in the top bar).
     pub unread: std::collections::BTreeSet<String>,
-    /// Where a needs-you jump left from (jump-back returns there).
-    pub jump_from: Option<String>,
+    /// Where each needs-you jump (! or @) left from, newest last, at most JUMPS_KEPT: jump-back (') returns there.
+    pub jumps: Vec<String>,
+    /// After a jump back: (where it came from, where it landed). ' pressed again while still there goes forward.
+    pub jump_forward: Option<(String, String)>,
     /// The search last made in this pane (its query stays lit after Enter until Esc).
     pub search: Option<crate::search::Search>,
     /// The dialog drawn in the last frame, as `dialog_key` names it (view.rs sets it each frame; None when no dialog
@@ -925,7 +930,8 @@ impl App {
             live_head_lines: 0,
             divider_down: None,
             unread: std::collections::BTreeSet::new(),
-            jump_from: None,
+            jumps: vec![],
+            jump_forward: None,
             search: None,
             drawn_dialog: None,
             owned,
@@ -2813,17 +2819,7 @@ impl App {
             }
             Action::NextNeedsYou => self.next_needs_you(true),
             Action::PreviousNeedsYou => self.next_needs_you(false),
-            Action::JumpBack => match self.jump_from.take() {
-                Some(id) if self.all_items.iter().any(|i| i.id == id) => {
-                    self.jump_from = self.selected_id();
-                    self.say(Tone::Said, "Back where you were.");
-                    self.show_task(&id)
-                }
-                _ => {
-                    self.say(Tone::Said, "Nowhere to go back to: jump with ! first.");
-                    vec![]
-                }
-            },
+            Action::JumpBack => self.jump_back(),
             Action::Search => match crate::search::pane_text(self) {
                 Some(_) => {
                     self.mode = Mode::Search(crate::search::Search {
@@ -2839,7 +2835,8 @@ impl App {
                     vec![]
                 }
             },
-            Action::OpenInEditor => match crate::search::pane_text(self) {
+            // The whole text, not the drawn one: nothing cut to the pane's width, no key hints, no rules.
+            Action::OpenInEditor => match crate::search::export_text(self) {
                 Some((name, lines)) if !lines.is_empty() => {
                     let mut text = lines.join("\n");
                     text.push('\n');
@@ -3313,6 +3310,37 @@ impl App {
     }
 
     /// `!`: the next thing waiting on you, oldest first, round and round (the filter set aside when it hides it).
+    /// ' : back to where the newest jump left from. Pressed again right after (still on the place it landed), forward
+    /// to where it came from: like vim's '', the two places swap. Places no longer listed are skipped.
+    fn jump_back(&mut self) -> Vec<Effect> {
+        let here = self.selected_id();
+        if let Some((from, landed)) = self.jump_forward.take() {
+            if here.as_deref() == Some(landed.as_str())
+                && self.all_items.iter().any(|i| i.id == from)
+            {
+                self.jumps.push(landed.clone());
+                if self.jumps.len() > JUMPS_KEPT {
+                    self.jumps.remove(0);
+                }
+                self.jump_forward = None;
+                self.say(Tone::Said, "Forward again.");
+                return self.show_task(&from);
+            }
+        }
+        while let Some(id) = self.jumps.pop() {
+            if Some(&id) == here.as_ref() || !self.all_items.iter().any(|i| i.id == id) {
+                continue;
+            }
+            if let Some(here) = here {
+                self.jump_forward = Some((here, id.clone()));
+            }
+            self.say(Tone::Said, "Back where you were.");
+            return self.show_task(&id);
+        }
+        self.say(Tone::Said, "Nowhere to go back to: jump with ! first.");
+        vec![]
+    }
+
     fn next_needs_you(&mut self, forward: bool) -> Vec<Effect> {
         let mut waiting: Vec<(usize, &Item)> = self
             .all_items
@@ -3337,10 +3365,17 @@ impl App {
             (None, true) => 0,
             (None, false) => ids.len() - 1,
         };
-        // Where this jump left from (not a needs-you task itself): jump-back returns there. The list's order stays.
-        if at.is_none() {
-            self.jump_from = here;
+        // Where this jump left from, whatever it was (a needs-you task too): jump-back returns there. The list's
+        // order stays.
+        if let Some(here) = here {
+            if self.jumps.last() != Some(&here) {
+                self.jumps.push(here);
+            }
+            if self.jumps.len() > JUMPS_KEPT {
+                self.jumps.remove(0);
+            }
         }
+        self.jump_forward = None;
         let id = ids[next].clone();
         let fx = self.show_task(&id);
         let words = format!("{} of {} waiting on you.", next + 1, ids.len());

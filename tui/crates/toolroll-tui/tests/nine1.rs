@@ -240,19 +240,21 @@ fn drawn_searched_and_exported_text_are_one() {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect();
-        // Every row drawn is a line of the text searched and exported (Steps draws it all here).
+        // Every row drawn is a line of the text searched (Steps draws it all here).
         for row in &rows {
             assert!(
                 exported.iter().any(|l| l == row),
                 "{tab:?}: drawn but not exported: {row:?}\n{exported:#?}"
             );
         }
-        // And the export is that text, the editor's file and nothing else.
+        // And the export is the same content laid out whole (nine2: no width, no key hints, no rules), the editor's
+        // file and nothing else.
+        let (_, whole) = toolroll_tui::search::export_text(&mut app).unwrap();
         let fx = app.key(ctrl('e'));
         let [Effect::OpenInEditor { text: file, .. }] = &fx[..] else {
             panic!("{fx:?}")
         };
-        let mut want = text.join("\n");
+        let mut want = whole.join("\n");
         want.push('\n');
         assert_eq!(file, &want);
         if tab == Tab::Steps {
