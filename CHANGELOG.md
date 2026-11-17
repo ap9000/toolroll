@@ -4,6 +4,34 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.112 — 2026-11-16
+
+A security release: keys and folder paths in an agent's output never leave Toolroll. Plus asking your agent to restyle
+the workbench, and a smoother everyday terminal: full-text export, the task's situation on Live, and a jump history.
+
+### Fixed
+
+- **Keys ending in "-" are caught.** Google, GitLab, OpenAI, Telegram, Slack and Discord tokens before a space or at a
+  line's end slipped past the privacy check, redaction and patch scanning in 0.9.111 and earlier.
+- **Folder paths in what an agent said are hidden whole,** including paths after a web address, glued paths,
+  `file://` and other local addresses, network shares, `$HOME`/`%USERPROFILE%` forms, and escaped or encoded paths.
+- **Very long agent output can't slow the cleaning down,** and an agent's only error line is never dropped.
+
+### New
+
+- **Ask your agent to restyle the workbench.** In your own chat on this computer: themes, colours, density, columns,
+  notifications on. Contrast and status colours are protected; keys stay yours. `toolroll view reset` undoes it.
+- **Ctrl-E opens the full text** of a pane in your editor, not the cut-off screen.
+- **Live shows the task's situation:** waiting to retry, on hold or failed, with what the agent said and `x` / `X`.
+- **`'` remembers your last 20 jumps,** and pressing it again goes forward.
+
+### Changed
+
+- **Narrow windows show the list** (`b`), with your place ("2 of 5"); the top bar is the same on every screen.
+- **Search covers what's on screen,** including the agent's error; unread dots mark any change you didn't see.
+- **Attempts read the same everywhere:** "attempt 3 (build #4)" in the workbench, `toolroll task show` and status.
+- **The guide covers the terminal workbench,** failures and retries, task sizing and upgrading.
+
 ## 0.9.111 — 2026-11-16
 
 The terminal workbench, smoothed by five rounds of first-run testing: failures say why in the agent's own words,

@@ -114,7 +114,7 @@ const LATEST = "node 26 · SQLite";
 const GATE = "gate changes";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
-const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path", GATE];
+const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path", GATE, "guard checks"];
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
 const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
@@ -488,7 +488,7 @@ describe("the CI workflows", () => {
   });
 
   test("the release's actions are pinned to full commit SHAs, each with its version", () => {
-    for (const file of ["publish.yml", "package-build.yml", "tui-bundle.yml", "gate-changes.yml"]) {
+    for (const file of ["publish.yml", "package-build.yml", "tui-bundle.yml", "gate-changes.yml", "guard-checks.yml"]) {
       const uses = Object.values(workflow(file).jobs).flatMap(job => (job.steps ?? []).map(step => step.uses).filter((one): one is string => one !== undefined));
       expect(uses.length, file).toBeGreaterThan(0);
       for (const one of uses) expect(one, `${file}: ${one}`).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/);
@@ -1220,6 +1220,43 @@ describe("protect the judges (.github/workflows/gate-changes.yml)", () => {
     expect(readFileSync(join(folder, "gate-changes.yml"), "utf8")).not.toMatch(/\$\{\{\s*(?:secrets\.|github\.token)/);
     expect((REQUIRED_PR_CHECKS as readonly string[]).includes(GATE)).toBe(false);
     expect(ADVISORY_PR_CHECKS[GATE]).toBe(".github/workflows/gate-changes.yml");
+  });
+});
+
+describe("the advisory guard checks (.github/workflows/guard-checks.yml)", () => {
+  test("every PR runs only base-owned rules, with read-only permissions and no candidate bootstrap", () => {
+    const guards = workflow("guard-checks.yml"), job = guards.jobs["guards"]!;
+    expect(Object.keys(guards.on)).toEqual(["pull_request"]);
+    expect(guards.permissions).toEqual({ contents: "read" });
+    expect(job.name).toBe("guard checks");
+    expect(job.if).toBeUndefined();
+    expect(job.strategy).toBeUndefined();
+    for (const paths of [["docs/a.md"], ["scripts/guard-checks.mjs"], ["src/example.ts"]]) expect(executed(pr(paths))).toContain("guard checks");
+    const checkouts = job.steps!.filter(step => step.uses?.startsWith("actions/checkout@"));
+    expect(checkouts.map(step => step.with)).toEqual([
+      { ref: "${{ env.TESTED_SHA }}", "fetch-depth": 0, "persist-credentials": false },
+      { ref: "${{ env.BASE_SHA }}", path: ".trusted-base", "persist-credentials": false },
+    ]);
+    expect(job.env).toEqual({ TESTED_SHA: "${{ github.event.pull_request.head.sha }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
+    const run = runsOf(job).join("\n");
+    expect(run).toContain("judge=.trusted-base/scripts/guard-checks.mjs");
+    expect(run).toContain('node "$judge" check --root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$TESTED_SHA"');
+    expect(run).toContain("exit 0"); // Missing base script is explicitly reported; the candidate never runs.
+    expect(run).not.toContain("judge=scripts/");
+    expect(run).not.toMatch(/\bnpm\b|\bnpx\b/);
+    expect(readFileSync(join(folder, "guard-checks.yml"), "utf8")).not.toMatch(/\$\{\{\s*(?:secrets\.|github\.token)/);
+    expect(ADVISORY_PR_CHECKS["guard checks"]).toBe(".github/workflows/guard-checks.yml");
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes("guard checks")).toBe(false);
+    const sha = "a".repeat(40);
+    const required = REQUIRED_PR_CHECKS.map((name, i): CheckRun => {
+      const file = REQUIRED_PR_CHECKS_WORKFLOW[name]!;
+      return { id: 100 + i, name, status: "completed", conclusion: "success", app: "github-actions", head: sha, suite: file === CI ? 5 : 6, workflow: file === CI ? 1 : 2, workflowPath: file };
+    });
+    const failed: CheckRun = { id: 400, name: "guard checks", status: "completed", conclusion: "failure", app: "github-actions", head: sha, suite: 10, workflow: 4, workflowPath: ".github/workflows/guard-checks.yml" };
+    const verdict = (extra: CheckRun) => prChecksVerdict([...required, extra], sha, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+    expect(verdict(failed)).toMatchObject({ state: "passed", failures: [] });
+    expect(verdict({ ...failed, status: "in_progress", conclusion: null })).toMatchObject({ state: "passed" });
+    expect(verdict({ ...failed, workflowPath: CI, workflow: 1, suite: 5 })).toMatchObject({ state: "failed" });
   });
 });
 
