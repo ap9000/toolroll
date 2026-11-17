@@ -15281,8 +15281,11 @@ async function flexibleConfig(action: string, value: string | undefined, repoGiv
     ? "Only an instance operator, with their password typed for this command, turns interactive agent threads on; never a remembered sign-in, a token, the lead or a chat app."
     : "Only an instance operator, as a person with their password, turns interactive agent threads off; never a token, the lead or a chat app.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
+  // No password on this computer yet (a laptop's owner who never set one): no sign-in here can succeed, so say how to
+  // get one instead of asking for it. Words only: the rule below is unchanged.
+  if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
   const acting = await askCredentials(flags, context);
-  if (acting === null) return fail(write, json, command, "usage", "changing interactive agent threads takes `--as <you> --token <t>`", EXIT.usage);
+  if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked, or add `--as <your Toolroll name> --token <your password>`.", EXIT.usage);
   const saved = store.transact(() => {
     // On relays the person's Claude sign-in: a credential act (a password typed for this command). Off only narrows.
     const verified = value === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token);

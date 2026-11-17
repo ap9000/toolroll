@@ -300,11 +300,30 @@ impl Client {
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str, what: &str) -> Result<T, ApiError> {
-        let res = self
+        self.read(path, what, false).await
+    }
+
+    /// A read that writes something on the console (the approval card mints its form's one-time nonce): it carries
+    /// this session's key, as every act does, so a cookie alone (a browser, another port) never makes it.
+    async fn get_keyed<T: DeserializeOwned>(&self, path: &str, what: &str) -> Result<T, ApiError> {
+        self.read(path, what, true).await
+    }
+
+    async fn read<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        what: &str,
+        keyed: bool,
+    ) -> Result<T, ApiError> {
+        let mut req = self
             .http
             .get(format!("{}{}", self.origin, path))
             .header("cookie", self.creds.cookie.as_str())
-            .header("accept", "application/json")
+            .header("accept", "application/json");
+        if keyed {
+            req = req.header("x-toolroll-key", self.creds.key.as_str());
+        }
+        let res = req
             .timeout(Duration::from_secs(30))
             .send()
             .await
@@ -386,8 +405,11 @@ impl Client {
     /// The approval waiting on a task (asked when the person presses Approve: it mints the form's one-time nonce).
     pub async fn approval(&self, task: &str) -> Result<ApprovalCard, ApiError> {
         versioned(
-            self.get::<ApprovalCard>(&format!("/t/{}/approval", encode(task)), "the approval")
-                .await?,
+            self.get_keyed::<ApprovalCard>(
+                &format!("/t/{}/approval", encode(task)),
+                "the approval",
+            )
+            .await?,
             |r| r.version,
         )
     }
