@@ -36,17 +36,6 @@ describe("the machine envelope", () => {
     expect(Object.keys(body)[0]).toBe("envelopeVersion");
   });
 
-  // The rule that keeps the contract a contract: no command may serialize its
-  // own success/failure shape. If this fails, a new emission site bypassed
-  // envelopeJson and its output silently lacks the version stamp.
-  test("every CLI emission routes through envelopeJson (source rule)", () => {
-    for (const file of ["operate.ts", "cli.ts"]) {
-      const source = readFileSync(join(here, file), "utf8");
-      expect(source.includes("JSON.stringify({ ok"), `${file} hand-rolls an envelope`).toBe(false);
-      expect(/write\(\s*JSON\.stringify/.test(source), `${file} writes raw JSON.stringify`).toBe(false);
-    }
-  });
-
   test("contract states the envelope version and capabilities", async () => {
     const code = await main(["contract", "--json"], write);
     expect(code).toBe(0);

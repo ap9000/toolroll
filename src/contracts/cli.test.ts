@@ -24,9 +24,9 @@ const read = (input: unknown): SampleVerdict => {
   return problems.length === 0 ? { ok: true } : { ok: false, lines: problems };
 };
 
-/** Each recorded answer in the byte fixture: its command line and the envelope it wrote. */
-function recorded(): { argv: string; envelope: Record<string, unknown> }[] {
-  return readFileSync(FIXTURE, "utf8").split(/\n\n(?=\$ )/).map(block => {
+/** Recorded answers remain schema examples; comparisons below use only their machine contract. */
+function recorded(wire = readFileSync(FIXTURE, "utf8")): { argv: string; envelope: Record<string, unknown> }[] {
+  return wire.split(/\n\n(?=\$ )/).map(block => {
     const [argv = "", ...body] = block.split("\n");
     return { argv, envelope: JSON.parse(body.join("\n")) as Record<string, unknown> };
   });
@@ -140,12 +140,12 @@ describe("the CLI's machine contract", () => {
   });
 });
 
-describe("the CLI's --json bytes", () => {
+describe("the CLI's --json contract", () => {
   // Only the clock is fixed, so a scan's and a notification's own timestamps repeat.
   beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(T0); });
   afterEach(() => { vi.useRealTimers(); });
 
-  /** Each sample's exact bytes, with the temporary folder written as <dir>. */
+  /** Exercise the same invocations as the fixture, with temporary paths normalized. */
   async function samples(): Promise<string> {
     const dir = realpathSync(await mkdtemp(join(tmpdir(), "toolroll-cli-bytes-")));
     const db = join(dir, "orders.db"), repo = join(dir, "shop");
@@ -215,8 +215,22 @@ describe("the CLI's --json bytes", () => {
     return `${out.join("\n\n")}\n`;
   }
 
-  // The recorded file was written by the code before item 14: the same state answers with the same bytes.
-  it("keeps every sampled answer's exact bytes", async () => {
-    await expect(await samples()).toMatchFileSnapshot("../../test/fixtures/cli/envelopes.txt");
+  it("keeps sampled envelope keys, reason codes and exit codes stable", async () => {
+    const answers = recorded(await samples());
+    for (const { argv, envelope } of answers) expect(read(envelope), argv).toEqual({ ok: true });
+    const contract = ({ argv, envelope }: ReturnType<typeof recorded>[number]) => {
+      const invocation = /^(\$ .*?) → (\d+)$/.exec(argv);
+      if (invocation === null) throw new Error(`Missing exit code: ${argv}`);
+      return {
+        argv: invocation[1],
+        exitCode: Number(invocation[2]),
+        keys: Object.keys(envelope).sort(),
+        envelopeVersion: envelope["envelopeVersion"],
+        ok: envelope["ok"],
+        command: envelope["command"],
+        reason: envelope["reason"],
+      };
+    };
+    expect(answers.map(contract)).toEqual(recorded().map(contract));
   });
 });

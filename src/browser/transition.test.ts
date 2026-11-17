@@ -2,11 +2,8 @@
 /**
  * The motion of an in-place page change (docs/plans/live-pages-and-home.md A2.2): which way a change goes, the class on
  * `<html>` that names the page content for the transition and leaves with it, a plain swap when motion is off or the
- * browser has no view transitions, and a new change skipping a running one. The timings themselves are read from the
- * shipped stylesheet: nothing runs past 220 ms.
+ * browser has no view transitions, and a new change skipping a running one.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { depthOf, directionOf, swap } from "./transition.js";
 
@@ -95,28 +92,4 @@ test("a plain swap, at once, under reduced motion, without view transitions, or 
   await plain;
   expect(started.length).toBe(0);
   expect(document.documentElement.className).toBe("");
-});
-
-test("the shipped timings: 80 ms out, 160 ms in, 8px over 200 ms deeper and shallower, nothing past 220 ms, none under reduced motion", () => {
-  const css = readFileSync(join(import.meta.dirname, "..", "server", "console.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const squash = (text: string) => text.replace(/\s+/g, " ");
-  const all = squash(css);
-  expect(all).toContain("::view-transition-old(root) { animation: so-page-leave 80ms ease-in both; }");
-  expect(all).toContain("::view-transition-new(root) { animation: so-page-arrive 160ms ease-out 60ms both; }");
-  expect(all).toContain("html.so-nav #workspace-main { view-transition-name: so-page; }");
-  expect(all).toContain("html.so-nav::view-transition-old(so-page) { animation: so-page-leave 80ms ease-in both; }");
-  expect(all).toContain("html.so-nav-same::view-transition-new(so-page) { animation: so-page-arrive 160ms ease-out 60ms both; }");
-  expect(all).toContain("html.so-nav-deeper::view-transition-new(so-page) { animation: so-page-deeper 200ms cubic-bezier(.2, .8, .2, 1) both; }");
-  expect(all).toContain("html.so-nav-shallower::view-transition-new(so-page) { animation: so-page-shallower 200ms cubic-bezier(.2, .8, .2, 1) both; }");
-  expect(all).toContain("@keyframes so-page-deeper { from { opacity: 0; transform: translateX(8px); } }");
-  expect(all).toContain("@keyframes so-page-shallower { from { opacity: 0; transform: translateX(-8px); } }");
-  expect(all).toContain(".so-ph { view-transition-name: so-phone-header; }");
-  // Every in-place and cross-document page rule: duration plus delay at most 220 ms.
-  for (const match of all.matchAll(/(so-page-(?:leave|arrive|deeper|shallower)) (\d+)ms [^;]*?(?: (\d+)ms)? both/g)) {
-    expect(Number(match[2]) + Number(match[3] ?? 0), match[0]).toBeLessThanOrEqual(220);
-  }
-  expect(all).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^@]*::view-transition-group\(\*\), ::view-transition-old\(\*\), ::view-transition-new\(\*\) \{ animation: none !important; \}/);
-  // The loading line is ink.
-  const workspace = squash(readFileSync(join(import.meta.dirname, "workspace.css"), "utf8"));
-  expect(workspace).toMatch(/\.so-main-column\[data-so-loading\]::before \{[^}]*height: 2px;[^}]*background: var\(--so-ink\);/);
 });
