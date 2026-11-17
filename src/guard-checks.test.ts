@@ -36,9 +36,17 @@ describe("guard rules and root-cause fixes", () => {
   test.each([
     "if false {}", "if (false) work();", "run() || true", "run() && false", "suite.only('case')",
     "describe.only('case')", "it.only('case')", "test.only.each(cases)", "fit('case')", "fdescribe('case')",
-    "dbg!(value)", "todo!()", "debugger;",
+    "debugger;",
   ])("rule 1 catches %s", text => {
     expect(check(file("src/example.ts", text)).findings.some((one: { rule: number }) => one.rule === 1)).toBe(true);
+  });
+  test.each(["dbg!(value);", "todo!();"])("rule 1 catches Rust's %s in a .rs file", text => {
+    expect(check(file("tui/src/example.rs", `fn f() { ${text} }`)).findings.some((one: { rule: number }) => one.rule === 1)).toBe(true);
+  });
+  test("each language's focused-test patterns stay in its own files", () => {
+    // A Rust helper named fit() is not Jasmine's focused test; a TypeScript todo!() is not Rust's macro.
+    expect(check(file("tui/src/view.rs", "fn g() { let a = fit(&text, w); }")).findings.filter((one: { rule: number }) => one.rule === 1)).toEqual([]);
+    expect(check(file("src/example.ts", "const x = todo!(1);")).findings.filter((one: { rule: number }) => one.rule === 1)).toEqual([]);
   });
 
   test.each(["scripts/example.sh", ".github/workflows/example.yml"])("shell exception needs a reason: %s", path => {
