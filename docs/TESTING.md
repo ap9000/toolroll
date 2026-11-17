@@ -380,3 +380,70 @@ file; a background pass says when it finished through `onBackgroundPass`), or it
 
 Prefer `test.each` tables to near-identical tests, and assert outcomes, not steps. A new feature gets an
 end-to-end check, not a unit test. A wording, layout or styling change gets no test.
+
+## Runtime verification: scripts/verify.mjs
+
+The reusable stranger-test driver runs the real terminal workbench with stand-in
+agent CLIs. It never calls a model. Build agents and release checks can use the
+same command and [feature map](feature-map.md), without making another install,
+PATH, PTY driver or outbound privacy probe.
+
+Requires Node, Git, Python 3, sqlite3, mkfifo and ps on the approved tools PATH.
+After the checkout and native workbench have been built:
+
+```sh
+node scripts/verify.mjs --features welcome,new-task,help
+node scripts/verify.mjs --scenario agent-error --scenario never-initialized
+node scripts/verify.mjs --tarball /tmp/toolroll-candidate.tgz --out evidence/runtime-candidate
+node scripts/verify.mjs --scenario narrow --keep
+```
+
+Without `--tarball`, the command uses `dist/bin.js` and
+`tui/target/release/toolroll-tui`; it does not build. A tarball is installed with
+scripts disabled into a temporary global prefix and its own npm cache and
+npmrc files. The package must carry this platform's native workbench. There is
+no fallback to the person's installed Toolroll.
+
+The command reuses `isolated-env.mjs`, the scripted-provider fixture, the PTY
+host and the screen reader used by `tui-e2e.mjs`. Each scenario gets a short
+throwaway HOME, all XDG folders, a file secret store, a fixture repository,
+stand-in browser openers/editor, and a system-assigned port other than 4180.
+Every spawn checks the isolation environment. Preflight asks `command -v` for
+every known agent CLI using the world's profile-free shell and refuses a real
+CLI. No login shell, real home, keychain, browser or service supervisor is used.
+This is accident prevention, with the same interpreter limitation documented in
+`isolated-env.mjs`; it is not a sandbox against hostile test code.
+
+With no selectors it exercises all mapped features. Repeat `--scenario` to
+select scenarios; `--features` is a comma-separated list. When both are given,
+the intersection runs. Unknown selectors and empty selections fail. Readiness
+waits use screen, process, file or database facts, with bounded deadlines; no
+fixed delay counts as verification.
+
+Reports default to `evidence/verify-<time>-<pid>/`: `report.json`, `report.md`,
+`screens.txt` and each PTY's raw screen log and recorded process ids. Keep these
+out of Git. Output inside the checkout must be under `evidence/`. Every selected
+feature gets PASS or FAIL with its screen excerpt. Reports also include time to
+first text and workbench, and a read-only scan of every column in notification,
+delivery, push, chat, lead, team, mail and coordinator tables for stand-in words.
+Missing database/schema, leaks, failed prerequisites and cleanup errors fail the
+run. Exit 0 means all selected checks passed; otherwise exit 1.
+
+All recorded processes are stopped; the temporary world is removed unless
+`--keep` is given. Evidence always remains. If cleanup fails, the world remains
+for diagnosis and the report fails. `--keep` retains files, never running agents.
+
+Focused checks for this driver:
+
+```sh
+npm run typecheck
+npx vitest run src/verify-cli.test.ts
+npx vitest run src/verify-cli.slow.test.ts
+```
+
+The small PTY contract (welcome, new task and help) is in the slow tier until its
+runtime is measured. It requires the built checkout and retains evidence. A
+release operator should run the tarball command against the exact packed
+candidate after the normal build and native machine checks, and retain its
+report with that candidate's release evidence. This slice does not change the
+release gate lists or make this new command an automatic release requirement.
