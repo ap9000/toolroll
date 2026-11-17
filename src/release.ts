@@ -116,6 +116,8 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "workbench bundle / binary · linux-x64": ".github/workflows/tui-bundle.yml",
   "workbench bundle / binary · linux-arm64": ".github/workflows/tui-bundle.yml",
   "workbench bundle / assemble": ".github/workflows/tui-bundle.yml",
+  // oxlint (docs/plans/ci-speed-2.md): new correctness and suspicious findings over the baseline; a note, never a gate.
+  "oxlint · advisory": ".github/workflows/lint.yml",
 };
 
 /**

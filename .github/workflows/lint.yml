@@ -1,0 +1,43 @@
+name: Lint
+
+# oxlint over the whole checkout (docs/plans/ci-speed-2.md, item 4): its correctness and suspicious categories, as
+# .oxlintrc.json configures them, at the exact version package.json pins. What the code already had when it was added is
+# baselined in .oxlintrc.json's overrides (each file keeps only the rules it already broke), so a finding here is new.
+# Advisory: not one of REQUIRED_PR_CHECKS, and the release verdict leaves it out by name and workflow (release.ts
+# ADVISORY_PR_CHECKS), so a release never waits for it or fails on it. It reads no secret and writes nothing.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  oxlint:
+    name: oxlint · advisory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+          check-latest: true
+          cache: npm
+      # Install scripts off: the lock file's oxlint, and nothing runs at install.
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install oxlint --deny-warnings --format github

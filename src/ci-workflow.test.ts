@@ -112,7 +112,7 @@ const REPEAT = "Windows Job Object containment · c2 repeat";
 const LATEST = "node 26 · SQLite";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
-const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
+const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path", "oxlint · advisory"];
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
 const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
@@ -1389,5 +1389,24 @@ describe("ci-speed-2 item 5: caches never cross from a pull request into main or
     expect(String(cache[0]!.with?.["path"])).toContain("tui/target-checks");
     expect(String(cache[0]!.with?.["key"])).toBe("rust-checks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-${{ hashFiles('tui/Cargo.lock') }}");
     expect(workflow("tui-bundle.yml").jobs["binaries"]!.uses).toBe("./.github/workflows/package-build.yml");
+  });
+});
+
+describe("ci-speed-2 item 4: oxlint (.github/workflows/lint.yml), advisory", () => {
+  test("every pull request runs the lock file's exact oxlint with warnings denied; never a release's question", () => {
+    const lint = workflow("lint.yml");
+    expect(lint.on).toEqual({ pull_request: null });
+    expect(lint.permissions).toEqual({ contents: "read" });
+    const job = lint.jobs["oxlint"]!;
+    expect(job.if).toBeUndefined();
+    expect(runsOf(job).filter(run => run !== "" && !run.includes("rev-parse"))).toEqual(["npm ci --ignore-scripts", "npx --no-install oxlint --deny-warnings --format github"]);
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { devDependencies: Record<string, string> };
+    expect(pkg.devDependencies["oxlint"]).toMatch(/^\d+\.\d+\.\d+$/);
+    const config = JSON.parse(readFileSync(join(import.meta.dirname, "..", ".oxlintrc.json"), "utf8")) as { categories?: Record<string, string> };
+    expect(config.categories).toMatchObject({ correctness: "error", suspicious: "error" });
+    expect(ADVISORY_PR_CHECKS[job.name!]).toBe(".github/workflows/lint.yml");
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(job.name!)).toBe(false);
+    for (const line of readFileSync(join(folder, "lint.yml"), "utf8").split("\n").filter(one => /uses: actions\//.test(one))) expect(line).toMatch(/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+    expect(readFileSync(join(folder, "lint.yml"), "utf8")).not.toMatch(/secrets\.|github\.token/);
   });
 });
