@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { inventory } from "../scripts/ci-shards.mjs";
-import { ALWAYS_FILES, diskTree, FULL_TRIGGERS, fullTrigger, plan, references, resolveImport, walksRepository } from "../scripts/ci-select.mjs";
+import { ALWAYS_FILES, buildGraph, diskTree, FULL_TRIGGERS, fullTrigger, plan, references, resolveImport, walksRepository } from "../scripts/ci-select.mjs";
 
 type Tree = Record<string, string>;
 const treeOf = (files: Tree) => ({ list: () => Object.keys(files), read: (path: string) => files[path] ?? null });
@@ -146,6 +146,29 @@ describe("what a selected plan holds", () => {
       expect(result.reasons["src/loader.test.ts"], change).toMatch(/reaches a load it can't read \(src\/loader\.ts\)|reaches/);
     }
     expect(references(code).dynamic.length + (code.includes("gone") ? 1 : 0)).toBeGreaterThan(0);
+  });
+
+  test("a computed folder with a plain file name last reaches every file of that name, and loads anything when there is none", () => {
+    const files = {
+      ...world, "evals/cases/a/oracle.mjs": "export const files = [];\n", "evals/cases/b/oracle.mjs": "export const files = [];\n",
+      "src/grade.ts": 'export const grade = (dir: string) => import(pathToFileURL(join(dir, "oracle.mjs")).href);\n',
+      "src/grade.test.ts": 'import "./grade.js";\ntest("g", () => {});\n',
+      "src/built.ts": 'export const load = (dist: string) => import(pathToFileURL(join(dist, "provider.js")).href);\n',
+      "src/built.test.ts": 'import "./built.js";\ntest("b", () => {});\n',
+    };
+    expect(references(files["src/grade.ts"]!)).toMatchObject({ byName: ["oracle.mjs"], dynamic: [] });
+    expect(planFor(files, modified("evals/cases/b/oracle.mjs")).reasons["src/grade.test.ts"]).toBe("reaches evals/cases/b/oracle.mjs");
+    expect(planFor(files, modified("docs/plans/p.md")).files).not.toContain("src/grade.test.ts");
+    // No file of that name here (the build's own provider.js): it may load anything.
+    expect(planFor(files, modified("docs/plans/p.md")).reasons["src/built.test.ts"]).toMatch(/reaches a load it can't read/);
+  });
+
+  test("found in this checkout: the learning children are a table of plain paths, and the grader's oracles are its cases' files", () => {
+    const root = `${import.meta.dirname}/..`;
+    const { edges, wild } = buildGraph(diskTree(root)) as { edges: Map<string, string[]>; wild: Map<string, string[]> };
+    for (const file of ["src/learning-look.ts", "src/eval-oracle.ts"]) expect(wild.get(file), file).toBeUndefined();
+    expect(edges.get("src/learning-look.ts")).toEqual(expect.arrayContaining(["src/learning-child.ts", "src/first-tasks-child.ts"]));
+    expect(edges.get("src/eval-oracle.ts")!.filter(one => one.endsWith("/oracle.mjs")).length).toBeGreaterThan(5);
   });
 
   test("loads the graph can read stay precise: one string, two behind a condition, a URL of a sibling, an import() in a comment or a string", () => {

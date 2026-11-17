@@ -34,8 +34,9 @@ import { join, posix } from "node:path";
 import { diffEntries } from "./ci-scope.mjs";
 import { inventory, laneFiles } from "./ci-shards.mjs";
 
-/** The folders the graph reads, and the source files in them it parses for edges. Data files are nodes, not parsed. */
-export const GRAPH_ROOTS = ["src", "test", "scripts"];
+/** The folders whose code the graph parses for edges (evals/: each case's oracle, which the grader loads by name). Every
+ * other file is a node, not parsed. */
+export const GRAPH_ROOTS = ["src", "test", "scripts", "evals"];
 const CODE = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 /** A literal names a file when it has one of these extensions (or a slash and resolves to a file or folder). */
 const NAMED_EXT = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|json|css|html|md|ps1|py|sh|toml|ya?ml|txt|sql|svg|png|wasm|swift|rs|lock)$/;
@@ -157,6 +158,10 @@ const STATIC = [/\bfrom\s*(?=["'])/g, /\bimport\s*(?=["'])/g, /\bvi\.(?:mock|doM
 const LOADS = /(?<!typeof\s+)\b(import|require|new\s+URL)\s*\(/g;
 const PLAIN = `(?:"[^"\\n$]*"|'[^'\\n$]*'|\`[^\`\\n$]*\`)`;
 const RESOLVED_ARGUMENT = new RegExp(`^\\s*(?:[\\w.!]+\\s*\\?\\s*${PLAIN}\\s*:\\s*${PLAIN}|${PLAIN})\\s*$`);
+/** A computed path whose last segment is a plain file name (`pathToFileURL(join(caseDir, "oracle.mjs")).href`): whatever
+ * the folder, it can only load a file of that name, so it reaches every file of that name in the tree (and loads
+ * anything when the tree has none: that is a build output or someone else's file). */
+const NAMED_LAST = /^\s*(?:pathToFileURL\(\s*)?(?:join|resolve)\((?:[^()]|\([^()]*\))*,\s*(["'])([\w.-]+\.(?:mjs|cjs|js|mts|cts|ts|tsx|json))\1\s*\)(?:\s*\)\s*\.href)?\s*$/;
 
 /** The argument of the call whose `(` is at `open` in the masked code, by balanced parentheses: [start, end). */
 function argumentAt(code, open) {
@@ -183,7 +188,7 @@ const TYPE_ONLY = /^[ \t]*(?:import|export)\s+type\s+[^;]*?\bfrom\s*["'][^"'\n]+
  * reaching less than everything.
  */
 export function references(text) {
-  const imports = new Set(), literals = new Set(), dynamic = [];
+  const imports = new Set(), literals = new Set(), dynamic = [], byName = new Set();
   const code = masked(text).replace(TYPE_ONLY, match => " ".repeat(match.length));
   const take = (index, spec) => { if (spec.startsWith(".")) imports.add(spec); };
   for (const re of STATIC) for (const match of code.matchAll(re)) {
@@ -198,6 +203,8 @@ export function references(text) {
     if (match[1] === "import" && /^\s*\.\s*[A-Z]/.test(code.slice(to + 1))) continue;
     const parts = match[1] === "import" || match[1] === "require" ? [argument] : [argument.slice(0, topLevelComma(code.slice(from, to))), argument.slice(topLevelComma(code.slice(from, to)) + 1)];
     if (match[1] !== "import" && match[1] !== "require" && !/^\s*import\.meta\.url\s*$/.test(parts[1] ?? "")) continue; // a URL of something else
+    const last = match[1] === "import" ? NAMED_LAST.exec(parts[0]) : null;
+    if (last !== null) { byName.add(last[2]); continue; }
     if (!RESOLVED_ARGUMENT.test(parts[0])) { dynamic.push(`${match[1].replace(/\s+/, " ")}(${argument.trim().slice(0, 60)})`); continue; }
     for (const one of parts[0].matchAll(/(["'`])([^"'`\n$]*)\1/g)) take(match.index, one[2]);
   }
@@ -209,7 +216,7 @@ export function references(text) {
     const parts = [...match[1].matchAll(/["'`]([^"'`\s$]+)["'`]/g)].map(one => one[1]);
     if (parts.length >= 2) literals.add(parts.join("/"));
   }
-  return { imports: [...imports].sort(), literals: [...literals].sort(), dynamic };
+  return { imports: [...imports].sort(), literals: [...literals].sort(), dynamic, byName: [...byName].sort() };
 }
 
 /** The index of the first comma outside brackets in a masked argument, or its length. */
@@ -278,8 +285,13 @@ export function buildGraph(tree) {
     const text = tree.read(file);
     if (typeof text !== "string") continue;
     const out = new Set();
-    const { imports, literals, dynamic } = references(text);
+    const { imports, literals, dynamic, byName: loadsNamed } = references(text);
     if (dynamic.length > 0) wild.set(file, dynamic);
+    for (const name of loadsNamed) {
+      const found = (byName.get(name) ?? []).filter(one => one !== file);
+      if (found.length === 0) wild.set(file, [...(wild.get(file) ?? []), `a file named ${name} (none in the tree)`]);
+      for (const one of found) out.add(one);
+    }
     // A test, a test helper or a script reaches whatever its literals name: tests start scripts and the CLI by path and
     // read fixtures and documents by name. Product code that lists a file's name (a report naming test/ensure-build.ts,
     // a lock file list) doesn't run or read this checkout's copy of it.
