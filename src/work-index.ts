@@ -950,6 +950,11 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   // A cancelled task says so in its own word, never the stage's "Stopped" (a replaced one keeps "Replaced by …").
   label = code === 'cancelled' && shared.headline === 'Stopped' && !shared.sentence.startsWith('Replaced by ') ? 'Cancelled' : shared.headline;
   detail = shared.sentence;
+  // A person paused retries; use the workbench's words in CLI and engine rows too.
+  if (code === 'held') {
+    label = 'On hold';
+    detail = s(row, 'hold_reason') === 'stopped retrying from the terminal' ? 'you stopped retrying' : detail;
+  }
   // Every Needs you action wears its need's own words, except a first sign-in (no agent was ever signed in): it is
   // Sign in, never "Sign in again" (the task page's own rule, task-view.tsx).
   const firstSignIn = code === 'signed-out' && n(row, 'no_agent') > 0 && s(row, 'signed_out') === null;

@@ -246,3 +246,63 @@ fn narrow_list_and_task_screens_share_one_top_bar() {
 }
 
 // ---- 3. jump back is in qol3.rs (jump_back_remembers_needs_you_jumps_and_goes_further_back) -----------------------
+
+// Wrapping is part of the shared content contract: screen/search agree; exports remain whole.
+#[test]
+fn agent_messages_wrap_on_live_and_steps_and_only_clip_at_the_row_cap() {
+    for tab in [Tab::Live, Tab::Steps] {
+        for width in [120, 40] {
+            let mut app = on(failed_long());
+            app.tab = tab;
+            app.narrow_list = false;
+            let shown = screen(&mut app, width, 60);
+            let (_, rows) = toolroll_tui::search::pane_text(&mut app).unwrap();
+            assert!(
+                folded(&rows.join(" ")).contains(LONG),
+                "{tab:?} at {width}: {rows:?}"
+            );
+            assert!(shown.contains("would cut"), "{shown}");
+            let start = rows
+                .iter()
+                .position(|r| r == "What the agent said")
+                .unwrap()
+                + 1;
+            assert!(
+                !rows[start..]
+                    .iter()
+                    .take_while(|r| !r.is_empty())
+                    .any(|r| r.contains('…')),
+                "{rows:?}"
+            );
+        }
+        let mut s = failed_long();
+        let huge = "An unusually long diagnostic message ".repeat(200);
+        s["failure"]["agentSaid"] = json!([huge]);
+        s["failure"]["line"] = json!(huge);
+        let mut app = on(s);
+        app.tab = tab;
+        screen(&mut app, 120, 60);
+        let (_, rows) = toolroll_tui::search::pane_text(&mut app).unwrap();
+        let reason_start = rows
+            .iter()
+            .position(|r| r.starts_with("An unusually long diagnostic"))
+            .unwrap();
+        let reason: Vec<_> = rows[reason_start..]
+            .iter()
+            .take_while(|r| !r.is_empty())
+            .collect();
+        assert_eq!(reason.len(), toolroll_tui::view::AGENT_SAID_ROWS);
+        assert!(reason.last().unwrap().ends_with('…'));
+        let start = rows
+            .iter()
+            .position(|r| r == "What the agent said")
+            .unwrap()
+            + 1;
+        let message: Vec<_> = rows[start..].iter().take_while(|r| !r.is_empty()).collect();
+        assert_eq!(message.len(), toolroll_tui::view::AGENT_SAID_ROWS);
+        assert!(message.last().unwrap().ends_with('…'));
+        assert!(message[1].starts_with("    "));
+        let (_, whole) = toolroll_tui::search::export_text(&mut app).unwrap();
+        assert!(whole.iter().any(|r| r.trim() == huge.trim()));
+    }
+}

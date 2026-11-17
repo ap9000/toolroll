@@ -321,3 +321,11 @@ test("a write while the projection is built is never stamped as new: the copy is
 
 /** The same read with no request around it, as every read was before. */
 const withoutReads = <T>(run: () => T): T => outsideWorkReads(run);
+
+test("an operator hold uses the workbench state and preserves other hold reasons", () => {
+  const store = world();
+  for (const [id, reason, detail] of [["a", "stopped retrying from the terminal", "you stopped retrying"], ["b", "Waiting for the design review", "Waiting for the design review"]] as const) {
+    store.holdOwned({ taskRef: store.refFor("built-in", id).id, ownerKind: "operator", ownerId: "alex", reason, until: null }, now);
+    expect(page(store).items.find(item => item.rootId === id)?.status).toMatchObject({ label: "On hold", detail });
+  }
+});

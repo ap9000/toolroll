@@ -220,26 +220,32 @@ fn the_confirm_the_toast_the_header_and_steps_name_one_build() {
 // ---- 4. a status line about an old state goes ----------------------------------------------------------------------
 
 #[test]
-fn building_it_goes_once_the_task_has_failed() {
-    let mut app = on(steps("running"));
-    app.update(Msg::Acted(Ok(ActOutcome::Done("Building it.".into()))));
-    assert_eq!(status(&app), "Building it.");
-    // Said just now (no key since): held a moment, even when the task moves.
-    let mut failed = steps("failed");
-    failed["failure"] = json!({ "line": "The agent stopped with an error.", "failedInARow": 1, "suggestion": null, "agentSaid": null });
-    app.update(Msg::Steps("t-retry".into(), Ok(parse(failed.clone()))));
-    assert_eq!(status(&app), "Building it.");
-    // Once the hold is over, the next read of the moved task clears it.
-    app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
-    app.update(Msg::Steps("t-retry".into(), Ok(parse(failed.clone()))));
-    assert_eq!(status(&app), "");
-    // Words about the state it is still in stay.
-    app.update(Msg::Acted(Ok(ActOutcome::Done(
-        "Opened in your browser.".into(),
-    ))));
-    app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
-    app.update(Msg::Steps("t-retry".into(), Ok(parse(failed))));
-    assert_eq!(status(&app), "Opened in your browser.");
+fn building_it_goes_once_the_task_changes_state() {
+    for known in [true, false] {
+        for next in ["queued", "failed", "done", "cancelled"] {
+            let mut app = on(steps("running"));
+            app.update(Msg::Acted(Ok(ActOutcome::Done("Building it.".into()))));
+            if !known {
+                app.said_for = Some(("t-retry".into(), None));
+            }
+            app.update(Msg::Steps("t-retry".into(), Ok(parse(steps("running")))));
+            assert_eq!(status(&app), "Building it.");
+            app.update(Msg::Steps("t-retry".into(), Ok(parse(steps(next)))));
+            assert_eq!(status(&app), "Building it.");
+            app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
+            app.update(Msg::Tick);
+            assert_eq!(status(&app), "", "known={known}, next={next}");
+            app.update(Msg::Steps("t-retry".into(), Ok(parse(steps("running")))));
+            assert_eq!(status(&app), "");
+            // An acknowledgement about an unchanged state stays.
+            app.update(Msg::Acted(Ok(ActOutcome::Done(
+                "Opened in your browser.".into(),
+            ))));
+            app.said_at = Some(std::time::Instant::now() - STATUS_HOLD);
+            app.update(Msg::Steps("t-retry".into(), Ok(parse(steps("running")))));
+            assert_eq!(status(&app), "Opened in your browser.");
+        }
+    }
 }
 
 // ---- 5. the cancel dialog's facts ----------------------------------------------------------------------------------

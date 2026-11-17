@@ -360,7 +360,11 @@ describe("operating the queue from the command line", () => {
 
     test("leaves a held task out of the ready set until the hold lifts", async () => {
       await run(["task", "add", "a thing", "--id", "t-1"]);
-      await run(["task", "hold", "t-1", "--reason", "waiting on the design call"]);
+      await run(["task", "hold", "t-1", "--reason", "stopped retrying from the terminal"]);
+      await run(["task", "show", "t-1"]);
+      expect(out()).toContain("On hold · you stopped retrying");
+      await run(["task", "show", "t-1", "--json"]);
+      expect(payload().work.status).toMatchObject({ label: "On hold", detail: "you stopped retrying" });
 
       expect(await run(["ready"], later(1_000))).toBe(EXIT.refused);
 

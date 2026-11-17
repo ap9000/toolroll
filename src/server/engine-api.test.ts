@@ -491,6 +491,7 @@ describe("the local owner reads them with the session a terminal client redeems"
     expect(row.waiting).toBeNull();
     // The row says the person's hold, never the backoff under it.
     expect(row.chip).toBe("On hold");
+    expect(row.status.label).toBe("On hold");
     expect(diagnoseTaskDispatch(world.store, "one", new Date())).toMatchObject({ code: "held", summary: "On hold" });
     // Resume: only the hold that was shown is released.
     expect((await act("/t/one/unhold", { hold: String(hold.id + 1000) })).status).toBe(409);
