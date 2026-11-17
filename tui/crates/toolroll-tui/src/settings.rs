@@ -284,10 +284,9 @@ pub(crate) fn walk_trusted(
             .as_deref()
             .is_some_and(|h| h != at && h.starts_with(at));
         let sticky_ok = !own && mode & 0o1000 != 0 && above_home;
-        if mode & u32::from(libc::S_IFMT) != u32::from(libc::S_IFDIR)
-            || !owner_ok
-            || (shared && !sticky_ok)
-        {
+        // Compared in the platform's own mode_t (u16 on macOS, u32 on Linux): no cast either way.
+        let is_dir = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        if !is_dir || !owner_ok || (shared && !sticky_ok) {
             return Err(if own {
                 "its folder can be changed by other people, or isn't yours".to_string()
             } else {
