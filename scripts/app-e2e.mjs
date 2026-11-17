@@ -2859,6 +2859,7 @@ await journey("pages", SCRIPTED, "A running release check: a release stopped at 
     ('${id}', 'v1.0.2', '1.0.2', 8, 'approval', 'failed', '${stoppedAt}', '${stoppedAt}', 'Nobody approved it in time.', '${stoppedAt}');`);
   const panel = on => on.locator('[aria-label="Release"]');
   const problems = [];
+  let outcome;
   try {
     await page.goto(`${base}/t/${id}`);
     await panel(page).waitFor({ timeout: 15_000 });
@@ -2888,11 +2889,14 @@ await journey("pages", SCRIPTED, "A running release check: a release stopped at 
     await phone.screenshot({ path: join(w.out, "release-check-running-phone.png"), fullPage: true });
     await putPhoneDown();
     await until("the check to finish", async () => latestBuild(id)?.finished_at != null ? true : null, { timeoutMs: 120_000, everyMs: 500 });
-    return { run: running.id };
+    outcome = { run: running.id };
   } finally {
     cli(["task", "archive", id, ...auth], { ok: [0, 1, 2, 3] });
-    if (problems.length > 0) throw new Error(problems.join("; "));
   }
+  // After the finally, not in it: a throw there replaced the journey's own failure (a timeout, a missing panel) with the
+  // problems found before it, and the real cause was lost (oxlint no-unsafe-finally).
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  return outcome;
 });
 
 await journey("pages", SCRIPTED, "Signing out ends the session: pages ask to sign in again", [], async () => {
