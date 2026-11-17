@@ -465,10 +465,34 @@ impl Export {
             Ok(_) => {}
         }
         let _ = std::fs::remove_dir_all(&self.dir);
-        match std::fs::symlink_metadata(&self.dir) {
+        let gone = match std::fs::symlink_metadata(&self.dir) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             _ => Err(left()),
-        }
+        };
+        // Our own folder there, when nothing is left in it: removed too (by identity; never one that isn't ours).
+        let (rdev, rino) = self.ids[0];
+        remove_root_if_empty(&self.root, rdev, rino);
+        gone
+    }
+}
+
+/// Our exports folder (`toolroll-exports-<uid>`), removed when it is empty: only that exact folder (device and inode
+/// when known), this user's, never a link. `remove_dir` itself refuses a folder with anything in it.
+#[cfg(unix)]
+fn remove_root_if_empty(root: &Path, dev: u64, ino: u64) {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    let Ok(m) = std::fs::symlink_metadata(root) else {
+        return;
+    };
+    let same = ino == 0 || (m.dev() == dev && m.ino() == ino);
+    if !m.is_dir() || m.uid() != me || !same {
+        return;
+    }
+    let empty = std::fs::read_dir(root).is_ok_and(|mut d| d.next().is_none());
+    if empty {
+        let _ = std::fs::remove_dir(root);
     }
 }
 
@@ -523,6 +547,10 @@ pub fn reclaim(places: &[PathBuf]) -> usize {
             if m.is_dir() && m.uid() == me && std::fs::remove_dir_all(&path).is_ok() {
                 removed += 1;
             }
+        }
+        // Nothing left in it: our folder goes too.
+        if let Ok(m) = std::fs::symlink_metadata(&root) {
+            remove_root_if_empty(&root, m.dev(), m.ino());
         }
     }
     removed
@@ -782,8 +810,34 @@ mod tests {
         );
         assert!(launch.command().unwrap().status().unwrap().success());
         let dir = launch.export.dir.clone();
+        let root = launch.export.root.clone();
         launch.finish().unwrap();
         assert!(!dir.exists());
+        // Our folder, empty now, went too; the place it was in stays.
+        assert!(!root.exists(), "an empty exports folder was left");
+        assert!(base.exists());
+        // Not empty (another export of ours in it): it stays.
+        let one = prepare(
+            "a",
+            "x",
+            Some(("true".into(), vec![])),
+            std::slice::from_ref(&base),
+            Box::new(isolate),
+        )
+        .unwrap();
+        let two = prepare(
+            "b",
+            "x",
+            Some(("true".into(), vec![])),
+            std::slice::from_ref(&base),
+            Box::new(isolate),
+        )
+        .unwrap();
+        let root = one.export.root.clone();
+        one.finish().unwrap();
+        assert!(root.exists(), "removed while another export was in it");
+        two.finish().unwrap();
+        assert!(!root.exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -906,6 +960,8 @@ mod tests {
         }
         assert_eq!(reclaim(std::slice::from_ref(&base)), 1);
         assert!(!stale.exists() && live.exists() && other.exists());
+        // Its folder had more in it: it stays.
+        assert!(root.exists());
         // Our folder there not private: nothing is touched.
         std::fs::create_dir(&stale).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();

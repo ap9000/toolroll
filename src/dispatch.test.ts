@@ -11,6 +11,7 @@ import { register } from "./runner.js";
 import { addApprover, approve } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { resolve } from "node:path";
+import { workIndexTask } from "./work-index.js";
 
 const T0 = new Date("2026-09-08T16:00:00.000Z");
 const REPO = resolve("never-stuck-test-repo");
@@ -272,6 +273,41 @@ describe("Never Stuck dispatch diagnosis", () => {
       code: "retry-scheduled",
       detail: expect.stringMatching(/^The agent stopped before handing off; its work was kept and it is being resumed\. It tries again (in under a minute|in \d+ minutes)\.$/),
     });
+  });
+
+  test("a scheduled retry names its task's own attempts through the real work index, never another task's builds", () => {
+    const mine = file(store, "t-mine");
+    const other = file(store, "t-other");
+    enroll(store);
+    // One failed build on `ref` (a temporary machine problem, which retries), then its backoff lifted so the
+    // next can be claimed at once.
+    let at = T0.getTime();
+    const failOnce = (ref: number, id: string): number => {
+      const now = new Date((at += 60_000));
+      const claimed = acquireIfReady(store, ref, "worker", { token: TOKEN, repo: REPO, now });
+      if (!claimed.ok) throw new Error(claimed.message);
+      const authority = store.routeAuthorityFor(ref, "builder", { provider: "claude", model: null });
+      const runId = store.startRun({
+        taskRef: ref, leaseId: claimed.claim.leaseId, runner: "worker", branch: `feat/${id}`, worktree: `/tmp/wt-${id}`, now,
+        ...(authority === null || !authority.ok ? {} : { route: authority.stamp }),
+      });
+      const sealed = finalize(store, claimed.claim.leaseId, { kind: "failure", runId, taskId: id, failureClass: "retryable-infra",
+        message: "A temporary problem stopped it.", worktree: `/tmp/wt-${id}`, now });
+      expect(sealed).toMatchObject({ ok: true, disposition: "backoff" });
+      return runId;
+    };
+    const lift = (ref: number): void => { store.handle.prepare("DELETE FROM hold WHERE task_ref = ? AND owner_kind = 'backoff'").run(ref); };
+    // Interleaved: the other task's builds sit between this task's, so counting across tasks would be wrong.
+    failOnce(other, "t-other"); lift(other);
+    const first = failOnce(mine, "t-mine"); lift(mine);
+    failOnce(other, "t-other"); lift(other);
+    const second = failOnce(mine, "t-mine");
+    expect(second).toBeGreaterThan(first + 1);
+    const now = new Date(at + 1_000);
+    expect(diagnoseTaskDispatch(store, "t-mine", now)).toMatchObject({ code: "retry-scheduled" });
+    // Two finished builds, the third waiting: attempt 3 comes next, after attempt 2 (its own second build's id).
+    const row = workIndexTask(store, "t-mine", now, { principal: "operator", repos: null, includeUnplaced: true });
+    expect(row?.status.detail).toMatch(new RegExp(`^Waiting: Toolroll tries attempt 3 (in under a minute|in \\d+ minutes|soon), after attempt 2 \\(build #${second}\\)\\.$`));
   });
 
   test("quota diagnosis is read-only and exposes a known reset", () => {

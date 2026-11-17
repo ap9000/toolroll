@@ -350,17 +350,14 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     // rail of status marks, or hidden; on either side; set aside while a panel is zoomed or the window is narrow.
     app.areas.body = body;
     let narrow = area.width < NARROW_WIDTH;
+    app.narrow = narrow;
     let list_state = if app.zoom || narrow {
         crate::viewstate::ListState::Hidden
     } else {
         app.list_state
     };
     let split = match list_state {
-        crate::viewstate::ListState::Full => app
-            .split
-            .min(body.width * 45 / 100)
-            .max(24)
-            .min(body.width.saturating_sub(28)),
+        crate::viewstate::ListState::Full => list_width_drawn(app.split, body.width),
         crate::viewstate::ListState::Rail => RAIL_WIDTH,
         crate::viewstate::ListState::Hidden => 0,
     };
@@ -400,6 +397,20 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         let inner = sheet::sheet(f.buffer_mut(), body);
         app.areas.right = inner;
         crate::agents::draw(f, app, inner);
+        draw_status(f, app, status);
+        if app.prefs.settings.key_bar {
+            draw_keys(f, app, keys);
+        }
+        draw_overlay(f, app, area);
+        return;
+    }
+    // Narrow, the list asked for (b, or Esc from a panel): the list across the whole column, no panel under it.
+    if narrow && app.narrow_list && !app.zoom {
+        app.panes.areas = vec![];
+        app.areas.tabs.clear();
+        app.areas.split_x = u16::MAX;
+        let list = sheet::sheet(f.buffer_mut(), body);
+        draw_list(f, app, list);
         draw_status(f, app, status);
         if app.prefs.settings.key_bar {
             draw_keys(f, app, keys);
@@ -454,6 +465,24 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_keys(f, app, keys);
     }
     draw_overlay(f, app, area);
+}
+
+/// The narrowest list drawn beside a panel.
+pub const LIST_MIN: u16 = 24;
+
+/// The widest list this body width gives beside a panel: under half of it, and room left for the panel.
+pub fn list_width_max(body_width: u16) -> u16 {
+    (body_width * 45 / 100)
+        .min(body_width.saturating_sub(28))
+        .max(LIST_MIN)
+}
+
+/// The list's width as drawn for the width asked (`split`) in a body this wide.
+pub fn list_width_drawn(split: u16, body_width: u16) -> u16 {
+    split
+        .min(body_width * 45 / 100)
+        .max(LIST_MIN)
+        .min(body_width.saturating_sub(28))
 }
 
 /// Below this many columns the screen is one column: the focused panel alone (the list hidden, splits set aside).
@@ -733,12 +762,13 @@ fn card_lines(
             None => String::new(),
         };
     }
-    let right_w = width(&right) + if right.is_empty() { 0 } else { 2 };
-    let room = w.saturating_sub(right_w + badge_w + 3);
-    let title = fit(&item.title, room);
-    let gap = w.saturating_sub(2 + width(&title) + right_w + badge_w);
-    // Unread (finished, failed or answered since you last opened it): a dot after its mark, and its title in ink.
+    // Unread (it changed while you weren't on it): its mark, a space, a dot and a space before the title, in ink.
     let unread = app.unread.contains(&item.id);
+    let dot_w = if unread { 2 } else { 0 };
+    let right_w = width(&right) + if right.is_empty() { 0 } else { 2 };
+    let room = w.saturating_sub(right_w + badge_w + 3 + dot_w);
+    let title = fit(&item.title, room);
+    let gap = w.saturating_sub(2 + dot_w + width(&title) + right_w + badge_w);
     let title_style = if item.section == Section::NeedsYou || here || unread {
         ink().add_modifier(Modifier::BOLD)
     } else {
@@ -746,7 +776,7 @@ fn card_lines(
     };
     let mut first = vec![
         Span::styled(mark.to_string(), mark_style),
-        Span::styled(if unread { "•" } else { " " }, ink()),
+        Span::styled(if unread { " • " } else { " " }, ink()),
         Span::styled(title, title_style),
         Span::raw(" ".repeat(gap)),
     ];
@@ -919,6 +949,33 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         app.areas.tabs.push((x, x + lw, *tab));
         x += lw;
         spans.push(Span::styled(shown, style));
+    }
+    // Narrow (one column): where this task is in the list, and the way back to it.
+    if app.narrow && !app.items.is_empty() {
+        let back = key_name(app, Action::ListCycle);
+        let at = format!(
+            "{} of {}{}",
+            app.selected + 1,
+            app.items.len(),
+            if back.is_empty() {
+                String::new()
+            } else {
+                format!(" · {back} list")
+            }
+        );
+        let used = sheet::spans_width(&spans);
+        let room = (tabs.width as usize).saturating_sub(used);
+        if room > width(&at) + 1 {
+            spans.push(Span::raw(" ".repeat(room - width(&at))));
+            spans.push(Span::styled(at, dim()));
+        } else if room > 6 {
+            // No room for the way back: the position alone.
+            let short = format!("{}/{}", app.selected + 1, app.items.len());
+            if room > width(&short) + 1 {
+                spans.push(Span::raw(" ".repeat(room - width(&short))));
+                spans.push(Span::styled(short, dim()));
+            }
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), tabs);
     // A Flexible thread: its own panel under the tabs (thread.rs).
@@ -1401,68 +1458,76 @@ fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
     fit_line(Line::from(spans), w)
 }
 
-fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
-    let w = area.width as usize;
-    // A failed task with output: why it stopped and what the agent said first, the output under it.
-    let has_output = app.transcript.run.is_some()
-        && !(app.transcript.main.is_empty() && app.transcript.sub.is_empty());
-    let area = if has_output && app.steps_here().is_some_and(|s| s.failure.is_some()) {
+/// What Live shows above the agent's output, or instead of it: why a failed task stopped and what the agent said
+/// (with a rule under it when output follows), a waiting task's words, or one line saying what there is. The bool: the
+/// agent's output follows it. One source for drawing, search and export (search.rs pane_text).
+pub fn live_head(app: &App, item: &Item, w: usize) -> (Vec<Line<'static>>, bool) {
+    let t = &app.transcript;
+    let has_output = t.run.is_some() && !(t.main.is_empty() && t.sub.is_empty());
+    let failed = app.steps_here().is_some_and(|s| s.failure.is_some());
+    if has_output {
+        if !failed {
+            return (vec![], true);
+        }
         let mut top = failure_lines(app, w);
         top.push(Line::from(Span::styled("─".repeat(w), line())));
+        return (top, true);
+    }
+    // A failed task: why it stopped and how to retry, before anything else.
+    if failed {
+        return (failure_lines(app, w), false);
+    }
+    // Waiting to try again: why the last build stopped and when the next one starts, never a blank pane.
+    let waiting = waiting_lines(app, w);
+    if !waiting.is_empty() {
+        return (waiting, false);
+    }
+    let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
+    let words = if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
+        "Ready for you to check. Press Enter for the changes, a to accept, or r to send it back."
+            .to_string()
+    } else if review && app.steps.is_some() {
+        format!(
+            "{} Press Enter for the changes, or w to open it in the browser.",
+            item.detail
+        )
+    } else if let Some(missing) = &t.missing {
+        missing.clone()
+    } else if t.run.is_some() {
+        "No output yet.".to_string()
+    } else if app.steps.is_none() && item.is_task {
+        "Reading…".to_string()
+    } else if !item.is_task {
+        format!("{} Press w to open it in the browser.", item.detail)
+    } else {
+        "Nothing is building on this task.".to_string()
+    };
+    (wrap(&words, w).into_iter().map(Line::raw).collect(), false)
+}
+
+fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
+    let w = area.width as usize;
+    // Why it stopped and what the agent said first (live_head), the output under it.
+    let (head, output) = live_head(app, item, w);
+    if !output {
+        f.render_widget(Paragraph::new(head), area);
+        return;
+    }
+    let area = if head.is_empty() {
+        area
+    } else {
         // At most two thirds of the pane (its rule included), so some of the output always shows under it.
-        let h = (top.len() as u16).min(area.height * 2 / 3).min(area.height);
-        f.render_widget(Paragraph::new(top), Rect { height: h, ..area });
+        let h = (head.len() as u16)
+            .min(area.height * 2 / 3)
+            .min(area.height);
+        f.render_widget(Paragraph::new(head), Rect { height: h, ..area });
         Rect {
             y: area.y + h,
             height: area.height - h,
             ..area
         }
-    } else {
-        area
     };
     let t = &app.transcript;
-    if t.run.is_none() || (t.main.is_empty() && t.sub.is_empty()) {
-        // A failed task: why it stopped and how to retry, before anything else.
-        if app.steps_here().is_some_and(|s| s.failure.is_some()) {
-            f.render_widget(Paragraph::new(failure_lines(app, w)), area);
-            return;
-        }
-        // Waiting to try again: why the last build stopped and when the next one starts, never a blank pane.
-        let waiting = waiting_lines(app, w);
-        if !waiting.is_empty() {
-            f.render_widget(Paragraph::new(waiting), area);
-            return;
-        }
-        let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
-        let words = if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
-            "Ready for you to check. Press Enter for the changes, a to accept, or r to send it back.".to_string()
-        } else if review && app.steps.is_some() {
-            format!(
-                "{} Press Enter for the changes, or w to open it in the browser.",
-                item.detail
-            )
-        } else if let Some(missing) = &t.missing {
-            missing.clone()
-        } else if t.run.is_some() {
-            "No output yet.".to_string()
-        } else if app.steps.is_none() && item.is_task {
-            "Reading…".to_string()
-        } else if !item.is_task {
-            format!("{} Press w to open it in the browser.", item.detail)
-        } else {
-            "Nothing is building on this task.".to_string()
-        };
-        f.render_widget(
-            Paragraph::new(
-                wrap(&words, w)
-                    .into_iter()
-                    .map(Line::raw)
-                    .collect::<Vec<_>>(),
-            ),
-            area,
-        );
-        return;
-    }
     // Following the newest: only the tail that fills the pane is laid out (cheap at any length). Scrolled back: the
     // whole transcript, laid out again at most twice a second while records keep arriving.
     let h = area.height as usize;
@@ -1532,11 +1597,14 @@ fn outcome_of(card: &StepCard) -> (&'static str, Style) {
 /// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
 /// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
 fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
+    f.render_widget(Paragraph::new(steps_lines(app, area.width as usize)), area);
+}
+
+/// Everything the Steps tab shows, at width `w`: one source for drawing, search and export (search.rs pane_text).
+pub fn steps_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     let Some(steps) = &app.steps else {
-        f.render_widget(Paragraph::new("Reading…"), area);
-        return;
+        return vec![Line::raw("Reading…")];
     };
-    let w = area.width as usize;
     let mut lines = vec![];
     let why = failure_lines(app, w);
     if !why.is_empty() {
@@ -1685,7 +1753,7 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(just_code_words(steps), dim())));
     }
-    f.render_widget(Paragraph::new(lines), area);
+    lines
 }
 
 /// A "Just code" task's chain in words, saying who gave its yes (it came with the task, so there is no Approval card).

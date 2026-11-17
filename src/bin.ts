@@ -52,6 +52,13 @@ async function sqliteHasFts5(): Promise<boolean> {
 }
 // --version and the top-level usage answer here, before the CLI and its command families load.
 const argv = process.argv.slice(2);
+// Bare `toolroll` at a person's terminal: say so at once, before the CLI, the console and the screen take their seconds
+// to load (easy-start.ts doesn't say it again). Our own words only; nothing else reads standard output here.
+export const STARTING_SAID = Symbol.for("toolroll.starting-said");
+if (argv.length === 0 && process.stdout.isTTY === true && process.stdin.isTTY === true) {
+  process.stdout.write("Starting Toolroll…\n");
+  (globalThis as Record<symbol, unknown>)[STARTING_SAID] = true;
+}
 const { quickAnswer } = await import("./cli-fast.js");
 const quick = quickAnswer(argv);
 if (quick !== null) {
