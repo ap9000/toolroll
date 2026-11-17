@@ -66,6 +66,7 @@
     "task.page": {"kind":"page","path":"/t/one"},
     "task.evidence": {"kind":"mixed","path":"/t/one/evidence","when":[{"if":"?print=1 asks for the printable record","kind":"page"},{"if":"otherwise: the task page's Record section","kind":"alias","to":"/t/:name"}]},
     "task.steps": {"kind":"data","path":"/t/one/steps","what":"a task's step cards (JSON, the engine API)"},
+    "task.approval": {"kind":"data","path":"/t/one/approval","what":"the approval waiting on a task (JSON, the engine API), its form's nonce minted as the task page mints one"},
     "task.diff": {"kind":"data","path":"/t/one/diff","what":"a result's changed files, or one file's hunks (JSON, the engine API)"},
     "task.release": {"kind":"ceremony","path":"/t/one/release","why":"the release sheet: one release's exact terms and the approval (password, or a one-time nonce under a fresh session); its own document"},
     "release.locate": {"kind":"alias","path":"/approve/1","to":"/t/:task/release"},

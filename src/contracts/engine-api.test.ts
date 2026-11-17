@@ -19,6 +19,8 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "step-cards-just-code.json": "stepCards",
   "step-cards-plan-first.json": "stepCards",
   "step-cards-sent-back.json": "stepCards",
+  "approval-card.json": "approvalCard",
+  "approval-card-problem.json": "approvalCard",
   "result-diff.json": "resultDiff",
   "result-diff-no-result.json": "resultDiff",
   "result-diff-file.json": "resultDiffFile",
