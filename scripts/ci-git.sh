@@ -21,7 +21,7 @@ case "$want" in
     exact=2.41.0
     sha256=e748bafd424cfe80b212cbc6f1bbccc3a47d4862fb1eb7988877750478568040
     work="$(mktemp -d)"
-    curl -fsSL --retry 3 -o "$work/git.tar.xz" "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$release.tar.xz"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$work/git.tar.xz" "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$release.tar.xz"
     echo "$sha256  $work/git.tar.xz" | sha256sum -c -
     tar -xJf "$work/git.tar.xz" -C "$work"
     # Only what the tests drive: no network transports, no Perl/Python/Tcl tools, no translations.

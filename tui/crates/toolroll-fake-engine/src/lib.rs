@@ -766,6 +766,10 @@ async fn approval(
     if let Err(r) = admitted(&s, &headers, &format!("/t/{task}/approval")) {
         return r;
     }
+    // As the console (mutation-key.ts terminalKeyed): this read mints, so only the terminal's own key makes it.
+    if headers.get("x-toolroll-key").and_then(|v| v.to_str().ok()) != Some(KEY) {
+        return json_answer(403, json!({ "error": "key" }));
+    }
     let mut st = s.state.lock().unwrap();
     let Some(mut card) = st.approvals.get(&task).cloned() else {
         return json_answer(

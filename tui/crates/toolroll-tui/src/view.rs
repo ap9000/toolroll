@@ -3815,8 +3815,15 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .as_ref()
         .map(|p| app.attempt_words(p.run))
         .unwrap_or_default();
+    // Nothing to open on (no saved result, no saved commit): the refusal's own words, never "Press t to open it".
+    let unavailable = app
+        .steps_here()
+        .and_then(crate::app::shell_refusal_of)
+        .filter(|_| item.is_task);
     let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
-        let words = if item.is_task {
+        let words = if let Some(why) = &unavailable {
+            why.as_str()
+        } else if item.is_task {
             "Open build shell: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
         } else {
             "This isn't a task. Press w to open it in the browser."
