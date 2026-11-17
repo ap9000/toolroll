@@ -438,7 +438,8 @@ Focused checks for this driver:
 ```sh
 npm run typecheck
 npx vitest run src/verify-cli.test.ts
-npx vitest run src/verify-cli.slow.test.ts
+# The live PTY run happens in CI's "workbench bundle" job, which has the Rust binary:
+node scripts/verify.mjs --features welcome,new-task,help
 ```
 
 The small PTY contract (welcome, new task and help) is in the slow tier until its
