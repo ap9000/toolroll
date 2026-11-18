@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { setFlexibleSetting } from "./flexible-available.js";
 import { hashPassword } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
-import { runOperate, EXIT } from "./operate.js";
+import { runOperate, EXIT, writeLoginFileDurably } from "./operate.js";
+import { savedLoginFile } from "./login-secrets.js";
+import { PASSWORDLESS_ACTION } from "./passwordless.js";
 import { standInToken } from "../test/flexible-sign-in-kit.js";
 
 // The model service the live check reaches: a scripted stand-in (flexible-relay-upstreams.ts replaced by vi.mock).
@@ -52,16 +54,21 @@ afterEach(async () => {
   await new Promise(done => upstream.close(done));
 });
 
-/** One CLI run, as JSON, with a stand-in hidden prompt that answers `paste` (and records what it was asked). */
-async function cli(args: string[], paste: string | null, env: Record<string, string> = {}): Promise<{ code: number; out: Record<string, unknown>; asked: string[]; raw: string }> {
+/** One CLI run, as JSON, with stand-in hidden prompts (recording what they asked): the token prompt answers `paste`; for
+ * `set` (whose password is only ever typed at its prompt), a `--token <password>` given here is taken out of the
+ * arguments and typed at the password prompt instead (`raw`: left in the arguments as given). */
+async function cli(args: string[], paste: string | null, env: Record<string, string> = {}, raw = false): Promise<{ code: number; out: Record<string, unknown>; asked: string[]; raw: string }> {
   const lines: string[] = [], asked: string[] = [];
+  const at = args.indexOf("--token");
+  const typed = !raw && args[0] === "set" && at >= 0 ? args[at + 1] ?? "" : "";
+  if (!raw && args[0] === "set" && at >= 0) args = args.filter((_, index) => index !== at && index !== at + 1);
   const saved = Object.fromEntries(Object.keys(env).map(name => [name, process.env[name]]));
   Object.assign(process.env, env);
   try {
     const code = await runOperate("config", [...args, "--json"], line => lines.push(line), { databaseFile: file,
-      ...(paste === null ? {} : { easySeams: { askHidden: async (question: string) => { asked.push(question); return paste; } } }) });
-    const raw = lines.join("\n");
-    return { code, out: JSON.parse(raw) as Record<string, unknown>, asked, raw };
+      ...(paste === null ? {} : { easySeams: { askHidden: async (question: string) => { asked.push(question); return question === "password: " ? typed : paste; } } }) });
+    const said = lines.join("\n");
+    return { code, out: JSON.parse(said) as Record<string, unknown>, asked, raw: said };
   } finally {
     for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
   }
@@ -75,7 +82,7 @@ describe("config set flexible-sign-in", () => {
   test("a value on the command line is refused before anything else (and said to be in shell history); nothing is asked or kept", async () => {
     const token = standInToken();
     for (const args of [["set", "flexible-sign-in", token, ...as()], ["set", "flexible-sign-in", ...as("alex", token)], ["set", "flexible-sign-in", "--as", token]]) {
-      const refused = await cli(args, standInToken());
+      const refused = await cli(args, standInToken(), {}, true);
       expect(refused.code).toBe(EXIT.usage);
       expect(refused.out).toMatchObject({ ok: false, reason: "argument" });
       expect(String(refused.out["message"])).toContain("claude setup-token");
@@ -117,7 +124,7 @@ describe("config set flexible-sign-in", () => {
 
     const saved = await cli(["set", "flexible-sign-in", "--no-check", ...as()], `${first.slice(0, 30)}\n${first.slice(30)}`);
     expect(saved).toMatchObject({ code: EXIT.ok, out: { ok: true, saved: true, replaced: false, check: "not-checked", signIn: { state: "active" } } });
-    expect(saved.asked).toEqual(["Paste the token from `claude setup-token`: "]);
+    expect(saved.asked).toEqual(["password: ", "Paste the token from `claude setup-token`: "]);
     expect(saved.raw).not.toContain(first.slice(14, 30));
     // --no-check made no connection; without it, the live check runs once after the password is proved.
     expect(scripted.calls).toBe(0);
@@ -136,5 +143,20 @@ describe("config set flexible-sign-in", () => {
     expect(ledger().map(row => row["outcome"])).toEqual(["saved", "replaced", "retired", "checked", "removed", "retired"]);
     const everything = JSON.stringify(store.handle.prepare("SELECT * FROM action_ledger").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM flexible_sign_in").all());
     for (const value of [first, second]) expect(everything).not.toContain(value.slice(14, 30));
+  });
+
+  test("a login remembered on this computer never stands in for the password: with Passwordless off or on, an untyped password saves nothing; typed, it saves", async () => {
+    mkdirSync(dirname(savedLoginFile(state)), { recursive: true, mode: 0o700 });
+    writeLoginFileDurably(savedLoginFile(state), "alex", PASSWORD);
+    for (const passwordless of ["off", "on"] as const) {
+      store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: passwordless, source: "policy" });
+      // No name and no password typed: the remembered one is never read for this save.
+      expect(await cli(["set", "flexible-sign-in", "--no-check"], standInToken())).toMatchObject({ code: EXIT.usage });
+      expect(await cli(["set", "flexible-sign-in", "--no-check", "--as", "alex"], standInToken())).toMatchObject({ code: EXIT.usage, asked: ["password: "] });
+      // --token is never the way to give it here either.
+      expect(await cli(["set", "flexible-sign-in", "--no-check", "--as", "alex", "--token", PASSWORD], standInToken(), {}, true)).toMatchObject({ code: EXIT.usage, asked: [] });
+      expect(rows()).toEqual([]);
+    }
+    expect(await cli(["set", "flexible-sign-in", "--no-check", ...as()], standInToken())).toMatchObject({ code: EXIT.ok, out: { saved: true } });
   });
 });

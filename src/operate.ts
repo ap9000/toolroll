@@ -15345,7 +15345,19 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
   if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
   if (action !== "show" && action !== "set" && action !== "clear") return fail(write, json, command, "usage", "`toolroll config set|clear|show flexible-sign-in`", EXIT.usage);
-  const acting = await askCredentials(flags, context);
+  // Saving is a credential act: your password typed at a hidden prompt for this command, never --token and never the
+  // login remembered on this computer (which would otherwise stand in as typed with Passwordless off). Show and clear
+  // keep the ordinary step-up.
+  let acting: { name: string; token: string } | null;
+  if (action === "set") {
+    if (flags.has("token")) return fail(write, json, command, "usage", "Saving your Claude sign-in asks for your Toolroll password at a hidden prompt, typed for this command: never --token or a saved sign-in.", EXIT.usage);
+    const typed = context.easySeams?.askHidden ?? (interactive() && !json ? askHidden : null);
+    const named = context.easySeams?.ask ?? (interactive() && !json ? ask : null);
+    if (typed === null) return fail(write, json, command, "usage", "Run this in your own terminal: it asks for your Toolroll password and the token from `claude setup-token` at hidden prompts.", EXIT.usage);
+    const name = text(flags, "as") ?? (named === null ? undefined : await named("username: "));
+    const password = await typed("password: ");
+    acting = name === undefined || name.length === 0 || password.length === 0 ? null : { name, token: password };
+  } else acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked.", EXIT.usage);
   const statusWords = (status: ReturnType<typeof flexibleSignInStatus>): string => status.state === "none"
     ? "Your Claude sign-in for threads: none. Run `claude setup-token`, then `toolroll config set flexible-sign-in`."
