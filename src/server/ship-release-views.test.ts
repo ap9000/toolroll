@@ -48,8 +48,11 @@ describe("Release progress", () => {
   });
 
   test("a stop stays a stop, and a running step says which", () => {
-    expect(releaseStepsViewOf(progress([step("gate", 9, 8), step("approval", 8, 7), step("check", 7, 6, "failed")], { step: "check", message: "1 test failed.", at: at(6) }), NOW)!)
-      .toMatchObject({ state: "failed", headline: "Stopped at Release check" });
+    for (const approval of ["done", "failed"] as const) {
+      const view = releaseStepsViewOf(progress([step("gate", 9, 8), step("approval", 8, 7, approval), step("check", 7, 6, "failed")], { step: "check", message: "1 test failed.", at: at(6) }), NOW)!;
+      expect(view).toMatchObject({ state: "failed", headline: "Stopped at Release check", at: { step: "check" } });
+      expect(view.rows.find(row => row.name === "Approval")?.st).toBe(approval === "done" ? "ok" : "history");
+    }
     expect(releaseStepsViewOf(progress([step("gate", 9, 8), step("approval", 8, 7), step("check", 7, null)]), NOW)!.headline).toBe("Release check · Step 3 of 13");
   });
 
@@ -64,6 +67,10 @@ describe("Release progress", () => {
     expect(view.headline).toMatch(/^Release check · Step \d+ of \d+$/);
     expect(view.rows.find(row => row.name === "Release check")?.st).toBe("run");
     expect(view.rows.filter(row => row.st === "bad")).toEqual([]);
+    for (const failed of steps.filter(one => one.state === "failed" && one.step !== "check" && (building === null || one.step === "approval"))) {
+      const name = failed.step === "approval" ? "Approval" : failed.step;
+      expect(view.rows.find(row => row.name === name)?.st).toBe("history");
+    }
     expect(view.rows.filter(row => ["Deploy to this Mac", "Homebrew"].includes(row.name)).every(row => row.st === "q")).toBe(true);
   });
 });

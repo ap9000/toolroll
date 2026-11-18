@@ -109,9 +109,9 @@ describe("a release check the machine runs", () => {
   test("the release panel reads Running while a machine step waits; Needs you only at Approval", async () => {
     expect((await viewOf("release-1.2.3")).release?.state).toBe("running");
     const at = (step: string) => releaseStepsViewOf({ tag: "v1", version: "1", pr: null, startedAt: ago(5).toISOString(), updatedAt: ago(1).toISOString(), stopped: null, building: null,
-      steps: [{ step: "gate", state: "done", startedAt: ago(5).toISOString(), endedAt: ago(4).toISOString(), detail: null }, { step, state: "waiting", startedAt: ago(4).toISOString(), endedAt: null, detail: null }] }, NOW)!.state;
-    expect(at("approval")).toBe("waiting");
-    for (const step of ["check", "ci", "quiet", "deploy", "publish"]) expect(at(step), step).toBe("running");
+      steps: [{ step: "gate", state: "done", startedAt: ago(5).toISOString(), endedAt: ago(4).toISOString(), detail: null }, { step, state: "waiting", startedAt: ago(4).toISOString(), endedAt: null, detail: null }] }, NOW)!;
+    expect(at("approval")).toMatchObject({ state: "waiting", rows: expect.arrayContaining([expect.objectContaining({ st: "wait" })]) });
+    for (const step of ["check", "ci", "quiet", "deploy", "publish"]) expect(at(step), step).toMatchObject({ state: "running", rows: expect.arrayContaining([expect.objectContaining({ st: "waiting" })]) });
     expect(releaseProgressFor(store, "release-1.2.3")).not.toBeNull();
   });
 

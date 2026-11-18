@@ -890,7 +890,7 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
       case "checks": {
         const said = step.say ?? null;
         if (step.state === "done") return { sentence: "Project checks passed", at: null };
-        if (step.state === "skipped") return { sentence: said === "Checks not run" ? "The checks didn't run" : said === "Checks at release" ? "Checked at release" : "No checks were recorded", at: null };
+        if (step.state === "skipped") return { sentence: said === "Checks not run" ? "The checks didn't run" : said === "Checks at release" ? "Checks deferred to release" : "No checks were recorded", at: null };
         if (step.state === "stuck") return { sentence: step.needsYou && said === null ? "" : said === "Checks unreadable" ? "The checks couldn't be read" : said === "Checks failed" ? "The checks failed" : stoppedWord, at: null };
         if (step.state === "current") return { sentence: said === "Checks running" ? "The checks are running" : step.needsYou ? "" : "Waiting for the checks", at: null };
         return { sentence: "The project's checks run on the result", at: null };

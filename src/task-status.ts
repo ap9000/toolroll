@@ -67,7 +67,7 @@ export type ChecksFact = {
 /** What checks Off leaves for a release: `pending` until a passing full release check contains the commit, then
  * `covered`. `running`: a check is waiting for its batch or running on this commit. */
 export type ReleaseState = "pending" | "covered" | "running";
-export const CHECKED_AT_RELEASE = "Checked at release";
+export const CHECKED_AT_RELEASE = "Checks deferred to release";
 export function releaseStateOf(checks: Pick<ChecksFact, "status" | "level" | "release"> | null | undefined): ReleaseState | undefined {
   if (checks?.level !== "off" || checks.status === "passed" || checks.status === "failed") return undefined;
   return checks.release != null ? "covered" : "pending";
@@ -247,8 +247,8 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
       : facts.machine === true ? MACHINE_CHECK_RUNNING : reason ?? "An agent is working on it.";
     case "Ready":
       if (facts.report) return "The report is ready to read. Read it, then accept it.";
-      if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then accept it.`;
-      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checked at release. Review the change, then accept it.";
+      if (releaseStateOf(facts.checks) === "covered") return `Release checks passed on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then accept it.`;
+      if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checks deferred to release. Review the change, then accept it.";
       if (facts.checks?.status === "passed") {
         // The Checks row names the others and the batch commit; the sentence doesn't repeat them.
         const peers = facts.checks.batch?.state === "together" ? facts.checks.batch.peers.length : 0;
@@ -305,7 +305,7 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
     else if (checks.status === "failed") row("checks", CHECKS_LABEL, `${quick ? "Quick checks failed" : "Failed"}${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}`, problem(headline),
       headline === "Failed" ? { href: checksHref } : { action: { label: "See what failed", href: checksHref } });
     else if (checks.status === "running") row("checks", CHECKS_LABEL, "Running", "running");
-    else if (checks.level === "off" && checks.release != null) row("checks", CHECKS_LABEL, `Passed at release on ${short(checks.release.head) ?? `build #${checks.release.run}`}`, "ok", { href: checksHref });
+    else if (checks.level === "off" && checks.release != null) row("checks", CHECKS_LABEL, `Release checks passed on ${short(checks.release.head) ?? `build #${checks.release.run}`}`, "ok", { href: checksHref });
     else if (checks.level === "off") row("checks", CHECKS_LABEL, CHECKED_AT_RELEASE, "none", runChecks === null ? {} : { action: runChecks });
     else if (checks.status === "not-run") row("checks", CHECKS_LABEL, "Didn't run", "none", runChecks === null ? {} : { action: runChecks });
     // A saved check that can't be read is run again where that is possible.
@@ -491,9 +491,9 @@ const screenshotMissing = (row: RequirementRow): boolean =>
   (row.requiredEvidence ?? []).includes("screenshot") && !(row.answered ?? []).some(one => one.kind === "screenshot");
 /** One requirement's state in words: the card's Requirements row and the Checks tab read this one source, so they
  * can't disagree. A refuted report verifies none of its requirements, so each reads Unverified, as the card does.
- * With checks Off, a requirement that waits only on the check reads Checked at release, then Met once a passing full
+ * With checks Off, a requirement that waits only on the check reads Checks deferred to release, then Met once a passing full
  * release check contains the commit. */
-export type RequirementWord = "Met" | "You check" | "Not shown yet" | "Checked at release" | "Waiting for checks" | "Not met" | "Unverified";
+export type RequirementWord = "Met" | "You check" | "Not shown yet" | "Checks deferred to release" | "Waiting for checks" | "Not met" | "Unverified";
 export function requirementWordOf(row: RequirementRow, verdict?: string | null, release?: ReleaseState): RequirementWord {
   if (verdict === "refuted") return "Unverified";
   if (requirementMet(row)) return "Met";

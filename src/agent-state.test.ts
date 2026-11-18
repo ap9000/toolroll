@@ -54,7 +54,11 @@ describe("the display state", () => {
 
   test("the roll-up takes the strongest state present, and nothing counted is idle", () => {
     expect(rollUp({ ...NO_COUNTS })).toEqual({ state: "idle", counts: NO_COUNTS });
-    expect(rollUp({ ...NO_COUNTS, working: 3, done: 1 }).state).toBe("working");
+    for (const [counts, state] of [
+      [{ working: 3, done: 1 }, "working"],
+      [{ done: 1, waiting: 3 }, "done"],
+      [{ waiting: 1, idle: 3 }, "waiting"],
+    ] as const) expect(rollUp({ ...NO_COUNTS, ...counts }).state).toBe(state);
     expect(rollUp({ ...NO_COUNTS, working: 3, failed: 1 }).state).toBe("failed");
     expect(rollUp({ ...NO_COUNTS, failed: 2, "needs-you": 1 }).state).toBe("needs-you");
     expect(rollUp({ ...NO_COUNTS, stuck: 1, paused: 1, working: 1 }).state).toBe("stuck");
