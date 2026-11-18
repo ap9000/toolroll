@@ -72,8 +72,8 @@ async function run(status: number, body: unknown, limitMs: number): Promise<{ ou
   child.stdout!.on("data", chunk => { out += String(chunk); });
   child.stderr!.on("data", chunk => { out += String(chunk); });
   let stopped = false;
-  // guard: bound — the real client's own retries decide how long it takes; past this it is stopped (and said so).
-  const guard = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, limitMs);
+  // The real client's own retries decide how long it takes; past this it is stopped (and said so).
+  const guard = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, limitMs); // guard: bound a ceiling on the real client's own retries; its exit wins
   const code = await new Promise<number | null>(done => child.once("exit", exit => done(exit)));
   clearTimeout(guard);
   return { out, code, calls, stopped };
