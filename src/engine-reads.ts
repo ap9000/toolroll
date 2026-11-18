@@ -136,6 +136,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
     planStopped: planStoppedOf(store, current.id, ref?.id ?? null, plannerRuns),
     plan: planAskOf(store, current.id, current.state, ref, scope, live !== null, now),
+    planQueued: planQueuedOf(store, current.state, ref, scope, live !== null, now),
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
@@ -541,4 +542,16 @@ export function planBackoffFor(store: Store, taskId: string, now: Date): { line:
     line: waiting.lastFailure === null ? "Toolroll tries the plan again soon." : `Last plan attempt failed · ${waiting.lastFailure}. Toolroll tries the plan again soon.`,
     agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null,
   };
+}
+
+/**
+ * A plan asked for that waits to start (stepCardsSchema.planQueued): queued, the plan requested, no approved scope, nothing
+ * running and no hold of any kind. Dispatch starts its planner on its own (operate.ts: a requested plan is the one spend
+ * on a task with no approved scope), so a person can stop it before it starts; a task filed with no plan asked for and
+ * no approval reads false (nothing would start). Read facts only: the hold proves its own.
+ */
+function planQueuedOf(store: Store, state: string, ref: { id: number; plan: string | null } | null, scope: ReturnType<Store["getScope"]>, live: boolean, now: Date): boolean {
+  if (ref === null || ref.plan !== "requested" || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return false;
+  if (scope !== null && approvalOf(scope).approved) return false;
+  return store.activeHolds(ref.id, now).length === 0;
 }

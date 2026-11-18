@@ -531,6 +531,9 @@ pub struct StepCards {
     /// What asking for a plan posts to `/t/<task>/plan` (null when a plan can't be asked for).
     #[serde(default)]
     pub plan: Option<PlanAsk>,
+    /// A plan asked for that waits to start (its planner starts on its own): Stop retrying applies to it.
+    #[serde(default)]
+    pub plan_queued: bool,
     /// Who approved the task's scope (null while no approval stands).
     pub approval: Option<Approval>,
     pub room: String,

@@ -300,10 +300,12 @@ fn a_plan_card_counts_planning_attempts_and_never_names_a_build() {
 
 #[test]
 fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
-    // Filed from the CLI: queued, nothing approved, nothing waiting to try again: nothing would start, so nothing to stop.
+    // Filed from the CLI: queued, nothing approved, no plan asked for, nothing waiting to try again: nothing would start,
+    // so nothing to stop.
     let mut s = steps("t-retry", "queued");
     s["approval"] = json!(null);
     s["waiting"] = json!(null);
+    s["planQueued"] = json!(false);
     let mut app = on(s);
     let bar = screen(&mut app, 160, 34)
         .lines()
@@ -316,6 +318,30 @@ fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
         !matches!(app.mode, Mode::ConfirmHold { .. }),
         "{:?}",
         app.mode
+    );
+    // A plan asked for that waits for its planner (no run, no approval, no backoff): it starts on its own, so x stops it.
+    let mut s = steps("t-retry", "queued");
+    s["approval"] = json!(null);
+    s["waiting"] = json!(null);
+    s["planQueued"] = json!(true);
+    let mut app = on(s);
+    let bar = screen(&mut app, 160, 34)
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(bar.contains("stop retrying"), "{bar}");
+    app.key(key('x'));
+    assert!(
+        matches!(&app.mode, Mode::ConfirmHold { version, .. } if version == "t-retry"),
+        "{:?}",
+        app.mode
+    );
+    screen(&mut app, 120, 30);
+    let fx = app.key(code(KeyCode::Enter));
+    assert!(
+        matches!(&fx[..], [Effect::Act { path, .. }] if path == "/t/t-retry/hold"),
+        "{fx:?}"
     );
     // Approved and waiting for a builder: Stop retrying stays.
     let mut s = steps("t-retry", "queued");

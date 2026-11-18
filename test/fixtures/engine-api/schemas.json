@@ -1,5 +1,5 @@
 {
-  "digest": "4e677581611b59c5b81c904635d268e7c90ffc3532d406622189f8ac7f2add60",
+  "digest": "1971d350f1a07ad23ea8458e5c3f762298939bf62d9215359a7fbc89f361f919",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2020,6 +2020,9 @@
             }
           ]
         },
+        "planQueued": {
+          "type": "boolean"
+        },
         "approval": {
           "anyOf": [
             {
@@ -2066,6 +2069,7 @@
         "retry",
         "planStopped",
         "plan",
+        "planQueued",
         "approval",
         "room"
       ],

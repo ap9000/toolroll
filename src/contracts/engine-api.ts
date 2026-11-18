@@ -290,6 +290,10 @@ export const stepCardsSchema = z.object({
   /** What asking for a plan posts to POST /t/<task>/plan as `source` (the planning source read: local-owner-acts.ts
    * planSourceOf), under the task page's own "plan first" rule. Null when a plan can't be asked for. */
   plan: z.object({ source: z.string().regex(/^[0-9a-f]{64}$/) }).nullable(),
+  /** A plan asked for that waits to start (engine-reads.ts planQueuedOf): queued, the plan requested, no approved scope,
+   * nothing running and no hold. Its planner starts on its own, so Stop retrying (a hold) applies to it; a task filed with
+   * no plan asked for and no approval reads false. Read facts only. */
+  planQueued: z.boolean(),
   /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
    * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
   approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),

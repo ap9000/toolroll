@@ -383,6 +383,17 @@ describe("every answer is its contract's shape", () => {
     store.placeTask(store.refFor("built-in", "t-ask", "ours").id, repoA);
     expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).plan).toEqual({ source: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).plan).toBeNull();
+    // A plan asked for that waits to start (its planner starts on its own) reads planQueued; a bare task, a stopped
+    // plan (its incident holds it) and finished work don't.
+    expect(steps.planQueued).toBe(false);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).planQueued).toBe(false);
+    store.createTask({ id: "t-asked", title: "Asked t-asked" }, T0);
+    const asked = store.refFor("built-in", "t-asked", "ours").id;
+    store.placeTask(asked, repoA);
+    expect(store.requestPlan(asked, T0)).toEqual({ ok: true });
+    const queued = stepCardsSchema.parse((await read("operator", "/t/t-asked/steps")).body);
+    expect([queued.planQueued, queued.waiting, queued.approval, queued.liveRun]).toEqual([true, null, null, null]);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).planQueued).toBe(false);
   });
 
   test("a planner's own backoff: the steps, the task page and the Plan card read the root attempt, never a correction child or a build", async () => {
