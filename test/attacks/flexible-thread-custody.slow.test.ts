@@ -213,9 +213,10 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       expect(out).not.toContain("LEAKED-KEY");
       expect(out).not.toContain("REAL-CLI");
       // The fence lets it reach its proxy (here a dead port) and its relay, at the relay's second-relay address: the call
-      // is authorized and bound to the turn, and refused only because no Claude sign-in is kept here (nothing was sent).
-      expect(out).toContain("relay-status 503");
-      expect(world.store.handle.prepare("SELECT status, reason, turn FROM thread_relay_call").all().map(row => ({ ...row }))).toEqual([{ status: "refused", reason: "no-credential", turn: admitted.turn }]);
+      // is authorized and bound to the turn, and refused only because its starter has no Claude sign-in for threads here
+      // (Toolroll's own turn-ending 403; nothing was sent).
+      expect(out).toContain("relay-status 403");
+      expect(world.store.handle.prepare("SELECT status, reason, turn FROM thread_relay_call").all().map(row => ({ ...row }))).toEqual([{ status: "refused", reason: "no-sign-in", turn: admitted.turn }]);
       expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("running");
       const lowered = await lowerFlexibleThreadLevel(world.store, { thread: id, by: { name: "alex", generation: world.store.accountOf("alex")!.generation }, level: "supervised" });
       expect(lowered).toMatchObject({ ok: true, stopped: "stopped", message: "Lowered to Supervised; the current step was stopped." });
