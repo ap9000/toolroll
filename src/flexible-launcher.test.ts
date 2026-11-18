@@ -263,6 +263,7 @@ describe("the real start path: limits before storage, one thread per start, noth
     const { launcher, asked } = counted();
     expect(await start(launcher)).toMatchObject({ ok: false, reason: "cap-reached" });
     expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread_meta").get()?.["n"]).toBe(0);
     expect(asked).toEqual([]);
   });
 
@@ -276,6 +277,8 @@ describe("the real start path: limits before storage, one thread per start, noth
     expect(left.refs).toBe("");
     expect(asked).toEqual([]);
     expect(world.store.handle.prepare("SELECT status FROM thread_turn WHERE request_key = ?").all(`start:${KEY}`).map(row => row["status"])).toEqual(["withdrawn"]);
+    // Its title was recorded with it, in the transaction that recorded the thread (written once, kept).
+    expect(world.store.handle.prepare("SELECT title FROM flexible_thread_meta").all().map(row => row["title"])).toEqual(["Fix the README"]);
   });
 
   test("the same start posted twice makes one thread: while the first is still starting the second is refused, never told it started", async () => {

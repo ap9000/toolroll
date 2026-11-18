@@ -82,7 +82,7 @@ async function terms(by = "alex") {
   return shown;
 }
 const press = (shown: { digest: string; summary: { key: string } }, as: { by?: string; token?: string } = {}) =>
-  shipFlexible(store, { thread: thread.id, by: as.by ?? "alex", token: as.token ?? token, shownDigest: shown.digest, shownKey: shown.summary.key, now: NOW });
+  shipFlexible(store, { thread: thread.id, by: as.by ?? "alex", proof: { kind: "password-now", password: as.token ?? token }, shownDigest: shown.digest, shownKey: shown.summary.key, now: NOW });
 async function shipped(files: Record<string, string> = { "a.txt": "one\n" }) {
   const candidate = commit(files);
   const done = await press(await terms());
@@ -175,12 +175,12 @@ describe("one press", () => {
     commit({ "a.txt": "one\n" });
     const shown = await terms();
     const before = projectRefs();
-    expect(await shipFlexible(store, { thread: thread.id, by: "alex", token, shownDigest: shown.digest, shownKey: "0".repeat(32), now: NOW })).toMatchObject({ ok: false, reason: "changed" });
-    expect(await shipFlexible(store, { thread: thread.id, by: "alex", token, shownDigest: "0".repeat(32), shownKey: shown.summary.key, now: NOW })).toMatchObject({ ok: false, reason: "changed" });
+    expect(await shipFlexible(store, { thread: thread.id, by: "alex", proof: { kind: "password-now", password: token }, shownDigest: shown.digest, shownKey: "0".repeat(32), now: NOW })).toMatchObject({ ok: false, reason: "changed" });
+    expect(await shipFlexible(store, { thread: thread.id, by: "alex", proof: { kind: "password-now", password: token }, shownDigest: "0".repeat(32), shownKey: shown.summary.key, now: NOW })).toMatchObject({ ok: false, reason: "changed" });
     commit({ "a.txt": "two\n" });
     expect(await press(shown)).toMatchObject({ ok: false, reason: "changed" });
     const fresh = await terms();
-    expect(await shipFlexible(store, { thread: thread.id, by: "alex", token, shownDigest: fresh.digest, shownKey: fresh.summary.key, text: { title: "Another title" }, now: NOW })).toMatchObject({ ok: false, reason: "changed" });
+    expect(await shipFlexible(store, { thread: thread.id, by: "alex", proof: { kind: "password-now", password: token }, shownDigest: fresh.digest, shownKey: fresh.summary.key, text: { title: "Another title" }, now: NOW })).toMatchObject({ ok: false, reason: "changed" });
     expect(ships()).toEqual([]);
     expect(projectRefs()).toBe(before);
     expect(await press(fresh)).toMatchObject({ ok: true });

@@ -10,7 +10,8 @@ Alex (2026-11-12): on this computer only, the laptop's passwordless **local owne
 2. **Retry their own approved build** after it stopped (a console restart, a model error).
 3. **Accept a result**, including one that owes the person's own check, from the terminal.
 
-Merging, releasing, hands-off modes and settings keep their password. API tokens, the lead, chat bots, builders and every
+Merging, releasing, hands-off modes and settings keep their password (one exception since, below: Ship on a
+password-free laptop). API tokens, the lead, chat bots, builders and every
 other machine caller gain nothing. A model never approves anything.
 
 Evidence: the first-result report for 0.9.103 (`B1.2` fails twice: accept in the terminal, plan without a password) and
@@ -369,3 +370,29 @@ Everything above stands except where this section says otherwise.
 2. Ask for a plan.
 3. Retry.
 4. Optional: chat Confirm for a lead's retry/plan card.
+
+## Exception (owner's decision D1, 2026-11-18): Ship a thread on a password-free laptop
+
+On a password-free solo laptop install, the owner may Ship an interactive agent thread with one key in the workbench
+(`a`, after its terms were read to the end). Merging anywhere else keeps its password: on any install where an account
+has a password, Ship takes a password typed now (`toolroll thread ship`, a hidden prompt), never the local owner's act.
+
+- **The act.** `ship-thread` (local-owner.ts), on the engine route `agents.live.thread.ship` only. It permits exactly one
+  press of exactly the terms shown (their digest and summary key) for a thread the owner started: stopping that thread's
+  idle agent, recording the consent with proof `local-owner` (and its laptop consent row, flexible_ship_laptop, bound
+  to the local-mode and account generations), the quarantined import, filing and sealing that Ship's own verify-only
+  task through approve()'s narrow branch (flexible-laptop.ts laptopShipSealAllowed), and arming the merge. It never
+  merges by itself (the armed pass merges only on the exact green commit), never opens a pull request outside that
+  pass, never approves another task and never changes checks, the publication grant or the project's terms.
+- **One predicate, read at every step that acts on it** (flexible-laptop.ts laptopShipProblem; Codex round 2): local
+  mode on for this owner at the consent's local generation, no active account with a password, no identity-provider
+  sign-in linked, a solo install, and the owner its only approver. Read in the consent transaction, in the seal's
+  transaction and in the armed merge's completion and reservation transactions. When it fails the Ship ends for good;
+  putting the settings back never revives it. A second account getting a password or SSO being linked moves no
+  generation of the owner's, so the predicate reads them directly.
+- **This computer.** Every local-owner cookie request is already refused unless it comes from this computer
+  (server/guards.ts, requestFromThisComputer; since 0.9.104).
+- **Seal eligibility.** approve's local rule, with one difference (scope.ts localWorkEligible `ship`): the Ship's task
+  carries its candidate by construction, so the candidate alone doesn't make it a deploy gate; signed release terms, a
+  release check or a release's own task still refuse it.
+

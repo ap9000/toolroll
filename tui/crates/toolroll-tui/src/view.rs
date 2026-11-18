@@ -3421,6 +3421,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
             (" Retry ", lines)
         }
+        Mode::ConfirmThreadAct(_, act) => crate::thread::confirm_act_lines(*act),
         Mode::ConfirmPlanAgain { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
             let mut lines = vec![

@@ -86,6 +86,8 @@ describe("the machine envelope", () => {
       "chat-approval": ["show", "--json"],
       ready: ["--json"],
       task: ["list", "--json"],
+      // A person's own threads: listed, or refused for want of a person's proof; one envelope either way.
+      thread: ["list", "--json"],
       ledger: ["verify", "--json"],
       audit: ["--json"],
       storage: ["--json"],

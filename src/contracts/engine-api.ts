@@ -99,8 +99,16 @@ export const threadFactsSchema = z.object({
   project: z.string().nullable(),
   level: flexibleLevelSchema.nullable(),
   agent: z.object({ provider: z.string(), model: z.string() }).nullable(),
-  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable() }).nullable(),
+  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable(),
+    /** Toolroll's own words for how the turn ended when it didn't simply finish (interrupted, unknown, withdrawn). */
+    endWords: z.string().optional(),
+    /** How the turn is billed: the person's plan (`subscription`) or a key. */
+    billing: z.enum(["subscription", "api-key"]).optional() }).nullable(),
   questions: z.array(threadQuestionSchema),
+  /** Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified. */
+  ended: z.object({ words: z.string(), stopPending: z.boolean() }).optional(),
+  /** Its latest Ship, in Toolroll's words (absent before its first). */
+  ship: z.object({ seq: z.number().int(), state: z.string(), words: z.string() }).optional(),
 });
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
@@ -130,7 +138,16 @@ export const liveThreadsSchema = z.object({
   /** Whether interactive agent threads are on (Settings → General): off, the list still has the threads already made. */
   on: z.boolean().optional(),
   threads: z.array(z.object({ id: hex32, title: z.string(), project: z.string().nullable(), level: flexibleLevelSchema.nullable(), live: z.boolean(), waiting: z.number().int(),
-    costUsd: z.number().nullable() })),
+    costUsd: z.number().nullable(),
+    /** Its latest turn's state (null before its first), whether it ended (End is final), and whether its agent's stop
+     * is still being verified. */
+    turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean(),
+    /** Its latest Ship's state (null before its first). */
+    ship: z.string().nullable(),
+    /** Its latest turn's number (null before its first): with `turn` and `ship`, what the workbench marks seen. */
+    turnSeq: z.number().int().nullable(),
+    /** Its latest Ship's number (null before its first): which Ship `ship` is, so a second refusal is news too. */
+    shipSeq: z.number().int().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------

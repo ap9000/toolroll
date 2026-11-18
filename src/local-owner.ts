@@ -74,6 +74,12 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // don't (a start above their password-free level still needs this proof); the start (engine-api.ts threadStart)
   // checks this exact act.
   "start-thread",
+  // Reply to one's own interactive agent thread (threads-everyday S4): a new turn under the terms it already runs on,
+  // admitted exactly as a start's turn is (the terms, the limits, the person's own sign-in); the handler checks this act.
+  "reply-thread",
+  // Stop one's own thread's agent (the thread stays open), or end the thread (final): each only narrows.
+  "stop-thread",
+  "end-thread",
   // The terminal workbench's Agents screen: look again for this computer's agents (the bounded, non-spending status
   // checks every sign-in check uses); never a model call and nothing written but the detection's own answer.
   "check-agents",
@@ -94,8 +100,30 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // starts nothing and approves nothing (each thread still needs its project's Flexible terms and its own terms card);
   // the handler checks this exact act inside its write.
   "flexible-switch",
+  // Threads' setup steps from the workbench's `w` link (threads-everyday S6, the owner's D2): saving or checking your own
+  // Claude sign-in for threads, and a project's Flexible terms (turning them on, lowering, turning off); and removing
+  // your own sign-in (it only narrows). Saving, checking and turning terms on take a password typed into the form now
+  // (LOCAL_PASSWORD_ACTS), never the local owner's act itself.
+  // Ship a thread's work with one key in the workbench (threads-everyday S7, the owner's D1 recorded in
+  // docs/plans/local-owner-acts.md): only on an install where nobody has a password, read again at every step that acts
+  // on it (flexible-laptop.ts); flexible-ship.ts and approve()'s narrow branch check this exact act.
+  "ship-thread",
+  // Cancel one's own thread's armed Ship for good (it only narrows).
+  "cancel-ship",
+  "flexible-sign-in-save",
+  "flexible-sign-in-check",
+  "flexible-sign-in-clear",
+  "project-flexible",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
+/**
+ * The closed list of local-owner acts whose proof is a password typed into the form now (threads-everyday S6, the owner's
+ * D2; Codex round 2): proveAccountNow checks it against the account's real password, through the same lockouts as any
+ * sign-in, and it counts only for that one act. An empty or wrong password proves nothing, and never falls back to the
+ * local owner's own act; nothing it proves stamps a remembered password, stands in for a later step-up, or upgrades the
+ * session (its authority stays local-owner).
+ */
+export const LOCAL_PASSWORD_ACTS: ReadonlySet<LocalOwnerAct> = new Set<LocalOwnerAct>(["flexible-switch", "flexible-sign-in-save", "flexible-sign-in-check", "project-flexible"]);
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
 /** Whether a runtime string names an act a local owner may do. */
 export function localOwnerAct(value: unknown): value is LocalOwnerAct {

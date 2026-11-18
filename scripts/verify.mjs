@@ -627,13 +627,56 @@ async function exercise(feature, context) {
     case 'stop-resume': await failed(); await press('x', /Stop retrying this task\?/); await press('enter', /Stopped retrying|Resume retrying/); shown = await press('x', /Resume retrying this task\?/); await press('enter', /Resumed|[Rr]etrying/); break;
     case 'retry': await failed(); await wait(/The agent stopped with an error\.[\s\S]*What the agent said/); shown = await retryAttempt(term, lastRun, context.task); break;
     case 'cancel': await failed(); shown = await press('X', /Cancel/); await press('enter', /[Cc]ancelled|[Cc]anceled/); break;
-    case 'threads': shown = await startThread(term, 'Review the subtraction change.'); break;
+    case 'threads': {
+      shown = await startThread(term, 'Review the subtraction change.');
+      // The thread it started is selected (not the task that was selected before).
+      await seen(() => newestThread() && projectView()?.task === newestThread(), 'the new thread selected');
+      context.thread = newestThread();
+      break;
+    }
+    case 'thread-reply': {
+      // Reply in the thread `threads` started: once its first turn is over the row reads Ready, s opens the reply box,
+      // and Enter sends the next message as turn 2.
+      await open('Review the subtraction change.', context.thread);
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
+      await press('s', /Reply:/);
+      term.send('Now explain the change.');
+      await wait(/Reply:[^\n]*explain the change\./);
+      shown = await press('enter', /Sent\. Turn 2 started|Refused: /);
+      if (!/Sent\. Turn 2 started/.test(shown)) throw new Error(`The reply was not sent: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await seen(() => sql(`SELECT COUNT(*) AS n FROM thread_turn WHERE thread = '${context.thread}' AND request_key LIKE 'reply:%'`)[0]?.n === 1, 'one reply turn on the record');
+      break;
+    }
+    case 'thread-ship': {
+      // a on the thread asks for its Ship terms. This world's project has no check command, so Toolroll says it can't
+      // ship yet, in its own words (the whole press, laptop road and password road, is flexible-ship*.slow.test.ts).
+      await open('Review the subtraction change.', context.thread);
+      // Its reply's turn first ends (the row reads Ready again): Ship never starts while a turn works.
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
+      shown = await press('a', /Ship approves exactly this:|no check command|Refused: /);
+      if (!/Ship approves exactly this:|no check command/.test(shown)) throw new Error(`Ship said neither its terms nor why: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      if (/Ship approves exactly this:/.test(shown)) term.send(esc);
+      if (sql("SELECT COUNT(*) AS n FROM flexible_ship")[0]?.n !== 0) throw new Error('Asking for the terms recorded a Ship');
+      break;
+    }
+    case 'thread-end': {
+      // X on the thread, asked first; y ends it for good: it moves to Recent as Ended and takes no reply.
+      await open('Review the subtraction change.', context.thread);
+      await press('X', /End this thread\?/);
+      shown = await press('y', /Ended\.|This thread had already ended\.|Refused: /);
+      if (!/Ended\./.test(shown)) throw new Error(`The thread did not end: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await wait(/Review the subtraction[^\n]*\sEnded\b/);
+      await seen(() => sql(`SELECT ended_at FROM flexible_thread_meta WHERE thread = '${context.thread}'`)[0]?.ended_at, 'the end on the record');
+      shown = await press('s', /This thread has ended/);
+      break;
+    }
     case 'threads-sign-in': {
       // Your own Claude sign-in for threads, end to end through the product: removed at a terminal; T then names the
       // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying
       // whose plan powers it, and the thread starts. The world keeps a saved sign-in afterwards. It is the map's last
       // feature: the thread it starts would otherwise take one of the project's three live threads from a later one.
-      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], [{ prompt: /password:/, answer: world.password }]);
+      // A solo install: removing your own sign-in only narrows, so it asks for no password (threads-everyday S8, D5).
+      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], []);
       await term.press('T', /New thread:/);
       const message = 'Check the sign-in, then review the subtraction change.';
       term.send(message);
@@ -669,12 +712,12 @@ async function exercise(feature, context) {
     }
     case 'jumps': {
       await ready();
-      // A thread's start keeps the selection where it was (no thread id comes back): open it, as a person would.
+      // A thread's start selects the new thread (threads-everyday S3); once its turn is over it waits on you too (Ready).
       const message = 'Review the subtraction change, then jump.';
       await startThread(term, message);
       const origin = newestThread(); await open(message, origin);
+      await wait(/Review the subtraction change, …\s+Ready\b|Review the subtraction change, then[^\n]*\sReady\b/);
       term.send('!'); await seen(() => projectView()?.task === context.task, 'next needs-you selects result');
-      term.send('@'); await wait(/waiting on you/);
       term.send("'"); await seen(() => projectView()?.task === origin, 'jump returns to thread');
       shown = term.text(); state = 'jump returned to original thread'; break;
     }

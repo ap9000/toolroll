@@ -166,7 +166,7 @@ describe("a thread's LiveSession is its owner's only", () => {
     expect(window.thread).toMatchObject({ project: "shop", level: "full", agent: { provider: "claude", model: "claude-sonnet-4-5" }, turn: { seq: 1, status: "running", costUsd: null, costBasis: null },
       questions: [{ kind: "permission", title: "Allow this command?", detail: "npm test", state: "pending", answerable: true, parts: [] }] });
     const list = liveThreadsSchema.parse((await read("pat", "/agents/live/threads")).body);
-    expect(list.threads).toEqual([{ id: T1, title: `Thread ${T1.slice(0, 8)}`, project: "shop", level: "full", live: true, waiting: 1, costUsd: null }]);
+    expect(list.threads).toEqual([{ id: T1, title: `Thread ${T1.slice(0, 8)}`, project: "shop", level: "full", live: true, waiting: 1, costUsd: null, turn: "running", ended: false, stopPending: false, ship: null, turnSeq: 1, shipSeq: null }]);
     for (const persona of ["ines", "alex"]) {
       expect(await read(persona, `${THREAD}?file=main`), persona).toEqual({ status: 404, body: { error: "thread" } });
       expect(liveThreadsSchema.parse((await read(persona, "/agents/live/threads")).body).threads, persona).toEqual([]);
@@ -204,6 +204,28 @@ describe("an answer goes only through its owner, naming the card they were shown
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ outcome: "refused", words: "The terms changed since they were shown. Read them again before starting. Nothing was started." });
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(before);
+  });
+});
+
+describe("Reply over HTTP: the owner's own, proved as a start is", () => {
+  const replyAs = async (persona: string, fields: Record<string, string>) => {
+    const response = await fetch(`${base}/agents/live/thread/${T1}/turn`, { method: "POST", redirect: "manual",
+      headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      body: new URLSearchParams({ csrf: csrfOf[persona]!, ...fields }).toString() });
+    return { status: response.status, body: await response.json() as unknown };
+  };
+  test("someone else, a token, no password on a team install and a malformed key are refused; a reply while a turn works takes no second turn", async () => {
+    const turnsBefore = world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE thread = ?").get(T1)!["n"];
+    const fields = { message: "Now add a test", key: "d".repeat(32) };
+    for (const persona of ["ines", "alex"]) expect(await replyAs(persona, fields), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/turn`, { method: "POST", redirect: "manual",
+      headers: { authorization: `Bearer ${readToken}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() });
+    expect(byToken.status).toBe(403);
+    expect(await replyAs("pat", fields)).toEqual({ status: 403, body: { outcome: "refused", words: "Replying here needs your password. Nothing was sent." } });
+    expect(await replyAs("pat", { ...fields, key: "nope", password: tokenOf["pat"]! })).toMatchObject({ status: 400, body: { outcome: "refused" } });
+    expect(await replyAs("pat", { ...fields, password: tokenOf["pat"]! })).toEqual({ status: 409, body: { outcome: "refused", words: "This thread is already working on a turn. Wait for it to finish, or stop it." } });
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE thread = ?").get(T1)!["n"]).toBe(turnsBefore);
+    expect(agent.sent.filter(line => line.includes("Now add a test"))).toEqual([]);
   });
 });
 
@@ -291,5 +313,48 @@ describe("the send compares the whole saved session (Codex round 2)", () => {
       expect(await answerAs(session, { request: shown.request, card: shown.digest, decision: "accept" })).toMatchObject({ status: 409, body: { outcome: "refused" } });
     } finally { held.afterDecide = null; session.end(); }
     expect(agent.sent.length).toBe(sentBefore);
+  });
+});
+
+describe("Ship over HTTP: its terms first; the press only on the laptop road", () => {
+  const post = async (persona: string, fields: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/agents/live/thread/${T1}/ship`, { method: "POST", redirect: "manual",
+      headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      body: new URLSearchParams({ csrf: csrfOf[persona]!, ...fields }).toString() });
+    return { status: response.status, body: await response.json() as unknown };
+  };
+  test("someone else and a token are refused; the owner is told what stands in the way; nothing is recorded", async () => {
+    for (const persona of ["ines", "alex"]) expect(await post(persona), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/ship`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${readToken}` } });
+    expect(byToken.status).toBe(403);
+    // This project has no check command: Ship can't be offered, before and after naming terms.
+    for (const fields of [{}, { terms: "3".repeat(32), digest: "4".repeat(32) }]) {
+      const refused = await post("pat", fields);
+      expect(refused.status).toBe(409);
+      expect((refused.body as { words: string }).words).toMatch(/no check command/);
+    }
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_ship").get()?.["n"]).toBe(0);
+  });
+});
+
+describe("End over HTTP (last: it ends the thread for good)", () => {
+  const post = async (persona: string, verb: string, fields: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/agents/live/thread/${T1}/${verb}`, { method: "POST", redirect: "manual",
+      headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      body: new URLSearchParams({ csrf: csrfOf[persona]!, ...fields }).toString() });
+    return { status: response.status, body: await response.json() as unknown };
+  };
+  test("someone else and a token are refused; the owner ends it with no password; then it takes no reply", async () => {
+    for (const persona of ["ines", "alex"]) expect(await post(persona, "end"), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/end`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${readToken}` } });
+    expect(byToken.status).toBe(403);
+    expect(world.store.handle.prepare("SELECT ended_at FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(T1)).toBeUndefined();
+    const ended = await post("pat", "end");
+    expect(ended.status).toBe(200);
+    expect((ended.body as { words: string }).words).toMatch(/^Ended\./);
+    expect(world.store.handle.prepare("SELECT ended_by FROM flexible_thread_meta WHERE thread = ?").get(T1)?.["ended_by"]).toBe("pat");
+    expect(await post("pat", "end")).toEqual({ status: 200, body: { outcome: "done", words: "This thread had already ended." } });
+    expect(await post("pat", "turn", { message: "One more thing", key: "e".repeat(32), password: tokenOf["pat"]! }))
+      .toEqual({ status: 409, body: { outcome: "refused", words: "This thread has ended. Start a new thread to go on." } });
   });
 });

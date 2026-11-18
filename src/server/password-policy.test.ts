@@ -27,7 +27,7 @@ const COOKIE_ONLY_POSTS = [
   'chat.queued-remove',
   'agents.seen', 'agents.watch',
   // A Flexible thread's owner answering its agent's request, and starting a thread (refused while Flexible is off).
-  'agents.live.thread.answer', 'agents.live.thread.start',
+  'agents.live.thread.answer', 'agents.live.thread.start', 'agents.live.thread.turn', 'agents.live.thread.stop', 'agents.live.thread.end', 'agents.live.thread.ship', 'agents.live.thread.ship-cancel', 'agents.live.thread.ship-send-back',
   // Settings → Advanced: the person's own view switch, from their own browser.
   'settings.advanced',
   'chat.send', 'chat.file', 'chat.ack-send',
