@@ -27,7 +27,10 @@
  * falls back to another person's sign-in or an installation-wide one: there is none.
  */
 import { randomBytes } from "node:crypto";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { flexibleAvailable } from "./flexible-available.js";
+import { CLAUDE_EXACT } from "./model-catalog.js";
 import { FLEXIBLE_RELAY_UPSTREAMS } from "./flexible-relay-upstreams.js";
 import { credentialProof, freshFacts, proveCredential } from "./scope.js";
 import { createSignInSecret, readSignInSecret, removeSignInSecret, withSignInLockAsync, type SignInSecret } from "./tool-secret-store.js";
@@ -42,7 +45,7 @@ const API_KEY = FLEXIBLE_RELAY_UPSTREAMS.claude.auth["api-key"];
 const GENERATION = /^[0-9a-f]{32}$/;
 const PERSON = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 200;
 
-export type SignInRefusalReason = "not-available" | "invalid-request" | "not-proved" | "shape" | "api-key" | "save-ended" | "not-saved";
+export type SignInRefusalReason = "not-available" | "invalid-request" | "not-proved" | "shape" | "api-key" | "save-ended" | "not-saved" | "check-refused";
 export type SignInRefusal = { ok: false; reason: SignInRefusalReason; message: string };
 const WORDS: Readonly<Record<SignInRefusalReason, string>> = Object.freeze({
   "not-available": "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`. Nothing was saved.",
@@ -52,6 +55,7 @@ const WORDS: Readonly<Record<SignInRefusalReason, string>> = Object.freeze({
   "api-key": "That's an API key. Threads need your `claude setup-token` sign-in. Nothing was saved.",
   "save-ended": "This save didn't finish: your sign-in was removed, your account changed, or the save took too long. Nothing was saved; try again.",
   "not-saved": "Toolroll couldn't keep your sign-in in its folder for secrets. Nothing was saved; your earlier sign-in, if any, still works.",
+  "check-refused": "Claude didn't accept this sign-in. Run `claude setup-token` again and paste the new token. Nothing was saved; your earlier sign-in, if any, still works.",
 });
 const refuse = (reason: SignInRefusalReason): SignInRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
@@ -72,12 +76,12 @@ export const looksLikeClaudeCredential = (text: string): boolean => /sk-ant-[A-Z
 // ---- rows ---------------------------------------------------------------------------------------------------------------
 
 export type SignInRow = { person: string; accountGeneration: number; generation: string; kind: "setup-token"; state: "staged" | "active" | "retiring"; saveOp: string | null;
-  proof: "password-now" | "sso-now" | "restored"; stagedAt: string; retireAfter: string | null; activatedAt: string | null; retiredAt: string | null; checkOutcome: string; checkedAt: string | null };
+  proof: "password-now" | "sso-now" | "restored"; stagedAt: string; retireAfter: string | null; activatedAt: string | null; retiredAt: string | null; checkOutcome: string; checkStatus: number | null; checkedAt: string | null };
 const readRow = (row: Record<string, unknown> | undefined): SignInRow | null => row === undefined ? null : {
   person: String(row["person"]), accountGeneration: Number(row["account_generation"]), generation: String(row["generation"]), kind: "setup-token",
   state: String(row["state"]) as SignInRow["state"], saveOp: row["save_op"] == null ? null : String(row["save_op"]), proof: String(row["proof"]) as SignInRow["proof"],
   stagedAt: String(row["staged_at"]), retireAfter: row["retire_after"] == null ? null : String(row["retire_after"]), activatedAt: row["activated_at"] == null ? null : String(row["activated_at"]),
-  retiredAt: row["retired_at"] == null ? null : String(row["retired_at"]), checkOutcome: String(row["check_outcome"]), checkedAt: row["checked_at"] == null ? null : String(row["checked_at"]) };
+  retiredAt: row["retired_at"] == null ? null : String(row["retired_at"]), checkOutcome: String(row["check_outcome"]), checkStatus: row["check_status"] == null ? null : Number(row["check_status"]), checkedAt: row["checked_at"] == null ? null : String(row["checked_at"]) };
 const rowOf = (store: Store, person: string, generation: string): SignInRow | null =>
   readRow(store.handle.prepare("SELECT * FROM flexible_sign_in WHERE person = ? AND generation = ?").get(person, generation) as Record<string, unknown> | undefined);
 const activeRowOf = (store: Store, person: string): SignInRow | null =>
@@ -133,7 +137,7 @@ export function placeFlexibleSignIn(state: string, staged: StagedSignIn, token: 
  * Then the pending activation is consumed exactly once (a replay, another generation or a removal in between finds
  * nothing staged), and the generation before it goes to retiring. With its ledger row.
  */
-export function activateFlexibleSignIn(store: Store, input: { staged: StagedSignIn; password: string; now: Date }): { ok: true; replaced: boolean } | SignInRefusal {
+export function activateFlexibleSignIn(store: Store, input: { staged: StagedSignIn; password: string; now: Date; check?: SignInCheck | null }): { ok: true; replaced: boolean } | SignInRefusal {
   const staged = input?.staged;
   if (staged === undefined || !PERSON(staged.person) || typeof staged.generation !== "string" || !GENERATION.test(staged.generation) || typeof staged.op !== "string" || !GENERATION.test(staged.op)
     || typeof input.password !== "string" || !(input.now instanceof Date)) return refuse("invalid-request");
@@ -153,7 +157,10 @@ export function activateFlexibleSignIn(store: Store, input: { staged: StagedSign
     const consumed = Number(store.handle.prepare(`UPDATE flexible_sign_in SET state = 'active', save_op = NULL, retire_after = NULL, activated_at = ?
       WHERE person = ? AND generation = ? AND state = 'staged' AND save_op = ? AND account_generation = ?`).run(now, row.person, row.generation, staged.op, row.accountGeneration).changes);
     if (consumed !== 1) throw new Error("a sign-in's staged save changed during its own activation");
-    store.recordAction({ at: now, actor: row.person, repo: null, taskId: null, runId: null, action: SIGN_IN_ACTION, outcome: replaced ? "replaced" : "saved", source: "policy", detail: "setup-token, not checked" });
+    const check = input.check ?? null;
+    if (check !== null) recordCheck(store, row.person, row.generation, check, now);
+    store.recordAction({ at: now, actor: row.person, repo: null, taskId: null, runId: null, action: SIGN_IN_ACTION, outcome: replaced ? "replaced" : "saved", source: "policy",
+      detail: `setup-token, ${check === null ? "not checked" : checkOutcomeOf(check)}` });
     return { ok: true as const, replaced };
   });
 }
@@ -174,25 +181,31 @@ export type SignInSaveSeams = { afterStage?: (staged: StagedSignIn) => void | Pr
  * generations' secrets deleted. The token was shape-checked by the caller (setupTokenFromPaste) and is checked again
  * here. `state` is Toolroll's state folder (beside the database).
  */
-export async function saveFlexibleSignIn(store: Store, input: { state: string; person: string; password: string; token: string; clock?: () => Date; seams?: SignInSaveSeams }):
-  Promise<{ ok: true; replaced: boolean; generation: string } | SignInRefusal> {
+export async function saveFlexibleSignIn(store: Store, input: { state: string; person: string; password: string; token: string;
+  /** Whether to run the live token-count check after authority is proved (every caller decides: `--no-check` skips it). */
+  check: boolean; clock?: () => Date; seams?: SignInSaveSeams }):
+  Promise<{ ok: true; replaced: boolean; generation: string; check: SignInCheck | null } | SignInRefusal> {
   const clock = input.clock ?? (() => new Date());
   const paste = setupTokenFromPaste(input.token);
   if (!paste.ok) return paste;
   const staged = stageFlexibleSignIn(store, { person: input.person, password: input.password, now: clock() });
   if (!staged.ok) return staged;
   await input.seams?.afterStage?.(staged.staged);
-  let saved: { ok: true; replaced: boolean; generation: string } | SignInRefusal;
+  let saved: { ok: true; replaced: boolean; generation: string; check: SignInCheck | null } | SignInRefusal;
   try {
-    saved = await withSignInLockAsync(input.state, input.person, async (): Promise<{ ok: true; replaced: boolean; generation: string } | SignInRefusal> => {
+    saved = await withSignInLockAsync(input.state, input.person, async (): Promise<{ ok: true; replaced: boolean; generation: string; check: SignInCheck | null } | SignInRefusal> => {
       let placed: "ok" | "exists";
       try { placed = placeFlexibleSignIn(input.state, staged.staged, paste.token); } catch { placed = "exists"; }
       if (placed !== "ok") { abandonStaged(store, staged.staged, clock()); return refuse("not-saved"); }
       await input.seams?.afterPlace?.(staged.staged);
+      // The live check: only now, after transaction A proved the person, and only the staged value. Claude refusing it
+      // retires the staged generation (it never becomes active); anything else is saved, labelled with what was found.
+      const check = input.check === true ? await checkSignInToken(paste.token) : null;
+      if (check !== null && check.outcome === "refused") { abandonStaged(store, staged.staged, clock()); return refuse("check-refused"); }
       let active: { ok: true; replaced: boolean } | SignInRefusal;
-      try { active = activateFlexibleSignIn(store, { staged: staged.staged, password: input.password, now: clock() }); } catch { active = refuse("save-ended"); }
+      try { active = activateFlexibleSignIn(store, { staged: staged.staged, password: input.password, now: clock(), check }); } catch { active = refuse("save-ended"); }
       if (!active.ok) { abandonStaged(store, staged.staged, clock()); return active; }
-      return { ok: true, replaced: active.replaced, generation: staged.staged.generation };
+      return { ok: true, replaced: active.replaced, generation: staged.staged.generation, check };
     });
   } catch { abandonStaged(store, staged.staged, clock()); saved = refuse("not-saved"); }
   // The generations this save retired (and any left by an earlier one) go now; whatever can't, the upkeep retries.
@@ -282,12 +295,13 @@ export async function tidyFlexibleSignIns(store: Store, state: string, input: { 
 // ---- what readiness, the start card and the CLI read (metadata only, never the secret) ------------------------------------
 
 /** A person's sign-in as the record says: none, saved (active), or refused by Claude on some call. Never reads the value. */
-export type SignInStatus = { state: "none" } | { state: "active" | "refused"; savedAt: string; checkOutcome: string; generation: string };
+export type SignInStatus = { state: "none" } | { state: "active" | "refused"; savedAt: string; checkOutcome: string; checkStatus: number | null; checkedAt: string | null; generation: string };
 export function flexibleSignInStatus(store: Store, person: string): SignInStatus {
   const account = store.accountOf(person);
   const row = activeRowOf(store, person);
   if (row === null || account === null || !standingAccount(store, person, row.accountGeneration)) return { state: "none" };
-  return { state: refusedOnce(store, person, row.generation) ? "refused" : "active", savedAt: row.activatedAt ?? row.stagedAt, checkOutcome: row.checkOutcome, generation: row.generation };
+  return { state: refusedOnce(store, person, row.generation) ? "refused" : "active", savedAt: row.activatedAt ?? row.stagedAt, checkOutcome: row.checkOutcome,
+    checkStatus: row.checkStatus, checkedAt: row.checkedAt, generation: row.generation };
 }
 
 /** How a person's threads are billed, from their own sign-in's record (its kind), for `by` at the generation their
@@ -346,3 +360,127 @@ export const signInRefusedBy = (status: number, errorType: string | null): boole
 /** What the agent gets, and the turn ends with, when Claude refused the sign-in (never Claude's own body). */
 export const signInRefusedWords = (status: number): string =>
   `Toolroll couldn't use your Claude sign-in for threads: Claude answered ${status}. Replace it in Settings → General, or with \`toolroll config set flexible-sign-in\`.`;
+
+// ---- the live check (count_tokens) -------------------------------------------------------------------------------------
+
+/** What one live check found. Informational: it never clears a refusal or widens anything; only a new save does. */
+export type SignInCheck = { outcome: "accepted"; status: 200 } | { outcome: "refused"; status: number } | { outcome: "inconclusive"; status: number } | { outcome: "unreachable"; status: null };
+/** How long the check may take: to connect, and in all; and the most of an answer it ever reads (never echoed). */
+export const SIGN_IN_CHECK_LIMITS = Object.freeze({ connectMs: 5_000, totalMs: 10_000, bodyBytes: 4 * 1024 });
+const CHECK_MODEL = CLAUDE_EXACT.find(one => one.value.startsWith("claude-haiku-"))?.value ?? "claude-haiku-4-5";
+const checkOutcomeOf = (check: SignInCheck): string => check.outcome === "accepted" ? "token-count check accepted" : `check ${check.outcome}${check.status === null ? "" : ` (HTTP ${check.status})`}`;
+
+/** A status's check, as signInCheckWords reads it. */
+export function statusCheck(status: SignInStatus): SignInCheck | { outcome: "not-checked" } {
+  if (status.state === "none") return { outcome: "not-checked" };
+  const outcome = status.checkOutcome;
+  if (outcome === "accepted") return { outcome, status: 200 };
+  if ((outcome === "refused" || outcome === "inconclusive") && status.checkStatus !== null) return { outcome, status: status.checkStatus };
+  if (outcome === "unreachable") return { outcome, status: null };
+  return { outcome: "not-checked" };
+}
+
+/** The words for a check's outcome (the plan's outcome table), never quoting what Claude said. */
+export function signInCheckWords(check: SignInCheck | { outcome: "not-checked" }): string {
+  switch (check.outcome) {
+    case "not-checked": return "Not checked.";
+    case "accepted": return "Token-count check accepted.";
+    case "refused": return `Claude didn't accept this sign-in (HTTP ${check.status}).`;
+    case "inconclusive": return check.status >= 300 && check.status < 400 ? "Check inconclusive (redirect refused)." : `Check inconclusive (HTTP ${check.status}).`;
+    case "unreachable": return "Couldn't reach Claude to check.";
+  }
+}
+
+/**
+ * One live check of a setup-token: POST /v1/messages/count_tokens (a one-word body, a small model) to the relay's own
+ * fixed origin (flexible-relay-upstreams.ts), signed in as the relay signs in with a setup-token, nothing else. Connect
+ * within 5 s and finish within 10 s; at most 4 KiB of the answer is read and none of it is kept or echoed. One decided
+ * outcome per answer: 200 with a whole `input_tokens` accepted; 401, or 403 authentication_error, refused; a redirect
+ * (never followed), any other status or an unreadable 200 inconclusive; a timeout or connection failure unreachable.
+ * Callers run it only after the person's authority was proved.
+ */
+export function checkSignInToken(token: string, limits: { connectMs: number; totalMs: number; bodyBytes: number } = SIGN_IN_CHECK_LIMITS): Promise<SignInCheck> {
+  const upstream = FLEXIBLE_RELAY_UPSTREAMS.claude, auth = upstream.auth["setup-token"];
+  if (!auth.shape.test(token)) return Promise.resolve({ outcome: "unreachable", status: null });
+  const route = upstream.routes.find(one => one.kind === "count-tokens")!;
+  const target = new URL(route.path, upstream.origin);
+  const body = Buffer.from(JSON.stringify({ model: CHECK_MODEL, messages: [{ role: "user", content: "hi" }] }), "utf8");
+  return new Promise<SignInCheck>(resolve => {
+    let done = false;
+    const finish = (check: SignInCheck) => { if (done) return; done = true; clearTimeout(total); clearTimeout(connect); try { outgoing.destroy(); } catch { /* gone */ } resolve(check); };
+    const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+    const outgoing = send({ protocol: target.protocol, hostname: target.hostname, port: target.port === "" ? undefined : Number(target.port), method: "POST", path: target.pathname, agent: false,
+      ...(target.protocol === "https:" ? { servername: target.hostname } : {}),
+      headers: { host: target.host, "content-type": "application/json", "content-length": String(body.length), "accept-encoding": "identity", "anthropic-version": "2023-06-01",
+        "anthropic-beta": auth.betas.join(","), [auth.header]: `${auth.prefix}${token}` } });
+    const total = setTimeout(() => finish({ outcome: "unreachable", status: null }), limits.totalMs);
+    const connect = setTimeout(() => finish({ outcome: "unreachable", status: null }), limits.connectMs);
+    outgoing.on("socket", socket => {
+      const connected = () => clearTimeout(connect);
+      if (!socket.connecting) connected(); else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", connected);
+    });
+    outgoing.on("error", () => finish({ outcome: "unreachable", status: null }));
+    outgoing.on("response", (answer: IncomingMessage) => {
+      const status = answer.statusCode ?? 0;
+      if (status < 100 || status > 599) { finish({ outcome: "inconclusive", status: 502 }); return; }
+      if (status >= 300 && status < 400) { finish({ outcome: "inconclusive", status }); return; }
+      const parts: Buffer[] = [];
+      let size = 0;
+      const decide = () => {
+        const text = Buffer.concat(parts).subarray(0, limits.bodyBytes).toString("utf8");
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(text) as unknown; } catch { parsed = null; }
+        const object = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+        if (status === 200) {
+          const tokens = object?.["input_tokens"];
+          finish(typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0 ? { outcome: "accepted", status: 200 } : { outcome: "inconclusive", status: 200 });
+          return;
+        }
+        const error = object?.["error"];
+        const type = error !== null && typeof error === "object" ? (error as Record<string, unknown>)["type"] : undefined;
+        finish(signInRefusedBy(status, typeof type === "string" ? type : null) ? { outcome: "refused", status } : { outcome: "inconclusive", status });
+      };
+      answer.on("data", (chunk: Buffer) => {
+        if (size < limits.bodyBytes) parts.push(chunk);
+        size += chunk.length;
+        // Past the cap: decided on what was read (a body too long to be an answer of ours is never read whole).
+        if (size >= limits.bodyBytes) decide();
+      });
+      answer.on("end", decide);
+      answer.on("error", () => finish({ outcome: "unreachable", status: null }));
+    });
+    outgoing.end(body);
+  });
+}
+
+/** A check's outcome on exactly that person's generation (a late answer never marks a newer one). */
+function recordCheck(store: Store, person: string, generation: string, check: SignInCheck, at: string): void {
+  store.handle.prepare("UPDATE flexible_sign_in SET check_outcome = ?, check_status = ?, checked_at = ? WHERE person = ? AND generation = ?")
+    .run(check.outcome, check.status, at, person, generation);
+}
+
+/**
+ * Check a person's active sign-in again (the caller proved the person first): its value, read from its own address under
+ * the person's lock, checked live, and the outcome written on exactly that generation if it is still the active one.
+ * Informational only: it never clears a refusal Claude made on a call, and changes nothing else.
+ */
+export async function recheckFlexibleSignIn(store: Store, state: string, input: { person: string; clock?: () => Date }): Promise<{ ok: true; check: SignInCheck } | { ok: false; reason: "no-sign-in" }> {
+  const clock = input.clock ?? (() => new Date());
+  return withSignInLockAsync(state, input.person, async () => {
+    const account = store.accountOf(input.person);
+    if (account === null) return { ok: false as const, reason: "no-sign-in" as const };
+    const found = signInForTurn(store, state, { owner: input.person, ownerGeneration: account.generation });
+    const row = activeRowOf(store, input.person);
+    // A generation Claude refused on a call is still read for a check (to say so), but nothing about it changes.
+    let value: string | null = found.ok ? found.signIn.value : null;
+    if (!found.ok && found.reason === "sign-in-refused" && row !== null) { try { value = readSignInSecret(state, row.person, row.generation)?.value ?? null; } catch { value = null; } }
+    if (value === null || row === null) return { ok: false as const, reason: "no-sign-in" as const };
+    const check = await checkSignInToken(value);
+    store.transact(() => {
+      if (activeRowOf(store, input.person)?.generation !== row.generation) return;
+      recordCheck(store, row.person, row.generation, check, clock().toISOString());
+      store.recordAction({ at: clock().toISOString(), actor: input.person, repo: null, taskId: null, runId: null, action: SIGN_IN_ACTION, outcome: "checked", source: "policy", detail: checkOutcomeOf(check) });
+    });
+    return { ok: true as const, check };
+  }, { waitMs: 15_000 });
+}

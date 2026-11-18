@@ -3,7 +3,8 @@
  * threads from a hidden prompt only (the prompt is the test's stand-in: easySeams.askHidden), a person's act with their
  * password, never a value on the command line. Isolated store and state folder; made-up tokens; no model.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,11 +15,23 @@ import { mintApiToken } from "./api-tokens.js";
 import { runOperate, EXIT } from "./operate.js";
 import { standInToken } from "../test/flexible-sign-in-kit.js";
 
+// The model service the live check reaches: a scripted stand-in (flexible-relay-upstreams.ts replaced by vi.mock).
+const scripted = vi.hoisted(() => ({ origin: "http://127.0.0.1:9", calls: 0 }));
+vi.mock("./flexible-relay-upstreams.js", async importOriginal => {
+  const real = await importOriginal<typeof import("./flexible-relay-upstreams.js")>();
+  return { FLEXIBLE_RELAY_UPSTREAMS: { claude: { ...real.FLEXIBLE_RELAY_UPSTREAMS.claude, get origin() { return scripted.origin; } } } };
+});
+let upstream: Server;
+
 const NOW = new Date();
 const PASSWORD = "alex-password-1";
 let dir: string, state: string, file: string, store: Store, actToken: string;
 
-beforeEach(() => {
+beforeEach(async () => {
+  scripted.calls = 0;
+  upstream = createServer((request, response) => { request.resume(); request.on("end", () => { scripted.calls++; response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ input_tokens: 2 })); }); });
+  await new Promise<void>(done => upstream.listen(0, "127.0.0.1", () => done()));
+  scripted.origin = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-sign-in-cli-")));
   state = join(dir, "toolroll");
   mkdirSync(state);
@@ -32,7 +45,12 @@ beforeEach(() => {
   store.createApiToken({ id: minted.id, account: "alex", name: "act", secretHash: minted.hash, access: "act", expiresAt: new Date(NOW.getTime() + 86_400_000).toISOString(), by: "alex" }, NOW);
   actToken = minted.token;
 });
-afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => {
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+  upstream.closeAllConnections();
+  await new Promise(done => upstream.close(done));
+});
 
 /** One CLI run, as JSON, with a stand-in hidden prompt that answers `paste` (and records what it was asked). */
 async function cli(args: string[], paste: string | null, env: Record<string, string> = {}): Promise<{ code: number; out: Record<string, unknown>; asked: string[]; raw: string }> {
@@ -101,16 +119,21 @@ describe("config set flexible-sign-in", () => {
     expect(saved).toMatchObject({ code: EXIT.ok, out: { ok: true, saved: true, replaced: false, check: "not-checked", signIn: { state: "active" } } });
     expect(saved.asked).toEqual(["Paste the token from `claude setup-token`: "]);
     expect(saved.raw).not.toContain(first.slice(14, 30));
-    expect(await cli(["set", "flexible-sign-in", ...as()], second)).toMatchObject({ code: EXIT.ok, out: { replaced: true } });
+    // --no-check made no connection; without it, the live check runs once after the password is proved.
+    expect(scripted.calls).toBe(0);
+    expect(await cli(["set", "flexible-sign-in", ...as()], second)).toMatchObject({ code: EXIT.ok, out: { replaced: true, check: "accepted" } });
+    expect(scripted.calls).toBe(1);
+    expect(await cli(["show", "flexible-sign-in", "--check", ...as()], null)).toMatchObject({ code: EXIT.ok, out: { check: "accepted", signIn: { check: "accepted" } } });
+    expect(scripted.calls).toBe(2);
     expect(rows()).toEqual([{ person: "alex", state: "active" }]);
     expect(files()).toHaveLength(1);
-    expect(await cli(["show", "flexible-sign-in", ...as()], null)).toMatchObject({ code: EXIT.ok, out: { signIn: { state: "active", check: "not-checked" } } });
+    expect(await cli(["show", "flexible-sign-in", ...as()], null)).toMatchObject({ code: EXIT.ok, out: { signIn: { state: "active", check: "accepted" } } });
     expect(await cli(["show", "flexible-sign-in", ...as("alex", "not-it")], null)).toMatchObject({ code: EXIT.refused });
     expect(await cli(["clear", "flexible-sign-in", ...as()], null)).toMatchObject({ code: EXIT.ok, out: { removed: true } });
     expect(rows()).toEqual([]);
     expect(files()).toEqual([]);
     expect(await cli(["show", "flexible-sign-in", ...as()], null)).toMatchObject({ code: EXIT.ok, out: { signIn: { state: "none" } } });
-    expect(ledger().map(row => row["outcome"])).toEqual(["saved", "replaced", "retired", "removed", "retired"]);
+    expect(ledger().map(row => row["outcome"])).toEqual(["saved", "replaced", "retired", "checked", "removed", "retired"]);
     const everything = JSON.stringify(store.handle.prepare("SELECT * FROM action_ledger").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM flexible_sign_in").all());
     for (const value of [first, second]) expect(everything).not.toContain(value.slice(14, 30));
   });

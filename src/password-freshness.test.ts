@@ -549,7 +549,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // `config set flexible`: an instance operator proved as a person and the setting written in one transaction.
     "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
     // `config show|clear flexible-sign-in`: your own sign-in read, or removed, by you proved as a person in that transaction.
-    "src/operate.ts#flexibleSignInConfig@259>removed:store.transact(_)@7": 1,
+    "src/operate.ts#flexibleSignInConfig@259>removed:store.transact(_)@8": 1,
     "src/operate.ts#flexibleSignInConfig@259>shown:store.transact(_)@5": 1,
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,

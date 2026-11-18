@@ -79,7 +79,7 @@ function ssoFacts(actor: string, live: { on: boolean }): FreshFacts & { consumed
     consumeSsoNow: () => { facts.consumed++; const was = waiting; waiting = null; return () => { waiting = was; }; }, floor: () => 0, stamp: () => {} };
   return facts;
 }
-const save = (person: string, password: string, token: string, seams = {}) => saveFlexibleSignIn(store, { state, person, password, token, clock: () => NOW, seams });
+const save = (person: string, password: string, token: string, seams = {}) => saveFlexibleSignIn(store, { state, person, password, token, check: false, clock: () => NOW, seams });
 
 describe("saving: staged, placed, activated; the one before retired", () => {
   test("a save with the password typed now: one active row at the account's generation, the value at its own address, ledgered; a replace retires the old one and deletes its secret", async () => {

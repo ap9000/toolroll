@@ -383,7 +383,7 @@ import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "./flexible-available.js";
-import { flexibleSignInStatus, looksLikeClaudeCredential, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, tidyFlexibleSignIns } from "./flexible-sign-in.js";
+import { flexibleSignInStatus, looksLikeClaudeCredential, recheckFlexibleSignIn, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, signInCheckWords, statusCheck, tidyFlexibleSignIns } from "./flexible-sign-in.js";
 import { enableFlexible, FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, flexibleTermsWords, isFlexibleLevel, lowerFlexible, proposedFlexibleTerms, turnFlexibleOff, type FlexibleChoice, type FlexibleLevel, type FlexibleStanding, type FlexibleTerms } from "./flexible.js";
 import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
@@ -1041,8 +1041,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "now",
   // task tidy: look first (--preview), then put away exactly what was shown (--apply --digest).
   "preview", "apply",
-  // config set flexible-sign-in: save without the live check.
-  "no-check",
+  // config set flexible-sign-in: save without the live check; config show flexible-sign-in --check: check it again.
+  "no-check", "check",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -15340,6 +15340,7 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   if (extra.length > 0) return fail(write, json, command, "usage", "`toolroll config set flexible-sign-in` takes no value: it asks for the token at a hidden prompt.", EXIT.usage);
   if (repoGiven) return fail(write, json, command, "usage", "your Claude sign-in is yours, not a project's: no --repo", EXIT.usage);
   if (flags.has("no-check") && action !== "set") return fail(write, json, command, "usage", "--no-check is only for `config set flexible-sign-in`", EXIT.usage);
+  if (flags.has("check") && action !== "show") return fail(write, json, command, "usage", "--check is only for `config show flexible-sign-in --check`", EXIT.usage);
   const personOnly = "Only you, as a person with your Toolroll password, change your own Claude sign-in for threads; never a token, the lead, a chat app or a machine.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
   if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
@@ -15350,8 +15351,8 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
     ? "Your Claude sign-in for threads: none. Run `claude setup-token`, then `toolroll config set flexible-sign-in`."
     : status.state === "refused"
       ? "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`."
-      : `Your Claude sign-in for threads: saved ${status.savedAt.slice(0, 10)}, not checked. It powers only threads you start.`;
-  const statusData = (status: ReturnType<typeof flexibleSignInStatus>) => status.state === "none" ? { state: "none" } : { state: status.state, savedAt: status.savedAt, check: status.checkOutcome };
+      : `Your Claude sign-in for threads: saved ${status.savedAt.slice(0, 10)}. ${signInCheckWords(statusCheck(status))} It powers only threads you start.`;
+  const statusData = (status: ReturnType<typeof flexibleSignInStatus>) => status.state === "none" ? { state: "none" } : { state: status.state, savedAt: status.savedAt, check: status.checkOutcome, checkStatus: status.checkStatus };
 
   if (action === "show") {
     const shown = store.transact(() => {
@@ -15359,7 +15360,14 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
       return proved.ok && personProof(proved.method) ? flexibleSignInStatus(store, acting.name) : null;
     });
     if (shown === null) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
-    return succeed(write, json, command, { signIn: statusData(shown) }, () => [statusWords(shown)]);
+    if (!flags.has("check")) return succeed(write, json, command, { signIn: statusData(shown) }, () => [statusWords(shown)]);
+    // Check again (informational: it never clears a refusal), on the generation that is yours now.
+    let state: string;
+    try { state = dirname(realpathSync(context.databaseFile)); } catch { return fail(write, json, command, "no-sign-in", "Toolroll's state folder can't be found.", EXIT.refused); }
+    const again = await recheckFlexibleSignIn(store, state, { person: acting.name, clock });
+    if (!again.ok) return fail(write, json, command, "no-sign-in", statusWords({ state: "none" }), EXIT.refused);
+    const now = flexibleSignInStatus(store, acting.name);
+    return succeed(write, json, command, { signIn: statusData(now), check: again.check.outcome }, () => [signInCheckWords(again.check), statusWords(now)]);
   }
   if (action === "clear") {
     const removed = store.transact(() => {
@@ -15381,8 +15389,10 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   if (!shaped.ok) return fail(write, json, command, shaped.reason, shaped.message, EXIT.refused);
   let state: string;
   try { state = dirname(realpathSync(context.databaseFile)); } catch { return fail(write, json, command, "not-saved", "Toolroll's state folder can't be found. Nothing was saved.", EXIT.refused); }
-  const saved = await saveFlexibleSignIn(store, { state, person: acting.name, password: acting.token, token: shaped.token, clock });
+  // The live check runs after your password is proved (transaction A), unless --no-check.
+  const saved = await saveFlexibleSignIn(store, { state, person: acting.name, password: acting.token, token: shaped.token, check: !flags.has("no-check"), clock });
   if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
-  return succeed(write, json, command, { saved: true, replaced: saved.replaced, check: "not-checked", signIn: statusData(flexibleSignInStatus(store, acting.name)) },
-    () => [`${saved.replaced ? "Replaced" : "Saved"}. Not checked. It powers only threads you start; a password reset ends it.`]);
+  const checked = saved.check === null ? { outcome: "not-checked" as const } : saved.check;
+  return succeed(write, json, command, { saved: true, replaced: saved.replaced, check: checked.outcome, signIn: statusData(flexibleSignInStatus(store, acting.name)) },
+    () => [`${saved.replaced ? "Replaced" : "Saved"}. ${signInCheckWords(checked)} It powers only threads you start; a password reset ends it.`]);
 }

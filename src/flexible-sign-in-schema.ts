@@ -7,7 +7,9 @@
  *   never overwritten). A row is `staged` while its save is under way (with the one-use binding its activation must
  *   match: `save_op`, the proof it was made with, the account generation), `active` once that save committed (at most
  *   one per person), and `retiring` once replaced, removed, expired or reset (terminal: its secret is deleted, then
- *   the row). A row counts only while its account is active at the same generation.
+ *   the row). A row counts only while its account is active at the same generation. `check_outcome` and
+ *   `check_status` are the last live token-count check of that generation (informational: a check never clears or
+ *   widens anything).
  * - `thread_relay_call` and `thread_relay_pending` gain `sign_in_person` and `sign_in_generation`: whose sign-in, and
  *   which generation of it, a call was reserved and sent with. `thread_relay_call.sign_in_refused` marks a call Claude
  *   answered with an authentication refusal (HTTP 401, or 403 authentication_error): that generation of that person's
@@ -29,7 +31,8 @@ CREATE TABLE IF NOT EXISTS flexible_sign_in (
   retire_after       TEXT,
   activated_at       TEXT,
   retired_at         TEXT,
-  check_outcome      TEXT NOT NULL DEFAULT 'not-checked' CHECK (check_outcome IN ('not-checked', 'accepted', 'inconclusive', 'unreachable')),
+  check_outcome      TEXT NOT NULL DEFAULT 'not-checked' CHECK (check_outcome IN ('not-checked', 'accepted', 'refused', 'inconclusive', 'unreachable')),
+  check_status       INTEGER CHECK (check_status IS NULL OR check_status BETWEEN 100 AND 599),
   checked_at         TEXT,
   PRIMARY KEY (person, generation),
   CHECK ((state = 'staged') = (save_op IS NOT NULL)),
