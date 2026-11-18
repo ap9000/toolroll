@@ -15334,11 +15334,14 @@ async function flexibleConfig(action: string, value: string | undefined, repoGiv
   }
   if (acting === null) return fail(write, json, command, "usage", value === "on" ? "Turning threads on asks for your Toolroll password at a hidden prompt: run it in your own terminal." : "This needs your name and password: run it in your own terminal to be asked, or add `--as <your Toolroll name> --token <your password>`.", EXIT.usage);
   const by = acting;
+  // The solo operator's password-free Off is no credential reading of any kind (no session, no method): it stands only
+  // while this install is solo and they are its one operator, read again in the write. Every other road proves a password.
   const saved = store.transact(() => {
     // On relays the person's Claude sign-in: a credential act (a password typed for this command). Off only narrows.
-    const verified = by.token === "" && value === "off" ? (soloOperatorOf(store) === by.name ? { ok: true as const, method: "session" as const } : { ok: false as const })
+    const verified = by.token === "" && value === "off" ? null
       : value === "on" ? credentialApprover(store, by.name, by.token) : authenticateApprover(store, by.name, by.token);
-    if (!verified.ok || !personProof(verified.method) || !store.isInstanceOperator(by.name)) return false;
+    const proved = verified === null ? soloOperatorOf(store) === by.name : verified.ok && personProof(verified.method);
+    if (!proved || !store.isInstanceOperator(by.name)) return false;
     setFlexibleSetting(store, value === "on", by.name, clock());
     return true;
   });
