@@ -17,7 +17,8 @@ import { accentNote, ACCENT_PRESETS } from "../accent-colors.js";
 import type { Authority } from "../local-owner.js";
 import { installModeLine, justMeAllowed, TEAM_FACT_WORDS, type InstallModeRead, type TeamFact } from "../install-mode.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
-import { kitSectionForm } from "../settings-kit.js";
+import { kitSectionForm, secretInput } from "../settings-kit.js";
+import { signInCheckWords, statusCheck, type SignInStatus } from "../flexible-sign-in.js";
 import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
 import type { LimitedAccess, ProjectResolver } from "./route-table.js";
 import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
@@ -248,6 +249,11 @@ export type GeneralDeps = {
   readonly taskSizing: () => { on: boolean; chosen: boolean; sizer: "claude" | "jev" | null; available: "claude" | "jev"; byEnv: boolean };
   /** Interactive agent threads (beta), as saved (flexible-available.ts flexibleSetting). */
   readonly flexible: () => { on: boolean };
+  /** A person's own Claude sign-in for threads, from its record only (flexible-sign-in.ts flexibleSignInStatus). */
+  readonly flexibleSignIn: (name: string) => SignInStatus;
+  /** A laptop install whose owner never set a password (task-outcome-cli.ts passwordFreeOwner): no credential act can
+   * succeed here yet. */
+  readonly passwordFree: () => boolean;
 };
 
 const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
@@ -474,6 +480,8 @@ function flexibleSection(deps: GeneralDeps): SectionImpl<FlexibleSummary> {
       const home = sectionHref(declaration);
       const on = summary?.on === true;
       const title = "Interactive agent threads (beta)";
+      // Turning them on is a credential act: with no password on this computer yet, say how to get one instead.
+      if (!on && deps.passwordFree()) return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), passwordFirst(home))}</div>` };
       const words = joinHtml([
         html`<p>${on ? "Turn them off. No new thread or turn starts, and any thread running now is stopped." : `Turn them on. Press T in the workbench to work with Claude Code in a thread. ${FLEXIBLE_SETTING_WORDS} Each project still needs its own Flexible terms, and each thread shows its terms before it starts.`}</p>`,
         problem === null ? "" : notice(problem),
@@ -481,6 +489,69 @@ function flexibleSection(deps: GeneralDeps): SectionImpl<FlexibleSummary> {
         html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
       ]);
       return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };
+    },
+  };
+}
+
+/** What a credential act's change document says on a laptop whose owner never set a password (no form: none can pass). */
+function passwordFirst(home: string): Html {
+  return joinHtml([
+    html`<p>This needs a Toolroll password, and you haven't set one. Run <code class="k-mono">toolroll password set</code> in a terminal, then sign in here with it.</p>`,
+    html`<div class="k-acts">${btn("Back", { variant: "ghost", href: home })}</div>`,
+  ]);
+}
+
+type SignInSummary = { status: SignInStatus; threadsOn: boolean; canSave: boolean; canCheck: boolean; canRemove: boolean; passwordFree: boolean };
+/** Your Claude sign-in for threads (flexible-sign-in.ts): each person's own, never shared and never shown. The record
+ * only (saved when, what the last check found, or that Claude didn't accept it); Add or Replace, Check again and Remove
+ * each on their own change document. */
+function flexibleSignInSection(deps: GeneralDeps): SectionImpl<SignInSummary> {
+  const title = "Your Claude sign-in for threads";
+  return {
+    loadSummary: ctx => ({ status: deps.flexibleSignIn(ctx.person.name), threadsOn: deps.flexible().on, canSave: ctx.can["save"] === true, canCheck: ctx.can["check"] === true,
+      canRemove: ctx.can["remove"] === true, passwordFree: deps.passwordFree() }),
+    render: ({ summary, attrs }) => {
+      const status = summary.status;
+      const lead = status.state === "none" ? "None. Threads use your own Claude sign-in: run claude setup-token in a terminal, then add the token here. It powers only threads you start."
+        : status.state === "refused" ? `Claude didn't accept it. Run claude setup-token again and replace it.`
+        : `Saved ${status.savedAt.slice(0, 10)}. ${signInCheckWords(statusCheck(status))} It powers only threads you start; a password reset ends it.`;
+      const acts = status.state === "none" ? "" : html`<div class="k-acts">${summary.canCheck ? btn("Check again", { sm: true, variant: "ghost", href: "/settings/change/flexible-sign-in-check" }) : ""}${summary.canRemove ? btn("Remove", { sm: true, variant: "ghost", href: "/settings/change/flexible-sign-in-clear" }) : ""}</div>`;
+      return settingsSection({ id: "flexible-sign-in", title, state: status.state === "none" ? " · none" : status.state === "refused" ? " · not accepted" : " · saved", attrs, lead,
+        ...(summary.canSave ? { right: btn(status.state === "none" ? "Add" : "Replace", { sm: true, href: "/settings/change/flexible-sign-in" }) } : {}),
+        body: joinHtml([summary.threadsOn ? "" : infoLine("Interactive agent threads are off. An instance operator turns them on above."), acts]) });
+    },
+    refusal: "Only you change your own Claude sign-in for threads.",
+    renderChange: ({ declaration, summary, problem, document }) => {
+      const home = `${sectionHref(declaration)}`;
+      const page = (heading: string, words: Html) => ({ title: heading, body: html`<div data-kit-page>${phoneHeader(heading, { back: home })}${doc(docHeader({ title: heading, back: [home, "General"], same: true }), words)}</div>` });
+      const status = summary?.status ?? { state: "none" as const };
+      if (document === "flexible-sign-in-clear") {
+        if (status.state === "none") return page("Remove your Claude sign-in", html`<p>You have no Claude sign-in for threads saved.</p>`);
+        return page("Remove your Claude sign-in", joinHtml([
+          html`<p>Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account.</p>`,
+          problem === null ? "" : notice(problem),
+          kitSectionForm({ proof: "flexible-sign-in-clear", action: "/settings/flexible-sign-in-clear", id: "flexible-sign-in-clear-form", native: true, save: { label: "Remove", variant: "danger" }, confirm: "Remove your Claude sign-in for threads", body: html`` }),
+          html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+        ]));
+      }
+      if (document === "flexible-sign-in-check") {
+        if (status.state === "none") return page("Check your Claude sign-in", html`<p>You have no Claude sign-in for threads saved.</p>`);
+        return page("Check your Claude sign-in", joinHtml([
+          html`<p>Toolroll asks Claude to count the tokens of one word with your sign-in. It's only a check: it changes nothing, and it never clears a sign-in Claude didn't accept.</p>`,
+          problem === null ? "" : notice(problem),
+          kitSectionForm({ proof: "flexible-sign-in-check", action: "/settings/flexible-sign-in-check", id: "flexible-sign-in-check-form", native: true, save: { label: "Check again" }, confirm: "Check your Claude sign-in for threads", body: html`` }),
+          html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+        ]));
+      }
+      const heading = status.state === "none" ? "Add your Claude sign-in" : "Replace your Claude sign-in";
+      if (summary?.passwordFree === true) return page(heading, passwordFirst(home));
+      return page(heading, joinHtml([
+        html`<p>Threads you start run on your own Claude plan, through this sign-in. Toolroll keeps it for you alone and never shows it again.</p>`,
+        problem === null ? "" : notice(problem),
+        kitSectionForm({ proof: "flexible-sign-in", action: "/settings/flexible-sign-in", id: "flexible-sign-in-form", native: true, save: { label: "Save" }, confirm: heading,
+          body: secretInput({ id: "flexible-sign-in-token", name: "token", label: "Your Claude sign-in", required: true, hint: "In a terminal, run claude setup-token, finish signing in, and paste the token it prints." }) }),
+        html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+      ]));
     },
   };
 }
@@ -495,6 +566,7 @@ export function generalSections(deps: GeneralDeps): SectionImpls {
     "install-mode": installModeSection(deps),
     "task-sizing": taskSizingSection(deps),
     flexible: flexibleSection(deps),
+    "flexible-sign-in": flexibleSignInSection(deps),
     advanced: advancedSection(),
     "local-mode": localModeSection(deps),
   } as unknown as SectionImpls;

@@ -657,6 +657,12 @@ post("settings", "settings.task-sizing", "/settings/task-sizing", { scope: "step
 // Interactive agent threads (beta; flexible-available.ts): an instance operator's step-up from a browser sign-in only
 // (a solo session stands in; a team needs the password; never a token), or the laptop owner's own act.
 post("settings", "settings.flexible", "/settings/flexible", { callers: ["cookie"], scope: "step-up", limited: "deny", ...operator("An instance operator turns interactive agent threads on or off.", "/settings/general?section=flexible") });
+// Your own Claude sign-in for threads (flexible-sign-in.ts), from a browser sign-in only (never a token): saving is a
+// credential act for yourself only, checking it again a step-up; removing is that person's step-up, or an instance
+// operator's for someone else (the handler checks which). A project-limited approver keeps their own.
+post("settings", "settings.flexible-sign-in", "/settings/flexible-sign-in", { callers: ["cookie"], scope: "step-up", limited: "self", ...approver("An approver saves their own Claude sign-in for threads.", "/settings/general?section=flexible-sign-in") });
+post("settings", "settings.flexible-sign-in-check", "/settings/flexible-sign-in-check", { callers: ["cookie"], scope: "step-up", limited: "self", ...approver("An approver checks their own Claude sign-in for threads.", "/settings/general?section=flexible-sign-in") });
+post("settings", "settings.flexible-sign-in-clear", "/settings/flexible-sign-in-clear", { callers: ["cookie"], scope: "step-up", limited: "self" });
 post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.

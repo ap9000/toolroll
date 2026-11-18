@@ -68,6 +68,9 @@ import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "../flexible-available.js";
+import { flexibleSignInStatus, recheckFlexibleSignIn, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, signInCheckWords, tidyFlexibleSignIns } from "../flexible-sign-in.js";
+import { passwordFreeOwner } from "../task-outcome-cli.js";
+import { realpathSync } from "node:fs";
 import { enableFlexible, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleSettingsView, isFlexibleLevel, lowerFlexible, turnFlexibleOff } from "../flexible.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
@@ -2597,6 +2600,9 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-quick": leadQuick,
     "settings.task-sizing": taskSizingAct,
     "settings.flexible": flexibleSwitchAct,
+    "settings.flexible-sign-in": flexibleSignInAct,
+    "settings.flexible-sign-in-check": flexibleSignInCheckAct,
+    "settings.flexible-sign-in-clear": flexibleSignInClearAct,
     "settings.lead-promise-cancel": leadPromiseCancel,
     "settings.lead-on": leadOn,
     "settings.code-map": codeMapAct("switch"),
@@ -2867,7 +2873,9 @@ ${postForm("/settings/chat-approval/save", html`\
       return true;
     });
     if (!saved) return back("problem", wanted === "on" ? "Turning interactive agent threads on needs your Toolroll password, typed now." : "Enter your Toolroll password to change interactive agent threads.");
-    return done("said", wanted === "on" ? "Interactive agent threads are on. Press T in the workbench to start one with Claude Code." : "Interactive agent threads are off. Any thread still running is stopped.");
+    // On: the next step is each person's own Claude sign-in, so the answer lands on it.
+    if (wanted === "on") return sayTo(response, "/settings/general?section=flexible-sign-in")("said", "Threads are on. Next, add your Claude sign-in.");
+    return done("said", "Interactive agent threads are off. Any thread still running is stopped.");
   }
   // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
   // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a
@@ -3052,6 +3060,8 @@ ${postForm("/settings/chat-approval/save", html`\
     installMode: () => installModeNow(store),
     taskSizing: () => taskSizingSetting(store),
     flexible: () => flexibleSetting(store),
+    flexibleSignIn: name => flexibleSignInStatus(store, name),
+    passwordFree: () => passwordFreeOwner(store),
   });
   /** What Computers' sections read (settings plan F2), none of it from the request. */
   const computersDeps = {
@@ -3149,6 +3159,74 @@ ${postForm("/settings/chat-approval/save", html`\
       if (!answer.ok) return refuse(response, who, answer.status, answer.message, "/settings");
       return sendScreen(response, 200, screen(answer.title, answer.body, { chrome: chromeFor(project, "settings"), forceSensitive: true }));
     };
+  }
+  /** Toolroll's state folder (beside the database), where people's sign-ins rest. */
+  const signInState = (): string | null => {
+    const file = store.databaseFile();
+    if (file === null || file === "" || file === ":memory:") return null;
+    try { return dirname(realpathSync(file)); } catch { return null; }
+  };
+  // Settings → General: your own Claude sign-in for threads (flexible-sign-in.ts). A credential act for yourself only,
+  // from a full browser session (a token never reaches this route; never the laptop owner's act, a session standing in or
+  // Passwordless): the token from `claude setup-token`, shape-checked, then transaction A proves the person (a password
+  // typed now, or a one-use identity-provider re-check), the live check runs, and transaction B proves it again. The
+  // token is never echoed: every answer is Toolroll's own words. A `person` field (someone else's) is refused.
+  async function flexibleSignInAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.flexibleSignIn);
+    const done = sayTo(response, "/settings/general?section=flexible-sign-in");
+    const back = sayTo(response, "/settings/change/flexible-sign-in");
+    if (["token", "password"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing was saved.");
+    if (body.sent.has("person")) return back("problem", "Your Claude sign-in is always your own. Nothing was saved.");
+    if (who.authority !== "full") return back("problem", "Saving your Claude sign-in needs your Toolroll password, typed now. Nothing was saved.");
+    const paste = setupTokenFromPaste(body.get("token") ?? "");
+    if (!paste.ok) return back("problem", paste.message);
+    const state = signInState();
+    if (state === null) return back("problem", "Toolroll's state folder can't be found. Nothing was saved.");
+    const saved = await saveFlexibleSignIn(store, { state, person: who.name, password: body.get("password") ?? "", token: paste.token, check: true, clock: () => now });
+    if (!saved.ok) return back("problem", saved.message);
+    return done("said", `${saved.replaced ? "Replaced" : "Saved"}. ${signInCheckWords(saved.check ?? { outcome: "not-checked" })}`);
+  }
+  // Check your own sign-in again: the ordinary step-up, then the live check on the generation that is yours now.
+  // Informational: it never clears a sign-in Claude didn't accept.
+  async function flexibleSignInCheckAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.flexibleSignInCheck);
+    const done = sayTo(response, "/settings/general?section=flexible-sign-in");
+    const back = sayTo(response, "/settings/change/flexible-sign-in-check");
+    if (body.sent.getAll("password").length > 1) return back("problem", "That form was sent twice over. Nothing was checked.");
+    const proved = store.transact((): boolean => authenticateApprover(who, body.get("password") ?? "").ok);
+    if (!proved) return back("problem", "Enter your Toolroll password to check your Claude sign-in.");
+    const state = signInState();
+    const again = state === null ? null : await recheckFlexibleSignIn(store, state, { person: who.name, clock: () => now });
+    if (again === null || !again.ok) return back("problem", "You have no Claude sign-in for threads saved. Add one first.");
+    return done("said", signInCheckWords(again.check));
+  }
+  // Remove a Claude sign-in for threads: your own (the ordinary step-up; a solo session stands in), or, for an instance
+  // operator, someone else's (People). It only narrows: one transaction retires that person's rows; it never reads,
+  // shows or sets anyone's sign-in, and never waits on a keychain or the network.
+  async function flexibleSignInClearAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.flexibleSignInClear);
+    const person = (body.get("person") ?? "").trim() || who.name;
+    const self = person === who.name;
+    const done = sayTo(response, self ? "/settings/general?section=flexible-sign-in" : "/people");
+    const back = sayTo(response, self ? "/settings/change/flexible-sign-in-clear" : "/people");
+    if (["person", "password"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const removed = store.transact(() => {
+      if (!self && !store.isInstanceOperator(who.name)) return null;
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return null;
+      return removeFlexibleSignIn(store, { person, by: who.name, now });
+    });
+    if (removed === null) return back("problem", self ? "Enter your Toolroll password to remove your Claude sign-in." : "An instance operator removes someone's Claude sign-in for threads, with their password.");
+    const state = signInState();
+    if (state !== null) void tidyFlexibleSignIns(store, state, { now, person }).catch(() => { /* the upkeep deletes it */ });
+    return done("said", !removed.removed ? (self ? "You had no Claude sign-in for threads saved." : `${person} had no Claude sign-in for threads saved.`)
+      : self ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
+        : `Removed ${person}'s Claude sign-in for threads. Their threads can't reach Claude until they add one again.`);
   }
   return { registrations, modelsView };
 }

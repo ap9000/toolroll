@@ -127,6 +127,11 @@ export const CONSOLE_FORMS = {
   justMe: formContract("POST /settings/install-mode/solo", ["password"]),
   taskSizing: formContract("POST /settings/task-sizing", ["password", "enabled", "sizer"]),
   flexibleSwitch: formContract("POST /settings/flexible", ["password", "enabled"]),
+  // Your own Claude sign-in for threads (flexible-sign-in.ts): saved (the token from `claude setup-token`, a credential
+  // act), checked again, or removed (yours; an instance operator may remove someone else's, never read or set it).
+  flexibleSignIn: formContract("POST /settings/flexible-sign-in", ["token", "password"]),
+  flexibleSignInCheck: formContract("POST /settings/flexible-sign-in-check", ["password"]),
+  flexibleSignInClear: formContract("POST /settings/flexible-sign-in-clear", ["person", "password"]),
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   // Flexible projects (flexible.ts, slice F1): turn on (the shown terms' digest and a password), lower (max), turn off.
   projectFlexible: formContract("POST /settings/project/flexible", ["repo", "action", "max", "digest", "password"]),

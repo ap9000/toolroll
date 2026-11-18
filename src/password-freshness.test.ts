@@ -396,7 +396,9 @@ describe("where freshness may be honoured", () => {
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
+      // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
+      "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -621,6 +623,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Settings → General: task sizing, an instance operator's step-up proved and written in one transaction.
     "src/server/settings.ts#createSettingsHandlers@1>taskSizingAct@116>saved:store.transact(_)@2": 1,
     // Settings → General: interactive agent threads, an instance operator's step-up proved and written in one transaction.
+    // Your own Claude sign-in for threads: checked again, or removed (yours, or an operator removing someone else's), each
+    // proved in its own transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>flexibleSignInCheckAct@151>proved:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>flexibleSignInClearAct@152>removed:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>flexibleSwitchAct@117>saved:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,

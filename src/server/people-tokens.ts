@@ -1,3 +1,4 @@
+import { flexibleSignInStatus } from "../flexible-sign-in.js";
 import { handlersOf } from './handler-registry.js';
 import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
@@ -108,6 +109,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         seen: seen === null ? `Joined ${one.addedAt.slice(0, 10)}` : now.getTime() - seen < 5 * 60_000 ? "Signed in now" : `Active ${new Date(seen).toISOString().slice(11, 16)} UTC`,
         joined: one.addedAt.slice(0, 10), activity: personHref(one.name),
         acts: store.recentActsOf(one.name).map(act => `${act.kind} ${act.subject} ${act.at.slice(0, 16).replace("T", " ")}`),
+        threadSignIn: approverView && flexibleSignInStatus(store, one.name).state !== "none",
       };
     });
     const invites = approverView ? store.openInvites(now) : [];

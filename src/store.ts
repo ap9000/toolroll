@@ -11265,6 +11265,9 @@ export class Store {
       this.db
         .prepare("UPDATE approver SET revoked_at = ?, revoked_by = ?, generation = generation + 1 WHERE name = ?")
         .run(stamp, by, name);
+      // v172: their Claude sign-ins for threads end with them, in this transaction (flexible-sign-in.ts: retiring is
+      // terminal; the upkeep deletes the secrets). They already stopped counting with the generation; this makes it so.
+      this.db.prepare("UPDATE flexible_sign_in SET state = 'retiring', save_op = NULL, retire_after = NULL, retired_at = ? WHERE person = ? AND state IN ('staged', 'active')").run(stamp, name);
       // v160: the person's own view preference goes with the account (a name is never reused). Only a display
       // preference: a damaged or missing table never blocks a revocation (a savepoint keeps its failure to itself, and
       // with the account revoked the row is never read for anyone).

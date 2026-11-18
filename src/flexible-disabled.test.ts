@@ -264,7 +264,10 @@ describe("the switch can't become an override", () => {
     // action reaches the switch or a project's terms.
     const writes = ROUTES.filter(row => row.method !== "GET" && (/flexible/i.test(row.id) || /flexible/i.test(row.pattern)));
     expect(writes.map(row => ({ id: row.id, method: row.method, callers: row.callers }))).toEqual([
-      { id: "settings.project-flexible", method: "POST", callers: ["cookie"] }, { id: "settings.flexible", method: "POST", callers: ["cookie"] }]);
+      { id: "settings.project-flexible", method: "POST", callers: ["cookie"] }, { id: "settings.flexible", method: "POST", callers: ["cookie"] },
+      // Your own Claude sign-in for threads (flexible-sign-in.ts): a browser sign-in's only, too.
+      { id: "settings.flexible-sign-in", method: "POST", callers: ["cookie"] }, { id: "settings.flexible-sign-in-check", method: "POST", callers: ["cookie"] },
+      { id: "settings.flexible-sign-in-clear", method: "POST", callers: ["cookie"] }]);
     for (const one of product.filter(file => /(^|\/)(mcp[^/]*|lead-tools|chat-actions|chat-decide|team-http)\.ts$/.test(file.path))) expect(one.text, one.path).not.toMatch(/flexible/i);
   });
 

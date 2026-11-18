@@ -134,7 +134,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(token.status).toBeGreaterThanOrEqual(400);
     expect(flexibleAvailable(world.store)).toBe(false);
     expect(ledger(world)).toEqual([]);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect(flexibleAvailable(world.store)).toBe(true);
     expect(said(await post("/settings/flexible", { enabled: "off", password }))).toContain("Interactive agent threads are off");
     expect(flexibleAvailable(world.store)).toBe(false);
@@ -151,12 +151,12 @@ describe("Settings → General, and a thread through the console", () => {
     expect(said(await post("/settings/flexible", { enabled: "on", password: "" }))).toContain("needs your Toolroll password, typed now");
     expect(flexibleAvailable(world.store)).toBe(false);
     expect(ledger(world)).toHaveLength(before);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect(flexibleAvailable(world.store)).toBe(true);
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
     expect(said(await post("/settings/flexible", { enabled: "off", password: "" }))).toContain("Interactive agent threads are off");
     expect(flexibleAvailable(world.store)).toBe(false);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
     expect((await (await fetch(`${base}/settings/general`, { headers: { cookie } })).text())).toContain(`On. ${FLEXIBLE_SETTING_WORDS.replaceAll("'", "&#39;")}`);
   });
