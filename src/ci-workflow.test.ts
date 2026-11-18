@@ -179,10 +179,20 @@ describe("the CI workflows", () => {
       expect(run, file).toContain("bwrap --version");
       expect(run, file).not.toMatch(/\|\| true\s*$/);
     }
-    // Playwright's --with-deps also reaches Ubuntu's mirrors: the same bounded retries, and a failure still fails.
-    const playwright = (workflow("journeys.yml").jobs["journeys"]?.steps ?? []).find(step => (step.run ?? "").includes("playwright@"))!;
-    expect(playwright.run).toMatch(/for attempt in 1 2 3; do\n\s+timeout 140 npx -y playwright@[0-9.]+ install --with-deps chromium && exit 0/);
+    // PR #469: all browser-install retries lost to another apt process holding dpkg's frontend lock.
+    // System dependencies finish first, with apt itself waiting for the lock (no check-then-install race).
+    const journeySteps = workflow("journeys.yml").jobs["journeys"]!.steps!;
+    const deps = journeySteps.find(step => (step.run ?? "").includes("install-deps chromium"))!;
+    expect(deps.run).toContain(`printf 'DPkg::Lock::Timeout "180";\\nAcquire::Retries "3";\\n' | sudo tee /etc/apt/apt.conf.d/99-toolroll-lock-timeout`);
+    expect(deps.run).toMatch(/timeout 280 npx -y playwright@[0-9.]+ install-deps chromium/);
+    expect((deps as { "timeout-minutes"?: number })["timeout-minutes"]).toBe(5);
+    const playwright = journeySteps.find(step => /playwright@[0-9.]+ install chromium/.test(step.run ?? ""))!;
+    expect(journeySteps.indexOf(deps)).toBeLessThan(journeySteps.indexOf(playwright));
+    expect(playwright.run).toMatch(/for attempt in 1 2 3; do\n\s+timeout 140 npx -y playwright@[0-9.]+ install chromium && exit 0/);
     expect(playwright.run!.trim().endsWith("exit 1")).toBe(true);
+    for (const one of workflows) for (const job of Object.values(one.jobs)) {
+      expect(runsOf(job).join("\n"), one.file).not.toMatch(/playwright[^\n]*install[^\n]*--with-deps/);
+    }
   });
 
   test("every required check reports under its exact name on an ordinary pull request, run or skipped", () => {
