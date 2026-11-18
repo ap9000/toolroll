@@ -51,6 +51,26 @@ describe("v174", () => {
     } finally { upgraded.close(); }
   });
 
+  test("the chain from a v172 file: v173's column, then v174's tables, in order, and no saved row changes", () => {
+    // A v172 file: neither v173's column (run.plan_problems_json) nor v174's tables.
+    const file = v173File();
+    const raw = new DatabaseSync(file);
+    raw.exec("ALTER TABLE run DROP COLUMN plan_problems_json");
+    raw.exec("UPDATE schema_version SET version = 172");
+    raw.close();
+    const steps: string[] = [];
+    const upgraded = openStore(file, { migrationStep: one => { steps.push(one); } });
+    try {
+      expect(version(upgraded)).toBe(174);
+      expect(steps.indexOf("plan-problems-column")).toBeGreaterThanOrEqual(0);
+      expect(steps.indexOf("flexible-everyday")).toBeGreaterThan(steps.indexOf("plan-problems-column"));
+      expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('run') WHERE name = 'plan_problems_json'").get()?.["n"]).toBe(1);
+      for (const table of V174_TABLES) expect(upgraded.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+      expect(upgraded.lookupRef("kept")).not.toBeNull();
+    } finally { upgraded.close(); }
+    expect(SCHEMA_VERSION).toBe(174);
+  });
+
   test("a crash after the step resumes to the same shape", () => {
     const file = v173File();
     expect(() => openStore(file, { migrationStep: one => { if (one === "flexible-everyday") throw new Error("crash"); } })).toThrow(/crash/);
