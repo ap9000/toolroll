@@ -90,6 +90,8 @@ export function createWorld(root, scenario = 'smoke', outer = process.env) {
       'test/math.test.js': test + "test('negative numbers', () => assert.equal(subtract(-2, 3), -5));\n" },
     conclusion: `${MARKER}: Added coverage for negative numbers.` } });
   provider.add('runtime-verification', { role: 'lead', when: [], answer: { text: 'The subtraction change is available for review.', calls: [] } });
+  // A thread's turns (the threads scenarios): the agent answers in words and its turn finishes (not `unknown`).
+  provider.add('runtime-verification', { role: 'thread', when: [/Review the (second )?subtraction change|explain the change/], answer: { text: 'I read the subtraction change; it does what it says.' } });
   for (const name of AGENT_CLIS) exe(name, '#!/bin/sh\necho "Not installed (stand-in)" >&2\nexit 127\n');
   exe('claude', `#!/bin/sh\n${scenario === 'never-initialized' ? `case "$1" in --version|--help|auth|mcp) ;; *) echo '${MARKER}: exited before initialization' >&2; exit 1 ;; esac\n` : ''}exec ${word(provider.shims.claude)} "$@"\n`);
   // Codex must never turn signed-in just because an auth probe returned zero.
