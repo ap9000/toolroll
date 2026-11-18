@@ -93,7 +93,7 @@ describe("a first task filed from a shell with no coding agent signed in", () =>
 });
 
 describe("a task filed from a shell waits for its plan to be asked for, and the reply says how", () => {
-  const NEXT = "Next: open `toolroll` and press p on it to ask for its plan.";
+  const NEXT = "Next: run `toolroll`, select it and press p to ask for a plan.";
 
   test("filing asks for no plan; the reply points at the terminal app's p, which is offered", async () => {
     builder("ready");

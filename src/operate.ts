@@ -9778,7 +9778,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: open `toolroll` and press p on it to ask for its plan." : null;
+    ? "Next: run `toolroll`, select it and press p to ask for a plan." : null;
   return succeed(
     write,
     json,
