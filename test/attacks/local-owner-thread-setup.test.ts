@@ -71,3 +71,20 @@ describe("the threads setup from a local owner's session", () => {
     expect(flexibleAvailable(world.store)).toBe(false);
   });
 });
+
+describe("the Ship door, from anywhere but this computer", () => {
+  test("a local owner's cookie on a forwarded request signs in no one: the Ship road answers nothing and records nothing", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const thread = "a".repeat(32);
+    const forwarded = await world.send(`/agents/live/thread/${thread}/ship`, "POST", { cookie, origin: world.origin, "x-forwarded-for": "203.0.113.7",
+      "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf }).toString());
+    expect(forwarded.status).not.toBe(200);
+    expect(forwarded.body).not.toContain("ship-terms");
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_ship").get()?.["n"]).toBe(0);
+    // The same cookie from this computer reaches the road (there's no such thread here, so it says so).
+    const local = await world.send(`/agents/live/thread/${thread}/ship`, "POST", { cookie, origin: world.origin,
+      "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf }).toString());
+    expect(local.status).toBe(404);
+    expect(JSON.parse(local.body)).toEqual({ outcome: "refused", words: "There's no such thread." });
+  });
+});

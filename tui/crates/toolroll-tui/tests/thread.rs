@@ -772,3 +772,66 @@ fn x_and_capital_x_on_a_thread_ask_first_then_post_stop_or_end_for_that_thread()
         assert!(fields.is_empty());
     }
 }
+
+fn ship_terms(laptop: bool) -> ActOutcome {
+    ActOutcome::ShipTerms {
+        key: "3".repeat(32),
+        digest: "4".repeat(32),
+        lines: vec![
+            "  Task      Changes from a Flexible thread".into(),
+            "  Ships     1 changed file from this thread, as commit 0123456789ab".into(),
+            "  Merges    Toolroll merges it by itself once the project's checks pass on this exact commit.".into(),
+        ],
+        laptop,
+        command: (!laptop).then(|| format!("toolroll thread ship {} --key {}", fake::THREAD, "3".repeat(32))),
+    }
+}
+
+#[test]
+fn a_on_a_thread_reads_the_ship_terms_whole_then_enter_ships_on_the_laptop_road_only() {
+    let mut app = thread_app(window());
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    let fx = app.key(key('a'));
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship", fake::THREAD));
+    assert!(fields.is_empty(), "asking for the terms ships nothing");
+    // The laptop road: the sheet, read to the end, then Enter presses exactly its key and digest.
+    app.update(Msg::Acted(Ok(ship_terms(true))));
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Ship approves exactly this:"), "{shown}");
+    assert!(shown.contains("Enter") && shown.contains("Ship it"), "{shown}");
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship", fake::THREAD));
+    assert_eq!(fields, &vec![("terms".to_string(), "3".repeat(32)), ("digest".to_string(), "4".repeat(32))]);
+    // Off it: Enter hands the yes to the command line (a password typed there), and posts nothing.
+    app.update(Msg::Acted(Ok(ship_terms(false))));
+    screen(&mut app, 120, 40);
+    let fx = app.key(enter());
+    assert_eq!(fx, vec![Effect::Scrollback(vec![format!("toolroll thread ship {} --key {}", fake::THREAD, "3".repeat(32))])]);
+    assert!(app.status.as_ref().is_some_and(|(_, w)| w.contains("password typed now")), "{:?}", app.status);
+}
+
+#[test]
+fn while_a_thread_ships_x_stops_the_ship_and_r_sends_it_back_with_a_note() {
+    let mut app = thread_app(window());
+    let mut list = threads_with("finished", false);
+    list["threads"][0]["ship"] = json!("armed");
+    app.update(Msg::Threads(Ok(parse(list))));
+    assert_eq!(app.selected_item().map(|i| i.word.as_str()), Some("Question"));
+    app.key(key('x'));
+    assert!(screen(&mut app, 120, 30).contains("Stop this Ship for good?"));
+    let fx = app.key(key('y'));
+    let [Effect::Act { path, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship/cancel", fake::THREAD));
+    app.key(key('r'));
+    for c in "Keep the old name".chars() {
+        app.key(key(c));
+    }
+    assert!(screen(&mut app, 120, 30).contains("Send back:"));
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship/send-back", fake::THREAD));
+    assert_eq!(fields[0], ("feedback".to_string(), "Keep the old name".to_string()));
+    assert_eq!(fields[1].1.len(), 32);
+}

@@ -113,7 +113,7 @@ const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | 
   "turn-expired": "This turn waited past midnight UTC, so it didn't start. Send the message again.",
   "thread-ended": "This thread has ended. Press T to start a new one.",
 });
-/** Whether a thread ended (End is final: flexible_thread_meta, v173). Read inside the caller's transaction. */
+/** Whether a thread ended (End is final: flexible_thread_meta, v174). Read inside the caller's transaction. */
 const threadEnded = (store: Store, thread: string): boolean =>
   store.handle.prepare("SELECT 1 AS ended FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(thread) !== undefined;
 const refuse = (reason: keyof typeof WORDS): FlexibleTurnRefusal => ({ ok: false, reason, message: WORDS[reason] });
@@ -455,7 +455,7 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, now, true);
     if (spend !== null) return withdraw(spend);
     store.handle.prepare("UPDATE thread_turn SET status = 'running', started_at = ? WHERE id = ? AND status = 'admitted'").run(at, turn.id);
-    // What it was begun under (v173): its owner's removal epoch and account generation now, written once. The upkeep's
+    // What it was begun under (v174): its owner's removal epoch and account generation now, written once. The upkeep's
     // backstop compares these, never today's, so a removal and a fresh save since still end it.
     const epoch = Number(store.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(turn.owner)?.["epoch"] ?? 0);
     store.handle.prepare("INSERT INTO flexible_turn_dispatch (turn, person, sign_in_epoch, account_generation) VALUES (?, ?, ?, ?) ON CONFLICT (turn) DO NOTHING")

@@ -258,8 +258,9 @@ describe("the switch can't become an override", () => {
   test("only a person's step-up writes it: the Settings route and the CLI twin, each proving and writing in one transaction", () => {
     const writers = product.filter(one => /\bsetFlexibleSetting\(/.test(code(one.text)) && one.path !== join("src", "flexible-available.ts")).map(one => one.path).sort();
     expect(writers).toEqual([join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
-    // On is a credential act (a password typed now, every install); off the ordinary step-up or the laptop owner's act.
-    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(wanted === "on"\) \{\n {8}if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\} else \{\n {8}if \(who\.authority !== "full" && localActNow\(store, "flexible-switch"\) === null\) return false;\n {8}if \(!authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\}\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
+    // On is a credential act (a password typed now, every install; a laptop owner's session types it into the form:
+    // scope.ts LOCAL_PASSWORD_ACTS); off the ordinary step-up or the laptop owner's own act, no password.
+    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(wanted === "on"\) \{\n {8}if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\} else \{\n {8}\/\/[^\n]*\n {8}if \(who\.authority === "local-owner"\) \{ if \(localActNow\(store, "flexible-switch"\) === null\) return false; \}\n {8}else if \(who\.authority !== "full" \|\| !authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\}\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
     expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\) => \{\n[^\n]*\n {4}const verified = value === "on" \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\);\n {4}if \(!verified\.ok \|\| !personProof\(verified\.method\) \|\| !store\.isInstanceOperator\(acting\.name\)\) return false;\n {4}setFlexibleSetting\(store, value === "on", acting\.name, clock\(\)\);/);
     // Every write is a browser sign-in's only (the change document is a page that reads); no token, MCP tool or chat
     // action reaches the switch or a project's terms.
@@ -302,9 +303,9 @@ describe("the switch can't become an override", () => {
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
       ["streamAnswerSender", "openFlexibleAnswerCatalog", "decideFlexibleAnswerByPolicy", "cancelFlexibleAnswer", "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers",
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
-    decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "continueFlexibleThread"],
+    decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "continueFlexibleThread", "sendBackFlexibleThread"],
       ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
-        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads"]);
+        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads", "flexibleThreadShipTerms", "shipFlexibleThread", "latestFlexibleShip", "cancelFlexibleThreadShip"]);
     // Ending a person's threads' authority only ever stops and settles.
     decided("src/flexible-authority-end.ts", [], ["requireFlexibleStop", "settleExitedStops", "openFlexibleStops", "interruptTurnAndStop", "endThreadAuthorityFor"]);
     // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated.
@@ -379,7 +380,10 @@ describe("the switch can't become an override", () => {
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
     for (const one of product.filter(engine("flexible-ship.ts"))) {
       const named = [...one.text.matchAll(/import \{([^}]*)\} from "\.\.?\/flexible-ship\.js"/g)].flatMap(match => match[1]!.split(",").map(name => name.trim()).filter(Boolean));
-      expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"] : []);
+      // The watch loop's pass (operate.ts), and the thread host's Ship doors (flexible-session.ts: its terms, the press
+      // under the thread's lock, cancel and send back; threads-everyday S7).
+      expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"]
+        : one.path === join("src", "flexible-session.ts") ? ["cancelFlexibleShip", "flexibleShipsOf", "flexibleShipTerms", "sendBackFlexible", "shipFlexible", "type ShipProof"] : []);
     }
   });
 });

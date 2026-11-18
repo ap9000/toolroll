@@ -595,6 +595,16 @@ async function exercise(feature, context) {
       await seen(() => sql(`SELECT COUNT(*) AS n FROM thread_turn WHERE thread = '${context.thread}' AND request_key LIKE 'reply:%'`)[0]?.n === 1, 'one reply turn on the record');
       break;
     }
+    case 'thread-ship': {
+      // a on the thread asks for its Ship terms. This world's project has no check command, so Toolroll says it can't
+      // ship yet, in its own words (the whole press, laptop road and password road, is flexible-ship*.slow.test.ts).
+      await open('Review the subtraction change.', context.thread);
+      shown = await press('a', /Ship approves exactly this:|no check command|Refused: /);
+      if (!/Ship approves exactly this:|no check command/.test(shown)) throw new Error(`Ship said neither its terms nor why: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      if (/Ship approves exactly this:/.test(shown)) term.send(esc);
+      if (sql("SELECT COUNT(*) AS n FROM flexible_ship")[0]?.n !== 0) throw new Error('Asking for the terms recorded a Ship');
+      break;
+    }
     case 'thread-end': {
       // X on the thread, asked first; y ends it for good: it moves to Recent as Ended and takes no reply.
       await open('Review the subtraction change.', context.thread);

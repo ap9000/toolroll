@@ -1,5 +1,5 @@
 {
-  "digest": "d3ee3b91c12a89b05ab9d043e27b7ba18f3d1a985744b08c9d4b81160bdb3a20",
+  "digest": "b83fa7ceb423fbcd78ae3a3518595c950bbac2b405c26cc2e8b534f18181ac65",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -651,6 +651,28 @@
                 "stopPending"
               ],
               "additionalProperties": false
+            },
+            "ship": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string"
+                },
+                "words": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "seq",
+                "state",
+                "words"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -743,6 +765,12 @@
               },
               "stopPending": {
                 "type": "boolean"
+              },
+              "ship": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -755,7 +783,8 @@
               "costUsd",
               "turn",
               "ended",
-              "stopPending"
+              "stopPending",
+              "ship"
             ],
             "additionalProperties": false
           }

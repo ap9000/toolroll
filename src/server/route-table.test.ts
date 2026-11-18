@@ -24,7 +24,7 @@ const LIMITED_ACCESS = {
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
   'task.page': 'resource', 'task.evidence': 'resource',
   // The engine API (solo-workbench plan A0): each read admitted as the page it mirrors (Work, the task page, the Live grid).
-  'work.rows': 'collection', 'task.steps': 'resource', 'task.approval': 'resource', 'task.diff': 'resource', 'agents.live.run': 'unscoped', 'agents.live.thread': 'unscoped', 'agents.live.threads': 'unscoped', 'agents.live.thread.answer': 'unscoped', 'agents.live.thread.start': 'unscoped', 'agents.live.thread.turn': 'unscoped', 'agents.live.thread.stop': 'unscoped', 'agents.live.thread.end': 'unscoped', 'engine.hello': 'unscoped', 'engine.agents': 'unscoped', 'engine.agents-check': 'unscoped', 'engine.models': 'unscoped',
+  'work.rows': 'collection', 'task.steps': 'resource', 'task.approval': 'resource', 'task.diff': 'resource', 'agents.live.run': 'unscoped', 'agents.live.thread': 'unscoped', 'agents.live.threads': 'unscoped', 'agents.live.thread.answer': 'unscoped', 'agents.live.thread.start': 'unscoped', 'agents.live.thread.turn': 'unscoped', 'agents.live.thread.stop': 'unscoped', 'agents.live.thread.end': 'unscoped', 'agents.live.thread.ship': 'unscoped', 'agents.live.thread.ship-cancel': 'unscoped', 'agents.live.thread.ship-send-back': 'unscoped', 'engine.hello': 'unscoped', 'engine.agents': 'unscoped', 'engine.agents-check': 'unscoped', 'engine.models': 'unscoped',
   // One-tap release approval: the sheet and the push's locator are each one task's own page, admitted by its project.
   'task.release': 'resource', 'release.locate': 'resource',
   'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',

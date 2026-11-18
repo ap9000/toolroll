@@ -1,4 +1,4 @@
-# Plan v2: everyday interactive agent threads (Flexible, beta) — from 8 to 9
+# Plan v3: everyday interactive agent threads (Flexible, beta) — from 8 to 9
 
 Base: main f91ea774 (0.9.114). Read-only study in a fresh detached worktree, removed afterwards. No product code. File:line refs are at that commit. v2 folds in Codex round 1 (REVISE, six findings) and the owner's decisions D1–D7. The changelog is at the end.
 
@@ -51,7 +51,7 @@ Base: main f91ea774 (0.9.114). Read-only study in a fresh detached worktree, rem
 - D7: no `--resume` in this arc. When no agent is live, the reply box says **"This starts a fresh agent. It won't remember earlier turns; your files are as it left them."** After sending: **"Sent. Turn 3 started with a fresh agent."** (or **"Sent. Turn 2 started."** when the agent was reused).
 
 **End (D4: final).**
-- Migration v173 adds `flexible_thread_meta(thread PK, title ≤80 written once, ended_at, ended_by, end_words, tidied_at)`. This is separate from `flexible_thread.state`, which stays the record of the repository's removal.
+- Migration v174 adds `flexible_thread_meta(thread PK, title ≤80 written once, ended_at, ended_by, end_words, tidied_at)`. This is separate from `flexible_thread.state`, which stays the record of the repository's removal.
 - Under the lock, one transaction:
   - sets `ended_at`;
   - withdraws admitted turns;
@@ -104,7 +104,7 @@ Who calls it:
 Codex 1 asked for exactly this path.
 
 **The durable stop requirement (Codex 3).**
-- v173 adds `flexible_stop_request(launch PK, thread, reason, words, requested_at, settled_at)`.
+- v174 adds `flexible_stop_request(launch PK, thread, reason, words, requested_at, settled_at)`.
 - Only a verified exit settles a row. A row names one launch, and is settled for that launch only.
 - Each console's tick reads the table and stops through custody (`stopFlexibleThreadAgent` with `expect: {launch, holder}`). So a CLI-side removal is acted on by the console holding the agent. That cross-process observation is tested on its own; the in-process `relayCancel` cut is tested separately.
 - `config clear flexible-sign-in`, People and Settings also stop at once where they can (`stopFlexibleThreadsOf(owner)`, a filter on `stopFlexibleThreadsEverywhere`) and report what they stopped.
@@ -112,7 +112,7 @@ Codex 1 asked for exactly this path.
 **The session.**
 - `endFlexibleThreadTurn` no longer clears `agent.turn` on `turn-not-running`. It clears it only once the record is terminal and, for an abnormal end, a stop requirement for that launch exists (inserted if missing).
 - A `result` with `is_error` ends the turn `unknown`.
-- The tick's backstop predicate is `signInHoldsFor`, but with the epoch and generation captured when the turn began, not today's. v173 adds `flexible_turn_dispatch(turn PK, sign_in_epoch, sign_in_generation)`, written by `beginFlexibleTurn`. A removal followed by a fresh save still stops the turn. A plain replacement never does.
+- The tick's backstop predicate is `signInHoldsFor`, but with the epoch and generation captured when the turn began, not today's. v174 adds `flexible_turn_dispatch(turn PK, sign_in_epoch, sign_in_generation)`, written by `beginFlexibleTurn`. A removal followed by a fresh save still stops the turn. A plain replacement never does.
 
 **The relay.** Its refusals for `no-sign-in`, `sign-in-refused`, `billing-mismatch` and `threads-off` interrupt the running turn inside `settle`'s transaction, with the words the agent was sent, and write a stop requirement.
 
@@ -243,9 +243,9 @@ The cost is one extra step.
 
 ## 3. Slices (★ = security-sensitive: AGENTS.md safety self-review, then Codex review, at most 2 rounds)
 
-1. **★ S1:** `endThreadAuthorityFor` via `revokeDerivedAuthority`, sign-in removal and restore; the v173 stop requirement and dispatch epoch; relay refusals interrupting; the session fixes; the tick; CLI, People and Settings reporting.
+1. **★ S1:** `endThreadAuthorityFor` via `revokeDerivedAuthority`, sign-in removal and restore; the v174 stop requirement and dispatch epoch; relay refusals interrupting; the session fixes; the tick; CLI, People and Settings reporting.
 2. **S2:** Toolroll's words in the view (`endWords`, billing, replacing the refused-call lines).
-3. **S3:** v173 metadata (title, end); list states; the start answer's thread id and selection.
+3. **S3:** v174 metadata (title, end); list states; the start answer's thread id and selection.
 4. **★ S4:** Reply under one lock (live session re-read, billing, ended barrier, the fresh-agent words).
 5. **★ S5:** End's admission barrier, Stop, the 7-day tidy, the CLI `thread end`.
 6. **★ S6:** D2, a typed password in a local-owner session for the closed list.
@@ -281,7 +281,7 @@ The cost is one extra step.
 - A password set while armed cancels the merge.
 - A replayed press is refused.
 
-**Contracts and migration:** v173 tables and triggers; engine responses (`threadShipTerms`, start answer with `thread`, facts additions); Rust parse; route inventory local marks.
+**Contracts and migration:** v174 tables and triggers; engine responses (`threadShipTerms`, start answer with `thread`, facts additions); Rust parse; route inventory local marks.
 
 **CLI:**
 - The default name is offered.
@@ -319,6 +319,22 @@ The cost is one extra step.
 - **Contract digest changes.** The terminal and console ship together, but an older workbench against a newer console must fail plainly.
 - **The new tables:** `flexible_thread_meta`, `flexible_stop_request` and `flexible_turn_dispatch` need the update-safe migration list (store.ts:2313).
 
+## v3 (Codex round 2, final; built on branch threads-everyday)
+
+- **D1: one laptop predicate, read at every step that acts on it** (flexible-laptop.ts laptopShipProblem): local mode on
+  for the owner at the consent's local generation, no active account with a password, no identity-provider sign-in
+  linked, a solo install, the owner the only approver. A second account getting a password (store.ts saveApprover) or a
+  linked SSO identity moves no generation of the owner's, so it is read directly: in the consent transaction, in the
+  seal's transaction (fileAndSeal and approve()'s ship-thread branch), and in the armed completion and merge-reservation
+  transactions (authorityProblem). When it fails the Ship is cancelled for good; reverting the settings revives nothing.
+  The consent is recorded in flexible_ship_laptop (written once), bound to the local and account generations.
+- **Locality is already shipped**: server/guards.ts refuses every local-owner cookie request unless requestFromThisComputer
+  accepts it (0.9.104). The Ship door relies on it; one test shows a forwarded request is refused.
+- **D2**: proveAccountNow intercepts the four named acts BEFORE the generic local-owner success; an empty or wrong password
+  never falls back to it; settings.ts no longer refuses every non-full session for the sign-in save.
+- **Schema**: the tables are v174 (task-loop's v173 merges first); the migration is self-contained.
+- **Ship's terms** are answered by the same POST road without a key (like a thread's start card), not a separate GET.
+
 ## Changelog v2 against v1
 
 - **D1 replaced.** v1 had "no local-owner Ship". v2 has a password-free local-owner road in the terminal, with a defined `ship-thread` act, ten checks and five safety flags. On installs with a password, Ship goes through a CLI hand-off with a password typed now (chosen over a terminal field, with reasons).
@@ -334,5 +350,5 @@ The cost is one extra step.
 - **D5.** Plain status, off and clear without a password on solo installs.
 - **D6.** A read-only browser list.
 - **D7.** The fresh-agent words.
-- **New migration content:** v173 now holds three tables.
+- **New migration content:** v174 now holds three tables.
 - **Slices:** S5 (End) and S4 (Reply) are now security-sensitive.

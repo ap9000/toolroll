@@ -1,5 +1,5 @@
 /**
- * v173: interactive agent threads for everyday use (docs/plans/threads-everyday.md). Adds three tables and changes no
+ * v174: interactive agent threads for everyday use (docs/plans/threads-everyday.md). Adds four tables and changes no
  * saved row:
  *
  * - `flexible_stop_request`: a durable requirement that one launch of a thread's agent be stopped (its whole tree's
@@ -14,10 +14,15 @@
  *   (End is final: who ended it, when, and Toolroll's words, written once), and when its working copy was tidied.
  *   Kept apart from `flexible_thread.state`, which stays the record of the repository's own removal.
  *
+ * - `flexible_ship_laptop`: the laptop consent a Ship was pressed under (the owner's D1: a password-free solo install's
+ *   local owner, one key in the workbench): whose, and the local-mode and account generations it was bound to. Written
+ *   once with the Ship's own record; every later transaction that acts on it re-reads the laptop predicate at that local
+ *   generation (flexible-laptop.ts).
+ *
  * Kept apart from the store so the update road can read the lists without it.
  */
 
-export const V173_SCHEMA = `
+export const V174_SCHEMA = `
 CREATE TABLE IF NOT EXISTS flexible_stop_request (
   launch       TEXT PRIMARY KEY CHECK (length(launch) = 32 AND launch NOT GLOB '*[^0-9a-f]*'),
   thread       TEXT NOT NULL CHECK (length(thread) = 32 AND thread NOT GLOB '*[^0-9a-f]*'),
@@ -69,14 +74,30 @@ CREATE TRIGGER IF NOT EXISTS flexible_thread_meta_kept BEFORE DELETE ON flexible
 BEGIN
   SELECT RAISE(ABORT, 'a flexible thread''s title and end are kept');
 END;
+CREATE TABLE IF NOT EXISTS flexible_ship_laptop (
+  ship               TEXT PRIMARY KEY CHECK (length(ship) = 32 AND ship NOT GLOB '*[^0-9a-f]*'),
+  owner              TEXT NOT NULL CHECK (length(owner) BETWEEN 1 AND 200),
+  local_generation   INTEGER NOT NULL CHECK (local_generation >= 1),
+  account_generation INTEGER NOT NULL CHECK (account_generation >= 0),
+  consented_at       TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS flexible_ship_laptop_written_once BEFORE UPDATE ON flexible_ship_laptop
+BEGIN
+  SELECT RAISE(ABORT, 'a Ship''s laptop consent is written once');
+END;
+CREATE TRIGGER IF NOT EXISTS flexible_ship_laptop_kept BEFORE DELETE ON flexible_ship_laptop
+BEGIN
+  SELECT RAISE(ABORT, 'a Ship''s laptop consent is kept');
+END;
 `;
 
-export const V173_TABLES = Object.freeze(["flexible_stop_request", "flexible_turn_dispatch", "flexible_thread_meta"] as const);
-/** The v173 migration's steps, in order (a test seam may stop after each). */
-export const V173_STEPS = Object.freeze(["flexible-everyday"] as const);
-/** v173's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
-export const V173_OBJECTS = Object.freeze([
+export const V174_TABLES = Object.freeze(["flexible_stop_request", "flexible_turn_dispatch", "flexible_thread_meta", "flexible_ship_laptop"] as const);
+/** The v174 migration's steps, in order (a test seam may stop after each). */
+export const V174_STEPS = Object.freeze(["flexible-everyday"] as const);
+/** v174's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
+export const V174_OBJECTS = Object.freeze([
   ["table", "flexible_stop_request"], ["index", "flexible_stop_request_open"], ["trigger", "flexible_stop_request_settles_once"], ["trigger", "flexible_stop_request_kept"],
   ["table", "flexible_turn_dispatch"], ["trigger", "flexible_turn_dispatch_written_once"],
   ["table", "flexible_thread_meta"], ["trigger", "flexible_thread_meta_written_once"], ["trigger", "flexible_thread_meta_kept"],
+  ["table", "flexible_ship_laptop"], ["trigger", "flexible_ship_laptop_written_once"], ["trigger", "flexible_ship_laptop_kept"],
 ] as const);

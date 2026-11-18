@@ -142,6 +142,10 @@ export const CONSOLE_FORMS = {
   threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms", "password", "agent"]),
   // Reply: the thread's next message, named by the client's own key (the same key never takes a second turn).
   threadTurn: formContract("POST /agents/live/thread/<id>/turn", ["message", "key", "password"]),
+  // Ship: without `terms` its exact terms; with the terms' key and digest, the laptop road's press.
+  threadShip: formContract("POST /agents/live/thread/<id>/ship", ["terms", "digest"]),
+  // Send back: the armed Ship ends and its note is the thread's next reply (named by the client's key).
+  threadSendBack: formContract("POST /agents/live/thread/<id>/ship/send-back", ["feedback", "key", "password"]),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   // The Agents screen: an agent's own sign-in, or its install with the exact command the person confirmed.

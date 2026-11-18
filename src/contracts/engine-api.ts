@@ -107,6 +107,8 @@ export const threadFactsSchema = z.object({
   questions: z.array(threadQuestionSchema),
   /** Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified. */
   ended: z.object({ words: z.string(), stopPending: z.boolean() }).optional(),
+  /** Its latest Ship, in Toolroll's words (absent before its first). */
+  ship: z.object({ seq: z.number().int(), state: z.string(), words: z.string() }).optional(),
 });
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
@@ -139,7 +141,9 @@ export const liveThreadsSchema = z.object({
     costUsd: z.number().nullable(),
     /** Its latest turn's state (null before its first), whether it ended (End is final), and whether its agent's stop
      * is still being verified. */
-    turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean() })),
+    turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean(),
+    /** Its latest Ship's state (null before its first). */
+    ship: z.string().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------

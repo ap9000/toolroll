@@ -66,6 +66,16 @@ pub enum ActOutcome {
         key: String,
         lines: Vec<String>,
     },
+    /// A thread's Ship terms (POST /agents/live/thread/<id>/ship without a key): every line, the key and digest the press
+    /// posts, whether this session may press it here (the laptop road), and otherwise the command that ships with a
+    /// password typed now. Nothing was shipped.
+    ShipTerms {
+        key: String,
+        digest: String,
+        lines: Vec<String>,
+        laptop: bool,
+        command: Option<String>,
+    },
     /// A new thread started (POST /agents/live/thread with its card's key): the words, and the thread, so it is selected.
     ThreadStarted {
         words: String,
@@ -631,6 +641,27 @@ impl Client {
                         preview,
                         digest,
                         terms,
+                    });
+                }
+                if v["outcome"] == "ship-terms" && status == 200 {
+                    let text = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
+                    let (key, digest) = (text(&v["key"]), text(&v["digest"]));
+                    let lines: Vec<String> = v["lines"]
+                        .as_array()
+                        .map(|a| a.iter().map(text).collect())
+                        .unwrap_or_default();
+                    let hex = |s: &str| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit());
+                    if !hex(&key) || !hex(&digest) || lines.is_empty() {
+                        return Err(ApiError::Contract(
+                            "The Ship's terms aren't what this version expects.".into(),
+                        ));
+                    }
+                    return Ok(ActOutcome::ShipTerms {
+                        key,
+                        digest,
+                        lines,
+                        laptop: v["laptop"] == true,
+                        command: v["command"].as_str().map(str::to_string),
                     });
                 }
                 if v["outcome"] == "done" && path == "/agents/live/thread" {

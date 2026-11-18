@@ -334,6 +334,26 @@
       ]
     },
     {
+      "id": "thread-ship",
+      "screen": "Work",
+      "reach": "Select the thread; a asks for its Ship terms; with no project check the console says why it can't ship yet",
+      "expected": "no check command|Ship approves exactly this:",
+      "scenario": "success",
+      "actions": [
+        "thread-ship",
+        "accept"
+      ],
+      "keys": [
+        "a"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "thread-reply"
+      ]
+    },
+    {
       "id": "thread-end",
       "screen": "Work",
       "reach": "Select the thread; X; y ends it; it moves to Recent as Ended and s says it ended",

@@ -343,6 +343,8 @@ pub enum Mode {
     NewThread(String),
     /// Reply: the thread's next message (`s` on a thread), for the thread named.
     ThreadReply(String, String),
+    /// Send back: a note for the thread whose Ship is armed (`r`), for the thread named.
+    ThreadSendBack(String, String),
     /// Stop a thread's agent (`x`) or end the thread (`X`), asked first.
     ConfirmThreadAct(String, crate::thread::ThreadAct),
     /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
@@ -1688,6 +1690,17 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::ShipTerms { key, digest, lines, laptop, command })) => {
+                // A Ship's terms: drawn whole on the same sheet a new thread's are, for the thread still selected.
+                let Some(thread) = self.thread_selected() else {
+                    return vec![];
+                };
+                self.status = None;
+                let mut terms = crate::thread::StartTerms::new(String::new(), None, key, lines);
+                terms.ship = Some(crate::thread::ShipPress { thread, digest, laptop, command });
+                self.mode = Mode::StartThread(terms);
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
                 self.sent_thread();
@@ -2367,6 +2380,7 @@ impl App {
                 | Mode::SendReview { .. }
                 | Mode::Steer(_)
                 | Mode::ThreadReply(..)
+                | Mode::ThreadSendBack(..)
                 | Mode::ConfirmThreadAct(..)
         ) {
             self.mode = Mode::Normal;
@@ -2916,6 +2930,15 @@ impl App {
                 |app, text| app.mode = Mode::NewThread(text),
                 |app, text| app.new_thread(text),
             ),
+            Mode::ThreadSendBack(thread, text) => {
+                let (kept, sent) = (thread.clone(), thread);
+                self.typing(
+                    key,
+                    text,
+                    move |app, text| app.mode = Mode::ThreadSendBack(kept.clone(), text),
+                    move |app, text| crate::thread::send_back(app, sent.clone(), text),
+                )
+            }
             Mode::ThreadReply(thread, text) => {
                 let (kept, sent) = (thread.clone(), thread);
                 self.typing(
@@ -3059,6 +3082,7 @@ impl App {
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
             | Mode::ThreadReply(_, t)
+            | Mode::ThreadSendBack(_, t)
             | Mode::Note(_, t)
             | Mode::SendBack(_, t) => grow(t),
             _ => {}
@@ -3247,6 +3271,20 @@ impl App {
                 }
             },
             Action::Pause => self.pause(item.as_ref()),
+            // On a thread, `a` is Ship (its terms first), and `r` sends an armed Ship back with a note.
+            Action::Accept | Action::ThreadShip if self.thread_selected().is_some() => crate::thread::ask_ship(self),
+            Action::SendBack if self.thread_selected().is_some() => {
+                if crate::thread::shipping(self) {
+                    crate::thread::open_send_back(self)
+                } else {
+                    self.say(Tone::Refused, "Nothing of this thread is shipping to send back. s replies to it.");
+                    vec![]
+                }
+            }
+            Action::ThreadShip => {
+                self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
+                vec![]
+            }
             // On a thread, `x` stops its agent's turn (the thread stays open) and `X` ends the thread (final).
             Action::Stop | Action::ThreadStop if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::Stop),
             Action::CancelTask | Action::ThreadEnd if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::End),
@@ -3991,6 +4029,7 @@ impl App {
             | Mode::NewTask(..)
             | Mode::NewThread(_)
             | Mode::ThreadReply(..)
+            | Mode::ThreadSendBack(..)
             | Mode::SendBack(..)
             | Mode::Palette(_)
             | Mode::PickModel(_)
@@ -4796,6 +4835,7 @@ impl App {
                 ActOutcome::Terms { .. }
                 | ActOutcome::ThreadTerms { .. }
                 | ActOutcome::ThreadStarted { .. }
+                | ActOutcome::ShipTerms { .. }
                 | ActOutcome::NextStep { .. },
             ) => {
                 self.say(

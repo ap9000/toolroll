@@ -32,7 +32,7 @@ import { V169_ADDED_COLUMNS, V169_SCHEMA, V169_STEPS } from "./task-sizing-schem
 import { V170_ADDED_COLUMNS, V170_STEPS } from "./agent-said-schema.js";
 import { V171_SCHEMA, V171_STEPS } from "./flexible-setting-schema.js";
 import { V172_ADDED_COLUMNS, V172_OBJECTS, V172_SCHEMA, V172_STEPS } from "./flexible-sign-in-schema.js";
-import { V173_OBJECTS, V173_SCHEMA, V173_STEPS } from "./flexible-everyday-schema.js";
+import { V174_OBJECTS, V174_SCHEMA, V174_STEPS } from "./flexible-everyday-schema.js";
 import { endThreadAuthorityFor } from "./flexible-authority-end.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
 import { endLapsedFlexible } from "./flexible.js";
@@ -1270,9 +1270,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v172 adds, and changes no saved row (interactive agent threads, beta): each person's own Claude sign-in for threads
 // (flexible_sign_in, a new table) and which sign-in a relay call used (thread_relay_call / thread_relay_pending
 // sign_in_*: saved calls read NULL). V172_SCHEMA, V172_ADDED_COLUMNS (flexible-sign-in-schema.ts).
-// v173 adds, and changes no saved row (interactive agent threads for everyday use): a durable stop requirement per
-// launch, the sign-in epoch a turn was begun under, and a thread's title and end (flexible-everyday-schema.ts).
-export const SCHEMA_VERSION = 173;
+// v173 is the task loop's (plan-problems-schema.ts, on its own branch); this build classes it update-safe as that one does.
+// v174 adds, and changes no saved row (interactive agent threads for everyday use): a durable stop requirement per
+// launch, the sign-in epoch a turn was begun under, a thread's title and end, and a Ship's laptop consent
+// (flexible-everyday-schema.ts).
+export const SCHEMA_VERSION = 174;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1410,7 +1412,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1674,7 +1676,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V174_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2084,7 +2086,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V174_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6564,9 +6566,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const signInDamaged = flexibleSignInShapeProblem(db);
   if (signInDamaged !== null) throw new Error(`${file}: refusing to open — ${signInDamaged}`);
   step("flexible-sign-in");
-  // v173: threads for everyday use (three new tables; no saved row changes). Idempotent; what is already here must be
-  // exactly this shape.
-  db.exec(V173_SCHEMA);
+  // v174: threads for everyday use (new tables only; no saved row changes). Idempotent; what is already here must be
+  // exactly this shape. Self-contained: it reads and checks only its own objects, whatever v173 added before it.
+  db.exec(V174_SCHEMA);
   const everydayDamaged = flexibleEverydayShapeProblem(db);
   if (everydayDamaged !== null) throw new Error(`${file}: refusing to open — ${everydayDamaged}`);
   step("flexible-everyday");
@@ -27809,11 +27811,11 @@ function flexibleSignInShapeProblem(db: Database): string | null {
   return null;
 }
 
-/** v173's tables, index and triggers, as a current or resumed file must hold them (flexible-everyday-schema.ts): each
+/** v174's tables, index and triggers, as a current or resumed file must hold them (flexible-everyday-schema.ts): each
  * there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
 function flexibleEverydayShapeProblem(db: Database): string | null {
-  const statements = V173_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
-  for (const [type, name] of V173_OBJECTS) {
+  const statements = V174_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of V174_OBJECTS) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
     if (row === undefined) return `the interactive agent threads ${type} ${name} is missing`;
     const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));

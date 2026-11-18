@@ -4,6 +4,7 @@ import { flexibleCandidateChangeRefusal } from "./flexible-merge-guard.js";
 import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { sessionStandsIn } from "./install-mode.js";
+import { laptopShipSealAllowed } from "./flexible-laptop.js";
 import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
 import { issueImported } from "./task-source.js";
@@ -1580,8 +1581,13 @@ export function approve(
     // localApprovalEligible, read again here inside the seal's transaction).
     const local = authenticated.method === "local-owner" ? currentLocalOwner() : null;
     if (authenticated.method === "local-owner") {
-      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined))) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
-      const eligible = localApprovalEligible(store, by, taskId);
+      // The laptop road (threads-everyday S7, the owner's D1): the ship-thread act seals exactly its own Ship's verify-only
+      // task, only while that Ship is imported with its laptop consent and the install is still one where nobody has a
+      // password (flexible-laptop.ts, read here in the seal's transaction); every rule below still applies.
+      const laptopShip = local !== null && local.act === "ship-thread" && chat === undefined && fastStart === undefined
+        && laptopShipSealAllowed(store, { by, taskId, candidate: store.getScope(taskId)?.candidate ?? null });
+      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined) && !laptopShip)) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
+      const eligible = laptopShip ? localWorkEligible(store, by, taskId, { act: "ship" }) : localApprovalEligible(store, by, taskId);
       if (!eligible.ok) return { ok: false as const, reason: "policy" as const, message: eligible.message };
     }
 
@@ -2243,7 +2249,10 @@ const LOCAL_REVISE_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
 /** The act a local owner's work rule is read for: approving a plan, or completing (accepting) a result whose build
  * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). Sending a result back
  * (`revise`) is read exactly as completing it is. */
-export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" };
+export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" }
+  /** The laptop road's seal of a Ship's own verify-only task (threads-everyday S7, D1): approve's rule, except that its
+   * prepared candidate (the thread's imported commit) is what that task is, not a release's or a deploy's. */
+  | { act: "ship" };
 
 /**
  * Whether the local owner may do this act on this task without a password: ONE rule (easy-start C5, split out for
@@ -2259,19 +2268,21 @@ export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"
  * back (the terminal's send back) is completion's rule exactly, in its own words.
  */
 export function localWorkEligible(store: Store, by: string, taskId: string, purpose: LocalWorkPurpose): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
-  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "revise" ? LOCAL_REVISE_WORDS
+  const words = purpose.act === "approve" || purpose.act === "ship" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "revise" ? LOCAL_REVISE_WORDS
     : purpose.act === "plan" ? LOCAL_PLAN_WORDS : LOCAL_RETRY_WORDS;
   const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: words[reason] });
   if (!localModeOn(store)) return no("local-mode-off");
   const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
   if (owner !== by) return no("not-owner");
   const scope = store.getScope(taskId);
-  if ((purpose.act === "approve" || purpose.act === "retry") && scope === null) return no("no-scope");
-  if (scope !== null && (deployGateScope(scope) || releaseCheckScope(scope))) return no("release");
+  if ((purpose.act === "approve" || purpose.act === "retry" || purpose.act === "ship") && scope === null) return no("no-scope");
+  // A Ship's own task carries its candidate by construction (flexible-ship.ts fileAndSeal): only signed release terms or
+  // a release check, or a release's own task, make it a release's.
+  if (scope !== null && ((purpose.act !== "ship" && deployGateScope(scope)) || releaseCheckScope(scope))) return no("release");
   if (purpose.act !== "approve" && (belongsToRelease(store, taskId) || releaseAuthorityOfTask(store, taskId) !== null)) return no("release");
   const ref = store.handle.prepare("SELECT repo, coordinator_cid, permission_mode FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
   // Retrying spends again under an existing yes: only on work the owner could approve again now (approve's own rule).
-  if (purpose.act === "approve" || purpose.act === "retry") {
+  if (purpose.act === "approve" || purpose.act === "retry" || purpose.act === "ship") {
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
     if (scope!.profile == null || levelOfProfile(scope!.profile) === "escalated") return no("escalated");

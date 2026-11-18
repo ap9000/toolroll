@@ -46,7 +46,9 @@ import {
   type FlexibleRequestCard, type FlexibleRequestKind,
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
-import { defaultCustodyIO, flexibleTurnLaunched } from "./flexible-launch.js";
+import { defaultCustodyIO, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
+import { cancelFlexibleShip, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
+import type { ApprovalSummary } from "./approval-summary.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleSignInBilling } from "./flexible-sign-in.js";
 import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent, withFlexibleThreadLock } from "./flexible-thread.js";
@@ -949,6 +951,105 @@ export async function tidyEndedFlexibleThreads(store: Store, input: { now: Date 
   return { tidied, left };
 }
 
+/** Said when a Ship is asked for while the thread's agent is working on a turn. */
+export const FLEXIBLE_SHIP_WORKING = "The agent is still working on your last message. Wait for it, or stop it with x, then ship. Nothing was shipped.";
+/** Said when the thread's agent is still being stopped before a Ship. */
+export const FLEXIBLE_SHIP_STOPPING = "Toolroll is stopping the thread's agent first. Nothing was shipped yet: try again in a moment.";
+
+/** The exact terms a Ship of `thread` would sign now (flexible-ship.ts flexibleShipTerms), for its owner only. */
+export async function flexibleThreadShipTerms(store: Store, input: { thread: string; by: { name: string; generation: number } }):
+  Promise<{ ok: true; digest: string; summary: ApprovalSummary } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
+  if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+  const shown = await flexibleShipTerms(store, { thread: input.thread, by: input.by.name });
+  if (!shown.ok) return shown;
+  return { ok: true, digest: shown.digest, summary: shown.summary };
+}
+
+/**
+ * Ship a thread's work (flexible-ship.ts shipFlexible: its whole contract unchanged), under ONE thread lock from the
+ * running-turn check through stopping an idle agent to the press (Codex round 1 finding 4): a turn admitted or running
+ * refuses it; an agent that is only waiting between turns is stopped first, its exit verified (on this console, or by
+ * custody from the command line, waiting up to `waitMs` for the console that holds it to prove the exit); then the
+ * press, under the same lock. If the agent committed after the terms were shown, the press's own digest check refuses
+ * it as changed.
+ */
+export async function shipFlexibleThread(store: Store, sessions: FlexibleSessions | null, input: { thread: string; by: { name: string; generation: number }; proof: ShipProof;
+  shownDigest: string; shownKey: string; now: Date; waitMs?: number; clock?: FlexibleClock }): Promise<Awaited<ReturnType<typeof shipFlexible>> | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
+  const clock = input.clock ?? systemClock;
+  const locked = await withFlexibleThreadLock(input.thread, async () => {
+    if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+    if (store.handle.prepare("SELECT 1 AS busy FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running') LIMIT 1").get(input.thread) !== undefined) {
+      return { ok: false as const, reason: "thread-running", message: FLEXIBLE_SHIP_WORKING };
+    }
+    if (unsettledLaunch(store, input.thread) !== null) {
+      try {
+        store.transact(() => {
+          for (const row of store.handle.prepare("SELECT id FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited'").all(input.thread)) {
+            requireFlexibleStop(store, { launch: String(row["id"]), thread: input.thread, reason: "its work is being shipped", at: clock().toISOString() });
+          }
+        });
+      } catch { /* the requirement is retried below and by the upkeep */ }
+      if (sessions !== null && unsettledHere(store, sessions, input.thread)) {
+        try { await stopFlexibleThreadSession(store, sessions, { thread: input.thread, reason: "its work is being shipped", clock }); } catch { /* checked below */ }
+      } else {
+        try { await stopFlexibleThreadsEverywhereFor(store, { thread: input.thread, reason: "its work is being shipped", clock }); } catch { /* checked below */ }
+      }
+      // The exit proved by whoever holds it: waited for as a fact, up to its ceiling.
+      const until = Date.now() + Math.max(0, Math.min(input.waitMs ?? 0, 30_000));
+      while (unsettledLaunch(store, input.thread) !== null && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 250));
+      if (unsettledLaunch(store, input.thread) !== null) return { ok: false as const, reason: "stopping", message: FLEXIBLE_SHIP_STOPPING };
+    }
+    return shipFlexible(store, { thread: input.thread, by: input.by.name, proof: input.proof, shownDigest: input.shownDigest, shownKey: input.shownKey, now: input.now });
+  });
+  return locked;
+}
+
+/** This thread's launches stopped by custody from outside its console (the command line), as `flexible off` does. */
+async function stopFlexibleThreadsEverywhereFor(store: Store, input: { thread: string; reason: string; clock: FlexibleClock }): Promise<void> {
+  const owner = flexibleThread(store, input.thread)?.createdBy;
+  if (owner === undefined) return;
+  const io = defaultCustodyIO();
+  for (const row of store.handle.prepare("SELECT id, holder FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited'").all(input.thread)) {
+    await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, io, clock: input.clock, expect: { launch: String(row["id"]), holder: String(row["holder"]) } });
+  }
+}
+
+/** The thread's latest Ship, as its owner reads it (null before its first). */
+export function latestFlexibleShip(store: Store, thread: string): { id: string; seq: number; state: string; taskId: string | null; candidate: string; base: string; detail: string | null } | null {
+  const read = flexibleShipsOf(store, thread);
+  const one = read.ok ? read.ships[0] : undefined;
+  return one === undefined ? null : { id: one.id, seq: one.seq, state: one.state, taskId: one.taskId, candidate: one.candidate, base: one.terms.github.base, detail: one.detail };
+}
+
+/** Cancel the thread's armed Ship (flexible-ship.ts cancelFlexibleShip: its owner, it only narrows). */
+export function cancelFlexibleThreadShip(store: Store, input: { thread: string; by: { name: string; generation: number }; now: Date }): { ok: true } | FlexibleSessionRefusal | { ok: false; reason: string; message: string } {
+  if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+  const ship = latestFlexibleShip(store, input.thread);
+  if (ship === null || ship.taskId === null) return { ok: false, reason: "not-found", message: "This thread has no Ship to cancel." };
+  return cancelFlexibleShip(store, { taskId: ship.taskId, by: input.by, now: input.now });
+}
+
+/**
+ * Send back: the thread's armed Ship ends (flexible-ship.ts sendBackFlexible) and its feedback becomes the thread's next
+ * reply (continueFlexibleThread, with the same proof a reply takes). Refused once the thread ended (End is final).
+ */
+export async function sendBackFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; feedback: string; key: string;
+  freshProof: boolean; held: () => boolean; launcher: FlexibleLauncher | null; now: Date; clock?: FlexibleClock }):
+  Promise<{ ok: true; turn: string; seq: number; fresh: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  if (!flexibleAvailable(store)) return refuse("not-available");
+  if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+  if (flexibleThreadEnded(store, input.thread)) return { ok: false, reason: "thread-ended", message: "This thread has ended, so it can't take your note. Cancel the Ship, or start a new thread." };
+  const ship = latestFlexibleShip(store, input.thread);
+  if (ship === null || ship.taskId === null) return { ok: false, reason: "not-found", message: "This thread has no Ship to send back." };
+  const sent = sendBackFlexible(store, { taskId: ship.taskId, by: input.by, feedback: input.feedback, now: input.now });
+  if (!sent.ok) return sent;
+  const replied = await continueFlexibleThread(store, sessions, { thread: input.thread, by: input.by, message: sent.feedback, key: input.key, freshProof: input.freshProof, held: input.held,
+    launcher: input.launcher, ...(input.clock === undefined ? {} : { clock: input.clock }) });
+  return replied.ok ? { ok: true, turn: replied.turn, seq: replied.seq, fresh: replied.fresh } : replied;
+}
+
 // ---- answering ------------------------------------------------------------------------------------------------------------------
 
 /** What a person picked on a card: a permission's allow or deny, or one question's answer (the option's words as shown). */
@@ -1006,6 +1107,8 @@ export type FlexibleQuestionView = { request: string; kind: FlexibleRequestKind;
 export type FlexibleThreadFacts = { version: string; title: string; project: string | null; level: FlexibleLevel | null; agent: { provider: string; model: string } | null;
   /** Ended (End is final): the thread's own words for it, and whether its agent's stop is still being verified. */
   ended?: { words: string; stopPending: boolean };
+  /** Its latest Ship, in Toolroll's words. */
+  ship?: { seq: number; state: string; words: string };
   turn: { seq: number; status: string; costUsd: number | null; costBasis: "measured" | "estimated" | "unknown" | null;
     /** Toolroll's own words for how the turn ended, when it didn't simply finish (interrupted, unknown, withdrawn). */
     endWords?: string;
@@ -1041,6 +1144,7 @@ function factsOf(store: Store, sessions: FlexibleSessions, thread: { id: string;
       ...endWordsOf(store, turn.id, turn.status), billing: turn.billing },
     questions,
     ...threadEndOf(store, thread.id),
+    ...shipFactsOf(store, thread.id),
   };
   // What the facts are, as one short digest: a client holding it is told "unchanged" instead of being sent them again.
   return { version: sha16(JSON.stringify(facts)), ...facts };
@@ -1193,4 +1297,27 @@ function threadEndOf(store: Store, thread: string): { ended?: { words: string; s
   const row = store.handle.prepare("SELECT end_words FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(thread);
   if (row === undefined) return {};
   return { ended: { words: cleanLiveText(String(row["end_words"])).slice(0, 500), stopPending: flexibleStopPending(store, thread) } };
+}
+
+/** A Ship's state in plain words, as the thread shows it. */
+function shipWords(ship: NonNullable<ReturnType<typeof latestFlexibleShip>>): string {
+  const commit = ship.candidate.slice(0, 12), detail = ship.detail === null ? null : cleanLiveText(ship.detail).slice(0, 300);
+  switch (ship.state) {
+    case "approved": case "imported": return "Shipping: its changes are being checked in quarantine.";
+    case "armed": return `Shipping: checks run on commit ${commit}; Toolroll merges it once they pass.`;
+    case "completed": case "merging": return `Shipping: its checks passed on commit ${commit}; Toolroll is merging it.`;
+    case "merged": return `Shipped: merged into ${cleanLiveText(ship.base)}.`;
+    case "cancelled": return `Ship stopped: ${detail ?? "it was cancelled"}.`;
+    case "refused": case "failed": return `Ship refused: ${detail ?? "its import didn't pass"}.`;
+    case "sent-back": return "Sent back to this thread with your note.";
+    default: return `Ship ${ship.seq}: ${cleanLiveText(ship.state)}.`;
+  }
+}
+
+/** The thread's latest Ship, as its facts carry it: absent before its first (and once removed). */
+function shipFactsOf(store: Store, thread: string): { ship?: { seq: number; state: string; words: string } } {
+  let ship: ReturnType<typeof latestFlexibleShip>;
+  try { ship = latestFlexibleShip(store, thread); } catch { return {}; }
+  if (ship === null || ship.state === "removed") return {};
+  return { ship: { seq: ship.seq, state: ship.state, words: shipWords(ship) } };
 }

@@ -104,6 +104,12 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Claude sign-in for threads, and a project's Flexible terms (turning them on, lowering, turning off); and removing
   // your own sign-in (it only narrows). Saving, checking and turning terms on take a password typed into the form now
   // (LOCAL_PASSWORD_ACTS), never the local owner's act itself.
+  // Ship a thread's work with one key in the workbench (threads-everyday S7, the owner's D1 recorded in
+  // docs/plans/local-owner-acts.md): only on an install where nobody has a password, read again at every step that acts
+  // on it (flexible-laptop.ts); flexible-ship.ts and approve()'s narrow branch check this exact act.
+  "ship-thread",
+  // Cancel one's own thread's armed Ship for good (it only narrows).
+  "cancel-ship",
   "flexible-sign-in-save",
   "flexible-sign-in-check",
   "flexible-sign-in-clear",

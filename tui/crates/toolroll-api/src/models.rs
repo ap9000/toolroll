@@ -231,6 +231,18 @@ pub struct ThreadFacts {
     /// Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<ThreadEnded>,
+    /// Its latest Ship, in Toolroll's words (absent before its first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ship: Option<ThreadShip>,
+}
+
+/// A thread's latest Ship, as its facts say it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadShip {
+    pub seq: i64,
+    pub state: String,
+    pub words: String,
 }
 
 /// How a thread ended (End is final).
@@ -261,6 +273,9 @@ pub struct ThreadRow {
     /// Its agent's stop is still being verified.
     #[serde(default)]
     pub stop_pending: bool,
+    /// Its latest Ship's state (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship: Option<String>,
 }
 
 /// `GET /agents/live/threads`: the person's own Flexible threads, and whether interactive agent threads are on (`on`;

@@ -396,7 +396,7 @@ describe("where freshness may be honoured", () => {
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 2, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 3, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
       // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
       "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
@@ -476,7 +476,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Flexible Ship (F4): the one press takes the same step-up as an ordinary approval, never a machine's credential
     // (reviewed new site; refused while interactive agent threads are off). approve() proves the person again inside the seal.
     "src/flexible-ship.ts#<module>": 2,
-    "src/flexible-ship.ts#personNow@7": 1,
+    "src/flexible-ship.ts#shipProofNow@7": 1,
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/control-setup.ts#<module>": 2,
@@ -573,6 +573,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/engine-api.ts#<module>": 2,
     "src/server/engine-api.ts#createEngineHandlers@6>threadStart@13": 1,
     "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@24": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
@@ -758,6 +759,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/evidence-pack.ts#ledgerExportChunks@4": 1,
     "src/flexible-session.ts#continueFlexibleThread@32": 1,
     "src/flexible-session.ts#continueFlexibleThread@32>locked:withFlexibleThreadLock(input.thread,_)@1": 1,
+    "src/flexible-session.ts#sendBackFlexibleThread@41": 3,
     "src/flow-engine.ts#workStage@10>filed:store.transact(_)@3": 12,
     "src/flow-pull-request.ts#pullRequestStep@2": 2,
     "src/flow-send.ts#chooseStep@15": 3,
@@ -802,6 +804,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>sendScreen@130>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 2,
     "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@24": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
