@@ -9,7 +9,7 @@
  * keeps the road it had.
  */
 import type { Store } from "./store.js";
-import { refArchived, requeueEligibility } from "./store.js";
+import { PLAN_AGAIN_ACTIONS, planAgain, refArchived, requeueEligibility } from "./store.js";
 import { LOCAL_OWNER_LAPSED, localActNow } from "./local-owner.js";
 import { approverStanding, localWorkEligible, personApprovalOf } from "./scope.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
@@ -211,4 +211,60 @@ export function retryAsLocalOwner(store: Store, taskId: string, pins: { run: num
 /** A refusal found after a write began: thrown so the transaction rolls back, then answered. */
 class Undone extends Error {
   constructor(readonly result: LocalActRefusal) { super(result.message); }
+}
+
+// ---- Plan again (the stranger test, round 10; plan-task-loop v2, S2) ------------------------------------------------------
+
+/** What a Retry hears while a plan stopped on its checks: Plan again is the way on, never a requeue. */
+export const PLAN_AGAIN_FIRST = "The plan didn't pass its checks. Use Plan again first.";
+/** What a Retry with nothing to bind to hears while a build incident stands. */
+export const RESOLVE_INCIDENT_FIRST = "Resolve the incident first.";
+
+/**
+ * Plan again, as the laptop's local owner, with no password: the planner tries again after a planning incident. It is
+ * the existing `request-plan` act (local-owner-acts.md §1, "Ask for a plan"), under exactly its limits, in one
+ * transaction: the owner acting now as exactly `request-plan`; its current reach into the project; the one work rule for
+ * planning (localWorkEligible); no plan pins saved on the task; the planning source still the one the screen read; then
+ * store.ts planAgain's own guards (this version's planning incident, queued, plan requested, scope unapproved, no live
+ * claim). Any unchanged-plan pre-authorization on the task is withdrawn and audited inside the same transaction, before
+ * the "already" answer too, so the plan Plan again asks for is only ever approved by a person's own yes. It approves,
+ * pins and pre-authorizes nothing.
+ */
+export function planAgainAsLocalOwner(store: Store, taskId: string, pins: { incident: number; source: string }, now: Date): { ok: true; replayed: boolean } | LocalActRefusal {
+  try {
+    return store.transact((): { ok: true; replayed: boolean } | LocalActRefusal => {
+      const local = localActNow(store, "request-plan");
+      if (local === null) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+      const ref = store.lookupRef(taskId);
+      if (ref === null || store.getTask(taskId) === null || !approverStanding(store, local.account, ref.repo).ok) {
+        return { ok: false, reason: "not-found", message: "That task is unavailable in your projects." };
+      }
+      if (refArchived(store, ref.id)) return { ok: false, reason: "archived", message: "This task is put away. Restore it first." };
+      const eligible = localWorkEligible(store, local.account, taskId, { act: "plan" });
+      if (!eligible.ok) return { ok: false, reason: "refused", message: eligible.message };
+      if (ref.planProvider !== null || ref.planModel !== null) {
+        return { ok: false, reason: "refused", message: "This task names its own planning agent, so planning it again needs your password." };
+      }
+      if (planSourceOf(store, taskId) !== pins.source) return { ok: false, reason: "stale", message: LOCAL_TASK_CHANGED };
+      const done = planAgain(store, { taskId, incident: pins.incident, by: local.account, actor: `operator:${local.account}`, action: PLAN_AGAIN_ACTIONS.local,
+        detail: { source: pins.source, via: local.transport }, now,
+        // An unchanged-plan pre-authorization never stands behind "you approve the plan before anything is built".
+        before: () => withdrawPlanAuthorization(store, taskId, ref.repo, local.account, now, "the local owner asked to plan again") });
+      return done.ok ? done : { ok: false, reason: done.reason, message: done.message };
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === LOCAL_OWNER_LAPSED) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+    throw error;
+  }
+}
+
+/** Withdraw an unchanged-plan pre-authorization saved on the task, with its audit row (as requestPlanAsLocalOwner does).
+ * Called inside the caller's transaction; nothing to withdraw writes nothing. */
+function withdrawPlanAuthorization(store: Store, taskId: string, repo: string | null, account: string, now: Date, why: string): void {
+  const armed = store.handle.prepare("SELECT signed_by, basis FROM plan_authorization WHERE task_id = ?").get(taskId);
+  if (armed === undefined) return;
+  store.handle.prepare("DELETE FROM plan_authorization WHERE task_id = ?").run(taskId);
+  store.recordAction({ at: now.toISOString(), actor: `operator:${account}`, repo, taskId, runId: null, source: "request",
+    action: "unchanged plan pre-authorization withdrawn", outcome: "withdrawn",
+    detail: JSON.stringify({ v: 1, signedBy: String(armed["signed_by"]), basis: String(armed["basis"]), why }) });
 }

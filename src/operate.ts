@@ -98,7 +98,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
-import { requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
+import { planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -953,6 +953,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "choice", "claim", "revision", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
+  // Plan again (task plan --incident): the planning incident the terminal read.
+  "incident",
   // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
   // stuck campaign a person ends (recover --abandon).
   "case", "k", "world", "deny", "abandon",
@@ -14869,11 +14871,20 @@ async function localPlanCommand(positional: readonly string[], flags: Map<string
     const passwordSet = store.accountOf(currentLocalOwner()?.account ?? "")?.passwordSet === true;
     return fail(write, json, command, "local-owner", `Choosing which agent plans needs your password. ${passwordSet ? "Sign in with your password to do this." : "Set a password first: run \`toolroll password set\`."}`, EXIT.refused);
   }
-  for (const name of flags.keys()) if (!["json", "db", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
-  const id = positional[0], digest = flags.get("digest");
-  const usage = "Use task plan <task> --digest <the plan source you read>.";
+  for (const name of flags.keys()) if (!["json", "db", "digest", "incident"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], digest = flags.get("digest"), incident = flags.get("incident");
+  const usage = "Use task plan <task> --digest <the plan source you read> [--incident <the planning incident you read>].";
   if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
   if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact task you read. ${usage}`, EXIT.usage);
+  // Plan again (the stranger test, round 10): the planner tries again after a planning incident, the same act.
+  if (incident !== undefined) {
+    if (typeof incident !== "string" || !/^[1-9]\d{0,14}$/.test(incident)) return fail(write, json, command, "usage", `--incident needs the incident you read. ${usage}`, EXIT.usage);
+    const again = planAgainAsLocalOwner(store, id, { incident: Number(incident), source: digest }, clock());
+    if (!again.ok) return fail(write, json, command, again.reason, again.message, EXIT.refused);
+    return succeed(write, json, command, { id, replayed: again.replayed, again: true }, () => [
+      again.replayed ? `${id} · Already planning again.` : `${id} · Planning again. You approve the plan before anything is built.`,
+    ]);
+  }
   const done = requestPlanAsLocalOwner(store, id, digest, clock());
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { id, replayed: done.replayed, autoPlan: false }, () => [

@@ -27830,3 +27830,57 @@ export function planProblemsOf(store: Store, runId: number): string[] | null {
     return lines.length === 0 ? null : lines;
   } catch { return null; }
 }
+
+// ---- Plan again (the stranger test, round 10; docs/plans: plan-task-loop v2, S2) ------------------------------------
+
+/** The incidents only a planning turn opens (claim.ts sealPlanFailure). Plan again resolves these, and nothing else. */
+export const PLANNER_INCIDENT_KINDS: ReadonlySet<string> = new Set(["malformed-plan", "malformed-decision", "plan-attempts-exhausted"]);
+/** The ledger acts Plan again is kept under: the local owner's road, and a password session's. */
+export const PLAN_AGAIN_ACTIONS = Object.freeze({ local: "task plan again (local owner)", person: "task plan again" } as const);
+
+/**
+ * Plan again: the planner tries again on the same task after a planning incident (its plan or question failed its checks,
+ * or planning failed again and again). One transaction, which re-reads everything:
+ * - the task exists, is not put away, and is this version's (the incident's run is a planning turn of exactly this
+ *   task's reference, and its kind is a planning one; a build incident is never resolved here);
+ * - requestPlan's own guards (store.ts requestPlan): the task is queued, its scope is not approved, no live claim; the
+ *   only difference is that the plan must already be `requested` (it was asked for, and stopped);
+ * - the same request again (this incident, already resolved by Plan again, the plan still requested) answers "already";
+ * - `before` (the caller's own narrowing, such as withdrawing a pre-authorization) runs inside this transaction, on the
+ *   replay too, before anything else is written;
+ * - then the incident is resolved (its hold and page with it), the planning strikes cleared, and the ledger row written.
+ * It approves nothing, pins nothing and pre-authorizes nothing: the plan it asks for waits for a person's own yes.
+ */
+export function planAgain(store: Store, input: { taskId: string; incident: number; by: string; actor: string; action: string; detail: Record<string, unknown>; now: Date; before?: () => void }):
+  { ok: true; replayed: boolean } | { ok: false; reason: "not-found" | "archived" | "stale" | "refused"; message: string } {
+  return store.transact(() => {
+    const { taskId, incident, now } = input;
+    const ref = store.lookupRef(taskId);
+    const task = store.getTask(taskId);
+    if (ref === null || task === null) return { ok: false as const, reason: "not-found" as const, message: "That task is unavailable in your projects." };
+    if (refArchived(store, ref.id)) return { ok: false as const, reason: "archived" as const, message: "This task is put away. Restore it first." };
+    const row = store.handle.prepare(`SELECT incident.kind, incident.resolved_at, run.task_ref, run.role FROM incident JOIN run ON run.id = incident.run WHERE incident.id = ?`).get(incident);
+    if (row === undefined || Number(row["task_ref"]) !== ref.id || row["role"] !== "planner" || !PLANNER_INCIDENT_KINDS.has(String(row["kind"]))) {
+      return { ok: false as const, reason: "stale" as const, message: "This task changed. Look at it again." };
+    }
+    const changed = { ok: false as const, reason: "stale" as const, message: "This task changed. Look at it again." };
+    if (task.state !== "queued" || ref.plan !== "requested") return changed;
+    const approved = store.handle.prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND approved_digest = digest AND approved_at IS NOT NULL").get(taskId);
+    if (approved !== undefined) return changed;
+    if (store.hasLiveClaim(ref.id, now)) return { ok: false as const, reason: "refused" as const, message: "The planner is already working on this task." };
+    if (row["resolved_at"] !== null) {
+      // Resolved by Plan again already, for this incident: the same request, answered once more and nothing else written.
+      const again = store.handle.prepare(`SELECT detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC`).all(taskId, PLAN_AGAIN_ACTIONS.local, PLAN_AGAIN_ACTIONS.person)
+        .some(one => { try { return (JSON.parse(String(one["detail"] ?? "")) as { incident?: unknown }).incident === incident; } catch { return false; } });
+      if (!again) return changed;
+      input.before?.();
+      return { ok: true as const, replayed: true };
+    }
+    input.before?.();
+    if (!store.resolveIncident(incident, input.by, now)) throw new Error("plan again: the incident was open and couldn't be resolved");
+    store.resetPlanStrikes(ref.id);
+    store.recordAction({ at: now.toISOString(), actor: input.actor, repo: ref.repo, taskId, runId: null, action: input.action, outcome: "requested", source: "request",
+      detail: JSON.stringify({ v: 1, incident, ...input.detail }) });
+    return { ok: true as const, replayed: false };
+  });
+}

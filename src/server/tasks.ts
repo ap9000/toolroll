@@ -1,7 +1,7 @@
 import { advancedShownNow } from "../advanced-view.js";
 import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
-import { archiveTaskFamily, dropFeedbackImage, markTypedByPerson, typedNotesFor, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
+import { archiveTaskFamily, dropFeedbackImage, markTypedByPerson, PLAN_AGAIN_ACTIONS, planAgain, PLANNER_INCIDENT_KINDS, typedNotesFor, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
 import { ranWords } from "../check-stamp.js";
 import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
@@ -32,7 +32,7 @@ import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
-import { LOCAL_TASK_CHANGED, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf } from "../local-owner-acts.js";
+import { LOCAL_TASK_CHANGED, PLAN_AGAIN_FIRST, planAgainAsLocalOwner, planSourceOf, RESOLVE_INCIDENT_FIRST, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf } from "../local-owner-acts.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
@@ -1959,6 +1959,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // Local-owner slice 3: the laptop's local owner retries its own approved build on its own road, bound to the
         // build and plan the page read. The same request again files no second note.
         let replayed = false;
+        // A requeue with nothing to bind to while an incident stands: the way on, said, never "this task changed".
+        const blocked = requeueBlockedWords(store, taskId, body.get("run"), body.get("digest"), who.via === "cookie" && who.authority === "local-owner");
+        if (blocked !== null) return taskScreen(response, who, taskId, blocked, 409);
         if (who.via === "cookie" && who.authority === "local-owner") {
           const retried = localOwnerRetry(store, taskId, body.get("run"), body.get("digest"), now);
           if (!retried.ok) return taskScreen(response, who, taskId, retried.message, retried.status);
@@ -2028,9 +2031,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         return redirect(response, taskHref(filed.id));
       }
       case "plan": {
+        const planForm = readForm(posted, CONSOLE_FORMS.taskPlan);
+        // Plan again (the stranger test, round 10): the planner tries again after a planning incident, bound to the
+        // incident and the planning source the page read. The local owner's road is its own (request-plan's limits, a
+        // pre-authorization withdrawn); a password session's arms nothing new and proves the same facts.
+        if (planForm.get("incident") !== null) {
+          const again = who.via === "cookie" && who.authority === "local-owner"
+            ? localOwnerPlanAgain(store, taskId, planForm.get("incident"), planForm.get("source"), now)
+            : personPlanAgain(store, taskId, who.name, planForm.get("incident"), planForm.get("source"), now);
+          return again.ok ? redirect(response, taskHref(taskId)) : taskScreen(response, who, taskId, again.message, again.status);
+        }
         // Local-owner slice 2: the laptop's local owner asks on its own road, bound to the planning source it read.
         if (who.via === "cookie" && who.authority === "local-owner") {
-          const asked = localOwnerPlan(store, taskId, readForm(posted, CONSOLE_FORMS.taskPlan).get("source"), now);
+          const asked = localOwnerPlan(store, taskId, planForm.get("source"), now);
           return asked.ok ? redirect(response, taskHref(taskId)) : taskScreen(response, who, taskId, asked.message, asked.status);
         }
         // The operator's explicit ask, refused transactionally when the
@@ -3455,3 +3468,48 @@ export function answerTermsInPlace(response: ServerResponse, offer: { preview: s
 
 /** A Retry whose displayed build or plan moved on before the press (requeueTask's pins). */
 export const TASK_CHANGED_SINCE = "This task changed since you looked. Review it again.";
+
+// ---- Plan again (the stranger test, round 10; plan-task-loop v2, S2). Kept last. -----------------------------------------
+
+/** The form's Plan again pins, read strictly: an incident id and a planning source. Null when either is malformed. */
+function planAgainPins(incident: string | null | undefined, source: string | null | undefined): { incident: number; source: string } | null {
+  if (typeof incident !== "string" || !/^[1-9][0-9]{0,14}$/.test(incident) || typeof source !== "string" || !/^[a-f0-9]{64}$/.test(source)) return null;
+  return { incident: Number(incident), source };
+}
+
+/** Plan again for the laptop's local owner: bound to the incident and planning source the page read; the writer
+ * (local-owner-acts.ts planAgainAsLocalOwner) proves the rest in one transaction. */
+export function localOwnerPlanAgain(store: Store, taskId: string, incident: string | null | undefined, source: string | null | undefined, now: Date): { ok: true } | { ok: false; status: number; message: string } {
+  const pins = planAgainPins(incident, source);
+  if (pins === null) return { ok: false, status: 409, message: LOCAL_TASK_CHANGED };
+  const done = planAgainAsLocalOwner(store, taskId, pins, now);
+  return done.ok ? { ok: true } : { ok: false, status: done.reason === "local-owner" || done.reason === "refused" ? 403 : 409, message: done.message };
+}
+
+/**
+ * Plan again for a password session (an approver, as the route's act scope already proved): the same store.ts planAgain,
+ * bound to the incident and planning source the page read, with the person recorded. It leaves any pre-authorization as
+ * resolving the incident always did and arms nothing new.
+ */
+export function personPlanAgain(store: Store, taskId: string, by: string, incident: string | null | undefined, source: string | null | undefined, now: Date): { ok: true } | { ok: false; status: number; message: string } {
+  const pins = planAgainPins(incident, source);
+  if (pins === null) return { ok: false, status: 409, message: LOCAL_TASK_CHANGED };
+  const done = store.transact(() => {
+    if (planSourceOf(store, taskId) !== pins.source) return { ok: false as const, reason: "stale" as const, message: LOCAL_TASK_CHANGED };
+    return planAgain(store, { taskId, incident: pins.incident, by, actor: `operator:${by}`, action: PLAN_AGAIN_ACTIONS.person, detail: { source: pins.source, via: "browser" }, now });
+  });
+  return done.ok ? { ok: true } : { ok: false, status: done.reason === "refused" ? 403 : 409, message: done.message };
+}
+
+/** A requeue posted with no build and plan to bind to while an incident stands: a planning incident's way on for anyone
+ * (Plan again: a requeue never stands in for a plan), or, for the local owner (who can't requeue without them), a build
+ * incident's (resolve it first). Null when the requeue carries its pins, or nothing blocks it. */
+export function requeueBlockedWords(store: Store, taskId: string, run: string | null | undefined, digest: string | null | undefined, local: boolean): string | null {
+  if ((run ?? "") !== "" || (digest ?? "") !== "") return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const open = store.handle.prepare("SELECT incident.kind, run.role FROM incident JOIN run ON run.id = incident.run WHERE run.task_ref = ? AND incident.resolved_at IS NULL ORDER BY incident.id DESC LIMIT 1").get(ref.id);
+  if (open === undefined) return null;
+  if (open["role"] === "planner" && PLANNER_INCIDENT_KINDS.has(String(open["kind"]))) return PLAN_AGAIN_FIRST;
+  return local ? RESOLVE_INCIDENT_FIRST : null;
+}

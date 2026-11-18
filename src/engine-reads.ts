@@ -505,3 +505,9 @@ function planAskOf(store: Store, taskId: string, state: string, ref: { id: numbe
   const source = planSourceOf(store, taskId);
   return source === null ? null : { source };
 }
+
+/** planStoppedOf for one task as its page reads it (server/task-views.ts): the same facts the steps carry. */
+export function planStoppedFor(store: Store, taskId: string): StepCards["planStopped"] {
+  const ref = store.lookupRef(taskId);
+  return ref === null ? null : planStoppedOf(store, taskId, ref.id, store.runsFor(ref.id).filter(run => run.role === "planner"));
+}
