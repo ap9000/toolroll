@@ -86,7 +86,7 @@ fn x_on_a_waiting_task_stops_retrying_after_a_confirm() {
     let mut app = waiting_app();
     assert_eq!(app.key(key('x')), vec![]);
     assert!(
-        matches!(&app.mode, Mode::ConfirmHold { task } if task == "t-retry"),
+        matches!(&app.mode, Mode::ConfirmHold { task, .. } if task == "t-retry"),
         "{:?}",
         app.mode
     );
@@ -338,7 +338,7 @@ fn the_palette_matches_words_and_ranks_the_task_first() {
     app.key(key(':'));
     assert!(score(
         "subtract",
-        "Send the result back, with a note (on a failed task: retry it)"
+        "Send the result back, with a note (or retry, or plan again)"
     )
     .is_none());
 }

@@ -250,6 +250,9 @@ impl Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewPin {
     pub task: String,
+    /// The task version whose result this is (its steps' own task: a sent-back task's revision), frozen when pinned. A
+    /// result of another version (a newer revision filed since) is never taken for it.
+    pub version: String,
     pub run: i64,
     pub receipt: String,
     pub source: String,
@@ -290,6 +293,9 @@ pub const NOTES_TOO_LONG: &str =
 
 /// Said when a dialog closes because what it showed changed.
 pub const RESULT_CHANGED: &str = "This result changed — look again.";
+/// What a dialog says when the task version it opened on is no longer the one shown (a revision filed since): nothing is
+/// sent, and it never moves to the newer version on its own.
+pub const TASK_CHANGED: &str = "This task changed — look again.";
 /// Said, and shown on the task's Live and Steps tabs, when this version can't read one task's steps.
 pub const STEPS_UNREADABLE: &str =
     "This version can't show this task's steps. Update Toolroll, or press w to see it in your browser.";
@@ -315,23 +321,42 @@ pub enum Mode {
     /// Retry a failed task: the build and approved scope the steps named (pinned when it opened), posted exactly.
     ConfirmRetry {
         task: String,
+        /// The task version the steps read (a revision's own id), frozen when the dialog opened: acted on, never a newer one.
+        version: String,
         run: i64,
         digest: String,
+    },
+    /// Plan again after a planning incident (the plan failed its checks): the incident and planning source the steps
+    /// named, posted exactly (POST /t/<version>/plan `incident`, `source`), the task page's own Plan again.
+    ConfirmPlanAgain {
+        task: String,
+        version: String,
+        incident: i64,
+        source: String,
+    },
+    /// Ask for a plan on a task filed without one (POST /t/<version>/plan `source`), the task page's "plan first".
+    ConfirmPlan {
+        task: String,
+        version: String,
+        source: String,
     },
     /// Stop retrying a waiting task (POST /t/<task>/hold, the task page's "Hold the next attempt"): it stays, nothing
     /// more runs until it is resumed.
     ConfirmHold {
         task: String,
+        version: String,
     },
     /// Resume a task this person stopped retrying: the hold shown (its id), released only while it still stands
     /// (POST /t/<task>/unhold `hold`, proved where it is released).
     ConfirmResume {
         task: String,
+        version: String,
         hold: i64,
     },
     /// Cancel a task: the state and latest build shown (`run`: None for no build), posted as pins the cancel proves.
     ConfirmCancel {
         task: String,
+        version: String,
         title: String,
         state: String,
         run: Option<i64>,
@@ -1152,9 +1177,43 @@ impl App {
 
     /// The selected task is queued with nothing building and no person's hold: waiting for a builder, or to try again.
     pub fn queued_here(&self) -> bool {
-        self.steps_here()
-            .is_some_and(|s| s.task.state == "queued" && s.live_run.is_none() && s.held.is_none())
-            && !self.approval_waiting()
+        self.steps_here().is_some_and(|s| {
+            s.task.state == "queued"
+                && s.live_run.is_none()
+                && s.held.is_none()
+                // A plan stopped on its checks isn't retrying: Plan again is its way on (r), never Stop retrying.
+                && s.plan_stopped.is_none()
+        }) && !self.approval_waiting()
+    }
+
+    /// The task version the selected row's steps read (a sent-back task's revision has its own id; the row keeps the
+    /// root's): what every act on it posts to, and what a dialog freezes when it opens.
+    pub fn version_here(&self) -> Option<String> {
+        self.steps_here().map(|s| s.task.id.clone())
+    }
+
+    /// What Plan again would post for the selected task: its root, the version the steps read, the planning incident and
+    /// the planning source (a plan stopped on its checks, and Plan again can be asked as it stands).
+    pub fn plan_again_pins(&self) -> Option<(String, String, i64, String)> {
+        let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
+        let steps = self.steps_here().filter(|s| s.live_run.is_none())?;
+        let stopped = steps.plan_stopped.as_ref()?;
+        let again = stopped.again.as_ref()?;
+        Some((
+            task,
+            steps.task.id.clone(),
+            stopped.incident,
+            again.source.clone(),
+        ))
+    }
+
+    /// What asking for a plan would post for the selected task: its root, its version and the planning source (a task
+    /// filed without a plan, nothing building).
+    pub fn plan_pins(&self) -> Option<(String, String, String)> {
+        let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
+        let steps = self.steps_here().filter(|s| s.live_run.is_none())?;
+        let plan = steps.plan.as_ref()?;
+        Some((task, steps.task.id.clone(), plan.source.clone()))
     }
 
     /// The selected task's plan waits for this person's yes (a sent-back revision's, say): its Approval step is the
@@ -1190,7 +1249,7 @@ impl App {
     }
 
     /// What Cancel shows and pins for the selected task: its id, title, state and latest build (any step's newest run).
-    pub fn cancel_pins(&self) -> Option<(String, String, String, Option<i64>)> {
+    pub fn cancel_pins(&self) -> Option<(String, String, String, String, Option<i64>)> {
         let item = self.selected_item().filter(|i| i.is_task && !i.thread)?;
         let steps = self.steps_here()?;
         if !matches!(steps.task.state.as_str(), "queued" | "running" | "failed") {
@@ -1205,6 +1264,7 @@ impl App {
             .or(steps.live_run);
         Some((
             item.id.clone(),
+            steps.task.id.clone(),
             item.title.clone(),
             steps.task.state.clone(),
             run,
@@ -1353,7 +1413,7 @@ impl App {
         }
         self.steps = None;
         self.check_pins();
-        if matches!(&self.mode, Mode::ConfirmRetry { task: t, .. } | Mode::ConfirmResume { task: t, .. } if *t == task)
+        if matches!(&self.mode, Mode::ConfirmRetry { task: t, .. } | Mode::ConfirmResume { task: t, .. } | Mode::ConfirmPlanAgain { task: t, .. } | Mode::ConfirmPlan { task: t, .. } if *t == task)
         {
             self.mode = Mode::Normal;
         }
@@ -2505,20 +2565,24 @@ impl App {
                     _ => vec![],
                 }
             }
-            Mode::ConfirmHold { task } => {
+            Mode::ConfirmHold { task, version } => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.hold(task),
+                    KeyCode::Enter => self.hold(task, version),
                     _ => {
                         self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
                     }
                 }
             }
-            Mode::ConfirmResume { task, hold } => {
+            Mode::ConfirmResume {
+                task,
+                version,
+                hold,
+            } => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.resume_hold(task, hold),
+                    KeyCode::Enter => self.resume_hold(task, version, hold),
                     _ => {
                         self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
@@ -2526,23 +2590,61 @@ impl App {
                 }
             }
             Mode::ConfirmCancel {
-                task, state, run, ..
+                task,
+                version,
+                state,
+                run,
+                ..
             } => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.cancel(task, state, run),
+                    KeyCode::Enter => self.cancel(task, version, state, run),
                     _ => {
                         self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
                     }
                 }
             }
-            Mode::ConfirmRetry { task, run, digest } => {
+            Mode::ConfirmRetry {
+                task,
+                version,
+                run,
+                digest,
+            } => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.retry(task, run, digest),
+                    KeyCode::Enter => self.retry(task, version, run, digest),
                     _ => {
                         self.say(Tone::Said, "Not retried.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmPlanAgain {
+                task,
+                version,
+                incident,
+                source,
+            } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.plan_again(task, version, incident, source),
+                    _ => {
+                        self.say(Tone::Said, NOTHING_CHANGED);
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmPlan {
+                task,
+                version,
+                source,
+            } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.ask_plan(task, version, source),
+                    _ => {
+                        self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
                     }
                 }
@@ -3207,6 +3309,17 @@ impl App {
                     vec![]
                 }
             },
+            // p asks for a plan on a task filed without one when nothing builds (the task page's "plan first").
+            Action::Pause if self.live_run().is_none() && self.plan_pins().is_some() => {
+                let (task, version, source) = self.plan_pins().unwrap();
+                self.status = None;
+                self.mode = Mode::ConfirmPlan {
+                    task,
+                    version,
+                    source,
+                };
+                vec![]
+            }
             Action::Pause => self.pause(item.as_ref()),
             Action::Stop => match self.live_run() {
                 Some(run) => {
@@ -3218,8 +3331,9 @@ impl App {
                 // Waiting to try again, or queued: stop retrying (it stays; nothing more runs).
                 None if self.queued_here() => {
                     let task = item.as_ref().map(|i| i.id.clone()).unwrap_or_default();
+                    let version = self.version_here().unwrap_or_else(|| task.clone());
                     self.status = None;
-                    self.mode = Mode::ConfirmHold { task };
+                    self.mode = Mode::ConfirmHold { task, version };
                     vec![]
                 }
                 None => {
@@ -3235,6 +3349,7 @@ impl App {
                     self.status = None;
                     self.mode = Mode::ConfirmResume {
                         task: i.id.clone(),
+                        version: self.version_here().unwrap_or_else(|| i.id.clone()),
                         hold: held,
                     };
                     vec![]
@@ -3245,10 +3360,11 @@ impl App {
                 }
             },
             Action::CancelTask => match self.cancel_pins() {
-                Some((task, title, state, run)) => {
+                Some((task, version, title, state, run)) => {
                     self.status = None;
                     self.mode = Mode::ConfirmCancel {
                         task,
+                        version,
                         title,
                         state,
                         run,
@@ -3303,6 +3419,20 @@ impl App {
                 self.mode = Mode::ConfirmAccept(pin);
                 vec![]
             }
+            // A plan stopped on its checks: r (and the palette's Retry) is Plan again, the way on.
+            Action::SendBack | Action::Retry
+                if !self.review_waiting() && self.plan_again_pins().is_some() =>
+            {
+                let (task, version, incident, source) = self.plan_again_pins().unwrap();
+                self.status = None;
+                self.mode = Mode::ConfirmPlanAgain {
+                    task,
+                    version,
+                    incident,
+                    source,
+                };
+                vec![]
+            }
             Action::SendBack if !self.review_waiting() && self.retry_pins().is_some() => {
                 self.run_action(Action::Retry)
             }
@@ -3310,6 +3440,7 @@ impl App {
                 Some((task, pins)) => {
                     self.status = None;
                     self.mode = Mode::ConfirmRetry {
+                        version: self.version_here().unwrap_or_else(|| task.clone()),
                         task,
                         run: pins.run,
                         digest: pins.digest,
@@ -4236,9 +4367,44 @@ impl App {
         }]
     }
 
+    /// An act's path on the selected task: the version its steps read (a revision's own id), else the row's.
     fn task_path(&self, verb: &str) -> Option<String> {
-        self.selected_id()
+        self.version_here()
+            .or_else(|| self.selected_id())
             .map(|id| format!("/t/{}/{verb}", toolroll_api::client::encode(&id)))
+    }
+
+    /// Plan again exactly as the dialog showed it (POST /t/<version>/plan `incident`, `source`, the task page's own Plan
+    /// again; the console proves them again). Never the selection's task now: the pinned one.
+    fn plan_again(
+        &mut self,
+        task: String,
+        version: String,
+        incident: i64,
+        source: String,
+    ) -> Vec<Effect> {
+        if self.plan_again_pins() != Some((task, version.clone(), incident, source.clone())) {
+            self.say(Tone::Refused, TASK_CHANGED);
+            return vec![];
+        }
+        self.act(
+            format!("/t/{}/plan", toolroll_api::client::encode(&version)),
+            vec![("incident", incident.to_string()), ("source", source)],
+            "Planning again. You approve the plan before anything is built.".into(),
+        )
+    }
+
+    /// Ask for a plan exactly as the dialog showed it (POST /t/<version>/plan `source`, the task page's "plan first").
+    fn ask_plan(&mut self, task: String, version: String, source: String) -> Vec<Effect> {
+        if self.plan_pins() != Some((task, version.clone(), source.clone())) {
+            self.say(Tone::Refused, TASK_CHANGED);
+            return vec![];
+        }
+        self.act(
+            format!("/t/{}/plan", toolroll_api::client::encode(&version)),
+            vec![("source", source)],
+            "Asked for a plan. You approve the plan before anything is built.".into(),
+        )
     }
 
     fn steer(&mut self, text: String) -> Vec<Effect> {
@@ -4291,9 +4457,10 @@ impl App {
 
     /// Retry exactly the build and approved scope the dialog showed (POST /t/<task>/requeue, the task page's Retry; the
     /// console proves them again). Never the selection's task now: the pinned one.
-    fn retry(&mut self, task: String, run: i64, digest: String) -> Vec<Effect> {
+    fn retry(&mut self, task: String, version: String, run: i64, digest: String) -> Vec<Effect> {
         if self.retry_pins().map(|(t, p)| (t, p.run, p.digest))
             != Some((task.clone(), run, digest.clone()))
+            || self.version_here().as_deref() != Some(version.as_str())
         {
             self.say(
                 Tone::Refused,
@@ -4301,7 +4468,7 @@ impl App {
             );
             return vec![];
         }
-        let path = format!("/t/{}/requeue", toolroll_api::client::encode(&task));
+        let path = format!("/t/{}/requeue", toolroll_api::client::encode(&version));
         self.act(
             path,
             vec![
@@ -4320,7 +4487,7 @@ impl App {
     }
 
     /// Stop retrying (POST /t/<task>/hold): an operator's hold, as the task page's "Hold the next attempt".
-    fn hold(&mut self, task: String) -> Vec<Effect> {
+    fn hold(&mut self, task: String, version: String) -> Vec<Effect> {
         if self.selected_id().as_deref() != Some(task.as_str()) {
             self.say(
                 Tone::Refused,
@@ -4328,9 +4495,13 @@ impl App {
             );
             return vec![];
         }
-        let path = format!("/t/{}/hold", toolroll_api::client::encode(&task));
+        if self.version_here().as_deref() != Some(version.as_str()) {
+            self.say(Tone::Refused, TASK_CHANGED);
+            return vec![];
+        }
+        let path = format!("/t/{}/hold", toolroll_api::client::encode(&version));
         // The countdown stops now (no try is coming), not at the next read; the act's answer reads the task again.
-        if let Some(steps) = self.steps.as_mut().filter(|s| s.task.id == task) {
+        if let Some(steps) = self.steps.as_mut().filter(|s| s.task.id == version) {
             steps.waiting = None;
         }
         if let Some(i) = self.all_items.iter_mut().find(|i| i.id == task) {
@@ -4347,8 +4518,9 @@ impl App {
     }
 
     /// Resume exactly the hold the dialog showed (POST /t/<task>/unhold `hold`: released only while it still stands).
-    fn resume_hold(&mut self, task: String, hold: i64) -> Vec<Effect> {
+    fn resume_hold(&mut self, task: String, version: String, hold: i64) -> Vec<Effect> {
         if self.selected_id().as_deref() != Some(task.as_str())
+            || self.version_here().as_deref() != Some(version.as_str())
             || self.held_here().map(|h| h.id) != Some(hold)
         {
             self.say(
@@ -4357,7 +4529,7 @@ impl App {
             );
             return vec![];
         }
-        let path = format!("/t/{}/unhold", toolroll_api::client::encode(&task));
+        let path = format!("/t/{}/unhold", toolroll_api::client::encode(&version));
         self.act(
             path,
             vec![("hold", hold.to_string())],
@@ -4367,9 +4539,15 @@ impl App {
 
     /// Cancel exactly the task, state and build the dialog showed (POST /t/<task>/cancel with them as pins, which the
     /// cancel proves in its own transaction).
-    fn cancel(&mut self, task: String, state: String, run: Option<i64>) -> Vec<Effect> {
-        if self.cancel_pins().map(|(t, _, s, r)| (t, s, r))
-            != Some((task.clone(), state.clone(), run))
+    fn cancel(
+        &mut self,
+        task: String,
+        version: String,
+        state: String,
+        run: Option<i64>,
+    ) -> Vec<Effect> {
+        if self.cancel_pins().map(|(t, v, _, s, r)| (t, v, s, r))
+            != Some((task.clone(), version.clone(), state.clone(), run))
         {
             self.say(
                 Tone::Refused,
@@ -4377,7 +4555,7 @@ impl App {
             );
             return vec![];
         }
-        let path = format!("/t/{}/cancel", toolroll_api::client::encode(&task));
+        let path = format!("/t/{}/cancel", toolroll_api::client::encode(&version));
         self.act(
             path,
             vec![
@@ -4434,11 +4612,12 @@ impl App {
             .selected_item()
             .filter(|i| i.is_task)
             .map(|i| i.id.clone());
-        let review = self
+        let read = self
             .steps
             .as_ref()
-            .filter(|s| Some(&s.task.id) == task.as_ref() || Some(&s.task.root) == task.as_ref())
-            .and_then(|s| s.review.clone());
+            .filter(|s| Some(&s.task.id) == task.as_ref() || Some(&s.task.root) == task.as_ref());
+        let version = read.map(|s| s.task.id.clone());
+        let review = read.and_then(|s| s.review.clone());
         match (task, review) {
             (Some(task), Some(r)) => {
                 let totals = self
@@ -4448,6 +4627,7 @@ impl App {
                     .and_then(|d| d.totals.as_ref())
                     .map(|t| (t.files, t.additions, t.deletions));
                 Some(ReviewPin {
+                    version: version.unwrap_or_else(|| task.clone()),
                     task,
                     run: r.run,
                     receipt: r.receipt,
@@ -4469,6 +4649,8 @@ impl App {
     /// Whether a pinned result is still the one waiting (same task, run, receipt and revision source).
     fn review_pin_stands(&self, pin: &ReviewPin) -> bool {
         self.selected_item().is_some_and(|i| i.id == pin.task)
+            // The same version (a revision filed since has a result of its own, never taken for this one).
+            && self.version_here().as_deref() == Some(pin.version.as_str())
             && self
                 .steps
                 .as_ref()
@@ -4494,6 +4676,16 @@ impl App {
                 .is_none()
                 .then_some(QUESTION_CHANGED),
             Mode::Approve { task, key, .. } => self.approval_changed(task, key),
+            // Every other dialog froze the version it opened on: a newer one (a revision filed since) closes it.
+            Mode::ConfirmHold { task, version }
+            | Mode::ConfirmResume { task, version, .. }
+            | Mode::ConfirmCancel { task, version, .. }
+            | Mode::ConfirmRetry { task, version, .. }
+            | Mode::ConfirmPlanAgain { task, version, .. }
+            | Mode::ConfirmPlan { task, version, .. } => (self.steps_here().is_some()
+                && (self.selected_id().as_deref() != Some(task.as_str())
+                    || self.version_here().as_deref() != Some(version.as_str())))
+            .then_some(TASK_CHANGED),
             _ => None,
         };
         if let Some(words) = changed {
@@ -4578,16 +4770,7 @@ impl App {
     /// sent-back task's revision; the console completes only the version that holds the receipt), read from the same
     /// steps the pin was just proved against (review_pin_stands); the selected task when they don't say.
     fn complete_path(&self, pin: &ReviewPin) -> String {
-        let version = self
-            .steps_here()
-            .filter(|s| {
-                s.review
-                    .as_ref()
-                    .is_some_and(|r| r.run == pin.run && r.receipt == pin.receipt)
-            })
-            .map(|s| s.task.id.clone())
-            .unwrap_or_else(|| pin.task.clone());
-        format!("/t/{}/complete", toolroll_api::client::encode(&version))
+        format!("/t/{}/complete", toolroll_api::client::encode(&pin.version))
     }
 
     /// Accept with the notes shown: saved on the result as one note (POST /r/<run>/comment, the result page's own Save

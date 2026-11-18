@@ -62,8 +62,14 @@ pub fn waiting_words(w: &toolroll_api::Waiting, now: i64) -> String {
         Some(_) => "trying again now".to_string(),
         None => "next try when a builder is free".to_string(),
     };
+    // A planner's own backoff tries the plan again, not a build.
+    let attempt = if w.attempt == "plan" {
+        "Last plan attempt failed"
+    } else {
+        "Last build failed"
+    };
     match w.last_failure.as_deref().map(clean) {
-        Some(why) if !why.is_empty() => format!("Last build failed · {why} · {next}"),
+        Some(why) if !why.is_empty() => format!("{attempt} · {why} · {next}"),
         _ => format!("Waiting · {next}"),
     }
 }
@@ -1579,6 +1585,10 @@ pub fn situation_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     if !failed.is_empty() {
         return failed;
     }
+    let stopped = plan_stopped_lines(app, room);
+    if !stopped.is_empty() {
+        return stopped;
+    }
     // A plan waiting for this person's yes (a sent-back revision's): what to press, above any earlier output.
     if app.approval_waiting() {
         return wrap(crate::app::APPROVAL_WAITS, room.w)
@@ -1750,9 +1760,13 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     };
     let mut lines = vec![];
     let why = failure_lines(app, room);
+    let stopped = plan_stopped_lines(app, room);
     if !why.is_empty() {
         lines.push(Line::from(Span::styled("Failed", crate::theme::failed())));
         lines.extend(why);
+        lines.push(Line::raw(""));
+    } else if !stopped.is_empty() {
+        lines.extend(stopped);
         lines.push(Line::raw(""));
     } else if !waiting_lines(app, room).is_empty() {
         lines.extend(waiting_lines(app, room));
@@ -1958,6 +1972,54 @@ fn failure_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
         for l in wrap(
             "It can't be retried here as it stands: press w to review it in the browser.",
+            w,
+        ) {
+            lines.push(Line::from(Span::styled(l, dim())));
+        }
+    }
+    lines
+}
+
+/// A plan that stopped on its checks (its planning incident): what stopped it, why the plan was refused (the planner's
+/// validator's own problems, cleaned by the engine), what the agent said, and Plan again. Live and Steps both say it.
+fn plan_stopped_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    let w = room.w;
+    let Some(stopped) = app.steps_here().and_then(|s| s.plan_stopped.as_ref()) else {
+        return vec![];
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        "Plan didn't pass",
+        crate::theme::failed(),
+    ))];
+    for l in wrap(&clean(&stopped.line), w) {
+        lines.push(Line::from(Span::styled(l, ink())));
+    }
+    if let Some(problems) = stopped.problems.as_ref().filter(|p| !p.is_empty()) {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled("Why the plan was refused", ink())));
+        for problem in problems {
+            for (i, l) in wrap(&clean(problem), w.saturating_sub(4))
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{l}", if i == 0 { "  · " } else { "    " }),
+                    dim(),
+                )));
+            }
+        }
+    }
+    lines.extend(agent_said_lines(stopped.agent_said.as_ref(), room));
+    let again = key_name(app, Action::SendBack);
+    if stopped.again.is_some() && !again.is_empty() {
+        if room.hints {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act(&again, "Plan again", true)));
+        }
+    } else {
+        lines.push(Line::raw(""));
+        for l in wrap(
+            "It can't be planned again here as it stands: press w to open it in the browser.",
             w,
         ) {
             lines.push(Line::from(Span::styled(l, dim())));
@@ -2767,8 +2829,10 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     // retry once it failed (r, the same key as send back).
     let review = app.review_waiting();
     let approval = app.approval_waiting();
-    let retry = !review && app.retry_pins().is_some();
+    let plan_again = !review && app.plan_again_pins().is_some();
+    let retry = !review && !plan_again && app.retry_pins().is_some();
     let live = app.live_run().is_some();
+    let plan = !live && app.plan_pins().is_some();
     let waiting = !live && app.queued_here();
     let held = !live && app.held_here().is_some();
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
@@ -2781,12 +2845,17 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         } else if approval {
             v.push((&[Accept], "approve"));
             v.push((&[Browser], "browser"));
+        } else if plan_again {
+            v.push((&[SendBack], "plan again"));
         } else if retry {
             v.push((&[SendBack], "retry"));
         } else if held {
             v.push((&[Stop], "resume"));
         } else if waiting {
             v.push((&[Stop], "stop retrying"));
+        }
+        if plan {
+            v.push((&[Pause], "plan"));
         }
     };
     let five: Vec<(&[Action], &'static str)> = match app.tab {
@@ -3283,6 +3352,54 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(sheet::act("Enter", "Retry it", true)));
             lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
             (" Retry ", lines)
+        }
+        Mode::ConfirmPlanAgain { .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled("Plan again?", ink())),
+                Line::raw(""),
+            ];
+            if let Some(stopped) = app.steps_here().and_then(|s| s.plan_stopped.as_ref()) {
+                for l in wrap(&clean(&stopped.line), w) {
+                    lines.push(Line::raw(l));
+                }
+                lines.push(Line::raw(""));
+            }
+            for l in wrap(
+                "The planner tries again on the same task. You approve the new plan before anything is built.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Plan again", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
+            (" Plan again ", lines)
+        }
+        Mode::ConfirmPlan { .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled("Ask for a plan?", ink())),
+                Line::raw(""),
+            ];
+            for l in wrap(
+                "An agent reads the project and proposes a plan. Nothing builds until you approve it.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Ask for a plan", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
+            (" Plan ", lines)
         }
         Mode::ConfirmStop(run) => (
             " Stop ",

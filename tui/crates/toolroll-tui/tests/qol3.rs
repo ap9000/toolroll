@@ -672,6 +672,7 @@ fn accept_with_notes_switched_is_shown_before_enter() {
     let mut app = on("t-done");
     app.mode = Mode::ConfirmAccept(ReviewPin {
         task: "t-done".into(),
+        version: "t-done".into(),
         run: 2,
         receipt: "a".repeat(64),
         source: "b".repeat(64),
@@ -723,6 +724,7 @@ fn an_undrawn_dialog_takes_no_keys() {
             Box::new(|a: &mut App| {
                 a.mode = Mode::ConfirmHold {
                     task: "t-live".into(),
+                    version: "t-live".into(),
                 };
             }),
             code(KeyCode::Enter),
@@ -733,6 +735,7 @@ fn an_undrawn_dialog_takes_no_keys() {
             Box::new(|a: &mut App| {
                 a.mode = Mode::ConfirmResume {
                     task: "t-live".into(),
+                    version: "t-live".into(),
                     hold: 41,
                 };
             }),
@@ -744,6 +747,7 @@ fn an_undrawn_dialog_takes_no_keys() {
             Box::new(|a: &mut App| {
                 a.mode = Mode::ConfirmAccept(ReviewPin {
                     task: "t-done".into(),
+                    version: "t-done".into(),
                     run: 2,
                     receipt: "a".repeat(64),
                     source: "b".repeat(64),
