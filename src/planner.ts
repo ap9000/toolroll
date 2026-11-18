@@ -65,6 +65,7 @@ import {
   type PlannerSource,
 } from "./planner-source.js";
 import { canonicalJsonUndefinedAsNull } from "./canonical-json.js";
+import { agentSaidTail } from "./agent-said.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -133,6 +134,9 @@ export type PlanOutcome =
       reason: string;
       message: string;
       problems?: (Problem | PlanProblem)[];
+      /** What the agent said on its way out (agent-said.ts agentSaidTail, already cleaned): kept on the run for the
+       * person's own Steps, never sent outside Toolroll. Absent when it said nothing. */
+      agentSaid?: string[];
     };
 
 /**
@@ -989,11 +993,12 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         kind: "failure",
         reason: "provider-init",
         message: "the provider harness never initialized — config, auth, or install, not the plan",
+        ...saidOf(result),
       };
     }
     if (result.code !== 0) {
       cleanup(worktree, [mailbox, planFile]);
-      return { ok: false, kind: "failure", reason: "agent", message: `agent exit ${result.code}` };
+      return { ok: false, kind: "failure", reason: "agent", message: `agent exit ${result.code}`, ...saidOf(result) };
     }
     if (result.sessionId !== null) {
       // Buffered test/custom transports may only expose identity in their
@@ -1184,6 +1189,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
           ok: false,
           kind: "failure",
           reason,
+          ...saidOf(turn),
           message: turn.timedOut
             ? "the structured repair turn timed out"
             : turn.initFailed
@@ -1242,4 +1248,11 @@ function cleanup(worktree: string, names: readonly string[]): void {
       // Missing is fine; unremovable is caught by the next quarantine sweep.
     }
   }
+}
+
+/** What a planner's agent said on its way out of a failed turn, cleaned (agent-said.ts agentSaidTail: at most eight short
+ * lines, no folder, key or control). Its own error output first, else its spoken conclusion; absent when it said nothing. */
+function saidOf(result: { stderr: string; finalMessage: string | null }): { agentSaid?: string[] } {
+  const said = agentSaidTail(result.stderr.trim() !== "" ? result.stderr : result.finalMessage);
+  return said.length === 0 ? {} : { agentSaid: said };
 }

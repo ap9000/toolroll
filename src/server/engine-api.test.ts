@@ -16,7 +16,7 @@ import { mintApiToken } from "../api-tokens.js";
 import { register } from "../runner.js";
 import { addApprover, propose } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
-import { openStore, recordAgentSaid, type Store } from "../store.js";
+import { openStore, recordAgentSaid, recordPlanProblems, type Store } from "../store.js";
 import { presented, T0 } from "../../test/serve-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
 import * as reads from "../engine-reads.js";
@@ -323,10 +323,10 @@ describe("every answer is its contract's shape", () => {
 
   test("a task waiting to try again says when and why, on its steps and its Work row; a build's own start is sent", async () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-wait/steps")).body);
-    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read", agentSaid: null });
+    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read", attempt: "build", agentSaid: null });
     expect(Date.parse(steps.waiting!.retryAt!)).toBeGreaterThan(Date.now());
     const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
-    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual({ retryAt: steps.waiting!.retryAt, lastFailure: steps.waiting!.lastFailure });
+    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual({ retryAt: steps.waiting!.retryAt, lastFailure: steps.waiting!.lastFailure, attempt: "build" });
     // Not waiting: a done task, a failed one.
     expect(rows.rows.find(row => row.id === "t-done")?.waiting).toBeNull();
     expect(stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).waiting).toBeNull();
@@ -348,6 +348,34 @@ describe("every answer is its contract's shape", () => {
       const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
       expect(steps.failure?.agentSaid).toEqual(["[path]: cannot read config", "claude: refusing to run a model"]);
     } finally { store.handle.prepare("UPDATE run SET agent_said_json = NULL WHERE id = ?").run(last.id); }
+  });
+
+  test("a plan that failed its checks stops with its problems and the agent's words, cleaned, and what Plan again binds to", async () => {
+    // A planner whose plan failed validation, as claim.ts sealPlanFailure leaves it: queued, an incident and its hold.
+    store.createTask({ id: "t-plan", title: "Plan t-plan" }, T0);
+    const ref = store.refFor("built-in", "t-plan", "ours").id;
+    store.placeTask(ref, repoA);
+    expect(store.requestPlan(ref, T0)).toEqual({ ok: true });
+    const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim");
+    const run = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", role: "planner", branch: "b-t-plan", worktree, now: new Date(), ...presented(store, ref, "planner") });
+    release(store, taken.claim.leaseId, new Date());
+    store.finishRun(run, { outcome: "failed", reason: "malformed-plan", now: new Date() } as never);
+    recordPlanProblems(store, run, ["plan must start with ## Approach", "plan: Proof must name acceptance criterion c1", "see /Users/me/shop/plan.md"]);
+    recordAgentSaid(store, run, ["\u001b[31mwrote /Users/me/shop/plan.md\u001b[0m"]);
+    const incident = store.createIncident({ run, kind: "malformed-plan" }, new Date());
+    store.holdOwned({ taskRef: ref, ownerKind: "incident", ownerId: String(incident), reason: "malformed-plan", until: null }, new Date());
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-plan/steps")).body);
+    expect(steps.planStopped).toEqual({ incident, kind: "plan", line: "The plan didn't pass its checks.",
+      problems: ["plan must start with ## Approach", "plan: Proof must name acceptance criterion c1", "see [path]"],
+      agentSaid: ["wrote [path]"], again: { source: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    // Nothing waits to retry (an incident is no backoff), nothing to Retry, and a plan is already asked for.
+    expect([steps.waiting, steps.retry, steps.plan]).toEqual([null, null, null]);
+    // A task with no plan asked for offers one; a task already approved does not.
+    store.createTask({ id: "t-ask", title: "Ask t-ask" }, T0);
+    store.placeTask(store.refFor("built-in", "t-ask", "ours").id, repoA);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).plan).toEqual({ source: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).plan).toBeNull();
   });
 
   test("failures in a row count from the last success or the last person's Retry, as the engine counts them", async () => {

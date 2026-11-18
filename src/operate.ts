@@ -3472,6 +3472,10 @@ async function tickCommand(
         failure: outcome.kind,
         ...(outcome.kind === "malformed" ? { malformed: outcome.reason === "malformed-decision" ? ("decision" as const) : ("plan" as const) } : {}),
         message: outcome.message,
+        code: outcome.reason,
+        // Why it was refused and what the agent said: kept on the run for the person's own Steps (cleaned at the store).
+        ...(outcome.kind === "malformed" && outcome.problems !== undefined ? { problems: outcome.problems.map(problem => problem.message) } : {}),
+        ...(outcome.agentSaid === undefined ? {} : { agentSaid: outcome.agentSaid }),
         now: clock(),
       });
       if (!sealedFailure.ok && sealedFailure.reason === "stopped") {

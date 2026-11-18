@@ -35,6 +35,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("step-cards-just-code.json", "stepCards"),
     ("step-cards-plan-first.json", "stepCards"),
     ("step-cards-sent-back.json", "stepCards"),
+    ("step-cards-plan-stopped.json", "stepCards"),
     ("approval-card.json", "approvalCard"),
     ("approval-card-problem.json", "approvalCard"),
     ("result-diff.json", "resultDiff"),

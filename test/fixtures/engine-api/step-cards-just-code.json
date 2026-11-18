@@ -120,5 +120,7 @@
     "you": true,
     "automatic": false
   },
-  "room": "task:t-done"
+  "room": "task:t-done",
+  "planStopped": null,
+  "plan": null
 }

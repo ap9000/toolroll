@@ -8,9 +8,9 @@
  * task's facts, never the whole Work projection or the task page); the diff reads the sealed patch and parses only the
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
-import { agentSaidOf, type Run, type Store, type TaskFamily } from "./store.js";
+import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
 import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
-import { retryPinsOf } from "./local-owner-acts.js";
+import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
@@ -125,13 +125,16 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
       if (waiting === null) return null;
-      // What the agent said on its way out of the last build, while it waits to try again (the Steps tab shows it).
-      const last = latestFinishedAttempt(builds);
+      // What the agent said on its way out of the attempt that failed (a build, or a plan attempt), while it waits to try
+      // again (the Steps tab shows it).
+      const last = waiting.attempt === "plan" ? latestFinishedPlanner(plannerRuns) : latestFinishedAttempt(builds);
       return { ...waiting, agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null };
     })(),
     // A hold matters only while the task could still run: a cancelled or finished task has nothing to resume.
     held: current.state === "cancelled" || current.state === "done" ? null : heldOf(store, ref?.id ?? null, builds, now),
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
+    planStopped: planStoppedOf(store, current.id, ref?.id ?? null, plannerRuns),
+    plan: planAskOf(store, current.id, current.state, ref, scope, live !== null, now),
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
@@ -192,8 +195,9 @@ function heldOf(store: Store, taskRef: number | null, builds: readonly Run[], no
     lastFailure: last !== null && last.outcome === "failed" ? failedAttemptSentence(last.reason).replace(/[.\s]+$/, "") : null };
 }
 
-/** When a waiting task tries again and why its last build stopped (contracts/engine-api.ts waitingSchema). */
-type Waiting = { retryAt: string | null; lastFailure: string | null };
+/** When a waiting task tries again, why its last attempt stopped, and whether that attempt was a build or a plan
+ * (contracts/engine-api.ts waitingSchema). */
+type Waiting = { retryAt: string | null; lastFailure: string | null; attempt: "build" | "plan" };
 
 /** A queued task waiting to start again: when the next try is due (its backoff hold's end; null: when a builder is
  * free) and the last build's failure in one short line. Null unless the task is queued and its last build failed or a
@@ -216,8 +220,9 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
   const rows = store.handle.prepare(`SELECT task.id AS task,
       EXISTS (SELECT 1 FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?)) AS held,
       (SELECT hold.until FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?) ORDER BY hold.held_at, hold.id LIMIT 1) AS until,
-      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
-      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason
+      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
+      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason,
+      (SELECT run.role FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS role
     FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
     WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})
       -- A person's hold (Stop retrying, a pause, a question, an incident) means it isn't waiting to try again.
@@ -229,6 +234,8 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
     out.set(String(row["task"]), {
       retryAt: held && row["until"] != null ? String(row["until"]) : null,
       lastFailure: failed ? failedAttemptSentence(row["reason"] == null ? null : String(row["reason"])).replace(/[.\s]+$/, "") : null,
+      // The latest attempt that ended was a planning turn (the planner's own backoff): the plan is tried again, not a build.
+      attempt: row["role"] === "planner" ? "plan" : "build",
     });
   }
   return out;
@@ -436,4 +443,65 @@ export function agentsReadOf(detection: AgentDetection | null, view: "full" | "s
     return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines };
   }
   return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection) };
+}
+
+// ---- Plan failures (the stranger test, round 10) --------------------------------------------------------------------
+
+/** The incidents only a planning turn opens (claim.ts sealPlanFailure): Plan again resolves them, never Retry. */
+export const PLANNER_INCIDENTS: Readonly<Record<string, "plan" | "question" | "stalled">> = Object.freeze({
+  "malformed-plan": "plan", "malformed-decision": "question", "plan-attempts-exhausted": "stalled",
+});
+
+/** The newest planning turn that ended (a finish time or an outcome), or null. */
+function latestFinishedPlanner(planners: readonly Run[]): Run | null {
+  let latest: Run | null = null;
+  for (const run of planners) if ((run.finishedAt !== null || (run.outcome ?? null) !== null) && (latest === null || run.id > latest.id)) latest = run;
+  return latest;
+}
+
+/** The line a stopped plan reads as: what stopped it, in plain words (needs-you.ts), never the attempt's own message. */
+export function planStoppedLine(kind: "plan" | "question" | "stalled", strikes: number, reason: string | null): string {
+  if (kind === "plan") return "The plan didn't pass its checks.";
+  if (kind === "question") return "The planner's question didn't pass its checks.";
+  const why = failedAttemptSentence(reason).replace(/[.\s]+$/, "").replace(/^./, first => first.toLowerCase());
+  return `Planning failed ${Math.max(strikes, 1)} times in a row: ${why}.`;
+}
+
+/**
+ * A plan that stopped and waits for Plan again (contracts/engine-api.ts stepCardsSchema.planStopped): this version's open
+ * incident from a planning turn, what stopped it in plain words, why the plan was refused and what the agent said
+ * (cleaned: planProblemsOf, agentSaidOf), and what Plan again binds to (the incident and the planning source the screen
+ * read; null when it can't be asked as it stands). Read facts only: Plan again proves every one of them again.
+ */
+function planStoppedOf(store: Store, taskId: string, taskRef: number | null, planners: readonly Run[]): StepCards["planStopped"] {
+  if (taskRef === null) return null;
+  const row = store.handle.prepare(`SELECT incident.id, incident.kind, incident.run FROM incident JOIN run ON run.id = incident.run
+      WHERE run.task_ref = ? AND run.role = 'planner' AND incident.resolved_at IS NULL ORDER BY incident.id DESC LIMIT 1`).get(taskRef);
+  if (row === undefined) return null;
+  const kind = PLANNER_INCIDENTS[String(row["kind"])];
+  if (kind === undefined) return null;
+  const run = Number(row["run"]);
+  const reason = planners.find(one => one.id === run)?.reason ?? null;
+  const strikes = Number(store.handle.prepare("SELECT plan_strikes FROM task_ref WHERE id = ?").get(taskRef)?.["plan_strikes"] ?? 0);
+  const source = planSourceOf(store, taskId);
+  const plan = store.handle.prepare("SELECT plan FROM task_ref WHERE id = ?").get(taskRef)?.["plan"];
+  return {
+    incident: Number(row["id"]), kind, line: planStoppedLine(kind, strikes, reason),
+    problems: planProblemsOf(store, run), agentSaid: agentSaidOf(store, run),
+    again: source !== null && plan === "requested" ? { source } : null,
+  };
+}
+
+/**
+ * What asking for a plan binds to (stepCardsSchema.plan), under the task page's own "plan first" rule
+ * (render-tasks.ts canPlan): no plan asked for yet, no approved scope, nothing running, queued, and not a coordinator's
+ * filing. Null otherwise. The request proves it all again.
+ */
+function planAskOf(store: Store, taskId: string, state: string, ref: { id: number; plan: string | null } | null,
+  scope: ReturnType<Store["getScope"]>, live: boolean, now: Date): StepCards["plan"] {
+  if (ref === null || ref.plan !== null || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return null;
+  if (scope !== null && approvalOf(scope).approved) return null;
+  if (store.coordinatorProvenanceOf(taskId) !== null) return null;
+  const source = planSourceOf(store, taskId);
+  return source === null ? null : { source };
 }

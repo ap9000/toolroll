@@ -150,7 +150,9 @@ const needRowSchema = z.object({
 /** A queued task waiting to start again after a failed build (engine-reads.ts waitingOf): when the next try is due
  * (the backoff hold's own end; null: as soon as a builder is free) and the last build's failure in one short line
  * (needs-you.ts failedAttemptSentence; null when the last build didn't fail). Read facts only. */
-export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable() });
+export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable(),
+  /** Whether the attempt that failed, and the one that comes next, is a build or a plan (the planner's own backoff). */
+  attempt: z.enum(["build", "plan"]) });
 // (Null whenever a person's hold stands: engine-reads.ts waitingForTasks.)
 /** A Work row's group (work-index.ts WorkIndexGroup): a Needs-you ask, building, or everything else. */
 export const WORK_ROW_GROUPS = ["decide", "review", "unblock", "building", "rest"] as const;
@@ -277,6 +279,17 @@ export const stepCardsSchema = z.object({
    * to POST /t/<task>/requeue as `run` and `digest`, the same act the task page's Retry is (re-proved there). Null
    * unless the task failed and its approval stands as it is. */
   retry: z.object({ run: z.number().int(), digest: z.string() }).nullable(),
+  /** A plan that stopped on this version (engine-reads.ts planStoppedOf): its open planning incident (`kind` plan: the
+   * plan failed its checks; question: the planner's question did; stalled: planning failed again and again), what
+   * stopped it in one plain line, why the plan was refused and what the agent said (each cleaned, at most eight lines;
+   * null when none was kept), and what Plan again posts to POST /t/<task>/plan as `incident` and `source` (null when it
+   * can't be asked as it stands). Read facts only: Plan again proves them again. Null when no plan stopped. */
+  planStopped: z.object({ incident: z.number().int(), kind: z.enum(["plan", "question", "stalled"]), line: z.string(),
+    problems: z.array(z.string()).max(8).nullable(), agentSaid: z.array(z.string()).max(8).nullable(),
+    again: z.object({ source: z.string().regex(/^[0-9a-f]{64}$/) }).nullable() }).nullable(),
+  /** What asking for a plan posts to POST /t/<task>/plan as `source` (the planning source read: local-owner-acts.ts
+   * planSourceOf), under the task page's own "plan first" rule. Null when a plan can't be asked for. */
+  plan: z.object({ source: z.string().regex(/^[0-9a-f]{64}$/) }).nullable(),
   /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
    * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
   approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),
