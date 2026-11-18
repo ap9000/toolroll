@@ -146,6 +146,8 @@ export const CONSOLE_FORMS = {
   threadShip: formContract("POST /agents/live/thread/<id>/ship", ["terms", "digest"]),
   // Send back: the armed Ship ends and its note is the thread's next reply (named by the client's key).
   threadSendBack: formContract("POST /agents/live/thread/<id>/ship/send-back", ["feedback", "key", "password"]),
+  // Stop a thread's agent, End the thread, cancel its armed Ship: the thread's owner, by the address alone (no fields).
+  threadClose: formContract("POST /agents/live/thread/<id>/stop, /agents/live/thread/<id>/end, /agents/live/thread/<id>/ship/cancel", []),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   // The Agents screen: an agent's own sign-in, or its install with the exact command the person confirmed.

@@ -70,11 +70,21 @@ Base: main f91ea774 (0.9.114). Read-only study in a fresh detached worktree, rem
 
 | State | Section | Word |
 |---|---|---|
-| Turn admitted or running | Working | `Thread ◐` |
-| Question waiting | Needs you | `Question` |
-| Turn finished | Needs you | `Ready` |
-| Ship armed | Working | `Shipping` |
-| Ended | Recent | `Ended` |
+| Turn admitted or running | Working | `Working` |
+| Question or permission waiting | Needs you, read or not | `Question` |
+| Turn finished | Needs you with an unread dot until looked at once, then Recent | `Ready` |
+| Turn stopped (interrupted) | as above | `Stopped` (its note: why, then Reply) |
+| Turn outcome unknown | as above | `Outcome unknown` (its note: check its activity) |
+| Ship armed or on its way | Working | `Shipping` |
+| Ship stopped / refused or failed | as a finished turn | `Ship stopped` / `Ship refused` |
+| Ended (closed by the person) | Recent | `Ended` |
+
+**Placement (owner's decision, status audit 2026-11-18).** Looking means selecting the thread or opening its view. Seen
+state is per thread turn (and Ship state), kept in the workbench's own view state like task unread dots; a new finished
+turn is news again. Reading clears only the news, never answers anything. The latest turn's stop or refusal is said
+first, an older Ship's words after it. A merged Ship reads `Ship: Merged` on the row's second line, apart from the
+thread's own word. The top bar's count, `!` and the terminal title count threads in Needs you with Work's rows. Words
+the browser and the CLI also show name no terminal keys. The browser and the CLI say the same state words.
 
 `liveThreads` rows gain `turn`, `ended`, `ship` and `stopPending`. The start answer carries `thread`. A new `ActOutcome::ThreadStarted` selects the thread once it is listed.
 
@@ -345,7 +355,7 @@ The cost is one extra step.
 - **Codex 5.** End is final, with an admission barrier in both admission and begin, an atomic withdraw, stop retries, a pending stop shown truthfully, no Send back, and its metadata separate from repository-removal state.
 - **Codex 6.** `--check` keeps its proof. Solo narrowing re-reads mode and identity in the write. The root-cause wording is fixed (`config show flexible` already doesn't prompt).
 - **D2.** Scoped per act: the closed list drops `ship-thread`, and there is no freshness or session upgrade.
-- **D3.** Ready in Needs you.
+- **D3.** Ready in Needs you (refined by the owner's placement decision above: until looked at once, then Recent).
 - **D4.** Final End, 7-day tidy.
 - **D5.** Plain status, off and clear without a password on solo installs.
 - **D6.** A read-only browser list.

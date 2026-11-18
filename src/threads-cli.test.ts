@@ -13,7 +13,8 @@ import { openStore, type Store } from "./store.js";
 import { flexibleAvailable, setFlexibleSetting } from "./flexible-available.js";
 import { declareNewInstallSolo } from "./install-mode.js";
 import { hashPassword } from "./scope.js";
-import { runOperate } from "./operate.js";
+import { runOperate, shipOutcomeWord, threadStateWord } from "./operate.js";
+import { shipOutcome, threadWord } from "./browser/views/agents-live-view.js";
 import { flexibleSignInStatus } from "./flexible-sign-in.js";
 import { standInSignIn } from "../test/flexible-sign-in-kit.js";
 
@@ -94,7 +95,7 @@ describe("credential acts: a password typed for this command, the install's name
     store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'alex', 1, 1, ?, ?) ON CONFLICT (id) DO UPDATE SET enabled = 1").run(NOW.toISOString(), NOW.toISOString());
     const laptop = await cli("thread", ["ship", "a".repeat(32)]);
     expect(laptop.code).not.toBe(0);
-    expect(laptop.said).toContain("press a");
+    expect(laptop.said).toContain("ships from the workbench");
   });
 });
 
@@ -104,3 +105,29 @@ describe("thread commands", () => {
     expect((await cli("thread", ["end", "0123abcd"])).code).not.toBe(0);
   });
 });
+
+describe("a thread's state reads the same in the command line and the browser (and the workbench: tests/thread.rs)", () => {
+  // (turn, ship, ended) → its word; a question waiting is the console's (Question) and is said by both lists the same way.
+  const table: Array<[string | null, string | null, boolean, string]> = [
+    ["running", null, false, "Working"], ["admitted", null, false, "Working"], ["finished", "armed", false, "Shipping"],
+    ["finished", null, false, "Ready"], ["finished", "merged", false, "Ready"],
+    ["unknown", null, false, "Outcome unknown"], ["interrupted", null, false, "Stopped"], ["unknown", null, true, "Ended"],
+    ["finished", "cancelled", false, "Ship stopped"], ["finished", "refused", false, "Ship refused"], ["finished", "failed", false, "Ship refused"],
+    ["interrupted", "refused", false, "Stopped"],
+  ];
+  test.each(table)("turn %s, Ship %s, ended %s: %s", (turn, ship, ended, word) => {
+    const row = { id: "t", title: "t", project: null, live: false, waiting: 0, turn, ended, stopPending: false, ship };
+    expect(threadStateWord(row)).toBe(word);
+    expect(threadWord(row).word).toBe(word);
+  });
+  test("a merged Ship reads Merged as its Ship outcome, apart from the thread's state; a refused one has its own word", () => {
+    expect(shipOutcome("merged")).toBe("Ship: Merged");
+    expect(shipOutcomeWord("merged")).toBe(" · Ship: Merged");
+    expect([shipOutcome("refused"), shipOutcomeWord("refused")]).toEqual([null, ""]);
+  });
+  test("words the command line and the browser show name no terminal keys", async () => {
+    const words = await import("./flexible-session.js");
+    for (const one of [words.FLEXIBLE_THREAD_ENDED, words.FLEXIBLE_SHIP_WORKING]) expect(one).not.toMatch(/\bpress\b|\bwith [a-zA-Z]\b/i);
+  });
+});
+

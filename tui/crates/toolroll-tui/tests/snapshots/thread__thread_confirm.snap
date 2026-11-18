@@ -2,7 +2,7 @@
 source: crates/toolroll-tui/tests/thread.rs
 expression: "screen(&mut app, 120, 30)"
 ---
-" Toolroll  · shop  $1.84 today · plan 62%                                                     ◐ 2 working   2 need you  "
+" Toolroll  · shop  $1.84 today · plan 62%                                           ◐ 2 working  1 unread   4 need you  "
 "                                                                                                                        "
 " ╭────────────────────────────────────────────╮ ╭─────────────────────────────────────────────────────────────────────╮ "
 " │ Work  8                                    │ │ Live · Steps · Diff · Terminal                                      │ "
@@ -14,7 +14,7 @@ expression: "screen(&mut app, 120, 30)"
 " │   shop · 12m ago                    ╭ Answer ───────────────────────────────╮                                      │ "
 " │ ● Make the totals include tax    Que│                                       │                                      │ "
 " │   shop                              │ Allow this command?                   │                                      │ "
-" │ ● Thread 0a9b8c7d                   │ Tool: Bash                            │                                      │ "
+" │ ● • Thread 0a9b8c7d                 │ Tool: Bash                            │                                      │ "
 " │   shop                              │ npm test -- --run src/total.test.ts   │                                      │ "
 " │                                     │ npm run lint                          │                                      │ "
 " │ Working 2                           │                                       │                                      │ "

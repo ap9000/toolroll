@@ -111,7 +111,7 @@ const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | 
   "not-an-operator": "Only an instance operator can change the installation's Flexible limits. Nothing changed.",
   "request-changed": "That message is already waiting to start with different settings (level, agent, billing or session). Send it again as a new message.",
   "turn-expired": "This turn waited past midnight UTC, so it didn't start. Send the message again.",
-  "thread-ended": "This thread has ended. Press T to start a new one.",
+  "thread-ended": "This thread has ended. Start a new thread to go on.",
 });
 /** Whether a thread ended (End is final: flexible_thread_meta, v174). Read inside the caller's transaction. */
 const threadEnded = (store: Store, thread: string): boolean =>

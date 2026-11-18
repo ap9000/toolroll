@@ -15506,7 +15506,7 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     return found.length === 1 ? found[0]!.id : null;
   };
   if (verb === "ship") {
-    if (passwordFreeOwner(store)) return fail(write, json, command, "laptop", "Nobody on this install has a password, so Ship is one key in the workbench: run `toolroll`, select the thread and press a.", EXIT.refused);
+    if (passwordFreeOwner(store)) return fail(write, json, command, "laptop", "Nobody on this install has a password, so this thread ships from the workbench (`toolroll`), after its terms are read there.", EXIT.refused);
     const acting = await typedForCommand(flags, context, true);
     if (acting === null) return fail(write, json, command, "usage", "Shipping asks for your Toolroll password at a hidden prompt, typed for this command: run it in your own terminal (never --token).", EXIT.usage);
     const account = store.accountOf(acting.name);
@@ -15549,8 +15549,8 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   const account = store.accountOf(who.name)!;
   if (verb === "list") {
     const rows = flexibleThreadRecords(store, { owner: who.name });
-    return succeed(write, json, command, { threads: rows }, () => rows.length === 0 ? ["You have no threads yet. Press T in the workbench to start one."]
-      : rows.map(one => `${one.id.slice(0, 8)}  ${one.title}  · ${one.ended ? "Ended" : one.turn === "admitted" || one.turn === "running" ? "Working" : one.ship !== null && ["approved", "imported", "armed", "completed", "merging"].includes(one.ship) ? "Shipping" : "Ready"}${one.project === null ? "" : ` · ${one.project}`}`));
+    return succeed(write, json, command, { threads: rows }, () => rows.length === 0 ? ["You have no threads yet. Start one in the workbench (`toolroll`)."]
+      : rows.map(one => `${one.id.slice(0, 8)}  ${one.title}  · ${threadStateWord(one)}${one.project === null ? "" : ` · ${one.project}`}${shipOutcomeWord(one.ship)}`));
   }
   const thread = pick(who.name);
   if (thread === null) return fail(write, json, command, "not-found", "You have no such thread.", EXIT.refused);
@@ -15558,7 +15558,7 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   if (verb === "show") {
     return succeed(write, json, command, { thread: row }, () => [`${row.title} (${row.id})`, `Project: ${row.project ?? row.repo}`,
       `Latest turn: ${row.turn ?? "none"}${row.endWords === null ? "" : `. ${row.endWords}`}`, ...(row.ended ? ["Ended."] : []),
-      ...(row.shipWords === null ? [] : [row.shipWords]), "Reply in the workbench: run `toolroll`, select it and press s."]);
+      ...(row.shipWords === null ? [] : [row.shipWords]), "Reply to it in the workbench (`toolroll`)."]);
   }
   // The same proof is asked again inside each write (End's and removal's own transactions): an account added meanwhile
   // ends a password-free solo one.
@@ -15573,4 +15573,22 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
   const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });
   return removed.ok ? succeed(write, json, command, { thread }, () => ["Removed its working copy. Its record stays."]) : fail(write, json, command, removed.reason, removed.message, EXIT.refused);
+}
+
+/** A thread's own state in one word, as the workbench and the browser say it (a question waiting isn't on the record
+ * here: the console holds it). */
+export function threadStateWord(one: { ended: boolean; turn: string | null; ship: string | null }): string {
+  if (one.ended) return "Ended";
+  if (one.turn === "admitted" || one.turn === "running") return "Working";
+  if (one.ship !== null && ["approved", "imported", "armed", "completed", "merging"].includes(one.ship)) return "Shipping";
+  if (one.turn === "unknown") return "Outcome unknown";
+  if (one.turn === "interrupted") return "Stopped";
+  if (one.ship === "cancelled") return "Ship stopped";
+  if (one.ship === "refused" || one.ship === "failed") return "Ship refused";
+  return "Ready";
+}
+/** A thread's Ship outcome, kept apart from its own state. */
+export function shipOutcomeWord(ship: string | null): string {
+  const word = ship === "merged" ? "Merged" : ship === "sent-back" ? "sent back" : null;
+  return word === null ? "" : ` · Ship: ${word}`;
 }

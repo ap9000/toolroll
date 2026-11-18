@@ -99,6 +99,8 @@ pub struct View {
     pub task: Option<String>,
     /// Finished, failed or answered tasks not opened since (ids).
     pub unread: Vec<String>,
+    /// Each thread's news last looked at (thread id, its news key: thread.rs news_key).
+    pub thread_seen: Vec<(String, String)>,
 }
 
 impl Default for View {
@@ -113,6 +115,7 @@ impl Default for View {
             tab: Tab::Live,
             task: None,
             unread: vec![],
+            thread_seen: vec![],
         }
     }
 }
@@ -174,6 +177,16 @@ impl View {
             .take(MAX_UNREAD)
             .collect();
         m.insert("unread".into(), json!(unread));
+        let seen: Map<String, Value> = self
+            .thread_seen
+            .iter()
+            .filter(|(id, k)| crate::state::safe_id(id) && news_key_ok(k))
+            .take(MAX_UNREAD)
+            .map(|(id, k)| (id.clone(), json!(k)))
+            .collect();
+        if !seen.is_empty() {
+            m.insert("threadSeen".into(), Value::Object(seen));
+        }
         Value::Object(m)
     }
 
@@ -206,6 +219,14 @@ impl View {
         out.task = word("task")
             .filter(|t| crate::state::safe_id(t))
             .map(str::to_string);
+        if let Some(seen) = m.get("threadSeen").and_then(Value::as_object) {
+            out.thread_seen = seen
+                .iter()
+                .filter_map(|(id, k)| k.as_str().map(|k| (id.clone(), k.to_string())))
+                .filter(|(id, k)| crate::state::safe_id(id) && news_key_ok(k))
+                .take(MAX_UNREAD)
+                .collect();
+        }
         if let Some(list) = m.get("unread").and_then(Value::as_array) {
             out.unread = list
                 .iter()
@@ -338,6 +359,15 @@ pub fn save(_path: &Path, _home: Option<&Path>, _file: &ViewFile) -> Result<(), 
     Ok(())
 }
 
+/// A thread's news key as thread.rs news_key writes it: a turn number, a turn state and a Ship state, short and plain.
+fn news_key_ok(key: &str) -> bool {
+    key.len() <= 64
+        && key.split(':').count() == 3
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +393,11 @@ mod tests {
             tab: Tab::Diff,
             task: Some("t-1".into()),
             unread: vec!["t-2".into(), "bad id!".into()],
+            // A thread's news seen is kept; a key that isn't one (a mark it didn't write) is dropped.
+            thread_seen: vec![
+                ("th-1".into(), "3:finished:-".into()),
+                ("th-2".into(), "x\u{1b}]0;y".into()),
+            ],
         };
         f.put(&project_key("/p"), v.clone(), 10);
         let back = ViewFile::parse(&f.text());
@@ -372,6 +407,7 @@ mod tests {
             got,
             &View {
                 unread: vec!["t-2".into()],
+                thread_seen: vec![("th-1".into(), "3:finished:-".into())],
                 ..v
             }
         );

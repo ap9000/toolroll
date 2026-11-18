@@ -1,5 +1,5 @@
 {
-  "digest": "b83fa7ceb423fbcd78ae3a3518595c950bbac2b405c26cc2e8b534f18181ac65",
+  "digest": "136a86d8ea58a62dc36777071d87327315901fb8bff66d24adc30c84f7dc14fd",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -771,6 +771,18 @@
                   "string",
                   "null"
                 ]
+              },
+              "turnSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -784,7 +796,8 @@
               "turn",
               "ended",
               "stopPending",
-              "ship"
+              "ship",
+              "turnSeq"
             ],
             "additionalProperties": false
           }

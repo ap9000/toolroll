@@ -12,7 +12,8 @@
       "turn": "running",
       "ended": false,
       "stopPending": false,
-      "ship": null
+      "ship": null,
+      "turnSeq": 2
     },
     {
       "id": "0a9b8c7d6e5f40312a3b4c5d6e7f8091",
@@ -25,7 +26,8 @@
       "turn": "finished",
       "ended": false,
       "stopPending": false,
-      "ship": null
+      "ship": null,
+      "turnSeq": 1
     },
     {
       "id": "6c2f1d0b8e4a43f9b7d2c1e0f9a8b7c6",
@@ -38,7 +40,8 @@
       "turn": "interrupted",
       "ended": true,
       "stopPending": false,
-      "ship": "merged"
+      "ship": "merged",
+      "turnSeq": 3
     }
   ]
 }

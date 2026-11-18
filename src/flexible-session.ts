@@ -815,7 +815,7 @@ async function discardRefusedStart(store: Store, sessions: FlexibleSessions, inp
 }
 
 /** Said when a thread ended (End is final): nothing new starts in it. */
-export const FLEXIBLE_THREAD_ENDED = "This thread has ended. Press T to start a new one.";
+export const FLEXIBLE_THREAD_ENDED = "This thread has ended. Start a new thread to go on.";
 
 /** Whether a thread ended (End is final; flexible_thread_meta). */
 export function flexibleThreadEnded(store: Store, thread: string): boolean {
@@ -960,7 +960,7 @@ export async function tidyEndedFlexibleThreads(store: Store, input: { now: Date 
 }
 
 /** Said when a Ship is asked for while the thread's agent is working on a turn. */
-export const FLEXIBLE_SHIP_WORKING = "The agent is still working on your last message. Wait for it, or stop it with x, then ship. Nothing was shipped.";
+export const FLEXIBLE_SHIP_WORKING = "The agent is still working on your last message. Wait for it, or stop its turn, then ship. Nothing was shipped.";
 /** Said when the thread's agent is still being stopped before a Ship. */
 export const FLEXIBLE_SHIP_STOPPING = "Toolroll is stopping the thread's agent first. Nothing was shipped yet: try again in a moment.";
 

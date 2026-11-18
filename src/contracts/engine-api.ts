@@ -143,7 +143,9 @@ export const liveThreadsSchema = z.object({
      * is still being verified. */
     turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean(),
     /** Its latest Ship's state (null before its first). */
-    ship: z.string().nullable() })),
+    ship: z.string().nullable(),
+    /** Its latest turn's number (null before its first): with `turn` and `ship`, what the workbench marks seen. */
+    turnSeq: z.number().int().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------

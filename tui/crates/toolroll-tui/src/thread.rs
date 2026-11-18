@@ -91,6 +91,20 @@ pub struct Threads {
     pub fetching: bool,
     pub rows: Vec<ThreadRow>,
     pub view: Option<ThreadView>,
+    /// What the person has looked at, per thread: the news key (news_key) of its latest turn and Ship when it was last
+    /// selected or its view open. Kept in the workbench's own view state (viewstate.rs), like task unread marks.
+    pub seen: std::collections::BTreeMap<String, String>,
+}
+
+/// A thread's news: its latest turn (number and state) and its latest Ship's state. A new finished turn, or a Ship
+/// that moved, is news again; reading it clears only the news, never answers anything.
+pub fn news_key(t: &ThreadRow) -> String {
+    format!(
+        "{}:{}:{}",
+        t.turn_seq.unwrap_or(0),
+        t.turn.as_deref().unwrap_or("-"),
+        t.ship.as_deref().unwrap_or("-")
+    )
 }
 
 /// The watched thread: its records, its facts (level, cost, questions) and the answer on its way.
@@ -144,16 +158,20 @@ impl Threads {
                     .cost_usd
                     .map(|c| format!(" · ${c:.2}"))
                     .unwrap_or_default();
-                let (section, word) = thread_place(t);
+                let seen = self.seen.get(&t.id).is_some_and(|k| *k == news_key(t));
+                let (section, word) = thread_place(t, seen);
+                let outcome = ship_outcome(t.ship.as_deref())
+                    .map(|o| format!(" · {o}"))
+                    .unwrap_or_default();
                 Item {
                     section,
                     id: t.id.clone(),
                     title: clean(&t.title),
                     word: word.into(),
                     detail: if t.ended {
-                        "Thread · ended".into()
+                        format!("Thread · ended{outcome}")
                     } else {
-                        format!("Thread · {level}{cost}")
+                        format!("Thread · {level}{cost}{outcome}")
                     },
                     tone: match section {
                         Section::NeedsYou => "attention",
@@ -174,26 +192,59 @@ impl Threads {
     }
 }
 
-/// Where a thread sits in the list, and its one word: a question waiting on you, then ended (Recent, final), then its
-/// turn working (Working), else your move (Needs you, Ready: reply, ship or end it).
-pub fn thread_place(t: &ThreadRow) -> (Section, &'static str) {
+/// Where a thread sits in the list, and its one word (the owner's placement decision): a question or permission waiting
+/// always needs you; an ended thread (one the person closed) is in Recent; a working turn or a Ship on its way is
+/// Working; anything else that is news (a turn that finished, stopped or ended unknown; a Ship that merged, stopped or
+/// was refused) needs you until you have looked at it once (`seen`), then sits in Recent with the same word.
+pub fn thread_place(t: &ThreadRow, seen: bool) -> (Section, &'static str) {
     if t.waiting > 0 {
-        (Section::NeedsYou, "Question")
-    } else if t.ended {
-        (Section::Recent, "Ended")
-    } else if matches!(t.turn.as_deref(), Some("admitted" | "running")) {
-        (Section::Working, "Thread")
-    } else if matches!(t.ship.as_deref(), Some("approved" | "imported" | "armed" | "completed" | "merging")) {
-        (Section::Working, "Shipping")
-    } else {
-        (Section::NeedsYou, "Ready")
+        return (Section::NeedsYou, "Question");
+    }
+    if t.ended {
+        return (Section::Recent, "Ended");
+    }
+    if matches!(t.turn.as_deref(), Some("admitted" | "running")) {
+        return (Section::Working, "Working");
+    }
+    if matches!(
+        t.ship.as_deref(),
+        Some("approved" | "imported" | "armed" | "completed" | "merging")
+    ) {
+        return (Section::Working, "Shipping");
+    }
+    // The latest turn's own end comes first (an older Ship never hides why the newest turn stopped).
+    let word = match (t.turn.as_deref(), t.ship.as_deref()) {
+        (Some("unknown"), _) => "Outcome unknown",
+        (Some("interrupted"), _) => "Stopped",
+        (_, Some("cancelled")) => "Ship stopped",
+        (_, Some("refused" | "failed")) => "Ship refused",
+        _ => "Ready",
+    };
+    (
+        if seen {
+            Section::Recent
+        } else {
+            Section::NeedsYou
+        },
+        word,
+    )
+}
+
+/// A thread's Ship outcome for its row's second line, kept apart from the thread's own state: the ones its word
+/// doesn't already say (the browser's shipOutcome and the CLI's say the same).
+pub fn ship_outcome(ship: Option<&str>) -> Option<&'static str> {
+    match ship? {
+        "merged" => Some("Ship: Merged"),
+        "sent-back" => Some("Ship: sent back"),
+        _ => None,
     }
 }
 
 /// Said when a thread act is asked for with no thread selected.
 pub const NO_THREAD_SELECTED: &str = "Select a thread first.";
 /// Said in the reply box when the thread's agent isn't running: the reply starts a fresh one (no `--resume`: D7).
-pub const REPLY_STARTS_FRESH: &str = "This starts a fresh agent: it won't remember earlier turns. Your files are as it left them.";
+pub const REPLY_STARTS_FRESH: &str =
+    "This starts a fresh agent: it won't remember earlier turns. Your files are as it left them.";
 
 /// `s` on a thread: the reply box, unless the thread ended (End is final) or a turn is still working.
 pub fn open_reply(app: &mut App) -> Vec<crate::app::Effect> {
@@ -203,11 +254,18 @@ pub fn open_reply(app: &mut App) -> Vec<crate::app::Effect> {
     };
     let row = app.threads.rows.iter().find(|t| t.id == id);
     if row.is_some_and(|t| t.ended) {
-        app.status = Some((Tone::Refused, "This thread has ended. Press T to start a new one.".into()));
+        app.status = Some((
+            Tone::Refused,
+            "This thread has ended. Press T to start a new one.".into(),
+        ));
         return vec![];
     }
     if row.is_some_and(|t| matches!(t.turn.as_deref(), Some("admitted" | "running"))) {
-        app.status = Some((Tone::Refused, "The agent is still working on your last message. Wait for it, or stop it with x.".into()));
+        app.status = Some((
+            Tone::Refused,
+            "The agent is still working on your last message. Wait for it, or stop it with x."
+                .into(),
+        ));
         return vec![];
     }
     app.status = None;
@@ -222,12 +280,18 @@ pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app
         return vec![];
     }
     if app.thread_selected().as_deref() != Some(thread.as_str()) {
-        app.status = Some((Tone::Refused, "Another thread is selected now. Nothing was sent.".into()));
+        app.status = Some((
+            Tone::Refused,
+            "Another thread is selected now. Nothing was sent.".into(),
+        ));
         return vec![];
     }
     let key = app.token(32);
     vec![Effect::Act {
-        path: format!("/agents/live/thread/{}/turn", toolroll_api::client::encode(&thread)),
+        path: format!(
+            "/agents/live/thread/{}/turn",
+            toolroll_api::client::encode(&thread)
+        ),
         fields: vec![("message".to_string(), message), ("key".to_string(), key)],
         done: "Sent.".into(),
     }]
@@ -248,13 +312,21 @@ pub fn ask_ship(app: &mut App) -> Vec<crate::app::Effect> {
         app.status = Some((Tone::Refused, "The agent is still working on your last message. Wait for it, or stop it with x, then ship.".into()));
         return vec![];
     }
-    if row.is_some_and(|t| matches!(t.ship.as_deref(), Some("approved" | "imported" | "armed" | "completed" | "merging"))) {
+    if row.is_some_and(|t| {
+        matches!(
+            t.ship.as_deref(),
+            Some("approved" | "imported" | "armed" | "completed" | "merging")
+        )
+    }) {
         app.status = Some((Tone::Refused, "This thread's work is already shipping. x stops that Ship; r sends it back with a note.".into()));
         return vec![];
     }
     app.status = Some((Tone::Said, "Reading the Ship's terms…".into()));
     vec![Effect::Act {
-        path: format!("/agents/live/thread/{}/ship", toolroll_api::client::encode(&id)),
+        path: format!(
+            "/agents/live/thread/{}/ship",
+            toolroll_api::client::encode(&id)
+        ),
         fields: vec![],
         done: "Shipping.".into(),
     }]
@@ -263,7 +335,10 @@ pub fn ask_ship(app: &mut App) -> Vec<crate::app::Effect> {
 /// Whether the selected thread's Ship is armed (x cancels it, r sends it back).
 pub fn shipping(app: &App) -> bool {
     app.thread_selected().is_some_and(|id| {
-        app.threads.rows.iter().any(|t| t.id == id && matches!(t.ship.as_deref(), Some("armed" | "completed")))
+        app.threads
+            .rows
+            .iter()
+            .any(|t| t.id == id && matches!(t.ship.as_deref(), Some("armed" | "completed")))
     })
 }
 
@@ -288,12 +363,18 @@ pub fn send_back(app: &mut App, thread: String, text: String) -> Vec<crate::app:
         return vec![];
     }
     if app.thread_selected().as_deref() != Some(thread.as_str()) {
-        app.status = Some((Tone::Refused, "Another thread is selected now. Nothing was sent.".into()));
+        app.status = Some((
+            Tone::Refused,
+            "Another thread is selected now. Nothing was sent.".into(),
+        ));
         return vec![];
     }
     let key = app.token(32);
     vec![Effect::Act {
-        path: format!("/agents/live/thread/{}/ship/send-back", toolroll_api::client::encode(&thread)),
+        path: format!(
+            "/agents/live/thread/{}/ship/send-back",
+            toolroll_api::client::encode(&thread)
+        ),
         fields: vec![("feedback".to_string(), feedback), ("key".to_string(), key)],
         done: "Sent back.".into(),
     }]
@@ -321,7 +402,11 @@ pub fn ask_act(app: &mut App, act: ThreadAct) -> Vec<crate::app::Effect> {
         return vec![];
     }
     app.status = None;
-    let act = if act == ThreadAct::Stop && shipping(app) { ThreadAct::CancelShip } else { act };
+    let act = if act == ThreadAct::Stop && shipping(app) {
+        ThreadAct::CancelShip
+    } else {
+        act
+    };
     app.mode = Mode::ConfirmThreadAct(id, act);
     vec![]
 }
@@ -329,8 +414,18 @@ pub fn ask_act(app: &mut App, act: ThreadAct) -> Vec<crate::app::Effect> {
 /// The question over the screen.
 pub fn confirm_act_lines(act: ThreadAct) -> (&'static str, Vec<Line<'static>>) {
     let (title, question, more, yes) = match act {
-        ThreadAct::CancelShip => (" Stop the Ship ", "Stop this Ship for good?", "Nothing more is merged from it. A pull request already open stays open.", "Stop it"),
-        ThreadAct::Stop => (" Stop ", "Stop the agent's turn?", "The thread stays open: reply to go on.", "Stop it"),
+        ThreadAct::CancelShip => (
+            " Stop the Ship ",
+            "Stop this Ship for good?",
+            "Nothing more is merged from it. A pull request already open stays open.",
+            "Stop it",
+        ),
+        ThreadAct::Stop => (
+            " Stop ",
+            "Stop the agent's turn?",
+            "The thread stays open: reply to go on.",
+            "Stop it",
+        ),
         ThreadAct::End => (
             " End thread ",
             "End this thread?",
@@ -352,21 +447,47 @@ pub fn confirm_act_lines(act: ThreadAct) -> (&'static str, Vec<Line<'static>>) {
 }
 
 /// A key on that question: `y` posts it for the thread it was asked about (only while that thread is still selected).
-pub fn confirm_act_key(app: &mut App, thread: String, act: ThreadAct, key: KeyEvent) -> Vec<crate::app::Effect> {
+pub fn confirm_act_key(
+    app: &mut App,
+    thread: String,
+    act: ThreadAct,
+    key: KeyEvent,
+) -> Vec<crate::app::Effect> {
     app.mode = Mode::Normal;
     if !matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-        app.status = Some((Tone::Said, match act { ThreadAct::Stop | ThreadAct::CancelShip => "Not stopped.", ThreadAct::End => "Not ended." }.into()));
+        app.status = Some((
+            Tone::Said,
+            match act {
+                ThreadAct::Stop | ThreadAct::CancelShip => "Not stopped.",
+                ThreadAct::End => "Not ended.",
+            }
+            .into(),
+        ));
         return vec![];
     }
     if app.thread_selected().as_deref() != Some(thread.as_str()) {
-        app.status = Some((Tone::Refused, "Another thread is selected now. Nothing changed.".into()));
+        app.status = Some((
+            Tone::Refused,
+            "Another thread is selected now. Nothing changed.".into(),
+        ));
         return vec![];
     }
-    let verb = match act { ThreadAct::Stop => "stop", ThreadAct::End => "end", ThreadAct::CancelShip => "ship/cancel" };
+    let verb = match act {
+        ThreadAct::Stop => "stop",
+        ThreadAct::End => "end",
+        ThreadAct::CancelShip => "ship/cancel",
+    };
     vec![Effect::Act {
-        path: format!("/agents/live/thread/{}/{verb}", toolroll_api::client::encode(&thread)),
+        path: format!(
+            "/agents/live/thread/{}/{verb}",
+            toolroll_api::client::encode(&thread)
+        ),
         fields: vec![],
-        done: match act { ThreadAct::Stop | ThreadAct::CancelShip => "Stopped.", ThreadAct::End => "Ended." }.into(),
+        done: match act {
+            ThreadAct::Stop | ThreadAct::CancelShip => "Stopped.",
+            ThreadAct::End => "Ended.",
+        }
+        .into(),
     }]
 }
 
@@ -491,14 +612,22 @@ fn facts_line(facts: &ThreadFacts) -> String {
     parts.push(level_words(facts.level.as_deref()).to_string());
     if let Some(turn) = &facts.turn {
         // A plan's turn costs nothing extra: it says so, never "$0.00 so far, total unknown".
-        let cost = match (turn.billing.as_deref(), turn.cost_usd, turn.cost_basis.as_deref()) {
+        let cost = match (
+            turn.billing.as_deref(),
+            turn.cost_usd,
+            turn.cost_basis.as_deref(),
+        ) {
             (Some("subscription"), _, _) => " · on your plan".into(),
             (_, Some(c), Some("estimated")) => format!(" · about ${c:.2}"),
             (_, Some(c), Some("unknown")) => format!(" · ${c:.2} so far, total unknown"),
             (_, Some(c), _) => format!(" · ${c:.2}"),
             (_, None, _) => " · no cost yet".into(),
         };
-        parts.push(format!("turn {} {}{cost}", turn.seq, turn_status_words(&turn.status)));
+        parts.push(format!(
+            "turn {} {}{cost}",
+            turn.seq,
+            turn_status_words(&turn.status)
+        ));
     }
     parts.join(" · ")
 }
@@ -510,7 +639,7 @@ pub fn turn_status_words(status: &str) -> String {
         "running" => "working".into(),
         "finished" => "done".into(),
         "interrupted" => "stopped".into(),
-        "unknown" => "ended".into(),
+        "unknown" => "outcome unknown".into(),
         "withdrawn" => "didn't start".into(),
         other => clean(other),
     }
@@ -518,18 +647,46 @@ pub fn turn_status_words(status: &str) -> String {
 
 /// Toolroll's own note on how the turn ended, when it didn't simply finish: at most three lines at `w`.
 pub fn end_note(facts: Option<&ThreadFacts>, w: usize) -> Vec<String> {
-    // The thread's end, then its Ship, then how its turn ended: Toolroll's own words for each, in that order.
-    let words = facts.and_then(|f| {
-        f.ended
-            .as_ref()
-            .map(|e| if e.stop_pending { format!("{} Stopping its agent…", e.words) } else { e.words.clone() })
-            .or_else(|| f.ship.as_ref().map(|s| s.words.clone()))
-            .or_else(|| f.turn.as_ref().and_then(|t| t.end_words.clone()))
-    });
-    let Some(words) = words.as_deref() else {
+    // The latest turn's own end first (why it stopped, with what to do next), then the thread's end, then its Ship
+    // (secondary: an older Ship never hides why the newest turn stopped). Toolroll's own words for each.
+    let Some(f) = facts else {
         return vec![];
     };
-    let mut lines = wrap(&format!("Toolroll: {}", clean(words)), w);
+    let mut said: Vec<String> = vec![];
+    if let Some(turn) = f.turn.as_ref() {
+        match (turn.status.as_str(), turn.end_words.as_deref()) {
+            ("unknown", words) => said.push(format!(
+                "Outcome unknown: {} Check its activity.",
+                words
+                    .map(clean)
+                    .unwrap_or_else(|| "Toolroll couldn't tell how the turn ended.".into())
+            )),
+            // Toolroll's recorded explanation of a stop already says what to do next; without one, the recovery.
+            ("interrupted", None) => said.push("This turn was stopped. Reply to go on.".into()),
+            (_, Some(words)) => said.push(clean(words)),
+            _ => {}
+        }
+    }
+    if let Some(e) = f.ended.as_ref() {
+        let words = clean(&e.words);
+        if !said.contains(&words) {
+            said.push(if e.stop_pending {
+                format!("{words} Stopping its agent…")
+            } else {
+                words
+            });
+        }
+    }
+    if let Some(ship) = f.ship.as_ref() {
+        said.push(clean(&ship.words));
+    }
+    if said.is_empty() {
+        return vec![];
+    }
+    let mut lines = wrap(&format!("Toolroll: {}", said[0]), w);
+    for more in &said[1..] {
+        lines.extend(wrap(more, w));
+    }
     lines.truncate(3);
     lines
 }
@@ -583,7 +740,11 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let input_h: u16 = match &app.mode {
         Mode::ThreadSendBack(t, _) if *t == item.id => 1,
         Mode::ThreadReply(t, _) if *t == item.id => {
-            if app.threads.rows.iter().any(|r| r.id == item.id && !r.live) { 2 } else { 1 }
+            if app.threads.rows.iter().any(|r| r.id == item.id && !r.live) {
+                2
+            } else {
+                1
+            }
         }
         Mode::NewThread(_) => 1,
         Mode::NewTask(..) if roomy => 5,
@@ -644,7 +805,11 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     // Toolroll's own note on the turn's end, in Toolroll's voice (never the agent's): under its transcript.
     if !note.is_empty() {
         f.render_widget(
-            Paragraph::new(note.into_iter().map(|l| Line::from(Span::styled(l, ink()))).collect::<Vec<_>>()),
+            Paragraph::new(
+                note.into_iter()
+                    .map(|l| Line::from(Span::styled(l, ink())))
+                    .collect::<Vec<_>>(),
+            ),
             note_row,
         );
     }
@@ -964,14 +1129,20 @@ pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Eff
             app.mode = Mode::Normal;
             let ship = terms.ship.unwrap();
             if app.thread_selected().as_deref() != Some(ship.thread.as_str()) {
-                app.status = Some((Tone::Refused, "Another thread is selected now. Nothing was shipped.".into()));
+                app.status = Some((
+                    Tone::Refused,
+                    "Another thread is selected now. Nothing was shipped.".into(),
+                ));
                 return vec![];
             }
             if !ship.laptop {
                 // Ship takes a password typed now, which the workbench never takes: the command that does, in the
                 // terminal's scrollback (it shows these same terms again before it asks).
                 let Some(command) = ship.command else {
-                    app.status = Some((Tone::Refused, "Shipping needs your password typed now. Nothing was shipped.".into()));
+                    app.status = Some((
+                        Tone::Refused,
+                        "Shipping needs your password typed now. Nothing was shipped.".into(),
+                    ));
                     return vec![];
                 };
                 app.mode = Mode::Copied;
@@ -979,8 +1150,14 @@ pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Eff
                 return vec![Effect::Scrollback(vec![command])];
             }
             vec![Effect::Act {
-                path: format!("/agents/live/thread/{}/ship", toolroll_api::client::encode(&ship.thread)),
-                fields: vec![("terms".to_string(), terms.key), ("digest".to_string(), ship.digest)],
+                path: format!(
+                    "/agents/live/thread/{}/ship",
+                    toolroll_api::client::encode(&ship.thread)
+                ),
+                fields: vec![
+                    ("terms".to_string(), terms.key),
+                    ("digest".to_string(), ship.digest),
+                ],
                 done: "Shipping.".into(),
             }]
         }
@@ -1001,7 +1178,11 @@ pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Eff
         }
         KeyCode::Esc => {
             app.mode = Mode::Normal;
-            let words = if terms.ship.is_some() { "Nothing was shipped." } else { "Nothing was started." };
+            let words = if terms.ship.is_some() {
+                "Nothing was shipped."
+            } else {
+                "Nothing was started."
+            };
             app.status = Some((Tone::Said, words.into()));
             vec![]
         }
@@ -1097,7 +1278,11 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
     terms.seen_end = terms.drawn >= body.len();
     let mut lines = vec![
         Line::from(Span::styled(
-            if shipping { "Ship approves exactly this:" } else { "Starting this thread agrees to exactly this:" },
+            if shipping {
+                "Ship approves exactly this:"
+            } else {
+                "Starting this thread agrees to exactly this:"
+            },
             ink(),
         )),
         Line::raw(""),
@@ -1115,15 +1300,32 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
     if terms.seen_end {
         lines.push(Line::from(crate::sheet::act(
             "Enter",
-            if !shipping { "Start the thread" } else if laptop { "Ship it" } else { "Ship it with your password (in a terminal)" },
+            if !shipping {
+                "Start the thread"
+            } else if laptop {
+                "Ship it"
+            } else {
+                "Ship it with your password (in a terminal)"
+            },
             true,
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            if shipping { "Enter ships it once you've read to the end." } else { "Enter starts it once you've read to the end." },
+            if shipping {
+                "Enter ships it once you've read to the end."
+            } else {
+                "Enter starts it once you've read to the end."
+            },
             dim(),
         )));
     }
-    lines.push(Line::from(Span::styled(if shipping { "Esc ships nothing." } else { "Esc starts nothing." }, dim())));
+    lines.push(Line::from(Span::styled(
+        if shipping {
+            "Esc ships nothing."
+        } else {
+            "Esc starts nothing."
+        },
+        dim(),
+    )));
     f.render_widget(Paragraph::new(lines).block(block), r);
 }

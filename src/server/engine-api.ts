@@ -254,7 +254,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (!read.ok) return refusal(response, 404, "thread");
     const body: LiveThreads = { version: ENGINE_API_VERSION, on, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
       .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null,
-        turn: one.turn?.status ?? null, ended: one.ended !== undefined, stopPending: one.stopPending, ship: one.ship?.state ?? null })) };
+        turn: one.turn?.status ?? null, ended: one.ended !== undefined, stopPending: one.stopPending, ship: one.ship?.state ?? null, turnSeq: one.turn?.seq ?? null })) };
     return sendChecked(response, 200, "liveThreads", body);
   }
 

@@ -864,6 +864,8 @@ pub struct Areas {
 pub struct App {
     pub project_name: String,
     pub needs_count: i64,
+    /// What Work's rows say waits on you (needs_count adds the threads that do: recount_needs).
+    pub work_needs: i64,
     /// The rows the list shows (`all_items` through the filter).
     pub items: Vec<Item>,
     /// Every row Work gave, and the threads.
@@ -1035,6 +1037,7 @@ impl App {
         App {
             project_name: String::new(),
             needs_count: 0,
+            work_needs: 0,
             items: Vec::new(),
             all_items: Vec::new(),
             filter: Filter::All,
@@ -1690,14 +1693,25 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
-            Msg::Acted(Ok(ActOutcome::ShipTerms { key, digest, lines, laptop, command })) => {
+            Msg::Acted(Ok(ActOutcome::ShipTerms {
+                key,
+                digest,
+                lines,
+                laptop,
+                command,
+            })) => {
                 // A Ship's terms: drawn whole on the same sheet a new thread's are, for the thread still selected.
                 let Some(thread) = self.thread_selected() else {
                     return vec![];
                 };
                 self.status = None;
                 let mut terms = crate::thread::StartTerms::new(String::new(), None, key, lines);
-                terms.ship = Some(crate::thread::ShipPress { thread, digest, laptop, command });
+                terms.ship = Some(crate::thread::ShipPress {
+                    thread,
+                    digest,
+                    laptop,
+                    command,
+                });
                 self.mode = Mode::StartThread(terms);
                 vec![]
             }
@@ -1824,7 +1838,8 @@ impl App {
             .flat_map(|g| g.rows.iter())
             .filter(|n| covered_by_welcome(n))
             .count() as i64;
-        self.needs_count = (rows.needs_count - covered).max(0);
+        self.work_needs = (rows.needs_count - covered).max(0);
+        self.needs_count = self.work_needs;
         self.spend = rows.spend.clone();
         let was: std::collections::HashMap<String, Seen> = self
             .all_items
@@ -1834,6 +1849,7 @@ impl App {
         self.all_items = items_of(&rows);
         self.all_items.extend(self.threads.items());
         sort_sections(&mut self.all_items);
+        self.recount_needs();
         // Unread: any change of a task's state you didn't see (it isn't the one open now): it finished, failed, an
         // attempt started or ended, a retry in the background failed (its next try moved), a question came or was
         // answered. It stays marked until it is opened (viewstate.rs keeps it).
@@ -1934,12 +1950,34 @@ impl App {
             }
         }
         let mut before = self.selected_id();
+        // The thread being looked at now has its news seen; any other thread with news unseen takes the unread mark.
+        if let Some(id) = before.as_deref() {
+            self.mark_thread_seen(id);
+        }
+        for t in &self.threads.rows {
+            let news = self
+                .threads
+                .seen
+                .get(&t.id)
+                .is_none_or(|k| *k != crate::thread::news_key(t));
+            if news
+                && before.as_deref() != Some(t.id.as_str())
+                && crate::thread::thread_place(t, false).0 == Section::NeedsYou
+            {
+                self.unread.insert(t.id.clone());
+            }
+        }
         self.all_items.retain(|i| !i.thread);
         self.all_items.extend(self.threads.items());
         sort_sections(&mut self.all_items);
+        self.recount_needs();
         self.items = self.filtered();
         // A thread just started here: selected once listed (a filter that hides it set aside).
-        if let Some(thread) = self.filed.clone().filter(|t| self.all_items.iter().any(|i| i.thread && &i.id == t)) {
+        if let Some(thread) = self
+            .filed
+            .clone()
+            .filter(|t| self.all_items.iter().any(|i| i.thread && &i.id == t))
+        {
             self.filed = None;
             if !self.items.iter().any(|i| i.id == thread) {
                 self.filter = Filter::All;
@@ -2332,9 +2370,12 @@ impl App {
     }
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
-        // Opened: no longer unread.
+        // Opened: no longer unread (a thread: its news seen, so it moves on to Recent once nothing else waits).
         if let Some(id) = self.selected_id() {
             self.unread.remove(&id);
+            if self.mark_thread_seen(&id) {
+                self.rerow_threads();
+            }
         }
         self.search = None;
         // Another task: let go of this one's terminal (it keeps running in the console; t on it again reattaches).
@@ -2515,7 +2556,9 @@ impl App {
                 }
                 _ => vec![],
             },
-            Mode::ConfirmThreadAct(thread, act) => crate::thread::confirm_act_key(self, thread, act, key),
+            Mode::ConfirmThreadAct(thread, act) => {
+                crate::thread::confirm_act_key(self, thread, act, key)
+            }
             Mode::ConfirmStop(run) => {
                 self.mode = Mode::Normal;
                 match key.code {
@@ -3252,7 +3295,9 @@ impl App {
             Action::PreviousTab => self
                 .set_tab(Tab::ALL[(Tab::ALL.iter().position(|t| *t == self.tab).unwrap() + 3) % 4]),
             // On a thread, `s` is Reply (its next message); the palette's "Reply to the thread" is the same.
-            Action::Steer | Action::ThreadReply if self.thread_selected().is_some() => crate::thread::open_reply(self),
+            Action::Steer | Action::ThreadReply if self.thread_selected().is_some() => {
+                crate::thread::open_reply(self)
+            }
             Action::ThreadReply => {
                 self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
                 vec![]
@@ -3272,12 +3317,17 @@ impl App {
             },
             Action::Pause => self.pause(item.as_ref()),
             // On a thread, `a` is Ship (its terms first), and `r` sends an armed Ship back with a note.
-            Action::Accept | Action::ThreadShip if self.thread_selected().is_some() => crate::thread::ask_ship(self),
+            Action::Accept | Action::ThreadShip if self.thread_selected().is_some() => {
+                crate::thread::ask_ship(self)
+            }
             Action::SendBack if self.thread_selected().is_some() => {
                 if crate::thread::shipping(self) {
                     crate::thread::open_send_back(self)
                 } else {
-                    self.say(Tone::Refused, "Nothing of this thread is shipping to send back. s replies to it.");
+                    self.say(
+                        Tone::Refused,
+                        "Nothing of this thread is shipping to send back. s replies to it.",
+                    );
                     vec![]
                 }
             }
@@ -3286,8 +3336,12 @@ impl App {
                 vec![]
             }
             // On a thread, `x` stops its agent's turn (the thread stays open) and `X` ends the thread (final).
-            Action::Stop | Action::ThreadStop if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::Stop),
-            Action::CancelTask | Action::ThreadEnd if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::End),
+            Action::Stop | Action::ThreadStop if self.thread_selected().is_some() => {
+                crate::thread::ask_act(self, crate::thread::ThreadAct::Stop)
+            }
+            Action::CancelTask | Action::ThreadEnd if self.thread_selected().is_some() => {
+                crate::thread::ask_act(self, crate::thread::ThreadAct::End)
+            }
             Action::ThreadStop | Action::ThreadEnd => {
                 self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
                 vec![]
@@ -4058,6 +4112,50 @@ impl App {
     }
 
     /// This project's view as the view file keeps it (viewstate.rs): ids and our own words only.
+    /// Mark `id`'s news seen, if it is a listed thread with news unseen; whether anything changed.
+    fn mark_thread_seen(&mut self, id: &str) -> bool {
+        let Some(key) = self
+            .threads
+            .rows
+            .iter()
+            .find(|t| t.id == id)
+            .map(crate::thread::news_key)
+        else {
+            return false;
+        };
+        if self.threads.seen.get(id) == Some(&key) {
+            return false;
+        }
+        self.threads.seen.insert(id.to_string(), key);
+        true
+    }
+
+    /// The thread rows placed again (their seen state moved), the selection kept on the same item.
+    fn rerow_threads(&mut self) {
+        let before = self.selected_id();
+        self.all_items.retain(|i| !i.thread);
+        self.all_items.extend(self.threads.items());
+        sort_sections(&mut self.all_items);
+        self.recount_needs();
+        self.items = self.filtered();
+        self.selected = before
+            .as_ref()
+            .and_then(|id| self.items.iter().position(|i| &i.id == id))
+            .unwrap_or(self.selected)
+            .min(self.items.len().saturating_sub(1));
+    }
+
+    /// What waits on the person: Work's own count and every thread in Needs you, counted and jumped over as one list
+    /// (the top bar, `!`, and the terminal's title agree).
+    fn recount_needs(&mut self) {
+        let threads = self
+            .all_items
+            .iter()
+            .filter(|i| i.thread && i.section == Section::NeedsYou)
+            .count() as i64;
+        self.needs_count = self.work_needs + threads;
+    }
+
     pub fn view_now(&self) -> crate::viewstate::View {
         let default_side = self.prefs.settings.list_side;
         crate::viewstate::View {
@@ -4079,6 +4177,13 @@ impl App {
                 .filter(|id| self.all_items.iter().any(|i| &i.id == *id) || !self.loaded)
                 .cloned()
                 .collect(),
+            thread_seen: self
+                .threads
+                .seen
+                .iter()
+                .filter(|(id, _)| self.threads.rows.iter().any(|t| &t.id == *id) || !self.loaded)
+                .map(|(id, k)| (id.clone(), k.clone()))
+                .collect(),
         }
     }
 
@@ -4093,6 +4198,7 @@ impl App {
         self.panes.ratio_x = v.ratio_x;
         self.panes.ratio_y = v.ratio_y;
         self.unread = v.unread.into_iter().collect();
+        self.threads.seen = v.thread_seen.into_iter().collect();
         let mut r = self.restore.take().unwrap_or_default();
         r.layout = v.layout;
         r.tab = v.tab;

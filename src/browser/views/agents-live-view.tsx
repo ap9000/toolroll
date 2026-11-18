@@ -420,7 +420,8 @@ function Headline({ working, needsYou, shownLive, local }: { working: number; ne
 }
 
 /** One of the viewer's own threads, as GET /agents/live/threads lists it (the engine contract's liveThreads row). */
-export type ThreadRow = { id: string; title: string; project: string | null; live: boolean; waiting: number; turn: string | null; ended: boolean; stopPending: boolean; ship: string | null };
+export type ThreadRow = { id: string; title: string; project: string | null; live: boolean; waiting: number; turn: string | null; ended: boolean; stopPending: boolean; ship: string | null;
+  turnSeq?: number | null };
 
 /** A thread's one word and its tone, as the terminal places it (thread.rs thread_place): a question waiting, ended,
  * working, shipping, else ready for you. */
@@ -429,8 +430,18 @@ export function threadWord(row: ThreadRow): { word: string; tone: ChipTone } {
   if (row.ended) return { word: "Ended", tone: "neutral" };
   if (row.turn === "admitted" || row.turn === "running") return { word: "Working", tone: "info" };
   if (row.ship !== null && ["approved", "imported", "armed", "completed", "merging"].includes(row.ship)) return { word: "Shipping", tone: "info" };
-  if (row.ship === "merged") return { word: "Shipped", tone: "success" };
-  return { word: "Ready", tone: "needs" };
+  // The latest turn's own end comes first (an older Ship never hides why the newest turn stopped).
+  if (row.turn === "unknown") return { word: "Outcome unknown", tone: "neutral" };
+  if (row.turn === "interrupted") return { word: "Stopped", tone: "neutral" };
+  if (row.ship === "cancelled") return { word: "Ship stopped", tone: "neutral" };
+  if (row.ship === "refused" || row.ship === "failed") return { word: "Ship refused", tone: "danger" };
+  return { word: "Ready", tone: "neutral" };
+}
+
+/** A thread's Ship outcome, kept apart from the thread's own state: the ones its word doesn't already say (the
+ * terminal's ship_outcome and the CLI's say the same). */
+export function shipOutcome(ship: string | null): string | null {
+  return ship === "merged" ? "Ship: Merged" : ship === "sent-back" ? "Ship: sent back" : null;
 }
 
 /** The viewer's own interactive agent threads, read-only (the owner's D6): where each stands, and where to go on with it. */
@@ -449,6 +460,7 @@ function Threads({ refreshKey }: { refreshKey: number }) {
       {rows.map(row => { const { word, tone } = threadWord(row); return <li key={row.id} className="flex min-w-0 items-center gap-2 text-body" data-live-thread>
         <span className="min-w-0 truncate text-foreground">{row.title}</span>
         {row.project !== null && <span className="shrink-0 text-muted-foreground">{row.project}</span>}
+        {shipOutcome(row.ship) !== null && <span className="shrink-0 text-muted-foreground">{shipOutcome(row.ship)}</span>}
         <span className="ml-auto shrink-0"><Chip tone={tone}>{word}</Chip></span>
       </li>; })}
     </ul>
