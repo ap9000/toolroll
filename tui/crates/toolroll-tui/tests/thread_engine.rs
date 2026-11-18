@@ -175,6 +175,8 @@ async fn a_new_thread_starts_only_under_the_key_of_the_terms_card_the_screen_dre
         "{posted:?}"
     );
     assert_eq!(app.status, Some((Tone::Said, "The thread started.".into())));
+    // The thread it started is selected once it is listed, not the task that was selected before.
+    assert_eq!(app.selected_item().map(|i| (i.id.as_str(), i.thread)), Some((toolroll_fake_engine::THREAD, true)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

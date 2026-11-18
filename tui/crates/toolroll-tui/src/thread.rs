@@ -144,24 +144,24 @@ impl Threads {
                     .cost_usd
                     .map(|c| format!(" · ${c:.2}"))
                     .unwrap_or_default();
+                let (section, word) = thread_place(t);
                 Item {
-                    section: if t.waiting > 0 {
-                        Section::NeedsYou
-                    } else {
-                        Section::Working
-                    },
+                    section,
                     id: t.id.clone(),
                     title: clean(&t.title),
-                    word: if t.waiting > 0 {
-                        "Question".into()
-                    } else if t.live {
-                        "Thread".into()
+                    word: word.into(),
+                    detail: if t.ended {
+                        "Thread · ended".into()
                     } else {
-                        "Idle".into()
+                        format!("Thread · {level}{cost}")
                     },
-                    detail: format!("Thread · {level}{cost}"),
-                    tone: if t.waiting > 0 { "attention" } else { "live" }.into(),
-                    paused: !t.live && t.waiting == 0,
+                    tone: match section {
+                        Section::NeedsYou => "attention",
+                        Section::Working => "live",
+                        _ => "ended",
+                    }
+                    .into(),
+                    paused: false,
                     age: String::new(),
                     project: t.project.as_deref().map(clean),
                     need: None,
@@ -171,6 +171,20 @@ impl Threads {
                 }
             })
             .collect()
+    }
+}
+
+/// Where a thread sits in the list, and its one word: a question waiting on you, then ended (Recent, final), then its
+/// turn working (Working), else your move (Needs you, Ready: reply, ship or end it).
+pub fn thread_place(t: &ThreadRow) -> (Section, &'static str) {
+    if t.waiting > 0 {
+        (Section::NeedsYou, "Question")
+    } else if t.ended {
+        (Section::Recent, "Ended")
+    } else if matches!(t.turn.as_deref(), Some("admitted" | "running")) {
+        (Section::Working, "Thread")
+    } else {
+        (Section::NeedsYou, "Ready")
     }
 }
 

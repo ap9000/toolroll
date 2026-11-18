@@ -105,6 +105,8 @@ export const threadFactsSchema = z.object({
     /** How the turn is billed: the person's plan (`subscription`) or a key. */
     billing: z.enum(["subscription", "api-key"]).optional() }).nullable(),
   questions: z.array(threadQuestionSchema),
+  /** Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified. */
+  ended: z.object({ words: z.string(), stopPending: z.boolean() }).optional(),
 });
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
@@ -134,7 +136,10 @@ export const liveThreadsSchema = z.object({
   /** Whether interactive agent threads are on (Settings → General): off, the list still has the threads already made. */
   on: z.boolean().optional(),
   threads: z.array(z.object({ id: hex32, title: z.string(), project: z.string().nullable(), level: flexibleLevelSchema.nullable(), live: z.boolean(), waiting: z.number().int(),
-    costUsd: z.number().nullable() })),
+    costUsd: z.number().nullable(),
+    /** Its latest turn's state (null before its first), whether it ended (End is final), and whether its agent's stop
+     * is still being verified. */
+    turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------

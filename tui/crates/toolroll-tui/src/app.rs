@@ -1677,6 +1677,13 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::ThreadStarted { words, thread })) => {
+                // The new thread is selected once it is listed (got_threads), like a task just filed.
+                self.say(Tone::Said, words);
+                self.filed = Some(thread);
+                self.sent_thread();
+                self.refresh()
+            }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
                 self.sent_thread();
@@ -1909,11 +1916,20 @@ impl App {
                 self.threads.rows.clear();
             }
         }
-        let before = self.selected_id();
+        let mut before = self.selected_id();
         self.all_items.retain(|i| !i.thread);
         self.all_items.extend(self.threads.items());
         sort_sections(&mut self.all_items);
         self.items = self.filtered();
+        // A thread just started here: selected once listed (a filter that hides it set aside).
+        if let Some(thread) = self.filed.clone().filter(|t| self.all_items.iter().any(|i| i.thread && &i.id == t)) {
+            self.filed = None;
+            if !self.items.iter().any(|i| i.id == thread) {
+                self.filter = Filter::All;
+                self.items = self.filtered();
+            }
+            before = Some(thread);
+        }
         self.selected = before
             .as_ref()
             .and_then(|id| self.items.iter().position(|i| &i.id == id))
@@ -4748,6 +4764,7 @@ impl App {
             Ok(
                 ActOutcome::Terms { .. }
                 | ActOutcome::ThreadTerms { .. }
+                | ActOutcome::ThreadStarted { .. }
                 | ActOutcome::NextStep { .. },
             ) => {
                 self.say(

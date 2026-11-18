@@ -250,7 +250,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const read = flexibleThreadsOf(store, flexible, { owner: who.name });
     if (!read.ok) return refusal(response, 404, "thread");
     const body: LiveThreads = { version: ENGINE_API_VERSION, on, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
-      .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null })) };
+      .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null,
+        turn: one.turn?.status ?? null, ended: one.ended !== undefined, stopPending: one.stopPending })) };
     return sendChecked(response, 200, "liveThreads", body);
   }
 
@@ -331,7 +332,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const started = await startFlexibleThread(store, flexible, { repo, by, digest: card.digest, message, model: card.model, billing: card.billing, startKey: card.summary.key, launcher,
       freshProof: FRESH_PROOFS.has(proved.method), expectNetwork: card.network });
     if (!started.ok) return acted(response, 409, "refused", started.message);
-    return acted(response, 200, "done", started.replayed ? "This thread already started." : "The thread started.");
+    // The thread itself, so the terminal selects it (the same thread again for a replayed start).
+    return json(response, 200, { outcome: "done", words: started.replayed ? "This thread already started." : "The thread started.", thread: started.thread });
   }
 
   /** The task an address names, in view as its page would be (the route admitted its project already). */

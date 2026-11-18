@@ -769,6 +769,10 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
         billing: input.billing, requestKey, holder: sessions.holder, clock, opening: true });
       if (!admitted.ok) return admitted;
       turn = admitted.turn;
+      // Its title, recorded with it (written once): the first line of its first message, cleaned as the live view
+      // cleans the agent's text. The list and every surface read this, never this host's memory alone.
+      const title = cardText(input.message.split("\n")[0], 80);
+      if (title !== "") store.handle.prepare("INSERT INTO flexible_thread_meta (thread, title) VALUES (?, ?) ON CONFLICT (thread) DO NOTHING").run(id, title);
       return { ok: true as const };
     },
     release: (_id, why) => {
@@ -859,6 +863,8 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
 export type FlexibleQuestionView = { request: string; kind: FlexibleRequestKind; title: string; detail: string | null; tool: string | null; complete: boolean; digest: string;
   state: FlexibleAnswerState; answerable: boolean; parts: { id: string; question: string; options: string[] }[] };
 export type FlexibleThreadFacts = { version: string; title: string; project: string | null; level: FlexibleLevel | null; agent: { provider: string; model: string } | null;
+  /** Ended (End is final): the thread's own words for it, and whether its agent's stop is still being verified. */
+  ended?: { words: string; stopPending: boolean };
   turn: { seq: number; status: string; costUsd: number | null; costBasis: "measured" | "estimated" | "unknown" | null;
     /** Toolroll's own words for how the turn ended, when it didn't simply finish (interrupted, unknown, withdrawn). */
     endWords?: string;
@@ -886,13 +892,14 @@ function factsOf(store: Store, sessions: FlexibleSessions, thread: { id: string;
   }));
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(thread.repo)?.["name"];
   const facts = {
-    title: session?.title ?? `Thread ${thread.id.slice(0, 8)}`,
+    title: recordedTitle(store, thread.id) ?? session?.title ?? `Thread ${thread.id.slice(0, 8)}`,
     project: typeof project === "string" ? project : null,
     level: levelOf(store, thread.id),
     agent: turn === null ? null : { provider: turn.provider, model: turn.model },
     turn: turn === null ? null : { seq: turn.seq, status: turn.status, costUsd: turn.costBasis === null ? null : turn.costMicrousd / 1_000_000, costBasis: turn.costBasis,
       ...endWordsOf(store, turn.id, turn.status), billing: turn.billing },
     questions,
+    ...threadEndOf(store, thread.id),
   };
   // What the facts are, as one short digest: a client holding it is told "unchanged" instead of being sent them again.
   return { version: sha16(JSON.stringify(facts)), ...facts };
@@ -931,13 +938,13 @@ export function flexibleThreadLiveOf(store: Store, sessions: FlexibleSessions, i
 
 /** The owner's ready threads, newest first, as the work list shows them. */
 export function flexibleThreadsOf(store: Store, sessions: FlexibleSessions, input: { owner: string }):
-  { ok: true; threads: (FlexibleThreadFacts & { id: string; repo: string; live: boolean; waiting: number })[] } | FlexibleSessionRefusal {
+  { ok: true; threads: (FlexibleThreadFacts & { id: string; repo: string; live: boolean; waiting: number; stopPending: boolean })[] } | FlexibleSessionRefusal {
   if (typeof input.owner !== "string") return refuse("invalid-request");
   const rows = store.handle.prepare("SELECT id FROM flexible_thread WHERE created_by = ? AND state = 'ready' ORDER BY created_at DESC, id LIMIT 50").all(input.owner).map(row => String(row["id"]));
   const threads = rows.map(id => flexibleThread(store, id)).filter(one => one !== null).map(thread => {
     const session = sessions.threads.get(thread.id);
     const facts = factsOf(store, sessions, thread, session);
-    return { ...facts, id: thread.id, repo: thread.repo, live: session?.agent != null, waiting: facts.questions.filter(one => one.answerable).length };
+    return { ...facts, id: thread.id, repo: thread.repo, live: session?.agent != null, waiting: facts.questions.filter(one => one.answerable).length, stopPending: flexibleStopPending(store, thread.id) };
   });
   return { ok: true, threads };
 }
@@ -1027,4 +1034,22 @@ function withoutRefusedLines(store: Store, turn: string | null, records: LiveRec
   if (turn === null || !records.some(one => one.k === "say" && one.t.some(line => AGENT_REFUSED_LINE.test(line)))) return records;
   if (flexibleTurn(store, turn)?.status !== "interrupted") return records;
   return records.map(one => one.k !== "say" ? one : { ...one, t: one.t.map(line => AGENT_REFUSED_LINE.test(line) ? FLEXIBLE_REFUSED_LINE_WORDS : line) });
+}
+
+/** The title recorded at a thread's start (flexible_thread_meta), or null. */
+function recordedTitle(store: Store, thread: string): string | null {
+  const title = store.handle.prepare("SELECT title FROM flexible_thread_meta WHERE thread = ?").get(thread)?.["title"];
+  return typeof title === "string" && title !== "" ? title : null;
+}
+
+/** Whether a stop of this thread's agent is required and not yet verified (flexible_stop_request open). */
+export function flexibleStopPending(store: Store, thread: string): boolean {
+  return store.handle.prepare("SELECT 1 AS open FROM flexible_stop_request WHERE thread = ? AND settled_at IS NULL LIMIT 1").get(thread) !== undefined;
+}
+
+/** A thread's end, as its facts carry it: absent while it is open. */
+function threadEndOf(store: Store, thread: string): { ended?: { words: string; stopPending: boolean } } {
+  const row = store.handle.prepare("SELECT end_words FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(thread);
+  if (row === undefined) return {};
+  return { ended: { words: cleanLiveText(String(row["end_words"])).slice(0, 500), stopPending: flexibleStopPending(store, thread) } };
 }

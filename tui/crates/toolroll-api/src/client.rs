@@ -66,6 +66,11 @@ pub enum ActOutcome {
         key: String,
         lines: Vec<String>,
     },
+    /// A new thread started (POST /agents/live/thread with its card's key): the words, and the thread, so it is selected.
+    ThreadStarted {
+        words: String,
+        thread: String,
+    },
     /// A new thread refused with what the person still needs first, as the console names it (one of NEXT_STEPS): the
     /// console's words, and the step.
     NextStep {
@@ -627,6 +632,17 @@ impl Client {
                         digest,
                         terms,
                     });
+                }
+                if v["outcome"] == "done" && path == "/agents/live/thread" {
+                    if let Some(thread) = v["thread"]
+                        .as_str()
+                        .filter(|t| t.len() == 32 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+                    {
+                        return Ok(ActOutcome::ThreadStarted {
+                            words: non_empty(words, status),
+                            thread: thread.to_string(),
+                        });
+                    }
                 }
                 if v["outcome"] == "refused" && path == "/agents/live/thread" {
                     if let Some(next) = v["next"].as_str().filter(|n| NEXT_STEPS.contains(n)) {

@@ -171,7 +171,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(await start({ agent: "codex" })).toEqual({ status: 409, body: { outcome: "refused", words: FLEXIBLE_CLAUDE_ONLY } });
     expect(FLEXIBLE_CLAUDE_ONLY).toContain("Codex threads come later");
     expect(held.starts).toEqual([]);
-    expect(await start({ terms: card.key, agent: "claude" })).toEqual({ status: 200, body: { outcome: "done", words: "The thread started." } });
+    expect(await start({ terms: card.key, agent: "claude" })).toEqual({ status: 200, body: { outcome: "done", words: "The thread started.", thread: "e".repeat(32) } });
     expect(held.starts).toHaveLength(1);
     expect(held.starts[0]).toMatchObject({ repo: world.project, model: expect.stringMatching(/^claude-/), startKey: card.key });
     // Turned off again: the very next start refuses, before anything is looked up.

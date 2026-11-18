@@ -1,5 +1,5 @@
 {
-  "digest": "2958dc1a817b605ab379d277ae02a7fd1b8be9fc754ba2fb1ec565763a84fc38",
+  "digest": "d3ee3b91c12a89b05ab9d043e27b7ba18f3d1a985744b08c9d4b81160bdb3a20",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -635,6 +635,22 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "ended": {
+              "type": "object",
+              "properties": {
+                "words": {
+                  "type": "string"
+                },
+                "stopPending": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "words",
+                "stopPending"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -715,6 +731,18 @@
                   "number",
                   "null"
                 ]
+              },
+              "turn": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended": {
+                "type": "boolean"
+              },
+              "stopPending": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -724,7 +752,10 @@
               "level",
               "live",
               "waiting",
-              "costUsd"
+              "costUsd",
+              "turn",
+              "ended",
+              "stopPending"
             ],
             "additionalProperties": false
           }
