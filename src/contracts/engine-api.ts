@@ -90,6 +90,22 @@ const threadQuestionSchema = z.object({
   /** A question's parts (empty for a permission): each part's id, its words, and the options offered. */
   parts: z.array(z.object({ id: z.string(), question: z.string(), options: z.array(z.string()) })),
 });
+/** Optional preparation for attach mode. Facts only: none of these fields authorizes launch or attachment.
+ * Omitted runtime means the legacy stream-json runtime. No raw terminal bytes belong in LiveRecord. */
+export const threadTerminalSchema = z.strictObject({
+  available: z.boolean(),
+  launch: hex32,
+  generation: z.number().int().positive(),
+  lifecycle: z.enum(["starting", "live", "stopping", "exited", "unresolved"]),
+  viewing: z.enum(["detached", "viewing"]),
+  control: z.enum(["none", "self", "other"]),
+  protocol: z.literal(1),
+  cols: z.number().int().min(2).max(500),
+  rows: z.number().int().min(2).max(500),
+});
+
+export type ThreadTerminalFacts = z.infer<typeof threadTerminalSchema>;
+
 /** A Flexible thread's facts beside its window: its level, its agent, its current turn and that turn's cost so far (null
  * until a call is charged; `costBasis` says how sure), and that turn's questions. */
 export const threadFactsSchema = z.object({
@@ -101,6 +117,8 @@ export const threadFactsSchema = z.object({
   agent: z.object({ provider: z.string(), model: z.string() }).nullable(),
   turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable() }).nullable(),
   questions: z.array(threadQuestionSchema),
+  runtime: z.enum(["stream-json", "interactive"]).optional(),
+  terminal: threadTerminalSchema.optional(),
 });
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room

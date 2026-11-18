@@ -240,3 +240,19 @@ fn a_key_the_contract_does_not_name_is_caught() {
     // And the model refuses it too (strict objects).
     assert!(serde_json::from_value::<WorkRows>(rows).is_err());
 }
+
+#[test]
+fn attach_facts_are_optional_and_unknown_terminal_fields_are_refused() {
+    let mut legacy = read("live-session-window-thread.json");
+    let thread = legacy["thread"].as_object_mut().unwrap();
+    thread.remove("runtime");
+    thread.remove("terminal");
+    let parsed: LiveSessionWindow = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+
+    let mut modern = read("live-session-window-thread.json");
+    modern["thread"]["runtime"] = Value::String("interactive".into());
+    assert!(serde_json::from_value::<LiveSessionWindow>(modern.clone()).is_ok());
+    modern["thread"]["terminal"]["executable"] = Value::String("claude".into());
+    assert!(serde_json::from_value::<LiveSessionWindow>(modern).is_err());
+}

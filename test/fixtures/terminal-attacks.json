@@ -1,0 +1,206 @@
+[
+  {
+    "name": "clipboard split ST",
+    "chunks": [
+      "4f4b1b5d35323b633b434c49505345435245541b",
+      "5c21"
+    ],
+    "safe": "OK!",
+    "visible": "OK!",
+    "absent": [
+      "CLIPSECRET"
+    ]
+  },
+  {
+    "name": "links are plain text",
+    "chunks": [
+      "1b5d383b3b68747470733a2f2f6261642e696e76616c69641b5c6c6162656c1b5d383b3b1b5c"
+    ],
+    "safe": "label",
+    "visible": "label",
+    "absent": [
+      "https://bad.invalid"
+    ]
+  },
+  {
+    "name": "titles notifications bells",
+    "chunks": [
+      "1b5d303b5449544c45534543524554071b5d393b4e4f54494345534543524554071b5d3737373b6e6f746966793b4e4f544943455345435245541b5c074f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "TITLESECRET",
+      "NOTICESECRET"
+    ]
+  },
+  {
+    "name": "DCS strings",
+    "chunks": [
+      "1b505041594c4f4144534543524554071b",
+      "5c4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "PAYLOADSECRET"
+    ]
+  },
+  {
+    "name": "APC strings",
+    "chunks": [
+      "1b5f5041594c4f4144534543524554071b",
+      "5c4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "PAYLOADSECRET"
+    ]
+  },
+  {
+    "name": "PM strings",
+    "chunks": [
+      "1b5e5041594c4f4144534543524554071b",
+      "5c4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "PAYLOADSECRET"
+    ]
+  },
+  {
+    "name": "SOS strings",
+    "chunks": [
+      "1b585041594c4f4144534543524554071b",
+      "5c4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "PAYLOADSECRET"
+    ]
+  },
+  {
+    "name": "queries and window ops",
+    "chunks": [
+      "1b5b366e1b5b631b5b3e30631b5b3138741b5b3f323524701b5b3e343b326d4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": []
+  },
+  {
+    "name": "alternate screen",
+    "chunks": [
+      "6d61696e1b5b3f31303439681b5b324a1b5b48616c741b5b3f313034396c"
+    ],
+    "safe": "main\u001b[?1049h\u001b[2J\u001b[Halt\u001b[?1049l",
+    "visible": "main",
+    "absent": []
+  },
+  {
+    "name": "redraw",
+    "chunks": [
+      "6f6c641b5b481b5b324b6e6577"
+    ],
+    "safe": "old\u001b[H\u001b[2Knew",
+    "visible": "new",
+    "absent": [
+      "old"
+    ]
+  },
+  {
+    "name": "unicode split UTF8",
+    "chunks": [
+      "41e6",
+      "97a5f09f",
+      "98805a"
+    ],
+    "safe": "A日😀Z",
+    "visible": "A日😀Z",
+    "absent": []
+  },
+  {
+    "name": "malformed UTF8",
+    "chunks": [
+      "41ffc0af421b5d35323b633b4d414c5345435245541b",
+      "5c5a"
+    ],
+    "safe": "A���BZ",
+    "visible": "BZ",
+    "absent": [
+      "MALSECRET"
+    ]
+  },
+  {
+    "name": "display input modes",
+    "chunks": [
+      "1b5b3f313b32353b313030303b313030363b32303034681b5b33316d7265641b5b306d"
+    ],
+    "safe": "\u001b[?1;25;1000;1006;2004h\u001b[31mred\u001b[0m",
+    "visible": "red",
+    "absent": []
+  },
+  {
+    "name": "unknown mixed modes",
+    "chunks": [
+      "1b5b3f32353b39393939684f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": []
+  },
+  {
+    "name": "unterminated OSC",
+    "chunks": [
+      "4f4b1b5d35323b633b554e46494e4953484544534543524554"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": [
+      "UNFINISHEDSECRET"
+    ]
+  },
+  {
+    "name": "escape inside string",
+    "chunks": [
+      "4f4b1b5d303b4553435345435245541b5b33316d68696464656e1b5c21"
+    ],
+    "safe": "OK!",
+    "visible": "OK!",
+    "absent": [
+      "ESCSECRET"
+    ],
+    "rawVisible": "OKhidden!",
+    "note": "VT cancels OSC on ESC followed by CSI, rendering hidden as plain cells. The engine filter consumes through ST. Neither boundary emits controls; this display difference is intentional."
+  },
+  {
+    "name": "oversized CSI",
+    "chunks": [
+      "1b5b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b313b6d4f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": []
+  },
+  {
+    "name": "cancel CSI",
+    "chunks": [
+      "1b5b3331184f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": []
+  },
+  {
+    "name": "charset and reset",
+    "chunks": [
+      "1b28421b634f4b"
+    ],
+    "safe": "OK",
+    "visible": "OK",
+    "absent": []
+  }
+]

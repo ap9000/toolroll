@@ -1,5 +1,5 @@
 {
-  "digest": "8f8877cf49d4cc6cc348a544c6c9bf65c3cb0c21cad66f4aa25c72403961e8a2",
+  "digest": "0376c97db209367bd74e4963168b12d3faaab15a1e63779dcac7e7b9e1dd4275",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -625,6 +625,81 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "runtime": {
+              "type": "string",
+              "enum": [
+                "stream-json",
+                "interactive"
+              ]
+            },
+            "terminal": {
+              "type": "object",
+              "properties": {
+                "available": {
+                  "type": "boolean"
+                },
+                "launch": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                "generation": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "lifecycle": {
+                  "type": "string",
+                  "enum": [
+                    "starting",
+                    "live",
+                    "stopping",
+                    "exited",
+                    "unresolved"
+                  ]
+                },
+                "viewing": {
+                  "type": "string",
+                  "enum": [
+                    "detached",
+                    "viewing"
+                  ]
+                },
+                "control": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "self",
+                    "other"
+                  ]
+                },
+                "protocol": {
+                  "type": "number",
+                  "const": 1
+                },
+                "cols": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 500
+                },
+                "rows": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 500
+                }
+              },
+              "required": [
+                "available",
+                "launch",
+                "generation",
+                "lifecycle",
+                "viewing",
+                "control",
+                "protocol",
+                "cols",
+                "rows"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
