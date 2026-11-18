@@ -32,6 +32,7 @@ import { V169_ADDED_COLUMNS, V169_SCHEMA, V169_STEPS } from "./task-sizing-schem
 import { V170_ADDED_COLUMNS, V170_STEPS } from "./agent-said-schema.js";
 import { V171_SCHEMA, V171_STEPS } from "./flexible-setting-schema.js";
 import { V172_ADDED_COLUMNS, V172_OBJECTS, V172_SCHEMA, V172_STEPS } from "./flexible-sign-in-schema.js";
+import { relayCancel } from "./flexible-relay-cancel.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -9940,6 +9941,8 @@ export class Store {
           )
           .run(name, credentialHash, now.toISOString());
         this.revokeDerivedAuthority(name, "credential-rotation", now);
+        // A rotation ends this person's Claude sign-in for threads (bound to the account generation): calls on it stop.
+        relayCancel({ person: name });
       });
       return null;
     });
@@ -11268,6 +11271,7 @@ export class Store {
       // v172: their Claude sign-ins for threads end with them, in this transaction (flexible-sign-in.ts: retiring is
       // terminal; the upkeep deletes the secrets). They already stopped counting with the generation; this makes it so.
       this.db.prepare("UPDATE flexible_sign_in SET state = 'retiring', save_op = NULL, retire_after = NULL, retired_at = ? WHERE person = ? AND state IN ('staged', 'active')").run(stamp, name);
+      relayCancel({ person: name });
       // v160: the person's own view preference goes with the account (a name is never reused). Only a display
       // preference: a damaged or missing table never blocks a revocation (a savepoint keeps its failure to itself, and
       // with the account revoked the row is never read for anyone).

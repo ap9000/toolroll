@@ -26,7 +26,7 @@
  * the generation still active, its billing the turn's, and no recorded authentication refusal for it. Nothing ever
  * falls back to another person's sign-in or an installation-wide one: there is none.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { flexibleAvailable } from "./flexible-available.js";
@@ -34,6 +34,7 @@ import { CLAUDE_EXACT } from "./model-catalog.js";
 import { FLEXIBLE_RELAY_UPSTREAMS } from "./flexible-relay-upstreams.js";
 import { credentialProof, freshFacts, proveCredential } from "./scope.js";
 import { createSignInSecret, readSignInSecret, removeSignInSecret, withSignInLockAsync, type SignInSecret } from "./tool-secret-store.js";
+import { relayCancel } from "./flexible-relay-cancel.js";
 import type { Store } from "./store.js";
 
 /** The ledger's action for every change to a person's sign-in. */
@@ -97,8 +98,15 @@ function standingAccount(store: Store, person: string, generation: number): bool
 
 // ---- saving: stage (A), place, activate (B), retire ----------------------------------------------------------------------
 
-/** A staged save: what transaction B must match. */
+/** A staged save: what transaction B must match. `op` is this save's capability: random, held only in the memory of the
+ * request that made it (the row keeps a hash of it, never it). */
 export type StagedSignIn = { person: string; generation: string; op: string; accountGeneration: number; proof: "password-now" | "sso-now" };
+const CAPABILITY = /^[0-9a-f]{64}$/;
+/** What the row keeps of a save's capability: 128 bits of its hash. */
+const opDigest = (op: string): string => createHash("sha256").update(`toolroll:flexible-sign-in:save:${op}`, "utf8").digest("hex").slice(0, 32);
+/** The capabilities a request's own facts minted (a re-check-proved save): B accepts its capability only from the very
+ * request object that minted it, so another request of the same person (another tab, another session) never can. */
+const mintedBy = new WeakMap<object, Set<string>>();
 
 /**
  * Transaction A of a save: the person proved now, for themselves only (a password typed now, or a one-use identity
@@ -116,10 +124,13 @@ export function stageFlexibleSignIn(store: Store, input: { person: string; passw
     if (!proved.ok || !credentialProof(proved.method)) return refuse("not-proved");
     const account = store.accountOf(input.person);
     if (account === null || !standingAccount(store, input.person, account.generation)) return refuse("not-proved");
-    const generation = randomBytes(16).toString("hex"), op = randomBytes(16).toString("hex");
+    const generation = randomBytes(16).toString("hex"), op = randomBytes(32).toString("hex");
     const proof = proved.method as "password-now" | "sso-now";
     store.handle.prepare(`INSERT INTO flexible_sign_in (person, account_generation, generation, kind, state, save_op, proof, staged_at, retire_after)
-      VALUES (?, ?, ?, 'setup-token', 'staged', ?, ?, ?, ?)`).run(input.person, account.generation, generation, op, proof, input.now.toISOString(), new Date(input.now.getTime() + SIGN_IN_STAGE_MS).toISOString());
+      VALUES (?, ?, ?, 'setup-token', 'staged', ?, ?, ?, ?)`).run(input.person, account.generation, generation, opDigest(op), proof, input.now.toISOString(), new Date(input.now.getTime() + SIGN_IN_STAGE_MS).toISOString());
+    // A re-check-proved save: its capability is bound to this request's own facts object (and so its session).
+    const facts = freshFacts.getStore();
+    if (proof === "sso-now" && facts != null) { const set = mintedBy.get(facts) ?? new Set<string>(); set.add(opDigest(op)); mintedBy.set(facts, set); }
     return { ok: true, staged: { person: input.person, generation, op, accountGeneration: account.generation, proof } };
   });
 }
@@ -139,23 +150,24 @@ export function placeFlexibleSignIn(state: string, staged: StagedSignIn, token: 
  */
 export function activateFlexibleSignIn(store: Store, input: { staged: StagedSignIn; password: string; now: Date; check?: SignInCheck | null }): { ok: true; replaced: boolean } | SignInRefusal {
   const staged = input?.staged;
-  if (staged === undefined || !PERSON(staged.person) || typeof staged.generation !== "string" || !GENERATION.test(staged.generation) || typeof staged.op !== "string" || !GENERATION.test(staged.op)
+  if (staged === undefined || !PERSON(staged.person) || typeof staged.generation !== "string" || !GENERATION.test(staged.generation) || typeof staged.op !== "string" || !CAPABILITY.test(staged.op)
     || typeof input.password !== "string" || !(input.now instanceof Date)) return refuse("invalid-request");
   return store.transact((): { ok: true; replaced: boolean } | SignInRefusal => {
     const now = input.now.toISOString();
     const row = rowOf(store, staged.person, staged.generation);
-    if (row === null || row.state !== "staged" || row.saveOp !== staged.op || row.retireAfter === null || row.retireAfter <= now || row.accountGeneration !== staged.accountGeneration) return refuse("save-ended");
+    const digest = opDigest(staged.op);
+    if (row === null || row.state !== "staged" || row.saveOp !== digest || row.retireAfter === null || row.retireAfter <= now || row.accountGeneration !== staged.accountGeneration) return refuse("save-ended");
     if (!standingAccount(store, row.person, row.accountGeneration)) return refuse("save-ended");
     if (row.proof === "password-now") {
       const again = proveCredential(store, row.person, input.password);
       if (!again.ok || again.method !== "password-now") return refuse("not-proved");
     } else if (row.proof === "sso-now") {
       const facts = freshFacts.getStore();
-      if (input.password !== "" || facts == null || facts.actor !== row.person || !facts.live()) return refuse("not-proved");
+      if (input.password !== "" || facts == null || facts.actor !== row.person || mintedBy.get(facts)?.has(digest) !== true || !facts.live()) return refuse("not-proved");
     } else return refuse("not-proved");
     const replaced = Number(store.handle.prepare("UPDATE flexible_sign_in SET state = 'retiring', retired_at = ? WHERE person = ? AND state = 'active'").run(now, row.person).changes) > 0;
     const consumed = Number(store.handle.prepare(`UPDATE flexible_sign_in SET state = 'active', save_op = NULL, retire_after = NULL, activated_at = ?
-      WHERE person = ? AND generation = ? AND state = 'staged' AND save_op = ? AND account_generation = ?`).run(now, row.person, row.generation, staged.op, row.accountGeneration).changes);
+      WHERE person = ? AND generation = ? AND state = 'staged' AND save_op = ? AND account_generation = ?`).run(now, row.person, row.generation, digest, row.accountGeneration).changes);
     if (consumed !== 1) throw new Error("a sign-in's staged save changed during its own activation");
     const check = input.check ?? null;
     if (check !== null) recordCheck(store, row.person, row.generation, check, now);
@@ -227,6 +239,8 @@ export function removeFlexibleSignIn(store: Store, input: { person: string; by: 
       .run(at, input.person).changes) > 0;
     store.recordAction({ at, actor: input.by, repo: null, taskId: null, runId: null, action: SIGN_IN_ACTION, outcome: removed ? "removed" : "none to remove", source: "policy",
       detail: input.by === input.person ? null : `${input.person}'s` });
+    // Every call still running on a sign-in of theirs is cut at once (the relay's own watcher is the second line).
+    if (removed) relayCancel({ person: input.person });
     return { removed };
   });
 }
@@ -493,4 +507,15 @@ export function threadsStatusNote(store: Store, person: string): string {
   if (status.state === "none") return "Threads use your own Claude sign-in: run `claude setup-token`, then `toolroll config set flexible-sign-in`.";
   if (status.state === "refused") return "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token.";
   return `Threads use the Claude sign-in you saved on ${status.savedAt.slice(0, 10)}. ${signInCheckWords(statusCheck(status))}`;
+}
+
+/** Whether a call already sent may go on (the relay, before each piece of its answer and on its watch): the turn's owner
+ * is `person`, who still has an active sign-in (a replacement keeps a call going; a removal ends it) at the turn's
+ * account generation (a password reset ends it), as an active approver (an account removed or demoted ends it). */
+export function signInHoldsFor(store: Store, input: { turn: string; person: string }): boolean {
+  const turn = store.handle.prepare("SELECT owner, owner_generation FROM thread_turn WHERE id = ?").get(input.turn);
+  if (turn === undefined || turn["owner"] !== input.person) return false;
+  const generation = Number(turn["owner_generation"]);
+  const row = activeRowOf(store, input.person);
+  return row !== null && row.accountGeneration === generation && standingAccount(store, input.person, generation);
 }

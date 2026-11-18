@@ -244,7 +244,9 @@ describe("R3: the activation proof", () => {
     expect(facts.consumed).toBe(1);
     expect(staged.staged).toMatchObject({ person: "alex", accountGeneration: accountGeneration(), proof: "sso-now" });
     expect(store.handle.prepare("SELECT person, account_generation, state, save_op, proof FROM flexible_sign_in WHERE generation = ?").get(staged.staged.generation))
-      .toEqual(expect.objectContaining({ person: "alex", account_generation: accountGeneration(), state: "staged", save_op: staged.staged.op, proof: "sso-now" }));
+      .toEqual(expect.objectContaining({ person: "alex", account_generation: accountGeneration(), state: "staged", save_op: expect.stringMatching(/^[0-9a-f]{32}$/), proof: "sso-now" }));
+    // The row keeps a hash of the save's capability, never the capability.
+    expect(JSON.stringify(store.handle.prepare("SELECT * FROM flexible_sign_in").all())).not.toContain(staged.staged.op);
     // Spent: a second A in the same request has nothing to stand on.
     expect(stageWithSso(facts)).toMatchObject({ ok: false, reason: "not-proved" });
     // Another person's request facts never prove alex.
@@ -276,6 +278,17 @@ describe("R3: the activation proof", () => {
     store.handle.prepare("UPDATE approver SET revoked_at = ? WHERE name = 'alex'").run(NOW.toISOString());
     expect(activateWithSso(facts, staged.staged)).toMatchObject({ ok: false, reason: "save-ended" });
     expect(active()).toBeUndefined();
+  });
+
+  test("R3 B takes the capability only from the very request that made it: another live request of the same person refuses", () => {
+    const facts = ssoFacts("alex", { on: true });
+    const staged = stageWithSso(facts);
+    if (!staged.ok) throw new Error(staged.message);
+    // Another request (another tab or session) of alex's, signed in and live, holding the staged save: refused.
+    expect(activateWithSso(ssoFacts("alex", { on: true }), staged.staged)).toMatchObject({ ok: false, reason: "not-proved" });
+    expect(active()).toBeUndefined();
+    // The request that made it: activated, once.
+    expect(activateWithSso(facts, staged.staged)).toEqual({ ok: true, replaced: false });
   });
 
   test("R3 activating another generation, or with another save's op, refuses", () => {

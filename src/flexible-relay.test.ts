@@ -478,8 +478,8 @@ describe("in-flight authority, settlement and usage", () => {
       expect(pending()).toBe(1);
       // The next call in that turn is refused while the reservation stands; nothing reaches the service.
       const held = await call();
-      expect(held.status).toBe(503);
-      expect(((await held.json()) as { error: { message: string } }).error.message).toBe("An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is.");
+      expect(held.status).toBe(403);
+      expect(((await held.json()) as { error: { message: string } }).error.message).toBe("Toolroll couldn't record an earlier model call in this turn yet, so it sent nothing more. Send your message again in a moment.");
       expect(pending()).toBe(1);
       expect(seen).toHaveLength(1);
       // (Threads run only on a person's plan sign-in, so a keyed turn's dollar hold has no relay call to wait on.)

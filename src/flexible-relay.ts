@@ -54,7 +54,7 @@ import { issueRelayGrant, revokeRelayGrant } from "./flexible-launch.js";
 import { onRelayCancel } from "./flexible-relay-cancel.js";
 import { FLEXIBLE_RELAY_UPSTREAMS, type RelayUpstream } from "./flexible-relay-upstreams.js";
 import { chargeFlexibleTurn, flexibleTurn, interruptFlexibleTurnSignIn, type FlexibleCostBasis, type FlexibleTurnRow } from "./flexible-turns.js";
-import { signInForTurn, signInRefusedBy, signInRefusedWords, signInStandsAt, type DispatchSignIn } from "./flexible-sign-in.js";
+import { signInForTurn, signInHoldsFor, signInRefusedBy, signInRefusedWords, signInStandsAt, type DispatchSignIn } from "./flexible-sign-in.js";
 import type { Store } from "./store.js";
 
 // ---- what the thread start uses ----------------------------------------------------------------------------------------
@@ -88,10 +88,13 @@ export function relayUrlInside(port: number, platform: NodeJS.Platform = process
 // ---- refusals the agent reads -----------------------------------------------------------------------------------------
 
 type CallReason = "threads-off" | "unsettled" | "check-failed" | "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-sign-in" | "sign-in-refused" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
-const CALL_WORDS: Readonly<Record<CallReason, { status: number; type: string; message: string }>> = Object.freeze({
+/** Every refusal the agent reads, exactly as sent. A refusal that should end the agent's turn is Toolroll's own 403
+ * permission_error with words that say what to do: the real Claude Code shows a 403 once and stops, while it retries a
+ * 401 or a 5xx silently (src/flexible-relay-client.slow.test.ts records each of these against it). */
+export const RELAY_CALL_ANSWERS: Readonly<Record<CallReason, { status: number; type: string; message: string }>> = Object.freeze({
   "threads-off": { status: 403, type: "permission_error", message: "Interactive agent threads were turned off in Toolroll, so nothing was sent to the model." },
-  unsettled: { status: 503, type: "api_error", message: "An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is." },
-  "check-failed": { status: 503, type: "api_error", message: "Toolroll couldn't check this call's authority, so nothing was sent." },
+  unsettled: { status: 403, type: "permission_error", message: "Toolroll couldn't record an earlier model call in this turn yet, so it sent nothing more. Send your message again in a moment." },
+  "check-failed": { status: 403, type: "permission_error", message: "Toolroll couldn't check whether this thread may still use Claude, so nothing was sent. Send your message again; if this keeps happening, restart Toolroll." },
   "credential-header": { status: 400, type: "invalid_request_error", message: "Toolroll's sign-in relay chooses the credential itself: a call can't carry its own key, sign-in or service override." },
   header: { status: 400, type: "invalid_request_error", message: "A request header isn't in a form Toolroll's sign-in relay accepts." },
   beta: { status: 400, type: "invalid_request_error", message: "That anthropic-beta feature isn't one Toolroll's sign-in relay allows." },
@@ -198,12 +201,14 @@ function grantOf(store: Store, token: string): Grant | null {
 const grantStillLive = (store: Store, digest: string): boolean => store.handle.prepare(`SELECT 1 AS ok FROM flexible_relay_grant g JOIN flexible_thread_launch l ON l.id = g.launch AND l.thread = g.thread
   WHERE g.token_digest = ? AND g.revoked_at IS NULL AND l.state = 'live'`).get(digest) !== undefined;
 
-/** Whether a call may still spend, from the record, in one read: its token unrevoked, its launch live, its turn this
- * thread's and running. A read that fails is no. */
-function authorizedNow(store: Store, digest: string, turn: string): boolean {
+/** Whether a call may still spend, from the record: its token unrevoked, its launch live, its turn this thread's and
+ * running, and the sign-in it was sent with still standing (signInHoldsFor: its person still has an active sign-in at the
+ * turn's account generation, an active approver; removed, reset or revoked ends it). A read that fails is no. */
+function authorizedNow(store: Store, digest: string, turn: string, person: string): boolean {
   try {
     return store.handle.prepare(`SELECT 1 AS ok FROM flexible_relay_grant g JOIN flexible_thread_launch l ON l.id = g.launch AND l.thread = g.thread
-      JOIN thread_turn t ON t.id = ? AND t.thread = g.thread AND t.status = 'running' WHERE g.token_digest = ? AND g.revoked_at IS NULL AND l.state = 'live'`).get(turn, digest) !== undefined;
+      JOIN thread_turn t ON t.id = ? AND t.thread = g.thread AND t.status = 'running' WHERE g.token_digest = ? AND g.revoked_at IS NULL AND l.state = 'live'`).get(turn, digest) !== undefined
+      && signInHoldsFor(store, { turn, person });
   } catch { return false; }
 }
 const SSE_EVENT_LIMIT = 1024 * 1024;
@@ -426,7 +431,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
 
   /** A call being forwarded: whose token, launch and turn it spends for. `cut` is set the moment its authority ends (a
    * writer's cancellation, synchronously): no byte of its answer is forwarded after that. */
-  type Live = { digest: string; launch: string; turn: string; cut: boolean; abort: (why: string) => void };
+  type Live = { digest: string; launch: string; turn: string; person: string; cut: boolean; abort: (why: string) => void };
   const calls = new Set<Live>();
   let pending = 0;
   let closing = false;
@@ -532,7 +537,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
     // Who is calling: exactly one header carries the relay token, and it is a live grant of this thread's.
     const bearer = request.headers.authorization === undefined ? undefined : /^Bearer (\S+)$/.exec(String(request.headers.authorization))?.[1] ?? "";
     const xkey = request.headers["x-api-key"] === undefined ? undefined : String(request.headers["x-api-key"]);
-    if (bearer !== undefined && xkey !== undefined) { request.resume(); reply(400, "invalid_request_error", CALL_WORDS["credential-header"].message); return; }
+    if (bearer !== undefined && xkey !== undefined) { request.resume(); reply(400, "invalid_request_error", RELAY_CALL_ANSWERS["credential-header"].message); return; }
     const tokenHeader = bearer !== undefined ? "authorization" : xkey !== undefined ? "x-api-key" : null;
     let grant: Grant | null = null;
     try { grant = grantOf(store, bearer ?? xkey ?? ""); } catch { grant = null; }
@@ -545,7 +550,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
     let route: { path: string; kind: "messages" | "count-tokens"; queries: readonly string[] } | null = null;
     let model: string | null = null, streamed = false, turn: FlexibleTurnRow | null = null;
     const refused = (reason: CallReason, detail: string | null = null, extra: OutgoingHttpHeaders = {}) => {
-      const words = CALL_WORDS[reason];
+      const words = RELAY_CALL_ANSWERS[reason];
       request.resume();
       reply(words.status, words.type, words.message, extra);
       settle(authed, { turn: turn?.id ?? null, at, route: route?.kind ?? "other", model, streamed, status: "refused", reason, httpStatus: words.status,
@@ -686,7 +691,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const routeKind = route.kind;
       const turnId = turn.id;
       // The call is recorded and charged before the agent sees its answer end: its next call finds this one on the record.
-      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed, turnId,
+      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed, turnId, signIn.person,
         result => {
           const record: CallRecord = { turn: turnId, at, route: routeKind, model, streamed: result.streamed, status: result.status, reason: null, httpStatus: result.httpStatus,
             usage: result.usage, charge: result.charge, detail: result.detail, signIn, signInRefused: result.signInRefused };
@@ -702,7 +707,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
   /** One call to the service, and its answer back to the agent (redacted, metered). Never follows a redirect. `ended`
    * records the call; it runs before the agent's answer is finished. */
   const forward = (target: URL, headers: OutgoingHttpHeaders, body: Buffer, response: ServerResponse, route: "messages" | "count-tokens", streamedAsked: boolean,
-    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, grant: Grant, turn: string, ended: (result: Forwarded) => void) =>
+    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, grant: Grant, turn: string, person: string, ended: (result: Forwarded) => void) =>
     new Promise<Live>(resolve => {
       const free = route === "count-tokens";
       let sent = false, settled = false, streamed = streamedAsked;
@@ -723,7 +728,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           resolve(live);
         }
       };
-      const live: Live = { digest: grant.digest, launch: grant.launch, turn, cut: false, abort: why => {
+      const live: Live = { digest: grant.digest, launch: grant.launch, turn, person, cut: false, abort: why => {
         live.cut = true;
         outgoing.destroy();
         finish("aborted", null, why, false, () => {
@@ -819,7 +824,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           const out = takeEvents(false);
           if (out === null) { lapsed("an event of its answer was too large to check"); return; }
           if (out === "") return;
-          if (!authorizedNow(store, grant.digest, turn)) { lapsed(); return; }
+          if (!authorizedNow(store, grant.digest, turn, person)) { lapsed(); return; }
           response.write(out);
         });
         answer.on("end", () => {
@@ -831,7 +836,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           const read = meter!.finish();
           // Before the answer completes: its token and its turn are re-read from the record; one that lapsed, or can't be
           // read, ends the answer cut off.
-          if (!authorizedNow(store, grant.digest, turn)) { lapsed(); return; }
+          if (!authorizedNow(store, grant.digest, turn, person)) { lapsed(); return; }
           if (out === null) { finish("aborted", status, "its answer was withheld: it carried a credential", read.complete, () => response.destroy()); return; }
           finish(read.complete ? "completed" : "incomplete", status, read.complete ? null : "the answer's usage couldn't be read whole", read.complete, () => response.end(out));
         });
@@ -853,6 +858,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       if (turnEnded !== undefined && turnEnded === call.turn) cut(call, "the turn ended");
       else if (cancel.launch !== undefined && cancel.launch === call.launch) cut(call, "this thread's agent was stopped");
       else if (cancel.digest !== undefined && cancel.digest === call.digest) cut(call, "its relay token was revoked");
+      else if (cancel.person !== undefined && cancel.person === call.person) cut(call, "its Claude sign-in for threads was removed or ended");
     }
     // A turn that ended: its reservations no call of this relay is forwarding are reconciled right after its writer.
     if (turnEnded !== undefined) queueMicrotask(sweep);
@@ -868,6 +874,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       try {
         if (!grantStillLive(store, call.digest)) why = "this thread's agent was stopped";
         else if (flexibleTurn(store, call.turn)?.status !== "running") why = "the turn ended";
+        else if (!signInHoldsFor(store, { turn: call.turn, person: call.person })) why = "its Claude sign-in for threads ended";
       } catch { why = "Toolroll couldn't check its authority"; }
       if (why !== null) cut(call, why);
     }

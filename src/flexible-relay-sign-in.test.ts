@@ -15,7 +15,7 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexi
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
-import { flexibleSignInBilling, flexibleSignInStatus, signInStandsAt } from "./flexible-sign-in.js";
+import { flexibleSignInBilling, flexibleSignInStatus, removeFlexibleSignIn, signInStandsAt } from "./flexible-sign-in.js";
 import { hashPassword } from "./scope.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -263,5 +263,79 @@ describe("first use: Claude refusing the sign-in", () => {
     const next = await thread("alex");
     expect((await call(next)).status).toBe(403);
     expect(flexibleSignInStatus(world.store, "alex")).toMatchObject({ state: "refused" });
+  });
+});
+
+describe("a call already on its way when the sign-in ends", () => {
+  const lastDetail = () => world.store.handle.prepare("SELECT detail FROM thread_relay_call ORDER BY id DESC LIMIT 1").get()?.["detail"];
+  test("removed by another process (on the record only) while a stream waits: the relay's own watch cuts it, nothing more forwarded", async () => {
+    standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    const held = twoHalves(true);
+    const answer = await fetch(`${one.relay.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: `Bearer ${one.token}` },
+      body: JSON.stringify({ ...BODY, stream: true }) });
+    const first = await readUntil(answer, "FIRST-HALF");
+    removeStandInSignIn(world.store, "alex");
+    expect(await first.rest()).not.toContain("SECOND-HALF");
+    held.release();
+    expect(lastDetail()).toBe("its Claude sign-in for threads ended");
+  });
+
+  const START = `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 3, output_tokens: 1 } } })}\n\n`;
+  const DELTA = (text: string) => `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n`;
+  const STOP = `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", usage: { output_tokens: 4 } })}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`;
+  /** A stand-in that answers in two halves: the first at once, the second once released. */
+  function twoHalves(streamed: boolean): { release: () => void; reached: Promise<void> } {
+    let release: () => void = () => {}, arrived: () => void = () => {};
+    const gate = new Promise<void>(done => { release = done; });
+    const reached = new Promise<void>(done => { arrived = done; });
+    script = (_request, response) => {
+      if (streamed) { response.writeHead(200, { "content-type": "text/event-stream" }); response.write(START + DELTA("FIRST-HALF")); }
+      else { response.writeHead(200, { "content-type": "application/json" }); response.write(MESSAGE.slice(0, 20)); }
+      arrived();
+      void gate.then(() => response.end(streamed ? DELTA("SECOND-HALF") + STOP : MESSAGE.slice(20)));
+    };
+    return { release: () => release(), reached };
+  }
+  /** Read a streamed answer until `seen` is in it (or it ends). */
+  async function readUntil(answer: Response, seen: string): Promise<{ text: string; rest: () => Promise<string> }> {
+    const reader = answer.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    while (!text.includes(seen)) { const next = await reader.read(); if (next.done) break; text += decoder.decode(next.value); }
+    return { text, rest: async () => { let more = ""; try { for (;;) { const next = await reader.read(); if (next.done) break; more += decoder.decode(next.value); } } catch { /* cut off */ } return more; } };
+  }
+
+  test("removed during a whole answer (from the record, as another process would): the answer is cut, nothing of it forwarded", async () => {
+    standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    const held = twoHalves(false);
+    const pending = call(one).then(answer => answer.text()).catch(() => "");
+    await held.reached;
+    removeStandInSignIn(world.store, "alex");
+    held.release();
+    expect(await pending).not.toContain("hello");
+    expect(records().at(-1)).toMatchObject({ status: "aborted" });
+  });
+
+  test("removed, reset or revoked during a streamed answer: the stream stops at once and nothing more is forwarded", async () => {
+    // bob starts them (alex signed the project's terms, which a reset of alex would end).
+    for (const end of ["removed", "reset", "revoked"] as const) {
+      standInSignIn(world.store, world.state, "bob");
+      const one = await thread("bob");
+      const held = twoHalves(true);
+      const answer = await fetch(`${one.relay.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: `Bearer ${one.token}` },
+        body: JSON.stringify({ ...BODY, stream: true }) });
+      const first = await readUntil(answer, "FIRST-HALF");
+      expect(first.text, end).toContain("FIRST-HALF");
+      if (end === "removed") removeFlexibleSignIn(world.store, { person: "bob", by: "bob", now: NOW });
+      else if (end === "reset") world.store.saveApprover("bob", hashPassword("bob-password-99"), NOW);
+      else expect(world.store.revokeAccount("bob", "alex", NOW)).toMatchObject({ ok: true });
+      // Cut at once, by the writer's own cancellation (the rest of the answer never even arrives from upstream).
+      expect(await first.rest(), end).not.toContain("SECOND-HALF");
+      held.release();
+      expect(records().at(-1), end).toMatchObject({ status: "aborted" });
+      expect(lastDetail(), end).toBe("its Claude sign-in for threads was removed or ended");
+    }
   });
 });
