@@ -21,7 +21,7 @@ test("overview, --json, views, and a new commit makes a new version", async () =
   expect(read.code).toBe(0);
   expect(read.text).toContain("Code map · main at");
   expect(read.text).toContain("untrusted data");
-  expect(read.text).toContain("src/b · 1 files · ts · uses src/a");
+  expect(read.text).toContain("src/b · 1 file · ts · uses src/a");
   const overview = await json("--repo", world.repo);
   expect(overview).toMatchObject({ ok: true, command: "map", state: "current", map: { v: 1, ok: true, view: "overview" } });
   expect((await json("area", "src/a", "--repo", world.repo)).map.items).toHaveLength(2);

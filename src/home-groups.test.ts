@@ -95,7 +95,7 @@ describe("Home's view", () => {
     const totals = page(now, "all", 1).totals;
     expect(view.counts.map(one => [one.key, one.label, one.value, one.href])).toEqual([
       ["needs", "Needs you", totals["needs-you"], "/tasks?scope=all&view=needs-you"], ["running", "Running", totals.running, "/tasks?scope=all&view=running"],
-      ["queued", "Queued", totals.queued, "/tasks?scope=all&view=queued"], ["finished", "Finished", totals.completed, "/tasks?scope=all&view=completed"]]);
+      ["queued", "Queued", totals.queued, "/tasks?scope=all&view=queued"], ["finished", "Complete", totals.completed, "/tasks?scope=all&view=completed"]]);
     // Done today lists what finished since midnight, newest first, never more than eight.
     const since = startOfToday(now).toISOString();
     const finished = page(now, "completed", 100).items.filter(one => homeGroupOf(one) === "done" && (one.completion?.at ?? one.updatedAt) >= since);
@@ -168,7 +168,7 @@ describe("Home's view", () => {
     const later = homeView(facts(new Date(now.getTime() + 1.5 * 86_400_000)));
     expect(later.finishedToday).toMatchObject({ count: 0, rows: [] });
     // The figure is still the whole Completed list it opens.
-    expect(later.counts.find(one => one.key === "finished")).toMatchObject({ label: "Finished", value: 14, href: "/tasks?scope=all&view=completed" });
+    expect(later.counts.find(one => one.key === "finished")).toMatchObject({ label: "Complete", value: 14, href: "/tasks?scope=all&view=completed" });
   });
 
   test("a group's count is its whole total, past the rows the page lists", () => {

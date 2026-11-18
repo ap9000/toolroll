@@ -133,7 +133,7 @@ export function instanceSocketTooLong(databaseFile: string): string | null {
  * A short folder this person owns that the socket checks accept (runDirProblem: the database's folder is its own real
  * path, owned by this user and writable by nobody else; the run folder inside it 0700): `~/.tr` when the home folder is
  * short enough, else one an administrator makes under /opt (root-owned, not writable by others) and hands to this user.
- * Never a shared folder such as /Users/Shared or /tmp: another user could make or own the name first. Words only.
+ * Never a shared folder (the system's Shared folder, /tmp): another user could make or own the name first. Words only.
  */
 function shortFolderSuggestion(folderMax: number): string {
   let home = homedir();
