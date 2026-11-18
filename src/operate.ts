@@ -1,6 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
-import { stopFlexibleThreadsEverywhere } from "./flexible-session.js";
+import { flexibleThreadTitleOf, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -15389,9 +15389,16 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
     });
     if (removed === null) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
     try { await tidyFlexibleSignIns(store, dirname(realpathSync(context.databaseFile)), { now: clock(), person: acting.name }); } catch { /* the console's upkeep deletes it */ }
-    return succeed(write, json, command, { removed: removed.removed }, () => [removed.removed
+    // Their running threads stopped on the record with the removal; their agents are stopped here now, by their recorded
+    // process identities only (as `config set flexible off` does), and a console's upkeep keeps trying any it couldn't.
+    const report = removed.ended.threads.length === 0 ? { stopped: [], survivors: [] } as FlexibleStopReport
+      : await stopFlexibleThreadsEverywhere(store, { reason: "its owner's Claude sign-in for threads was removed", owner: acting.name, clock });
+    const named = (ids: readonly string[]) => ids.map(id => flexibleThreadTitleOf(store, id)).join(", ");
+    const stoppedWords = report.stopped.length === 0 ? [] : [`Stopped ${report.stopped.length === 1 ? "1 running thread" : `${report.stopped.length} running threads`} (${named(report.stopped.map(one => one.thread))}).`];
+    const leftWords = report.survivors.length === 0 ? [] : [`${named(report.survivors.map(one => one.thread))} couldn't be stopped yet; a running console keeps trying every few seconds.`];
+    return succeed(write, json, command, { removed: removed.removed, stopped: report.stopped, survivors: report.survivors }, () => [removed.removed
       ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
-      : "You had no Claude sign-in for threads saved. Nothing changed."]);
+      : "You had no Claude sign-in for threads saved. Nothing changed.", ...stoppedWords, ...leftWords]);
   }
   // set: the token from a hidden prompt at your own terminal only.
   const typeHidden = context.easySeams?.askHidden ?? (interactive() && !json ? askHidden : null);

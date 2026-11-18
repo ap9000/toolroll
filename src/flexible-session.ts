@@ -37,6 +37,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { flexibleAvailable } from "./flexible-available.js";
+import { interruptTurnAndStop, openFlexibleStops, requireFlexibleStop, settleExitedStops } from "./flexible-authority-end.js";
 import { FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn, type FlexibleTurnStartInput } from "./flexible-agents.js";
 import {
@@ -192,8 +193,12 @@ export async function settleFlexibleStops(store: Store, sessions: FlexibleSessio
         if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
       } catch { pending++; }
     }
+    try { store.transact(() => { settleExitedStops(store, (input.clock ?? systemClock)().toISOString()); }); } catch { /* the next tick settles them */ }
     return { ok: true, stopped, pending };
   }
+  const required = await settleStopRequirements(store, sessions, clocked);
+  stopped += required.stopped;
+  pending += required.pending;
   const unresolved = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state = 'unresolved' ORDER BY started_at, id").all(sessions.holder)
     .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));
   for (const one of unresolved) {
@@ -224,13 +229,18 @@ export type FlexibleStopReport = { stopped: { thread: string; network: boolean }
  * and its turn interrupted here; that console closes its network handles on its next upkeep tick. Nothing here checks
  * the switch: it only stops.
  */
-export async function stopFlexibleThreadsEverywhere(store: Store, input: { reason: string; io?: CustodyIO; clock?: FlexibleClock }): Promise<FlexibleStopReport> {
+export async function stopFlexibleThreadsEverywhere(store: Store, input: { reason: string; io?: CustodyIO; clock?: FlexibleClock;
+  /** Only the launches of this person's threads (their sign-in removed at the command line): the rest are left alone. */
+  owner?: string }): Promise<FlexibleStopReport> {
   const io = input.io ?? defaultCustodyIO();
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const report: FlexibleStopReport = { stopped: [], survivors: [] };
   const lives = new Map<string, FlexibleHolderLife>();
   const lifeOf = (holder: string): FlexibleHolderLife => { if (!lives.has(holder)) lives.set(holder, holderLife(holder, io)); return lives.get(holder)!; };
-  const launches = store.handle.prepare("SELECT id, thread, holder FROM flexible_thread_launch WHERE state <> 'exited' ORDER BY started_at, id").all()
+  const launches = (input.owner === undefined
+    ? store.handle.prepare("SELECT id, thread, holder FROM flexible_thread_launch WHERE state <> 'exited' ORDER BY started_at, id").all()
+    : store.handle.prepare(`SELECT l.id AS id, l.thread AS thread, l.holder AS holder FROM flexible_thread_launch l JOIN flexible_thread t ON t.id = l.thread
+      WHERE l.state <> 'exited' AND t.created_by = ? ORDER BY l.started_at, l.id`).all(input.owner))
     .map(row => ({ launch: String(row["id"]), thread: String(row["thread"]), holder: String(row["holder"]) }));
   for (const one of launches) {
     const gone = lifeOf(one.holder) === "gone";
@@ -245,6 +255,8 @@ export async function stopFlexibleThreadsEverywhere(store: Store, input: { reaso
       report.stopped.push({ thread: one.thread, network: true });
     } else report.survivors.push({ thread: one.thread, pids: [...done.survivors], why: done.why });
   }
+  try { store.transact(() => { settleExitedStops(store, (input.clock ?? systemClock)().toISOString()); }); } catch { /* a console's next tick settles them */ }
+  if (input.owner !== undefined) return report;
   // A crashed console's turns and answers, once nothing of it is left running: settled as holder recovery settles them.
   const holders = new Set(store.handle.prepare("SELECT DISTINCT holder FROM thread_turn WHERE status IN ('admitted', 'running')").all().map(row => String(row["holder"])));
   const goneHolders = [...new Set([...holders, ...launches.map(one => one.holder)])].filter(holder => lifeOf(holder) === "gone"
@@ -257,6 +269,46 @@ export async function stopFlexibleThreadsEverywhere(store: Store, input: { reaso
     }
   }
   return report;
+}
+
+/** What a running turn's backstop says when its owner's authority moved since it began, whatever moved it. */
+export const FLEXIBLE_AUTHORITY_MOVED_WORDS = "Your Claude sign-in for threads no longer counts (it was removed, or your Toolroll account changed), so Toolroll stopped this turn.";
+
+/**
+ * The durable stop requirements (flexible_stop_request), acted on here every tick until each launch's exit is verified:
+ * - the backstop first: every running turn this host holds whose owner's removal epoch or account generation moved
+ *   since it began (flexible_turn_dispatch, never today's) is interrupted, and its launch required to stop;
+ * - then every open requirement naming a launch this host holds is stopped as stopFlexibleThreadSession stops one
+ *   (answers revoked, the agent's whole tree stopped and its exit verified, its relay closed). A launch another console
+ *   holds is that console's to stop; one a crashed console left is holder recovery's. A requirement settles only once
+ *   its launch's record says exited, whichever process proved it.
+ */
+async function settleStopRequirements(store: Store, sessions: FlexibleSessions, clocked: { clock?: FlexibleClock }): Promise<{ stopped: number; pending: number }> {
+  const at = () => (clocked.clock ?? systemClock)().toISOString();
+  let stopped = 0, pending = 0;
+  try {
+    store.transact(() => {
+      for (const row of store.handle.prepare(`SELECT t.id AS turn, t.owner AS owner, d.sign_in_epoch AS epoch, d.account_generation AS generation FROM thread_turn t
+        JOIN flexible_turn_dispatch d ON d.turn = t.id WHERE t.status = 'running' AND t.holder = ?`).all(sessions.holder)) {
+        const owner = String(row["owner"]);
+        const epochNow = Number(store.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(owner)?.["epoch"] ?? 0);
+        const account = store.accountOf(owner);
+        const moved = epochNow !== Number(row["epoch"]) || account === null || account.revokedAt !== null || account.generation !== Number(row["generation"]);
+        if (moved) interruptTurnAndStop(store, { turn: String(row["turn"]), words: FLEXIBLE_AUTHORITY_MOVED_WORDS, reason: "its owner's authority moved since its turn began", at: at() });
+      }
+      settleExitedStops(store, at());
+    });
+  } catch { /* the next tick tries again */ }
+  for (const one of openFlexibleStops(store)) {
+    const launch = store.handle.prepare("SELECT holder, state FROM flexible_thread_launch WHERE id = ?").get(one.launch);
+    if (launch === undefined || launch["state"] === "exited" || String(launch["holder"]) !== sessions.holder) continue;
+    try {
+      const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason: one.reason, ...clocked });
+      if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
+    } catch { pending++; }
+  }
+  try { store.transact(() => { settleExitedStops(store, at()); }); } catch { /* the next tick settles them */ }
+  return { stopped, pending };
 }
 
 // ---- upkeep: the tick and holder recovery -------------------------------------------------------------------------------------
@@ -527,7 +579,9 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
     }
     keep(link.recorder.observe(raw));
     if (primaryResultEvent(raw) && link.turn !== null) {
-      void endFlexibleThreadTurn(store, sessions, { thread: input.thread, turn: link.turn, outcome: "finished", ...clocked });
+      // A result that is an error isn't a finished turn: it ends `unknown`, in Toolroll's words.
+      const failed = raw["is_error"] === true;
+      void endFlexibleThreadTurn(store, sessions, { thread: input.thread, turn: link.turn, outcome: failed ? "unknown" : "finished", ...(failed ? { detail: "The agent stopped with an error." } : {}), ...clocked });
     }
   };
   const decoder = new StringDecoder("utf8");
@@ -561,7 +615,18 @@ export function endFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, 
   const finished = finishFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, outcome: input.outcome, usage: null, ...(input.detail === undefined ? {} : { detail: input.detail }), ...clocked });
   const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, turn: input.turn, reason: "the turn ended", ...clocked });
   const agent = sessions.threads.get(input.thread)?.agent;
-  if (agent != null && agent.turn === input.turn) agent.turn = null;
+  if (agent != null && agent.turn === input.turn) {
+    // A turn the record already ended abnormally (interrupted: a sign-in removed, an account changed, the relay refusing
+    // a call that ends it) keeps a durable requirement that this agent stop, until its exit is verified: the link to
+    // the turn may go only once that requirement is on the record (it is written with the interruption; here again,
+    // in case it isn't).
+    const now = flexibleTurn(store, input.turn);
+    if (now !== null && now.status === "interrupted") {
+      try { store.transact(() => { requireFlexibleStop(store, { launch: agent.launch, thread: input.thread, reason: "its turn was interrupted", at: (input.clock ?? systemClock)().toISOString() }); }); }
+      catch { /* the record can't be written: the link stays, and the next result or the upkeep tries again */ return revoked.ok ? { ok: false, reason: "stop-unrecorded", message: "Toolroll couldn't record that this agent must stop yet." } : revoked; }
+    }
+    if (now === null || now.status !== "running") agent.turn = null;
+  }
   bump(sessions, input.thread);
   if (!revoked.ok) return revoked;
   if (!finished.ok && finished.reason !== "turn-not-running") return finished;
@@ -921,4 +986,13 @@ export function waitFlexibleThreadChange(sessions: FlexibleSessions, input: { th
     sessions.waiters.set(input.thread, set);
     input.abandoned?.(() => finish("abandoned"));
   });
+}
+
+/** A thread's title as people read it: the one recorded at its start (flexible_thread_meta), else its short id. */
+export function flexibleThreadTitleOf(store: Store, thread: string): string {
+  try {
+    const title = store.handle.prepare("SELECT title FROM flexible_thread_meta WHERE thread = ?").get(thread)?.["title"];
+    if (typeof title === "string" && title !== "") return title;
+  } catch { /* the short id below */ }
+  return `Thread ${thread.slice(0, 8)}`;
 }

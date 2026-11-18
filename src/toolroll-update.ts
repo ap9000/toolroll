@@ -467,6 +467,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v170: a saved run reads nothing the agent said (NULL).
   // v171 adds a table only (flexible_setting, interactive agent threads' switch; no row reads off): no rule is needed.
   // v172: a saved relay call or reservation reads no sign-in (NULL); people's sign-ins are a new table.
+  // v173 adds tables only (flexible_stop_request, flexible_turn_dispatch, flexible_thread_meta): no rule is needed.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS, V169_ADDED_COLUMNS, V170_ADDED_COLUMNS, V172_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };

@@ -3224,9 +3224,13 @@ ${postForm("/settings/chat-approval/save", html`\
     if (removed === null) return back("problem", self ? "Enter your Toolroll password to remove your Claude sign-in." : "An instance operator removes someone's Claude sign-in for threads, with their password.");
     const state = signInState();
     if (state !== null) void tidyFlexibleSignIns(store, state, { now, person }).catch(() => { /* the upkeep deletes it */ });
-    return done("said", !removed.removed ? (self ? "You had no Claude sign-in for threads saved." : `${person} had no Claude sign-in for threads saved.`)
-      : self ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
-        : `Removed ${person}'s Claude sign-in for threads. Their threads can't reach Claude until they add one again.`);
+    // Their running threads were stopped on the record in the removal's own transaction; each console stops the agents it
+    // holds on its next upkeep tick (a few seconds) and keeps trying until each exit is verified.
+    const stopping = removed.ended.threads.length;
+    const stopWords = stopping === 0 ? "" : ` Toolroll is stopping ${stopping === 1 ? "1 running thread" : `${stopping} running threads`}.`;
+    return done("said", !removed.removed ? (self ? `You had no Claude sign-in for threads saved.${stopWords}` : `${person} had no Claude sign-in for threads saved.${stopWords}`)
+      : self ? `Removed.${stopWords} Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account.`
+        : `Removed ${person}'s Claude sign-in for threads.${stopWords} Their threads can't reach Claude until they add one again.`);
   }
   return { registrations, modelsView };
 }

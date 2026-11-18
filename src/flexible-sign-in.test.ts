@@ -202,7 +202,7 @@ describe("R2: removal cancels pending saves", () => {
     const keychain = memoryKeychain();
     keychain.failing = true;
     chooseSecretStore(keychain);
-    expect(removeFlexibleSignIn(store, { person: "alex", by: "alex", now: NOW })).toEqual({ removed: true });
+    expect(removeFlexibleSignIn(store, { person: "alex", by: "alex", now: NOW })).toMatchObject({ removed: true });
     expect(rows().map(row => row["state"])).toEqual(["retiring", "retiring"]);
     expect(signInEpochOf(store, "alex")).toBe(1);
     expect(rows().every(row => row["save_op"] === null)).toBe(true);
@@ -211,7 +211,7 @@ describe("R2: removal cancels pending saves", () => {
     // An operator removes someone else's (narrowing only), ledgered as theirs.
     chooseSecretStore(null);
     await save("bob", BOB, standInToken());
-    expect(removeFlexibleSignIn(store, { person: "bob", by: "alex", now: NOW })).toEqual({ removed: true });
+    expect(removeFlexibleSignIn(store, { person: "bob", by: "alex", now: NOW })).toMatchObject({ removed: true });
     expect(active("bob")).toBeUndefined();
   });
 

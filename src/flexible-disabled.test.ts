@@ -304,7 +304,9 @@ describe("the switch can't become an override", () => {
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
     decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest"],
       ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
-        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange"]);
+        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf"]);
+    // Ending a person's threads' authority only ever stops and settles.
+    decided("src/flexible-authority-end.ts", [], ["requireFlexibleStop", "settleExitedStops", "openFlexibleStops", "interruptTurnAndStop", "endThreadAuthorityFor"]);
     // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated.
     decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"]);
     decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
@@ -369,8 +371,9 @@ describe("the switch can't become an override", () => {
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-start.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-answers.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-answers\.js"/);
     for (const one of product.filter(engine("flexible-session.ts", join("server", "engine-api.ts"), "operate.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-session\.js"/);
-    // The CLI's switch-off reaches the thread host's module only for the stop.
-    expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["stopFlexibleThreadsEverywhere"]);
+    // The CLI reaches the thread host's module only for the stop (the switch turned off, a sign-in removed) and a
+    // thread's title in its report.
+    expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["flexibleThreadTitleOf, stopFlexibleThreadsEverywhere, type FlexibleStopReport"]);
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
     for (const one of product.filter(engine("flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);

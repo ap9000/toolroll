@@ -448,6 +448,11 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, now, true);
     if (spend !== null) return withdraw(spend);
     store.handle.prepare("UPDATE thread_turn SET status = 'running', started_at = ? WHERE id = ? AND status = 'admitted'").run(at, turn.id);
+    // What it was begun under (v173): its owner's removal epoch and account generation now, written once. The upkeep's
+    // backstop compares these, never today's, so a removal and a fresh save since still end it.
+    const epoch = Number(store.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(turn.owner)?.["epoch"] ?? 0);
+    store.handle.prepare("INSERT INTO flexible_turn_dispatch (turn, person, sign_in_epoch, account_generation) VALUES (?, ?, ?, ?) ON CONFLICT (turn) DO NOTHING")
+      .run(turn.id, turn.owner, epoch, turn.ownerGeneration);
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
   });
 }
