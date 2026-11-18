@@ -49,7 +49,7 @@ import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO, flexibleTurnLaunched } from "./flexible-launch.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleSignInBilling } from "./flexible-sign-in.js";
-import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
+import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent, withFlexibleThreadLock } from "./flexible-thread.js";
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
@@ -806,6 +806,59 @@ async function discardRefusedStart(store: Store, sessions: FlexibleSessions, inp
   try { withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: input.detail.slice(0, 500), clock: input.clock }); } catch { /* already begun or ended */ }
   try { await stopFlexibleThreadSession(store, sessions, { thread: input.thread, reason: "its start was refused", clock: input.clock }); } catch { /* nothing ran */ }
   try { await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.clock() }); } catch { /* left for its owner to remove */ }
+}
+
+/** Said when a thread ended (End is final): nothing new starts in it. */
+export const FLEXIBLE_THREAD_ENDED = "This thread has ended. Press T to start a new one.";
+
+/** Whether a thread ended (End is final; flexible_thread_meta). */
+export function flexibleThreadEnded(store: Store, thread: string): boolean {
+  return store.handle.prepare("SELECT 1 AS ended FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(thread) !== undefined;
+}
+
+/**
+ * Reply: the thread's owner sends its agent their next message (a new turn), all under the thread's lock, from the
+ * admission through handing the message to the agent (a Ship, an End or another reply is wholly before or after it):
+ * - One transaction re-reads the person's own session (`held`, compared whole with the one admitted), refuses an
+ *   ended thread, reads the billing of their own sign-in now, and admits the turn (F2e admitFlexibleTurn: the terms
+ *   the thread's last turn ran under must still stand for this person, every limit has room) at the thread's level,
+ *   with the thread's agent and model. The same `key` again never takes a second turn.
+ * - Then the turn begins (beginFlexibleThreadTurn): the thread's running agent takes it when it is provably the same
+ *   launch; otherwise a fresh agent starts, which doesn't remember earlier turns (`fresh`, said to the person).
+ * A person's surface only; the caller proves the person (their session re-read, and the proof a start takes).
+ */
+export async function continueFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; message: string; key: string;
+  freshProof: boolean; held: () => boolean; launcher: FlexibleLauncher | null; clock?: FlexibleClock; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }):
+  Promise<{ ok: true; turn: string; seq: number; fresh: boolean; replayed: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  if (!flexibleAvailable(store)) return refuse("not-available");
+  if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000
+    || typeof input.key !== "string" || !ID.test(input.key) || typeof input.held !== "function") return refuse("invalid-request");
+  if (input.launcher === null) return refuse("no-network");
+  const clock = input.clock ?? systemClock;
+  const locked = await withFlexibleThreadLock(input.thread, async () => {
+    const admitted = store.transact((): { ok: true; turn: string; seq: number; replayed: boolean } | { ok: false; reason: string; message: string } => {
+      if (!input.held()) return { ok: false, reason: "session", message: "Your session here changed. Sign in again, then reply. Nothing was sent." };
+      if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+      if (flexibleThreadEnded(store, input.thread)) return { ok: false, reason: "thread-ended", message: FLEXIBLE_THREAD_ENDED };
+      const last = store.handle.prepare("SELECT id FROM thread_turn WHERE thread = ? AND status <> 'withdrawn' ORDER BY seq DESC LIMIT 1").get(input.thread)?.["id"];
+      const before = typeof last === "string" ? flexibleTurn(store, last) : null;
+      if (before === null) return { ok: false, reason: "no-turn", message: "This thread has no turn to continue from. Start a new thread." };
+      const billing = flexibleSignInBilling(store, input.by);
+      if (!billing.ok) return { ok: false, reason: billing.reason, message: billing.reason === "no-sign-in"
+        ? "Threads use your own Claude sign-in, and you haven't saved one (or it was removed). Add one, then reply. Nothing was sent."
+        : "Claude didn't accept your sign-in for threads. Save a new one, then reply. Nothing was sent." };
+      const level = levelOf(store, input.thread) ?? before.level;
+      return admitFlexibleTurn(store, { thread: input.thread, starter: input.by, digest: before.termsDigest, level, freshProof: input.freshProof, provider: before.provider, model: before.model,
+        billing: billing.billing, requestKey: `reply:${input.key}`, holder: sessions.holder, clock });
+    });
+    if (!admitted.ok) return admitted;
+    if (admitted.replayed && flexibleTurn(store, admitted.turn)?.status !== "admitted") return { ok: false as const, reason: "already-sent", message: "That message already started a turn. Nothing new was started." };
+    const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock,
+      ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
+    if (!begun.ok) return begun;
+    return { ok: true as const, turn: admitted.turn, seq: admitted.seq, fresh: begun.launched === "started", replayed: admitted.replayed };
+  });
+  return locked;
 }
 
 // ---- answering ------------------------------------------------------------------------------------------------------------------

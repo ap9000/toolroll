@@ -74,6 +74,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // don't (a start above their password-free level still needs this proof); the start (engine-api.ts threadStart)
   // checks this exact act.
   "start-thread",
+  // Reply to one's own interactive agent thread (threads-everyday S4): a new turn under the terms it already runs on,
+  // admitted exactly as a start's turn is (the terms, the limits, the person's own sign-in); the handler checks this act.
+  "reply-thread",
   // The terminal workbench's Agents screen: look again for this computer's agents (the bounded, non-spending status
   // checks every sign-in check uses); never a model call and nothing written but the detection's own answer.
   "check-agents",

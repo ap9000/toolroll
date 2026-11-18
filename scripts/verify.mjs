@@ -575,7 +575,26 @@ async function exercise(feature, context) {
     case 'stop-resume': await failed(); await press('x', /Stop retrying this task\?/); await press('enter', /Stopped retrying|Resume retrying/); shown = await press('x', /Resume retrying this task\?/); await press('enter', /Resumed|[Rr]etrying/); break;
     case 'retry': await failed(); await wait(/The agent stopped with an error\.[\s\S]*What the agent said/); shown = await retryAttempt(term, lastRun, context.task); break;
     case 'cancel': await failed(); shown = await press('X', /Cancel/); await press('enter', /[Cc]ancelled|[Cc]anceled/); break;
-    case 'threads': shown = await startThread(term, 'Review the subtraction change.'); break;
+    case 'threads': {
+      shown = await startThread(term, 'Review the subtraction change.');
+      // The thread it started is selected (not the task that was selected before).
+      await seen(() => newestThread() && projectView()?.task === newestThread(), 'the new thread selected');
+      context.thread = newestThread();
+      break;
+    }
+    case 'thread-reply': {
+      // Reply in the thread `threads` started: once its first turn is over the row reads Ready, s opens the reply box,
+      // and Enter sends the next message as turn 2.
+      await open('Review the subtraction change.', context.thread);
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
+      await press('s', /Reply:/);
+      term.send('Now explain the change.');
+      await wait(/Reply:[^\n]*explain the change\./);
+      shown = await press('enter', /Sent\. Turn 2 started|Refused: /);
+      if (!/Sent\. Turn 2 started/.test(shown)) throw new Error(`The reply was not sent: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await seen(() => sql(`SELECT COUNT(*) AS n FROM thread_turn WHERE thread = '${context.thread}' AND request_key LIKE 'reply:%'`)[0]?.n === 1, 'one reply turn on the record');
+      break;
+    }
     case 'threads-sign-in': {
       // Your own Claude sign-in for threads, end to end through the product: removed at a terminal; T then names the
       // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying

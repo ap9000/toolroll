@@ -341,6 +341,8 @@ pub enum Mode {
     ConfirmThread(crate::thread::ThreadPin),
     /// A new thread's first message (refused by the engine while Flexible isn't available).
     NewThread(String),
+    /// Reply: the thread's next message (`s` on a thread), for the thread named.
+    ThreadReply(String, String),
     /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
     StartThread(crate::thread::StartTerms),
     /// A new thread was refused with what this person still needs first (thread.rs NextStep): `w` opens its page in the
@@ -1460,7 +1462,7 @@ impl App {
         vec![]
     }
 
-    fn token(&mut self, len: usize) -> String {
+    pub(crate) fn token(&mut self, len: usize) -> String {
         use std::hash::{BuildHasher, Hasher};
         let mut out = String::new();
         while out.len() < len {
@@ -2362,6 +2364,7 @@ impl App {
                 | Mode::SendBack(..)
                 | Mode::SendReview { .. }
                 | Mode::Steer(_)
+                | Mode::ThreadReply(..)
         ) {
             self.mode = Mode::Normal;
         }
@@ -2909,6 +2912,15 @@ impl App {
                 |app, text| app.mode = Mode::NewThread(text),
                 |app, text| app.new_thread(text),
             ),
+            Mode::ThreadReply(thread, text) => {
+                let (kept, sent) = (thread.clone(), thread);
+                self.typing(
+                    key,
+                    text,
+                    move |app, text| app.mode = Mode::ThreadReply(kept.clone(), text),
+                    move |app, text| crate::thread::send_reply(app, sent.clone(), text),
+                )
+            }
             Mode::Steer(text) => self.typing(
                 key,
                 text,
@@ -3042,6 +3054,7 @@ impl App {
             Mode::Steer(t)
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
+            | Mode::ThreadReply(_, t)
             | Mode::Note(_, t)
             | Mode::SendBack(_, t) => grow(t),
             _ => {}
@@ -3210,6 +3223,12 @@ impl App {
                 .set_tab(Tab::ALL[(Tab::ALL.iter().position(|t| *t == self.tab).unwrap() + 1) % 4]),
             Action::PreviousTab => self
                 .set_tab(Tab::ALL[(Tab::ALL.iter().position(|t| *t == self.tab).unwrap() + 3) % 4]),
+            // On a thread, `s` is Reply (its next message); the palette's "Reply to the thread" is the same.
+            Action::Steer | Action::ThreadReply if self.thread_selected().is_some() => crate::thread::open_reply(self),
+            Action::ThreadReply => {
+                self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
+                vec![]
+            }
             Action::Steer => match self.live_run() {
                 Some(_) => {
                     self.mode = Mode::Steer(String::new());
@@ -3960,6 +3979,7 @@ impl App {
             | Mode::Note(..)
             | Mode::NewTask(..)
             | Mode::NewThread(_)
+            | Mode::ThreadReply(..)
             | Mode::SendBack(..)
             | Mode::Palette(_)
             | Mode::PickModel(_)

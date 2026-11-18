@@ -75,6 +75,7 @@ actions! {
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
+    ThreadReply = "thread-reply", Global, Act, "Reply to the thread (s on a thread)", [];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
     PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
     JumpBack = "jump-back", Global, Move, "Back to where each jump left from (again right away: forward)", ["'"];

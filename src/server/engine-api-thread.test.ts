@@ -207,6 +207,28 @@ describe("an answer goes only through its owner, naming the card they were shown
   });
 });
 
+describe("Reply over HTTP: the owner's own, proved as a start is", () => {
+  const replyAs = async (persona: string, fields: Record<string, string>) => {
+    const response = await fetch(`${base}/agents/live/thread/${T1}/turn`, { method: "POST", redirect: "manual",
+      headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      body: new URLSearchParams({ csrf: csrfOf[persona]!, ...fields }).toString() });
+    return { status: response.status, body: await response.json() as unknown };
+  };
+  test("someone else, a token, no password on a team install and a malformed key are refused; a reply while a turn works takes no second turn", async () => {
+    const turnsBefore = world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE thread = ?").get(T1)!["n"];
+    const fields = { message: "Now add a test", key: "d".repeat(32) };
+    for (const persona of ["ines", "alex"]) expect(await replyAs(persona, fields), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/turn`, { method: "POST", redirect: "manual",
+      headers: { authorization: `Bearer ${readToken}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() });
+    expect(byToken.status).toBe(403);
+    expect(await replyAs("pat", fields)).toEqual({ status: 403, body: { outcome: "refused", words: "Replying here needs your password. Nothing was sent." } });
+    expect(await replyAs("pat", { ...fields, key: "nope", password: tokenOf["pat"]! })).toMatchObject({ status: 400, body: { outcome: "refused" } });
+    expect(await replyAs("pat", { ...fields, password: tokenOf["pat"]! })).toEqual({ status: 409, body: { outcome: "refused", words: "This thread is already working on a turn. Wait for it to finish, or stop it." } });
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE thread = ?").get(T1)!["n"]).toBe(turnsBefore);
+    expect(agent.sent.filter(line => line.includes("Now add a test"))).toEqual([]);
+  });
+});
+
 describe("the owner's read waits for the thread's next change (wait=1), never polled", () => {
   test("an unchanged read waits; the agent's next words wake it at once with them; a read that isn't held to a version and cursor can't wait", async () => {
     const first = await read("pat", THREAD);

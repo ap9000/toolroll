@@ -314,6 +314,26 @@
       ]
     },
     {
+      "id": "thread-reply",
+      "screen": "Work",
+      "reach": "Select the thread threads started; once it reads Ready, s; type the next message; Enter",
+      "expected": "Sent\\. Turn 2 started",
+      "scenario": "success",
+      "actions": [
+        "thread-reply",
+        "steer"
+      ],
+      "keys": [
+        "s"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "threads"
+      ]
+    },
+    {
       "id": "layout",
       "screen": "Work",
       "reach": "L",
@@ -559,14 +579,6 @@
         "backtab"
       ],
       "feature": "Previous tab",
-      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
-    },
-    {
-      "action": "steer",
-      "keys": [
-        "s"
-      ],
-      "feature": "Steer: send the running agent a note",
       "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
     },
     {

@@ -699,3 +699,57 @@ fn a_stopped_turn_says_so_in_plain_words_with_toolrolls_own_note() {
     assert!(!shown.contains("total unknown"), "{shown}");
     assert!(shown.contains("Toolroll: Your Claude sign-in for threads was removed, so Toolroll"), "{shown}");
 }
+
+/// The threads list with the selected thread's turn in `turn` (and its agent live or not).
+fn threads_with(turn: &str, live: bool) -> Value {
+    let mut list = fake::fixture("live-threads.json");
+    list["threads"][0]["turn"] = json!(turn);
+    list["threads"][0]["live"] = json!(live);
+    list
+}
+
+#[test]
+fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
+    let mut app = thread_app(window());
+    // While its turn is still working, s says so and opens nothing.
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(app.status.as_ref().is_some_and(|(_, w)| w.contains("still working")), "{:?}", app.status);
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(matches!(&app.mode, Mode::ThreadReply(t, _) if t == fake::THREAD), "{:?}", app.mode);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Reply:"), "{shown}");
+    assert!(shown.contains("This starts a fresh agent: it won't remember earlier turns."), "{shown}");
+    for c in "Now add a test".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+    assert_eq!(path, &format!("/agents/live/thread/{}/turn", fake::THREAD));
+    assert_eq!(fields[0], ("message".to_string(), "Now add a test".to_string()));
+    assert_eq!(fields[1].0, "key");
+    assert_eq!(fields[1].1.len(), 32);
+    assert!(fields[1].1.bytes().all(|b| b.is_ascii_hexdigit()));
+    // Each reply has a key of its own.
+    app.key(key('s'));
+    for c in "again".chars() {
+        app.key(key(c));
+    }
+    let again = app.key(enter());
+    let [Effect::Act { fields: second, .. }] = again.as_slice() else { panic!("{again:?}") };
+    assert_ne!(second[1].1, fields[1].1);
+}
+
+#[test]
+fn an_ended_thread_takes_no_reply() {
+    let mut app = thread_app(window());
+    let mut list = threads_with("interrupted", false);
+    list["threads"][0]["ended"] = json!(true);
+    app.update(Msg::Threads(Ok(parse(list))));
+    // Still selected (an ended thread moves to Recent): s says it ended.
+    app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(app.status.as_ref().is_some_and(|(_, w)| w.contains("This thread has ended")), "{:?}", app.status);
+}

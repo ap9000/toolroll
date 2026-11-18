@@ -188,6 +188,49 @@ pub fn thread_place(t: &ThreadRow) -> (Section, &'static str) {
     }
 }
 
+/// Said when a thread act is asked for with no thread selected.
+pub const NO_THREAD_SELECTED: &str = "Select a thread first.";
+/// Said in the reply box when the thread's agent isn't running: the reply starts a fresh one (no `--resume`: D7).
+pub const REPLY_STARTS_FRESH: &str = "This starts a fresh agent: it won't remember earlier turns. Your files are as it left them.";
+
+/// `s` on a thread: the reply box, unless the thread ended (End is final) or a turn is still working.
+pub fn open_reply(app: &mut App) -> Vec<crate::app::Effect> {
+    let Some(id) = app.thread_selected() else {
+        app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
+        return vec![];
+    };
+    let row = app.threads.rows.iter().find(|t| t.id == id);
+    if row.is_some_and(|t| t.ended) {
+        app.status = Some((Tone::Refused, "This thread has ended. Press T to start a new one.".into()));
+        return vec![];
+    }
+    if row.is_some_and(|t| matches!(t.turn.as_deref(), Some("admitted" | "running"))) {
+        app.status = Some((Tone::Refused, "The agent is still working on your last message. Wait for it, or stop it with x.".into()));
+        return vec![];
+    }
+    app.status = None;
+    app.mode = Mode::ThreadReply(id, String::new());
+    vec![]
+}
+
+/// Enter in the reply box: the message, posted with a fresh key of its own (the same post twice takes one turn).
+pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app::Effect> {
+    let message = text.trim().to_string();
+    if message.is_empty() {
+        return vec![];
+    }
+    if app.thread_selected().as_deref() != Some(thread.as_str()) {
+        app.status = Some((Tone::Refused, "Another thread is selected now. Nothing was sent.".into()));
+        return vec![];
+    }
+    let key = app.token(32);
+    vec![Effect::Act {
+        path: format!("/agents/live/thread/{}/turn", toolroll_api::client::encode(&thread)),
+        fields: vec![("message".to_string(), message), ("key".to_string(), key)],
+        done: "Sent.".into(),
+    }]
+}
+
 pub fn level_words(level: Option<&str>) -> &'static str {
     match level {
         Some("supervised") => "Supervised",
@@ -390,7 +433,10 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     // A new task (n works everywhere) gets the same composer as a task's panel (view.rs draw_composer): never typed
     // into unseen. A new thread keeps its own line here.
     let roomy = area.height >= 22;
-    let input_h: u16 = match app.mode {
+    let input_h: u16 = match &app.mode {
+        Mode::ThreadReply(t, _) if *t == item.id => {
+            if app.threads.rows.iter().any(|r| r.id == item.id && !r.live) { 2 } else { 1 }
+        }
         Mode::NewThread(_) => 1,
         Mode::NewTask(..) if roomy => 5,
         Mode::NewTask(..) => 2,
@@ -551,6 +597,20 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     f.render_widget(Paragraph::new(lines), qa);
     if matches!(app.mode, Mode::NewTask(..)) {
         crate::view::draw_composer(f, app, input_row, roomy);
+    }
+    if let Mode::ThreadReply(t, text) = &app.mode {
+        if *t == item.id {
+            let mut lines = vec![];
+            if input_h > 1 {
+                lines.push(Line::from(Span::styled(fit(REPLY_STARTS_FRESH, w), dim())));
+            }
+            lines.push(Line::from(vec![
+                Span::styled("Reply: ", ink()),
+                Span::raw(fit(text, w.saturating_sub(8))),
+                Span::styled("▏", ink()),
+            ]));
+            f.render_widget(Paragraph::new(lines), input_row);
+        }
     }
     if let Mode::NewThread(text) = &app.mode {
         f.render_widget(

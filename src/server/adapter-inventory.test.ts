@@ -31,6 +31,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     "agents.live.thread.answer=answer-question",
     // Starting a thread: the laptop owner's yes to its terms card (engine-api.ts threadStart checks this exact act).
     "agents.live.thread.start=start-thread",
+    // Reply: the owner's next message to their own thread (engine-api.ts threadTurn checks this exact act).
+    "agents.live.thread.turn=reply-thread",
     "agents.seen=mark-seen", "agents.watch=watch-agent", "chat.file=file-task", "chat.mate-end=lead-send", "chat.mate-follow=lead-send", "chat.mate-mint=lead-send",
     "chat.mate-stop=lead-send", "chat.proposal.confirm=lead-send", "chat.proposal.dismiss=lead-send", "chat.queued-remove=lead-send", "chat.send=lead-send",
     "decision.answer=answer-question",
