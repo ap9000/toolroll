@@ -183,9 +183,9 @@ describe("the CI workflows", () => {
     // System dependencies finish first, with apt itself waiting for the lock (no check-then-install race).
     const journeySteps = workflow("journeys.yml").jobs["journeys"]!.steps!;
     const deps = journeySteps.find(step => (step.run ?? "").includes("install-deps chromium"))!;
-    expect(deps.run).toContain(`printf 'DPkg::Lock::Timeout "180";\\nAcquire::Retries "3";\\n' | sudo tee /etc/apt/apt.conf.d/99-toolroll-lock-timeout`);
-    expect(deps.run).toMatch(/timeout 280 npx -y playwright@[0-9.]+ install-deps chromium/);
-    expect((deps as { "timeout-minutes"?: number })["timeout-minutes"]).toBe(5);
+    expect(deps.run).toContain(`printf 'DPkg::Lock::Timeout "180";\\nAcquire::Retries "3";\\nAcquire::http::Timeout "20";\\nAcquire::https::Timeout "20";\\n' | sudo tee /etc/apt/apt.conf.d/99-toolroll-lock-timeout`);
+    expect(deps.run).toMatch(/timeout 500 npx -y playwright@[0-9.]+ install-deps chromium/);
+    expect((deps as { "timeout-minutes"?: number })["timeout-minutes"]).toBe(9);
     const playwright = journeySteps.find(step => /playwright@[0-9.]+ install chromium/.test(step.run ?? ""))!;
     expect(journeySteps.indexOf(deps)).toBeLessThan(journeySteps.indexOf(playwright));
     expect(playwright.run).toMatch(/for attempt in 1 2 3; do\n\s+timeout 140 npx -y playwright@[0-9.]+ install chromium && exit 0/);

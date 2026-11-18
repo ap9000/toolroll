@@ -92,14 +92,14 @@ jobs:
       - run: npm run build
       # Playwright isn't a dependency (scripts/e2e-kit.mjs loadPlaywright finds npx's copy): pinned, with its Chromium.
       - name: Playwright's system dependencies, waiting for apt's lock
-        timeout-minutes: 5
+        timeout-minutes: 9
         run: |
           # No earlier step backgrounds apt. A runner's package maintenance can still hold its lock.
           # Let apt acquire the lock itself; checking it before starting apt would race another installer.
           # guard: bound apt waits for the actual dpkg lock, at most 180 seconds
-          printf 'DPkg::Lock::Timeout "180";\nAcquire::Retries "3";\n' | sudo tee /etc/apt/apt.conf.d/99-toolroll-lock-timeout >/dev/null
-          # guard: bound dependency installation must finish within this step's five-minute limit
-          timeout 280 npx -y playwright@1.64.1 install-deps chromium
+          printf 'DPkg::Lock::Timeout "180";\nAcquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/99-toolroll-lock-timeout >/dev/null
+          # guard: bound dependency installation (a stalled mirror read times out after 20 s and retries) within the step's nine minutes
+          timeout 500 npx -y playwright@1.64.1 install-deps chromium
       # Only browser downloads retry here; system dependencies have already finished installing.
       - name: Playwright's Chromium, with bounded retries
         timeout-minutes: 8
