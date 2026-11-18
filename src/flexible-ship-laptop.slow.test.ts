@@ -80,7 +80,7 @@ async function press(proof: ShipProof, as: LocalPrincipal | null = owner()) {
   const go = () => shipFlexible(store, { thread: thread.id, by: "alex", proof, shownDigest: shown.digest, shownKey: shown.summary.key, now: NOW });
   return as === null ? go() : asLocalOwner(as, go);
 }
-const laptop = { kind: "local-owner" } as const;
+const laptop: ShipProof = { kind: "local-owner", held: () => true };
 const ships = () => store.handle.prepare("SELECT seq, state, proof, task_id, detail FROM flexible_ship ORDER BY seq").all().map(row => ({ ...row }));
 const anotherWithPassword = () => { store.saveApprover("bob", hashPassword("bob-password-333"), NOW); };
 const linkSso = () => {
@@ -143,6 +143,17 @@ describe("the laptop road: one key, the whole contract", () => {
     expect(laptopShipProblem(store, { owner: "alex" }) === null).toBe(standsAgain);
     expect(await mergeArmedFlexible(store, { taskId: done.taskId, root, clock: () => NOW })).toMatchObject({ ok: false, reason: "wrong-state" });
     expect(ships()[0]).toMatchObject({ state: "cancelled" });
+  });
+});
+
+describe("the session goes with the laptop proof", () => {
+  test("a session that ends while the press waits (lock, stop, reads) consents to nothing: asked again in the consent's transaction", async () => {
+    commit({ "a.txt": "one\n" });
+    let asked = 0;
+    // Held when asked first (before the lock); gone by the time the consent is recorded.
+    expect(await press({ kind: "local-owner", held: () => ++asked === 1 })).toMatchObject({ ok: false, reason: "proof-refused" });
+    expect(asked).toBeGreaterThan(1);
+    expect(ships()).toEqual([]);
   });
 });
 

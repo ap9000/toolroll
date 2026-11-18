@@ -10,8 +10,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
-import { closeFlexibleThread, FLEXIBLE_ENDED_KEEP_MS, FLEXIBLE_ENDED_WORDS, FLEXIBLE_STOPPED_WORDS, flexibleThreadLiveOf, openFlexibleSessions, tidyEndedFlexibleThreads,
-  type FlexibleSessions } from "./flexible-session.js";
+import { closeFlexibleThread, FLEXIBLE_ENDED_KEEP_MS, FLEXIBLE_ENDED_WORDS, FLEXIBLE_STOPPED_WORDS, flexibleThreadLiveOf, openFlexibleSessions, removeFlexibleThreadCopy,
+  stopFlexibleThreadsEverywhere, tidyEndedFlexibleThreads, type FlexibleSessions } from "./flexible-session.js";
 import { hashPassword } from "./scope.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { standInSignIn } from "../test/flexible-sign-in-kit.js";
@@ -139,5 +139,31 @@ describe("the tidy, a week after the end", () => {
     expect(await close("end")).toMatchObject({ ok: true, stopPending: true });
     expect(await tidyEndedFlexibleThreads(world.store, { now: new Date(NOW.getTime() + FLEXIBLE_ENDED_KEEP_MS + 60_000) })).toEqual({ tidied: 0, left: 1 });
     expect(world.store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(T1)?.["state"]).toBe("ready");
+  });
+});
+
+describe("the command line's End and removal (Codex review of the build, round 1, findings 3 and 4)", () => {
+  test("the caller's proof is asked again inside the write: an install that changed meanwhile ends nothing and removes nothing", async () => {
+    expect(await closeFlexibleThread(world.store, null, { thread: T1, by: pat(), act: "end", clock: () => NOW, prove: () => false }))
+      .toMatchObject({ ok: false, reason: "proof-changed" });
+    expect(world.store.handle.prepare("SELECT ended_at FROM flexible_thread_meta WHERE thread = ?").get(T1)?.["ended_at"]).toBeNull();
+    expect(await removeFlexibleThreadCopy(world.store, { thread: T1, by: "pat", now: NOW, prove: () => false })).toMatchObject({ ok: false });
+    expect(world.store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(T1)?.["state"]).toBe("ready");
+    expect(existsSync(join(world.state, "threads", T1))).toBe(true);
+  });
+
+  test("stopping one thread's agent from the command line touches only that thread's own launches", async () => {
+    const T2 = "2".padStart(32, "0"), L2 = "a2".padStart(32, "0");
+    const folder = join(world.state, "threads", T2);
+    mkdirSync(join(folder, "repo"), { recursive: true });
+    world.store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
+      .run(T2, world.project, world.second, `refs/toolroll/threads/${T2}/base`, folder, NOW.toISOString());
+    working();
+    world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, turn, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
+      VALUES (?, ?, NULL, 'claude', 'full', ?, ?, 'here', ?, ?, 't1', 'live', ?)`).run(L2, T2, "f".repeat(32), sessions.holder, "9".repeat(32), fakePid(2), NOW.toISOString());
+    const report = await stopFlexibleThreadsEverywhere(world.store, { reason: "its owner ended the thread", thread: T1, clock: () => NOW });
+    expect([...report.stopped, ...report.survivors].map(one => one.thread)).toEqual([T1]);
+    expect(world.store.handle.prepare("SELECT state FROM flexible_thread_launch WHERE id = ?").get(L2)?.["state"]).toBe("live");
+    expect(world.store.handle.prepare("SELECT state FROM flexible_thread_launch WHERE id = ?").get(L1)?.["state"]).not.toBe("live");
   });
 });

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
-import { attachFlexibleAgent, FLEXIBLE_AUTHORITY_MOVED_WORDS, FLEXIBLE_REFUSED_LINE_WORDS, flexibleThreadLiveOf, openFlexibleSessions, settleFlexibleStops, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
+import { attachFlexibleAgent, FLEXIBLE_AUTHORITY_MOVED_WORDS, flexibleThreadLiveOf, openFlexibleSessions, settleFlexibleStops, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { THREAD_AUTHORITY_WORDS } from "./flexible-authority-end.js";
 import { stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { onRelayCancel, type RelayCancel } from "./flexible-relay-cancel.js";
@@ -194,7 +194,13 @@ describe("the console acts on the record, whichever process wrote it", () => {
     try { removeFlexibleSignIn(other, { person: "pat", by: "pat", now: NOW }); } finally { other.close(); }
     // The agent prints its error and ends its turn: the record already says interrupted, so it stays so, and the view
     // shows Toolroll's own words, never the raw API error.
-    stdout.write(`${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: 'API Error: 403 {"type":"error","error":{"type":"permission_error"}}' }] } })}\n`);
+    const text = (one: string) => `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: one }] } })}\n`;
+    stdout.write(text("Looking at the parser first."));
+    // Every shape a refused call's error takes, each a whole block (multiline JSON included).
+    stdout.write(text('API Error: 403 {"type":"error","error":{"type":"permission_error"}}'));
+    stdout.write(text('API Error: 401\n{\n  "type": "error",\n  "error": { "type": "authentication_error", "message": "invalid x-api-key" }\n}'));
+    stdout.write(text("Failed to authenticate. API Error: 403 · Please run /login"));
+    stdout.write(text('{\n  "type": "error",\n  "error": { "type": "permission_error", "message": "relay said no" }\n}'));
     stdout.write(`${JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: 403" })}\n`);
     await new Promise(resolve => setImmediate(resolve));
     expect(flexibleTurn(world.store, turn)!.status).toBe("interrupted");
@@ -202,8 +208,10 @@ describe("the console acts on the record, whichever process wrote it", () => {
     if (!read.ok) throw new Error(read.message);
     expect(read.facts.turn).toMatchObject({ status: "interrupted", endWords: THREAD_AUTHORITY_WORDS.removed, billing: "subscription" });
     const said = read.window.ok ? read.window.records.flatMap(one => one.k === "say" ? one.t : []) : [];
-    expect(said).toContain(FLEXIBLE_REFUSED_LINE_WORDS);
-    expect(said.join("\n")).not.toContain("API Error");
+    expect(said).toContain("Looking at the parser first.");
+    expect(said.filter(line => line === `Toolroll: ${THREAD_AUTHORITY_WORDS.removed}`)).toHaveLength(4);
+    const all = said.join("\n");
+    for (const raw of ["API Error", "authentication_error", "permission_error", "\"type\"", "invalid x-api-key", "/login", "relay said no"]) expect(all, raw).not.toContain(raw);
     expect(sessions.threads.get(T1)?.agent?.turn ?? null).toBeNull();
     // A fresh sign-in saved since revives nothing: the requirement stands until the exit is verified.
     standInSignIn(world.store, world.state, "pat");

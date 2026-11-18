@@ -233,13 +233,17 @@ export type FlexibleStopReport = { stopped: { thread: string; network: boolean }
  */
 export async function stopFlexibleThreadsEverywhere(store: Store, input: { reason: string; io?: CustodyIO; clock?: FlexibleClock;
   /** Only the launches of this person's threads (their sign-in removed at the command line): the rest are left alone. */
-  owner?: string }): Promise<FlexibleStopReport> {
+  owner?: string;
+  /** Only this thread's own recorded launches (one thread ended at the command line): every other thread is left alone. */
+  thread?: string }): Promise<FlexibleStopReport> {
   const io = input.io ?? defaultCustodyIO();
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const report: FlexibleStopReport = { stopped: [], survivors: [] };
   const lives = new Map<string, FlexibleHolderLife>();
   const lifeOf = (holder: string): FlexibleHolderLife => { if (!lives.has(holder)) lives.set(holder, holderLife(holder, io)); return lives.get(holder)!; };
-  const launches = (input.owner === undefined
+  const launches = (input.thread !== undefined
+    ? store.handle.prepare("SELECT id, thread, holder FROM flexible_thread_launch WHERE state <> 'exited' AND thread = ? ORDER BY started_at, id").all(input.thread)
+    : input.owner === undefined
     ? store.handle.prepare("SELECT id, thread, holder FROM flexible_thread_launch WHERE state <> 'exited' ORDER BY started_at, id").all()
     : store.handle.prepare(`SELECT l.id AS id, l.thread AS thread, l.holder AS holder FROM flexible_thread_launch l JOIN flexible_thread t ON t.id = l.thread
       WHERE l.state <> 'exited' AND t.created_by = ? ORDER BY l.started_at, l.id`).all(input.owner))
@@ -258,7 +262,7 @@ export async function stopFlexibleThreadsEverywhere(store: Store, input: { reaso
     } else report.survivors.push({ thread: one.thread, pids: [...done.survivors], why: done.why });
   }
   try { store.transact(() => { settleExitedStops(store, (input.clock ?? systemClock)().toISOString()); }); } catch { /* a console's next tick settles them */ }
-  if (input.owner !== undefined) return report;
+  if (input.owner !== undefined || input.thread !== undefined) return report;
   // A crashed console's turns and answers, once nothing of it is left running: settled as holder recovery settles them.
   const holders = new Set(store.handle.prepare("SELECT DISTINCT holder FROM thread_turn WHERE status IN ('admitted', 'running')").all().map(row => String(row["holder"])));
   const goneHolders = [...new Set([...holders, ...launches.map(one => one.holder)])].filter(holder => lifeOf(holder) === "gone"
@@ -878,7 +882,10 @@ export const FLEXIBLE_ENDED_WORDS = "You ended this thread.";
  *   as the upkeep's retry target and said so (`stopPending`).
  * End again is the same end ("already").
  */
-export async function closeFlexibleThread(store: Store, sessions: FlexibleSessions | null, input: { thread: string; by: { name: string; generation: number }; act: "stop" | "end"; clock?: FlexibleClock }):
+export async function closeFlexibleThread(store: Store, sessions: FlexibleSessions | null, input: { thread: string; by: { name: string; generation: number }; act: "stop" | "end"; clock?: FlexibleClock;
+  /** The caller's own proof of the person, asked again inside the transaction that ends it (the command line's solo
+   * standing: an account added meanwhile ends it). */
+  prove?: () => boolean }):
   Promise<{ ok: true; already: boolean; stopPending: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (typeof input.thread !== "string" || !ID.test(input.thread) || (input.act !== "stop" && input.act !== "end")) return refuse("invalid-request");
   const clock = input.clock ?? systemClock;
@@ -887,6 +894,7 @@ export async function closeFlexibleThread(store: Store, sessions: FlexibleSessio
     const recorded = store.transact((): { ok: true; already: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string } => {
       const account = store.accountOf(input.by.name);
       if (account === null || account.revokedAt !== null || account.generation !== input.by.generation) return { ok: false, reason: "stale-generation", message: "Your account changed since this started. Sign in again and retry. Nothing changed." };
+      if (input.prove !== undefined && !input.prove()) return { ok: false, reason: "proof-changed", message: "This install changed since you asked (another account, or a password), so this needs your password now. Nothing changed." };
       if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
       const ended = flexibleThreadEnded(store, input.thread);
       if (input.act === "end") {
@@ -1268,17 +1276,21 @@ function endWordsOf(store: Store, turn: string, status: string): { endWords?: st
   return words === "" ? {} : { endWords: words };
 }
 
-/** What the agent prints when a model call it made was refused (Claude Code's own error lines): replaced in the thread's
- * transcript by a pointer to Toolroll's own words, once the turn's record says it was interrupted. */
-const AGENT_REFUSED_LINE = /^\s*(?:API Error: [45]\d\d\b|Invalid API key\b|Please run \/login\b)/;
+/** An agent text block that is a refused model call's error, as Claude Code prints them (its API error lines, the
+ * authentication messages, the error object itself): read whole, never line by line. */
+const AGENT_API_ERROR = /\bAPI Error\b|\bInvalid API key\b|Please run \/login|Failed to authenticate|"type"\s*:\s*"error"|\b(?:authentication|permission)_error\b/;
 export const FLEXIBLE_REFUSED_LINE_WORDS = "(The agent's error message is left out: Toolroll's note on this turn says what happened.)";
 
-/** `records` with the agent's own refused-call lines replaced (AGENT_REFUSED_LINE), when `turn`'s record says it was
- * interrupted. Decided from the record, never from the agent's text alone. */
+/** `records` with every agent text block that is a refused call's error (AGENT_API_ERROR, anywhere in it) replaced WHOLE
+ * by Toolroll's own recorded explanation of the turn's end (never a line of the agent's own), when `turn`'s record says it
+ * was interrupted. Decided from the record, never from the agent's text alone. */
 function withoutRefusedLines(store: Store, turn: string | null, records: LiveRecord[]): LiveRecord[] {
-  if (turn === null || !records.some(one => one.k === "say" && one.t.some(line => AGENT_REFUSED_LINE.test(line)))) return records;
-  if (flexibleTurn(store, turn)?.status !== "interrupted") return records;
-  return records.map(one => one.k !== "say" ? one : { ...one, t: one.t.map(line => AGENT_REFUSED_LINE.test(line) ? FLEXIBLE_REFUSED_LINE_WORDS : line) });
+  if (turn === null || !records.some(one => one.k === "say" && one.t.some(line => AGENT_API_ERROR.test(line)))) return records;
+  const row = flexibleTurn(store, turn);
+  if (row?.status !== "interrupted") return records;
+  const words = endWordsOf(store, turn, row.status).endWords;
+  const explained = words === undefined ? FLEXIBLE_REFUSED_LINE_WORDS : `Toolroll: ${words}`;
+  return records.map(one => one.k !== "say" || !one.t.some(line => AGENT_API_ERROR.test(line)) ? one : { ...one, t: [explained] });
 }
 
 /** The title recorded at a thread's start (flexible_thread_meta), or null. */
@@ -1340,8 +1352,8 @@ export function flexibleThreadRecords(store: Store, input: { owner: string }): F
 
 /** Remove a thread's working copy (F2a removeFlexibleThread: its owner; refused while anything of its agent may run or
  * a Ship is open). Its record, title and end stay. */
-export async function removeFlexibleThreadCopy(store: Store, input: { thread: string; by: string; now: Date }): Promise<{ ok: true } | { ok: false; reason: string; message: string }> {
+export async function removeFlexibleThreadCopy(store: Store, input: { thread: string; by: string; now: Date; prove?: () => boolean }): Promise<{ ok: true } | { ok: false; reason: string; message: string }> {
   if (ownThread(store, input.thread, { name: input.by }) === null) return refuse("thread-unknown");
-  const removed = await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.now });
+  const removed = await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.now, ...(input.prove === undefined ? {} : { prove: input.prove }) });
   return removed.ok ? { ok: true } : { ok: false, reason: removed.reason, message: removed.message };
 }

@@ -15471,7 +15471,8 @@ async function typedForCommand(flags: Map<string, string | true>, context: Conte
   const answered = text(flags, "as") ?? (named === null ? undefined : await named(usual === null ? "username: " : `username [${usual}]: `));
   const name = answered === "" && usual !== null ? usual : answered;
   const password = await typed("password: ");
-  return name === undefined || name === "" || password === "" ? null : { name, token: password };
+  if (name === undefined || name.length === 0 || password.length === 0) return null;
+  return { name, token: password };
 }
 
 /** What's still missing for `person` to start a thread, said after threads are turned on (the order T asks for them). */
@@ -15536,8 +15537,14 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     acting = await askCredentials(flags, context);
   }
   if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked.", EXIT.usage);
-  const who = acting;
-  const proved = store.transact(() => who.token === "" ? soloOperatorOf(store) === who.name : (() => { const one = authenticateApprover(store, who.name, who.token); return one.ok && personProof(one.method); })());
+  // Named as the solo operator (no password: the narrowing acts and reads), or proved by the ordinary step-up.
+  const who = { ...acting, solo: solo !== null && acting.name === solo && !flags.has("token") && acting.token.length === 0 };
+  const proveNow = (): boolean => {
+    if (who.solo) return soloOperatorOf(store) === who.name;
+    const one = authenticateApprover(store, who.name, who.token);
+    return one.ok && personProof(one.method);
+  };
+  const proved = store.transact(proveNow);
   if (!proved) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
   const account = store.accountOf(who.name)!;
   if (verb === "list") {
@@ -15553,14 +15560,17 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
       `Latest turn: ${row.turn ?? "none"}${row.endWords === null ? "" : `. ${row.endWords}`}`, ...(row.ended ? ["Ended."] : []),
       ...(row.shipWords === null ? [] : [row.shipWords]), "Reply in the workbench: run `toolroll`, select it and press s."]);
   }
+  // The same proof is asked again inside each write (End's and removal's own transactions): an account added meanwhile
+  // ends a password-free solo one.
   if (verb === "end") {
-    const done = await closeFlexibleThread(store, null, { thread, by: { name: who.name, generation: account.generation }, act: "end", clock });
+    const done = await closeFlexibleThread(store, null, { thread, by: { name: who.name, generation: account.generation }, act: "end", clock, prove: proveNow });
     if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
-    // Its agent stopped here too, by its recorded process identities only (the console that holds it closes the rest).
-    if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", owner: who.name, clock });
+    // Its agent stopped here too, by its own recorded launches' process identities only (the console that holds it
+    // closes the rest); no other thread is touched.
+    if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
     return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
   }
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
-  const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock() });
+  const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });
   return removed.ok ? succeed(write, json, command, { thread }, () => ["Removed its working copy. Its record stays."]) : fail(write, json, command, removed.reason, removed.message, EXIT.refused);
 }

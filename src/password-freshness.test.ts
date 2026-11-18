@@ -389,7 +389,7 @@ describe("where freshness may be honoured", () => {
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
       "src/nightly-github.ts": 1,
       // config show|clear flexible-sign-in: your own sign-in's status, and its removal, each a person proved now.
-      "src/operate.ts": 69, "src/pull-request-flow.ts": 1,
+      "src/operate.ts": 70, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -548,6 +548,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#storageCommand@157>operator@1": 1,
     // `config set task-sizing`: an instance operator proved and the setting written in one transaction.
     "src/operate.ts#taskSizingConfig@257>saved:store.transact(_)@2": 1,
+    "src/operate.ts#threadCommand@264>proveNow@3": 1,
     // `config set flexible`: an instance operator proved as a person and the setting written in one transaction.
     "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
     // `config show|clear flexible-sign-in`: your own sign-in read, or removed, by you proved as a person in that transaction.

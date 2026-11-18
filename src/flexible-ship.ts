@@ -202,7 +202,10 @@ function ownerStanding(store: Store, thread: FlexibleThreadRow, by: string): { g
  * - `local-owner`: the laptop road (D1): the local owner's own act `ship-thread` in their live session, on an install
  *   where nobody has a password (flexible-laptop.ts laptopShipProblem, read at every step that acts on it).
  */
-export type ShipProof = { kind: "password-now"; password: string } | { kind: "local-owner" };
+export type ShipProof = { kind: "password-now"; password: string }
+  /** `held`: the person's own live session, compared whole with the one admitted (its lifetime included); asked before
+   * the lock and again inside the consent's transaction (Codex round 1 of the build, finding 2). */
+  | { kind: "local-owner"; held: () => boolean };
 type ShipProved = { method: "password-now" } | { method: "local-owner"; localGeneration: number; accountGeneration: number };
 
 /** The press's proof, now (before the lock, and again inside the consent's own transaction); a machine never ships. */
@@ -216,7 +219,8 @@ function shipProofNow(store: Store, by: string, proof: ShipProof, repo: string):
     if (proved.method !== "password-now") return refuse("proof-refused");
     return { method: "password-now" };
   }
-  if (proof?.kind !== "local-owner") return refuse("proof-refused");
+  if (proof?.kind !== "local-owner" || typeof proof.held !== "function") return refuse("proof-refused");
+  if (!proof.held()) return refuse("proof-refused");
   const local = localActNow(store, "ship-thread");
   if (local === null || local.account !== by) return refuse("proof-refused");
   const problem = laptopShipProblem(store, { owner: by, localGeneration: local.localGeneration });
@@ -566,6 +570,9 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
     if (check === null) return { ok: true, state: "waiting", why: "the check hasn't passed on this exact commit" };
     const receipt = assignmentOf(store, input.taskId, clock(), { principal: "operator", repos: [found.repo] }, input.root)?.receipt ?? null;
     if (receipt === null || receipt.runId !== newest.id || (receipt.head !== null && receipt.head !== head)) return { ok: true, state: "waiting", why: "its result isn't ready to complete yet" };
+    // A lapsed authority ends the Ship for good: that cancellation is written and COMMITTED by the transaction below
+    // (it returns; only the other refusals throw, to roll back what they began), and is said only after the commit.
+    let cancelled: FlexibleShipRefusal | null = null;
     try {
       store.transact(() => {
         // Interactive agent threads still on, read in the transaction that completes (the reads above were async).
@@ -573,7 +580,7 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
         const again = rowOfTask(store, input.taskId);
         if (again === null || again.state !== "armed") throw new ShipStop(refuse("wrong-state"));
         const problem = authorityProblem(store, again);
-        if (problem !== null) { cancelArmed(store, again, problem, clock()); throw new ShipStop(refuse("cancelled", problem)); }
+        if (problem !== null) { cancelArmed(store, again, problem, clock()); cancelled = refuse("cancelled", problem); return; }
         const who = verifyApproverStanding(store, again.approvedBy, again.approvedGeneration, [again.repo]);
         if (!who.ok) throw new ShipStop(refuse("not-an-approver"));
         const opened = completeAndOpenPullRequest(store, { taskId: input.taskId, digest: receipt.digest, runId: newest.id, who: who.who, root: input.root }, clock());
@@ -590,6 +597,7 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
       if (error instanceof ShipStop) return error.refusal.reason === "cancelled" ? error.refusal : { ok: true, state: "waiting", why: error.refusal.message };
       throw error;
     }
+    if (cancelled !== null) return cancelled;
     return { ok: true, state: "completed" };
   }
   // Completed: merge exactly the checked head, through its pull request to the signed destination.

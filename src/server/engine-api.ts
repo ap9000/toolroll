@@ -552,7 +552,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (localActNow(store, "ship-thread") === null) return acted(response, 403, "refused", "Shipping from here needs your own act at this computer. Nothing was shipped.");
     const held = sessionHeld(who, flexible, id);
     if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can ship a thread's work.");
-    const shipped = await shipFlexibleThread(store, flexible, { thread: id, by, proof: { kind: "local-owner" }, shownDigest: body.get("digest") ?? "", shownKey: key, now: new Date() });
+    // The session goes with the proof: asked again inside the consent's own transaction, after the lock, the agent's
+    // stop and the reads of the thread's branch (a session that ended meanwhile consents to nothing).
+    const shipped = await shipFlexibleThread(store, flexible, { thread: id, by, proof: { kind: "local-owner", held }, shownDigest: body.get("digest") ?? "", shownKey: key, now: new Date() });
     if (!shipped.ok) return acted(response, 409, "refused", shipped.message);
     const commit = latestFlexibleShip(store, id)?.candidate.slice(0, 12) ?? "";
     return acted(response, 200, "done", `Shipping: checks run on commit ${commit}; Toolroll merges it once they pass.`);
