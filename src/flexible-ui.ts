@@ -10,6 +10,8 @@ import { acts, btn, disclose, formRow, note, notice, select, settingsSection } f
 import { kitSectionForm } from "./settings-kit.js";
 
 const ACTION = "/settings/project/flexible";
+/** What "Flexible" means, said once where it is chosen (threads-everyday S9). */
+export const FLEXIBLE_MEANS = "Flexible: people here can start interactive agent threads right away, without a plan approved first. A thread's changes reach the project only when you Ship them and the project's checks pass.";
 const termsList = (terms: FlexibleTerms): Html => html`<ul class="k-note">${flexibleTermsWords(terms).map(line => html`<li>${line}</li>`)}</ul>`;
 
 /** The ceremony: the terms in full, then the password. */
@@ -36,7 +38,7 @@ export function flexibleSettingsHtml(view: FlexibleSettingsView | undefined): Ht
   const standing = view.standing;
   const changer = view.canChange ? null : note("An approver for this project can change this.");
   if (standing.state === "secure") {
-    return settingsSection({ id: "flexible", title: "How work starts", state: " · Secure", lead: "Work is planned and approved before it starts.",
+    return settingsSection({ id: "flexible", title: "How work starts", state: " · Secure", lead: `Work is planned and approved before it starts. ${FLEXIBLE_MEANS}`,
       body: changer ?? disclose("Turn on Flexible", enableForm(view, "Turn on Flexible")) });
   }
   if (standing.state === "unreadable") {
@@ -48,6 +50,6 @@ export function flexibleSettingsHtml(view: FlexibleSettingsView | undefined): Ht
       body: changer ?? joinHtml([disclose("Turn on again", enableForm(view, "Turn on again")), lowerAndOff(view, null)]) });
   }
   return settingsSection({ id: "flexible", title: "How work starts", state: ` · Flexible, up to ${FLEXIBLE_LEVEL_WORDS[standing.terms.max]}`,
-    lead: `Agent threads start at once, at ${FLEXIBLE_LEVEL_WORDS[standing.terms.default]}. Turned on by ${standing.signedBy}.`,
+    lead: `${FLEXIBLE_MEANS} Threads start at ${FLEXIBLE_LEVEL_WORDS[standing.terms.default]}. Turned on by ${standing.signedBy}.`,
     body: joinHtml([disclose("Terms", termsList(standing.terms)), changer ?? lowerAndOff(view, standing.terms)]) });
 }

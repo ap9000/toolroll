@@ -419,6 +419,43 @@ function Headline({ working, needsYou, shownLive, local }: { working: number; ne
   </p>;
 }
 
+/** One of the viewer's own threads, as GET /agents/live/threads lists it (the engine contract's liveThreads row). */
+export type ThreadRow = { id: string; title: string; project: string | null; live: boolean; waiting: number; turn: string | null; ended: boolean; stopPending: boolean; ship: string | null };
+
+/** A thread's one word and its tone, as the terminal places it (thread.rs thread_place): a question waiting, ended,
+ * working, shipping, else ready for you. */
+export function threadWord(row: ThreadRow): { word: string; tone: ChipTone } {
+  if (row.waiting > 0) return { word: "Question", tone: "needs" };
+  if (row.ended) return { word: "Ended", tone: "neutral" };
+  if (row.turn === "admitted" || row.turn === "running") return { word: "Working", tone: "info" };
+  if (row.ship !== null && ["approved", "imported", "armed", "completed", "merging"].includes(row.ship)) return { word: "Shipping", tone: "info" };
+  if (row.ship === "merged") return { word: "Shipped", tone: "success" };
+  return { word: "Ready", tone: "needs" };
+}
+
+/** The viewer's own interactive agent threads, read-only (the owner's D6): where each stands, and where to go on with it. */
+function Threads({ refreshKey }: { refreshKey: number }) {
+  const [rows, setRows] = useState<ThreadRow[]>([]);
+  useEffect(() => {
+    let current = true;
+    fetch("/agents/live/threads", { credentials: "same-origin" }).then(response => response.ok ? response.json() : null)
+      .then((answer: { threads?: ThreadRow[] } | null) => { if (current) setRows(Array.isArray(answer?.threads) ? answer.threads : []); }).catch(() => {});
+    return () => { current = false; };
+  }, [refreshKey]);
+  if (rows.length === 0) return null;
+  return <section aria-label="Your threads" className="flex flex-col gap-2 border-t border-border pt-3" data-live-threads>
+    <h2 className="text-label font-semibold text-foreground">Your threads</h2>
+    <ul className="flex flex-col gap-1">
+      {rows.map(row => { const { word, tone } = threadWord(row); return <li key={row.id} className="flex min-w-0 items-center gap-2 text-body" data-live-thread>
+        <span className="min-w-0 truncate text-foreground">{row.title}</span>
+        {row.project !== null && <span className="shrink-0 text-muted-foreground">{row.project}</span>}
+        <span className="ml-auto shrink-0"><Chip tone={tone}>{word}</Chip></span>
+      </li>; })}
+    </ul>
+    <p className="text-caption text-muted-foreground">Continue in the terminal: run <code>toolroll</code>, then pick the thread.</p>
+  </section>;
+}
+
 export function LiveGrid() {
   const [tiles, setTiles] = useState<Tile[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -608,6 +645,7 @@ export function LiveGrid() {
     {openRunId !== null && <FullScreen key={openRunId} runId={openRunId} tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY}
       streamed={streamedIds.has(openRunId)} now={now} lost={lost} onClose={closeRun} showLive={() => showLive(openRunId)} />}
     {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} lost={lost} onClose={closeLead} filed={shown.filter(tile => tile.filedBy?.thread === openLeadId)} />}
+    <Threads refreshKey={tiles.length + leads.length} />
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;
