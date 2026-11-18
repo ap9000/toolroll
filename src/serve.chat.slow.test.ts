@@ -1259,7 +1259,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(data.view?.kind).toBe('work');
     const tasksView = (data.view as import('./browser-workspace.js').BrowserWorkView).list;
     expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual(tasksView.tabs.map(() => repoDir));
-    expect(tasksView.tabs.map(tab => tab.label)).toEqual(['All', 'Needs you', 'Ready', 'Running', 'Queued', 'Finished']);
+    expect(tasksView.tabs.map(tab => tab.label)).toEqual(['All', 'Needs you', 'Ready', 'Running', 'Queued', 'Complete']);
     expect(tasksView.tabs.find(tab => tab.active)?.label).toBe('All');
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(['a', 'b']);
     expect(tasksView.rows.every(row => row.href.startsWith('/t/'))).toBe(true);
@@ -1384,7 +1384,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain('data-poll="0"');
     const csrf = csrfFrom(html);
     const safeFragment = await (await fetch(url("/chat/task-status?task=a"), { headers: { cookie } })).text();
-    expect(safeFragment).toContain('data-primary-action>Approve plan</a>');
+    expect(safeFragment).toContain('data-primary-action>Review plan</a>');
     expect(safeFragment).not.toContain('type="password"');
 
     const nonce = /name="nonce" value="([0-9a-f]+)"/.exec(html)?.[1];
@@ -2094,7 +2094,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(lens["fragments"]).toBeUndefined();
     const lensFragments = (await status(cookie, "?task=a&version=stale"))["fragments"] as Record<string, string | null>;
     expect(lensFragments["live"]).toContain('id="task-chat-live"');
-    expect(lensFragments["live"]).toContain('data-primary-action>Approve plan</a>');
+    expect(lensFragments["live"]).toContain('data-primary-action>Review plan</a>');
     expect(lensFragments["live"]).not.toContain('type="password"');
     expect(lensFragments["live"]).not.toContain('name="nonce"');
     // The task keeps its own thread (v77): the lead conversation's message

@@ -242,7 +242,7 @@ async function longRequestJourney() {
       check(`${name}: revision navigation stays rooted`, revisionLocationIs(page.url(), task, childId));
       await goto(page, `/t/${task}?version=${childId}`);
       const child = fixture.store.getScope(childId);
-      check(`${name} ${mode}: exactly one unapproved child retains every inherited byte`, fixture.store.revisionsFromRun(runId).length === before + 1 && child !== null && child.approvedAt === null && child.approvedDigest === null && child.goal === `${original.goal} — apply the ${batch.every(one => one.path !== null) ? 'annotations' : 'feedback'} recorded on build #${runId}; the revision brief carries the exact batch` && child.outOfScope === original.outOfScope);
+      check(`${name} ${mode}: exactly one unapproved child retains every inherited byte`, fixture.store.revisionsFromRun(runId).length === before + 1 && child !== null && child.approvedAt === null && child.approvedDigest === null && child.goal === `${original.goal} — apply the ${batch.length === 1 ? 'note' : `${batch.length} notes`} sent back on build #${runId}` && child.outOfScope === original.outOfScope);
       if (revisionNames) {
         const expectedTitle = 'Fix the payout rounding drift — revision';
         const title = await page.locator('h1').textContent();

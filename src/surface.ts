@@ -319,7 +319,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "provider", takesValue: true, meaning: "pin which provider plans THIS task (plan phase only)" },
       { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" },
       // Local-owner slice 2: the terminal UI's plan request, for the laptop's local owner only (no password, no pins).
-      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" }],
+      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" },
+      // Plan again (the stranger test, round 10): the same act, after a planning incident, bound to the incident read.
+      { name: "incident", takesValue: true, meaning: "the terminal's local owner: plan again after this planning incident (the plan failed its checks)" }],
     notableReasons: ["unknown-task"] },
   { invocation: "task hold", synopsis: "park a task with a reason", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
@@ -474,6 +476,11 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("mode revoke", "revoke a repository's mode — one click, every act it covered falls back to its own ceremony"),
   operator("config set", "set phase or spend configuration"),
   operator("config clear", "clear phase or spend configuration"),
+  operatorRead("thread list", "your own interactive agent threads: each one's title, project and where it stands"),
+  operatorRead("thread show", "one of your threads: its latest turn, its end and its Ship, in Toolroll's words"),
+  operator("thread end", "end one of your threads for good (its agent stops; its work can still be shipped for a week)"),
+  operator("thread remove", "remove one of your threads' working copy (refused while its agent may run or a Ship is open)"),
+  operator("thread ship", "ship one of your threads' committed work: shows its terms, asks, then takes your password typed now"),
   operator("setup clear", "clear installation setup"),
   operator("verify set", "approve the one shell command the plane re-runs after every future commit (--quick \"<cmd>\" approves the fast check Quick runs); --self-heal binds one approved-setup replay when a required project executable is missing"),
   operator("verify clear", "revoke a repository's approved verification command; --level quick revokes only the quick command"),
@@ -540,6 +547,8 @@ const REMOTE_NO: readonly string[] = [
   // The code map's switch, holdout and report: this machine's sign-in, never a token's (code-map-acts.ts refuses one in
   // the write too).
   "map on", "map off", "map holdout end", "map report",
+  // Your own interactive agent threads: the console on this machine holds them; never a token's.
+  "thread list", "thread show", "thread end", "thread remove", "thread ship",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.

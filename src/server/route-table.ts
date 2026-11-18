@@ -170,6 +170,16 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // local owner's act is a person's proof). engine-api.ts threadStart checks this exact act inside its proof; refused while
   // interactive agent threads are off.
   "agents.live.thread.start": "start-thread",
+  // Reply to one's own thread: a new turn under the terms the thread already runs on (its handler proves the act).
+  "agents.live.thread.turn": "reply-thread",
+  // Stopping one's own thread's agent, and ending the thread: each only narrows (the handler checks the exact act).
+  "agents.live.thread.stop": "stop-thread",
+  "agents.live.thread.end": "end-thread",
+  // Ship with one key on a password-free laptop (the handler checks this exact act and the laptop predicate); cancelling
+  // a Ship only narrows; sending back is a reply (its handler proves the reply's act).
+  "agents.live.thread.ship": "ship-thread",
+  "agents.live.thread.ship-cancel": "cancel-ship",
+  "agents.live.thread.ship-send-back": "reply-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",
@@ -226,6 +236,13 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // Interactive agent threads (beta): an installation setting the laptop's owner may turn on or off (its handler proves
   // the step-up and this exact act inside its write).
   "settings.flexible": "flexible-switch",
+  // Threads' setup from the workbench's `w` link (threads-everyday S6): each handler takes a password typed into its form
+  // for saving, checking and turning terms on (scope.ts LOCAL_PASSWORD_ACTS); removing your own sign-in, lowering and
+  // turning terms off only narrow.
+  "settings.flexible-sign-in": "flexible-sign-in-save",
+  "settings.flexible-sign-in-check": "flexible-sign-in-check",
+  "settings.flexible-sign-in-clear": "flexible-sign-in-clear",
+  "settings.project-flexible": "project-flexible",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -449,6 +466,12 @@ get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$",
 get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped", callers: ["cookie"], ...free });
 post("pages", "agents.live.thread.answer", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/answer$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/answer` });
 post("pages", "agents.live.thread.start", "/agents/live/thread", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver starts threads.") });
+post("pages", "agents.live.thread.turn", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/turn$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver replies to their own threads."), sample: `/agents/live/thread/${"a".repeat(32)}/turn` });
+post("pages", "agents.live.thread.stop", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/stop$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/stop` });
+post("pages", "agents.live.thread.end", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/end$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/end` });
+post("pages", "agents.live.thread.ship", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver ships their own thread's work."), sample: `/agents/live/thread/${"a".repeat(32)}/ship` });
+post("pages", "agents.live.thread.ship-cancel", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/cancel$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/ship/cancel` });
+post("pages", "agents.live.thread.ship-send-back", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/send-back$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver sends back their own thread's Ship."), sample: `/agents/live/thread/${"a".repeat(32)}/ship/send-back` });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to

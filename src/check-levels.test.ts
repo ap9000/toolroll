@@ -246,14 +246,14 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
   });
 });
 
-describe("c2: Off reads Ready for review and says no check ran; a Quick pass reads Ready with Quick checks passed", () => {
+describe("c2: Off reads Ready and says no check ran; a Quick pass reads Ready with Quick checks passed", () => {
   test("the shared status function", () => {
     const off = taskStatusOf({ stage: "finished", checks: { status: "not-run", exitCode: null, head: HEAD, level: "off" }, links: { runChecks: "/r/1?tab=checks#follow-ups" } });
-    expect(off.headline).toBe("Ready for review");
-    expect(off.sentence).toBe("Checked at release. Review the change, then accept it.");
-    expect(off.details[0]).toMatchObject({ key: "checks", text: "Checked at release", mark: "none", action: { label: "Run checks" } });
+    expect(off.headline).toBe("Ready");
+    expect(off.sentence).toBe("Checks deferred to release. Review the change, then accept it.");
+    expect(off.details[0]).toMatchObject({ key: "checks", text: "Checks deferred to release", mark: "none", action: { label: "Run checks" } });
     const quick = taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "quick" } });
-    expect(quick.headline).toBe("Ready for review");
+    expect(quick.headline).toBe("Ready");
     expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then accept it.`);
     expect(quick.details[0]).toMatchObject({ text: `Quick checks passed on ${HEAD.slice(0, 7)}`, mark: "ok" });
     // A full pass keeps its words; a failed quick check is Failed, in red.
@@ -280,11 +280,11 @@ describe("c3: Run checks and Add tests work on any result", () => {
     expect(done).toMatchObject({ state: "passed", exitCode: 0 });
     expect(await runFollowUpCheck(store, root, done!.request, { now: () => NOW })).toMatchObject({ state: "passed" });
     expect(git(REPO, "worktree", "list").split("\n")).toHaveLength(1);
-    expect(statusOf("checks-off")).toMatchObject({ headline: "Ready for review" });
+    expect(statusOf("checks-off")).toMatchObject({ headline: "Ready" });
     expect(statusOf("checks-off").details.find(one => one.key === "checks")!.text).toBe(`Passed on ${HEAD.slice(0, 7)}`);
-    expect((await taskView("checks-off")).status!.status.headline).toBe("Ready for review");
+    expect((await taskView("checks-off")).status!.status.headline).toBe("Ready");
     const rows = (workspaceOf(await page("/")).view as Extract<BrowserWorkspace["view"], { kind: "work" }>).list.rows;
-    expect(rows.find(row => row.id === "checks-off")!.status.label).toBe("Ready for review");
+    expect(rows.find(row => row.id === "checks-off")!.status.label).toBe("Ready");
   });
 
   test("Run checks: a quick pass upgraded by full checks, and a failure stays visible", async () => {
@@ -302,7 +302,7 @@ describe("c3: Run checks and Add tests work on any result", () => {
     const full = requestFollowUpChecks(store, { runId: run, level: "full", actor: "sam" }, NOW);
     if (!full.ok) throw new Error(full.message);
     expect(await runFollowUpCheck(store, root, full.request, { now: () => NOW })).toMatchObject({ state: "passed" });
-    expect(statusOf("quick-pass")).toMatchObject({ headline: "Ready for review" });
+    expect(statusOf("quick-pass")).toMatchObject({ headline: "Ready" });
     // A later quick pass never replaces a full one.
     expect(withFollowUps({ status: "passed", level: "full", exitCode: 0, head: HEAD }, [{ level: "quick", state: "passed", head: HEAD, exitCode: 0 }]).level).toBe("full");
     store.setVerifyCommand({ repo: quickVerifyKey(REPO), command: "test -f package.json", timeoutMs: 60_000, approvedBy: "sam" }, NOW);
@@ -487,15 +487,15 @@ describe("checks Off are checked at release", () => {
   const commit = (file: string) => { writeFileSync(join(REPO, file), `${file}\n`); git(REPO, "add", file); git(REPO, "commit", "-q", "-m", file); return git(REPO, "rev-parse", "HEAD"); };
   const read = (id: string) => assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, root)!;
 
-  test("Off reads Ready and Checked at release until a passing full release check contains its commit; nothing stored changes", async () => {
+  test("Off reads Ready and Checks deferred to release until a passing full release check contains its commit; nothing stored changes", async () => {
     const offHead = commit("off-change.txt");
     built("off-before-release", "Reword the delivery banner", ago(20), "off", 0, "off", offHead);
     const before = read("off-before-release");
     const proofBefore = store.proofVerdictFor(runs["off-before-release"]!);
     const status = () => assignmentTaskStatusOf(read("off-before-release"));
     expect(before.readiness).toEqual({ verdict: "short", checksOff: true, blockers: [] });
-    expect(requirementWordOf(before.receipt!.proof!.matrix[0]!, null, "pending")).toBe("Checked at release");
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then accept it." });
+    expect(requirementWordOf(before.receipt!.proof!.matrix[0]!, null, "pending")).toBe("Checks deferred to release");
+    expect(status()).toMatchObject({ headline: "Ready", sentence: "Checks deferred to release. Review the change, then accept it." });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "0 of 1 met · 1 at release" });
 
     // Not covered: a release check on an older commit, a failed one, and a quick one.
@@ -504,7 +504,7 @@ describe("checks Off are checked at release", () => {
     built("release-failed", "Release with a failing check", ago(17), "full", 1, undefined, later, true);
     built("release-quick", "Release with quick checks", ago(16), "quick", 0, undefined, later, true);
     expect(releaseCoverageOf(store, root, REPO, offHead)).toBeNull();
-    expect(status().headline).toBe("Ready for review");
+    expect(status().headline).toBe("Ready");
 
     // Covered: a passing full release check on a later commit that contains it.
     built("release-full", "Release the next version", ago(15), "full", 0, undefined, later, true);
@@ -514,17 +514,17 @@ describe("checks Off are checked at release", () => {
     expect(releaseCoverageOf(store, undefined, REPO, offHead)).toBeNull();
     const after = read("off-before-release");
     expect(after.receipt!.checks.release).toEqual({ run: runs["release-full"], head: later });
-    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then accept it.` });
-    expect(status().details.find(one => one.key === "checks")).toMatchObject({ text: `Passed at release on ${later.slice(0, 7)}`, mark: "ok" });
+    expect(status()).toMatchObject({ headline: "Ready", sentence: `Release checks passed on ${later.slice(0, 7)}. Review the change, then accept it.` });
+    expect(status().details.find(one => one.key === "checks")).toMatchObject({ text: `Release checks passed on ${later.slice(0, 7)}`, mark: "ok" });
     expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "1 of 1 met", mark: "ok" });
     // Derived at read time: the sealed receipt digest and the stored proof are unchanged.
     expect(after.receipt!.digest).toBe(before.receipt!.digest);
     expect(store.proofVerdictFor(runs["off-before-release"]!)).toEqual(proofBefore);
     // The Tasks list says the same.
     const rows = (workspaceOf(await page("/")).view as Extract<BrowserWorkspace["view"], { kind: "work" }>).list.rows;
-    expect(rows.find(row => row.id === "off-before-release")!.status).toMatchObject({ label: "Ready for review" });
+    expect(rows.find(row => row.id === "off-before-release")!.status).toMatchObject({ label: "Ready" });
     const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { root }).items.find(one => one.rootId === "off-before-release")!;
-    expect(listed.status).toMatchObject({ label: "Ready for review", detail: status().sentence });
+    expect(listed.status).toMatchObject({ label: "Ready", detail: status().sentence });
 
     // task complete says nothing about checks that were deliberately Off.
     const lines: string[] = [];

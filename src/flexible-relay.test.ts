@@ -367,7 +367,8 @@ describe("refusals: nothing is forwarded", () => {
     expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
     const keyed = admitAndBegin({ billing: "api-key" });
     expect((await call()).status).toBe(403);
-    expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    // That refusal (billing-mismatch) ends the turn in the relay's own words: it can't go on.
+    expect(flexibleTurn(world.store, keyed)).toMatchObject({ status: "interrupted" });
     admitAndBegin();
     // An active record whose generation has nothing at its own address (another generation's secret is never read for
     // it), or no sign-in at all: nothing is sent.
@@ -375,6 +376,8 @@ describe("refusals: nothing is forwarded", () => {
     world.store.handle.prepare(`INSERT INTO flexible_sign_in (person, account_generation, generation, kind, state, proof, staged_at, activated_at) VALUES ('alex', ?, ?, 'setup-token', 'active', 'password-now', 't', 't')`)
       .run(world.store.accountOf("alex")!.generation, randomBytes(16).toString("hex"));
     expect((await call()).status).toBe(403);
+    // Each of those refusals ends its turn (it can't go on); the next call goes in a new one.
+    admitAndBegin();
     removeStandInSignIn(world.store, "alex");
     expect((await call()).status).toBe(403);
     expect(seen).toHaveLength(0);

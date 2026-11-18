@@ -209,6 +209,12 @@ pub struct ThreadTurn {
     pub status: String,
     pub cost_usd: Option<f64>,
     pub cost_basis: Option<String>,
+    /// Toolroll's own words for how the turn ended when it didn't simply finish (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_words: Option<String>,
+    /// `subscription` (the person's plan) or `api-key` (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<String>,
 }
 
 /// Attach preparation only; facts never confer launch, viewing or control authority.
@@ -274,6 +280,29 @@ pub struct ThreadFacts {
     pub runtime: Option<ThreadRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<ThreadTerminal>,
+    /// Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<ThreadEnded>,
+    /// Its latest Ship, in Toolroll's words (absent before its first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ship: Option<ThreadShip>,
+}
+
+/// A thread's latest Ship, as its facts say it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadShip {
+    pub seq: i64,
+    pub state: String,
+    pub words: String,
+}
+
+/// How a thread ended (End is final).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadEnded {
+    pub words: String,
+    pub stop_pending: bool,
 }
 
 /// One of the person's threads, as the work list shows it.
@@ -287,6 +316,24 @@ pub struct ThreadRow {
     pub live: bool,
     pub waiting: i64,
     pub cost_usd: Option<f64>,
+    /// Its latest turn's state (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub turn: Option<String>,
+    /// Ended (End is final; an older engine leaves it out: false).
+    #[serde(default)]
+    pub ended: bool,
+    /// Its agent's stop is still being verified.
+    #[serde(default)]
+    pub stop_pending: bool,
+    /// Its latest Ship's state (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship: Option<String>,
+    /// Its latest turn's number (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub turn_seq: Option<i64>,
+    /// Its latest Ship's number (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship_seq: Option<i64>,
 }
 
 /// `GET /agents/live/threads`: the person's own Flexible threads, and whether interactive agent threads are on (`on`;
@@ -577,6 +624,15 @@ pub struct StepCards {
     pub held: Option<TaskHold>,
     /// What Retry posts to `/t/<task>/requeue` (null unless a failed task can be retried as it stands).
     pub retry: Option<RetryPins>,
+    /// A plan that stopped on this version and waits for Plan again (null when none did).
+    #[serde(default)]
+    pub plan_stopped: Option<PlanStopped>,
+    /// What asking for a plan posts to `/t/<task>/plan` (null when a plan can't be asked for).
+    #[serde(default)]
+    pub plan: Option<PlanAsk>,
+    /// A plan asked for that waits to start (its planner starts on its own): Stop retrying applies to it.
+    #[serde(default)]
+    pub plan_queued: bool,
     /// Who approved the task's scope (null while no approval stands).
     pub approval: Option<Approval>,
     pub room: String,
@@ -601,12 +657,15 @@ pub struct Failure {
     pub agent_said: Option<Vec<String>>,
 }
 
-/// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last build.
+/// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last attempt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StepWaiting {
     pub retry_at: Option<String>,
     pub last_failure: Option<String>,
+    /// "build" or "plan": what failed, and what is tried again.
+    #[serde(default = "build_attempt")]
+    pub attempt: String,
     pub agent_said: Option<Vec<String>>,
 }
 
@@ -616,8 +675,34 @@ impl StepWaiting {
         Waiting {
             retry_at: self.retry_at.clone(),
             last_failure: self.last_failure.clone(),
+            attempt: self.attempt.clone(),
         }
     }
+}
+
+fn build_attempt() -> String {
+    "build".into()
+}
+
+/// A plan that stopped and waits for Plan again: its planning incident, what stopped it, why the plan was refused and
+/// what the agent said (cleaned by the engine), and what Plan again binds to (None: it can't be asked as it stands).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlanStopped {
+    pub incident: i64,
+    /// "plan", "question" or "stalled".
+    pub kind: String,
+    pub line: String,
+    pub problems: Option<Vec<String>>,
+    pub agent_said: Option<Vec<String>>,
+    pub again: Option<PlanAsk>,
+}
+
+/// The planning source a plan request (or Plan again) binds to: `/t/<task>/plan` `source`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlanAsk {
+    pub source: String,
 }
 
 /// A person's hold on a task (the operator's own): its id (what Resume names), reason and the last failure.
@@ -635,6 +720,9 @@ pub struct TaskHold {
 pub struct Waiting {
     pub retry_at: Option<String>,
     pub last_failure: Option<String>,
+    /// "build" or "plan": what failed, and what is tried again.
+    #[serde(default = "build_attempt")]
+    pub attempt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -712,6 +800,9 @@ pub struct FileHunks {
     pub old_path: Option<String>,
     pub meta: Vec<String>,
     pub hunks: Vec<Hunk>,
+    /// The file's length at the result when the patch itself says it (an added file; a deleted one is 0).
+    #[serde(default)]
+    pub line_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

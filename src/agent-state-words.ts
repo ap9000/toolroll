@@ -3,7 +3,7 @@
  * agent-state.ts derives the states; the console's pages and the sidebar say them with these.
  */
 /** The display states, strongest first: a roll-up takes the first one any member has. */
-export const DISPLAY_STATES = ["needs-you", "failed", "stuck", "paused", "working", "waiting", "done", "idle"] as const;
+export const DISPLAY_STATES = ["needs-you", "failed", "stuck", "paused", "working", "done", "waiting", "idle"] as const;
 export type DisplayState = (typeof DISPLAY_STATES)[number];
 
 export const STATE_WORDS: Record<DisplayState, string> = {

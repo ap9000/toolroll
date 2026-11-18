@@ -23,7 +23,7 @@ import { buildReviewOf } from "./review-switch.js";
 import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
 import { routeChangeOf } from "./route-change.js";
 import { wasInterrupted } from "./run-ending.js";
-import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
+import { BUILT_IN, PLANNER_INCIDENT_KINDS, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 import { shortWhen, viewerZone } from "./when-html.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
@@ -31,7 +31,7 @@ export const DEFAULT_MAX_OPEN_DECISIONS = 5;
 export type TaskReadinessBlocker =
   | { code: "unknown-task"; message: string }
   | { code: "state"; state: TaskState; message: string }
-  | { code: "hold"; ownerKind: string; until: string | null; message: string }
+  | { code: "hold"; ownerKind: string; until: string | null; message: string; ownerId?: string }
   | { code: "dependency"; blockerId: string; blockerState: TaskState; message: string }
   | { code: "archived"; message: string };
 
@@ -70,8 +70,15 @@ export type DispatchDiagnosisCode =
   | "running"
   | "vanished-run"
   | "retry-scheduled"
+  /** A planner's own backoff: the plan is tried again (stranger test round 10). */
+  | "plan-retry"
   | "waiting-decision"
   | "waiting-incident"
+  /** A planning incident (the plan or the planner's question failed its checks, or planning failed again and again):
+   * Plan again is the way on, never Retry. */
+  | "plan-stopped"
+  /** Planning failed again and again with no valid plan (plan-attempts-exhausted): Plan again too. */
+  | "planning-stopped"
   | "held"
   | "storage-blocked"
   /** v52: an operator stopped one exact attempt; only resuming it lifts the pause. */
@@ -157,7 +164,7 @@ export function taskReadinessBlocker(store: Store, taskRef: number, now: Date): 
     .prepare(
       // A person's hold (or a question, an incident, a stop) is said before a backoff: the backoff ends on its own, the
       // other doesn't, so "Retry scheduled" over a task a person stopped would say what won't happen.
-      `SELECT owner_kind, until, reason FROM hold
+      `SELECT owner_kind, owner_id, until, reason FROM hold
        WHERE task_ref = ? AND (until IS NULL OR until > ?)
        ORDER BY owner_kind = 'backoff', held_at, id LIMIT 1`,
     )
@@ -166,6 +173,7 @@ export function taskReadinessBlocker(store: Store, taskRef: number, now: Date): 
     return {
       code: "hold",
       ownerKind: String(hold["owner_kind"]),
+      ownerId: String(hold["owner_id"] ?? ""),
       until: hold["until"] === null || hold["until"] === undefined ? null : String(hold["until"]),
       message: `held: ${String(hold["reason"])}`,
     };
@@ -393,6 +401,10 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       const when = local.until === null ? "" : ` It tries again on its own ${retryWhenWords(local.until, now)}.`;
       return answer("storage-blocked", "waiting", "Needs macOS permission", `${local.message.slice(`held: ${STORAGE_HOLD_PREFIX}`.length)}${when}`, { action: "unhold", nextAt: local.until });
     }
+    // A planner's own backoff (claim.ts sealPlanFailure, owner plan:<ref>): the plan is tried again, never a build.
+    if (local.ownerKind === "backoff" && (local.ownerId ?? "").startsWith("plan:")) {
+      return answer("plan-retry", "retrying", "Retry scheduled", local.until === null ? "The plan is tried again soon." : `The plan is tried again ${retryWhenWords(local.until, now)}.`, { nextAt: local.until });
+    }
     if (local.ownerKind === "backoff") {
       // Run 2085: an attempt that stopped before its handoff says so plainly.
       const last = store.runsFor(ref.id).find(one => one.role === "builder" && one.finishedAt !== null);
@@ -402,6 +414,9 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       return answer("retry-scheduled", "retrying", "Retry scheduled", local.until === null ? "The failed attempt is backing off before retrying." : `It tries again ${retryWhenWords(local.until, now)}.`, { nextAt: local.until });
     }
     if (local.ownerKind === "decision") return answer("waiting-decision", "waiting", "Waiting on your answer", "An agent parked a question; answering it resumes the task.", { action: "answer-decision" });
+    const planning = local.ownerKind === "incident" ? plannerIncident(store, local.ownerId) : null;
+    if (planning === "stalled") return answer("planning-stopped", "waiting", "Planning stopped", "Planning stopped after repeated failures. Plan again, or edit the task.");
+    if (planning === "invalid") return answer("plan-stopped", "waiting", "Plan didn't pass", "The plan didn't pass its checks. Plan again, or edit the task.");
     if (local.ownerKind === "incident") return answer("waiting-incident", "waiting", "Needs a retry", "The last attempts failed the same way. Retry, or change the plan.", { action: "retry-task" });
     if (local.ownerKind === "stop") return answer("stopped", "waiting", "Paused", `${local.message.replace(/^held:\s*/, "")}. The attempt's work is preserved; resuming that exact attempt lifts this pause.`, { action: "resume-run" });
     return answer("held", "waiting", "On hold", local.message.replace(/^held:\s*/, ""), { action: local.ownerKind === "operator" ? "unhold" : "inspect-hold" });
@@ -595,4 +610,13 @@ export function resetWhenWords(at: string, now: Date, zone: string = viewerZone(
   if (words.startsWith("Tomorrow ")) return `tomorrow at ${words.slice("Tomorrow ".length)}`;
   if (words.startsWith("Yesterday ")) return "now";
   return `on ${words}`;
+}
+
+/** An incident hold's planning incident, by kind: "stalled" (planning failed again and again), "invalid" (the plan or
+ * the planner's question failed its checks), or null (no planning incident). */
+function plannerIncident(store: Store, ownerId: string | undefined): "stalled" | "invalid" | null {
+  if (ownerId === undefined || !/^[1-9][0-9]*$/.test(ownerId)) return null;
+  const row = store.handle.prepare("SELECT incident.kind, run.role FROM incident JOIN run ON run.id = incident.run WHERE incident.id = ?").get(Number(ownerId));
+  if (row === undefined || row["role"] !== "planner" || !PLANNER_INCIDENT_KINDS.has(String(row["kind"]))) return null;
+  return row["kind"] === "plan-attempts-exhausted" ? "stalled" : "invalid";
 }

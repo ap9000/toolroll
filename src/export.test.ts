@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { openStore, type Store } from "./store.js";
+import { presented } from "../test/route-fixture.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
@@ -269,4 +270,22 @@ test("a private key goes whole: header, body and footer, and a Telegram keyboard
   const out = redactKeyShapes(`here it is:\n${pem}\nthanks`);
   expect(out).toBe("here it is:\n[redacted]\nthanks");
   expect(out).not.toContain("MIIEvQ");
+});
+
+test("what an agent wrote leaves only cleaned: a raw, unclean stored value is exported through its accessor", () => {
+  store.createTask({ id: "said", title: "said" }, NOW);
+  const ref = store.lookupRef("said")!.id;
+  const run = store.startRun({ taskRef: ref, leaseId: "lease-said", runner: "r", provider: "claude", role: "planner", branch: "toolroll/said", worktree: "/pool/said", now: NOW, ...presented(store, ref, "planner") });
+  store.finishRun(run, { outcome: "failed", reason: "malformed-plan", now: NOW });
+  // Written straight into the columns, the way no Toolroll writer would: a folder, a key and terminal escapes.
+  const unclean = JSON.stringify(["read /Users/alex/.ssh/id_rsa", `key ${PLANTED.anthropic}`, "\u001b]0;title\u0007done"]);
+  store.handle.prepare("UPDATE run SET agent_said_json = ?, plan_problems_json = ? WHERE id = ?").run(unclean, unclean, run);
+  const runs = exportOf().files.find(one => one.path.endsWith("/run.jsonl"))!.data.toString("utf8");
+  const row = runs.split("\n").filter(line => line !== "").map(line => JSON.parse(line) as Record<string, unknown>).find(one => one["id"] === run)!;
+  for (const column of ["agent_said_json", "plan_problems_json"]) {
+    const value = String(row[column]);
+    expect(value).not.toMatch(/\/Users\/alex|id_rsa|\\u001b|\\u0007/);
+    expect(value).not.toContain(PLANTED.anthropic);
+  }
+  expect(runs).not.toContain("/Users/alex/.ssh");
 });

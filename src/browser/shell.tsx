@@ -202,7 +202,7 @@ export function PhoneHeader({ workspace, title, back, states, current, trailing 
 type SheetRow = { id: string; title: string; href: string; project: string | null; age: string; word: string; group: string };
 type SheetRead = { state: "loading" } | { state: "failed" } | { state: "ready"; rows: SheetRow[]; more: boolean };
 
-const ASK_WORD: Record<string, string> = { decide: "Decision", review: "Result", unblock: "Blocked" };
+const ASK_WORD: Record<string, string> = { decide: "Decision", review: "Ready", unblock: "Blocked" };
 /** What the Needs-you list holds, read from the Tasks list it opens (the same rows, in the same groups). */
 async function readNeeds(href: string): Promise<{ rows: SheetRow[]; more: boolean }> {
   const url = new URL(href, window.location.origin);

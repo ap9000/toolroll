@@ -1,5 +1,5 @@
 {
-  "digest": "0376c97db209367bd74e4963168b12d3faaab15a1e63779dcac7e7b9e1dd4275",
+  "digest": "efa18dd3129a50e52a20fbc6334d89e828596c116ca42a073c147ba007bac86e",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -515,6 +515,16 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "endWords": {
+                      "type": "string"
+                    },
+                    "billing": {
+                      "type": "string",
+                      "enum": [
+                        "subscription",
+                        "api-key"
+                      ]
                     }
                   },
                   "required": [
@@ -700,6 +710,44 @@
                 "rows"
               ],
               "additionalProperties": false
+            },
+            "ended": {
+              "type": "object",
+              "properties": {
+                "words": {
+                  "type": "string"
+                },
+                "stopPending": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "words",
+                "stopPending"
+              ],
+              "additionalProperties": false
+            },
+            "ship": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string"
+                },
+                "words": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "seq",
+                "state",
+                "words"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -780,6 +828,48 @@
                   "number",
                   "null"
                 ]
+              },
+              "turn": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended": {
+                "type": "boolean"
+              },
+              "stopPending": {
+                "type": "boolean"
+              },
+              "ship": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "turnSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "shipSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -789,7 +879,13 @@
               "level",
               "live",
               "waiting",
-              "costUsd"
+              "costUsd",
+              "turn",
+              "ended",
+              "stopPending",
+              "ship",
+              "turnSeq",
+              "shipSeq"
             ],
             "additionalProperties": false
           }
@@ -1158,11 +1254,19 @@
                           "string",
                           "null"
                         ]
+                      },
+                      "attempt": {
+                        "type": "string",
+                        "enum": [
+                          "build",
+                          "plan"
+                        ]
                       }
                     },
                     "required": [
                       "retryAt",
-                      "lastFailure"
+                      "lastFailure",
+                      "attempt"
                     ],
                     "additionalProperties": false
                   },
@@ -1890,6 +1994,13 @@
                     "null"
                   ]
                 },
+                "attempt": {
+                  "type": "string",
+                  "enum": [
+                    "build",
+                    "plan"
+                  ]
+                },
                 "agentSaid": {
                   "anyOf": [
                     {
@@ -1908,6 +2019,7 @@
               "required": [
                 "retryAt",
                 "lastFailure",
+                "attempt",
                 "agentSaid"
               ],
               "additionalProperties": false
@@ -1974,6 +2086,114 @@
             }
           ]
         },
+        "planStopped": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "incident": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "plan",
+                    "question",
+                    "stalled"
+                  ]
+                },
+                "line": {
+                  "type": "string"
+                },
+                "problems": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentSaid": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "again": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "required": [
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "incident",
+                "kind",
+                "line",
+                "problems",
+                "agentSaid",
+                "again"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "planQueued": {
+          "type": "boolean"
+        },
         "approval": {
           "anyOf": [
             {
@@ -2018,6 +2238,9 @@
         "waiting",
         "held",
         "retry",
+        "planStopped",
+        "plan",
+        "planQueued",
         "approval",
         "room"
       ],
@@ -2338,6 +2561,18 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "lineCount": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -2345,7 +2580,8 @@
             "path",
             "oldPath",
             "meta",
-            "hunks"
+            "hunks",
+            "lineCount"
           ],
           "additionalProperties": false
         },

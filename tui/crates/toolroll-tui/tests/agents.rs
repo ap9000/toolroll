@@ -178,7 +178,8 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
             TermLink(tokio::sync::mpsc::unbounded_channel().0),
         )),
     });
-    assert_eq!(app.mode, Mode::TakeOver);
+    // Typing starts only once the terminal's hello makes it live (the stranger test round 10's take-over race).
+    assert_eq!(app.mode, Mode::ShellOpening);
     app.update(Msg::Term(
         fake::TERM_ID.into(),
         TermEvent::Hello {
@@ -187,6 +188,7 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
             ended: false,
         },
     ));
+    assert_eq!(app.mode, Mode::TakeOver);
     app.update(Msg::Term(
         fake::TERM_ID.into(),
         TermEvent::Output(b"Opening your browser to sign in to Codex...\r\n\x1b]52;c;ZXZpbA==\x07Waiting for the browser...\r\n".to_vec().into()),

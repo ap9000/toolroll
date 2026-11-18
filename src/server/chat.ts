@@ -1424,11 +1424,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const counts: BrowserHomeCount[] = [
       { key: "working", label: "Working now", value: agents.length, href: "/?view=running" },
       // Each by its shared headline, as the Tasks list words it: a result whose checks failed waits on you, it isn't ready.
-      { key: "waiting", label: "Waiting on you", value: needs.items.filter(one => one.status.label !== "Ready for review").length, href: "/?view=needs-you" },
-      { key: "ready", label: "Ready to review", value: needs.items.filter(one => one.status.label === "Ready for review").length, href: "/?view=needs-you" },
+      { key: "waiting", label: "Waiting on you", value: needs.items.filter(one => one.status.label !== "Ready").length, href: "/?view=needs-you" },
+      { key: "ready", label: "Ready", value: needs.items.filter(one => one.status.label === "Ready").length, href: "/?view=needs-you" },
       { key: "done", label: "Done this week", value: done.items.filter(one => (one.completion?.at ?? one.updatedAt) >= weekAgo).length, href: "/?view=completed" },
     ];
-    const tabOf = (one: WorkIndexItem): BrowserCatchUpItem["tab"] => one.assignmentState === "ready-to-check" ? one.status.label === "Ready for review" ? "ready" : "needs-you"
+    const tabOf = (one: WorkIndexItem): BrowserCatchUpItem["tab"] => one.assignmentState === "ready-to-check" ? one.status.label === "Ready" ? "ready" : "needs-you"
       : one.assignmentState === "needs-decision" ? "needs-you" : one.assignmentState === "working" || one.assignmentState === "checking" ? "running" : "finished";
     const catchUp = all.items.filter(one => tabOf(one) !== "finished" || one.updatedAt >= weekAgo).slice(0, 40).map(one => ({
       id: one.rootId, title: one.title, href: taskHref(one.rootId), project: one.repo === null ? null : projectName(one.repo), tab: tabOf(one),

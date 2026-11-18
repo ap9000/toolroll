@@ -282,8 +282,9 @@ describe("each binding, at the decision and at the write", () => {
     ["the owner's generation", () => { store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'pat'").run(); }, "stale-generation"],
     ["the turn", () => { finishFlexibleTurn(store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW }); }, "turn-changed"],
     ["the connection", () => { exited(L1); }, "connection-changed"],
-    // Changing a person's access starts a new generation of their account.
-    ["the owner's access", () => { expect(store.setAccountProjects("pat", [join(dir, "other")], "alex", NOW)).toEqual({ ok: true }); }, "stale-generation"],
+    // Changing a person's access starts a new generation of their account, and ends their running turn in the same
+    // transaction (flexible-authority-end.ts): the question's turn is over, so it can't be answered.
+    ["the owner's access", () => { expect(store.setAccountProjects("pat", [join(dir, "other")], "alex", NOW)).toEqual({ ok: true }); }, "turn-changed"],
     ["the terms", () => { store.handle.prepare("UPDATE flexible_terms SET ended_at = ?, ended_by = 'alex', end_reason = 'off' WHERE ended_at IS NULL").run(NOW.toISOString()); }, "authority-changed"],
     ["the thread's level", () => { store.handle.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'auto', 'pat', ?)").run(T1, NOW.toISOString()); }, "authority-changed"],
     ["the thread", () => { store.handle.prepare("UPDATE flexible_thread SET state = 'removing' WHERE id = ?").run(T1); }, "thread-changed"],

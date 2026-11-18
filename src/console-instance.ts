@@ -17,6 +17,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Store } from "./store.js";
 
@@ -125,7 +126,25 @@ export function instanceSocketTooLong(databaseFile: string): string | null {
   if (needs <= SOCKET_PATH_MAX) return null;
   // The longest folder (as its real path) a database can sit in and still have a socket beside it.
   const folderMax = SOCKET_PATH_MAX - Buffer.byteLength(`/${INSTANCE_DIR}/0123456789abcdef.sock`);
-  return `the database's folder is too deep for Toolroll's socket (${needs} of at most ${SOCKET_PATH_MAX} bytes), so nothing can find a console started on it — move it to a shorter folder (at most ${folderMax} bytes long), or point TOOLROLL_DB at an orders.db in one: \`TOOLROLL_DB=/short/folder/orders.db toolroll\``;
+  return `the database's folder is too deep for Toolroll's socket (${needs} of at most ${SOCKET_PATH_MAX} bytes). Put it in a short folder only you can write (at most ${folderMax} bytes long), for example: ${shortFolderSuggestion(folderMax)}`;
+}
+
+/**
+ * A short folder this person owns that the socket checks accept (runDirProblem: the database's folder is its own real
+ * path, owned by this user and writable by nobody else; the run folder inside it 0700): `~/.tr` when the home folder is
+ * short enough, else one an administrator makes under /opt (root-owned, not writable by others) and hands to this user.
+ * Never a shared folder (the system's Shared folder, /tmp): another user could make or own the name first. Words only.
+ */
+function shortFolderSuggestion(folderMax: number): string {
+  let home = homedir();
+  try { home = realpathSync(home); } catch { /* the words only */ }
+  if (home !== "" && Buffer.byteLength(join(home, ".tr")) <= folderMax) {
+    return "`mkdir -m 700 ~/.tr`, then run `TOOLROLL_DB=~/.tr/orders.db toolroll`";
+  }
+  let name = "you";
+  try { const user = userInfo().username; if (/^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/.test(user)) name = user; } catch { /* the words only */ }
+  const folder = `/opt/toolroll-${name}`;
+  return `\`sudo mkdir -m 700 ${folder} && sudo chown ${name} ${folder}\`, then run \`TOOLROLL_DB=${folder}/orders.db toolroll\``;
 }
 /** A socket path that binds exactly (no truncation), named as a console names its own. */
 export function socketPathProblem(path: string): string | null {

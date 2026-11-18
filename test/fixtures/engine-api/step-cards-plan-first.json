@@ -107,5 +107,8 @@
   "held": null,
   "retry": null,
   "approval": null,
-  "room": "task:t-b"
+  "room": "task:t-b",
+  "planStopped": null,
+  "plan": null,
+  "planQueued": false
 }

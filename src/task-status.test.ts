@@ -24,7 +24,7 @@ describe("release coverage requires validated non-check evidence", () => {
 
   test("valid screenshot waits only for checks, including stored direct-assessment outcomes", () => {
     const row = mixedCheckScreenshot({ path: "", ok: true, bytes: 5000, dims: { width: 390, height: 844 } });
-    expect(requirementWordOf(row, null, "pending")).toBe("Checked at release");
+    expect(requirementWordOf(row, null, "pending")).toBe("Checks deferred to release");
     expect(requirementWordOf(row, null, "covered")).toBe("Met");
     expect(requirementWordOf({ ...row, assessment: { evidenceState: "missing", detail: row.detail } }, null, "covered")).toBe("Met");
     expect(requirementWordOf({ ...row, assessment: { evidenceState: "failed", detail: ["Screenshot could not be verified"] } }, null, "covered")).toBe("Not shown yet");
@@ -51,7 +51,7 @@ describe("the brief's states", () => {
     const status = taskStatusOf({ stage: "finished", checks: passed, requirements: { met: 2, total: 3, yours: 1 }, evidence: { shortened: 1, missing: 0, damaged: 0 } });
     expect(row(status, "requirements")).toMatchObject({ text: "2 of 3 met · You check 1", mark: "none" });
     expect(row(status, "evidence")).toMatchObject({ text: "Some output shortened", mark: "note" });
-    expect(status.headline).toBe("Ready for review");
+    expect(status.headline).toBe("Ready");
   });
 
   test("a complete task whose checks failed keeps the failure visible as an ink note, not red", () => {
@@ -92,9 +92,9 @@ describe("severity", () => {
   test("a pull request, a shortened output or a missing file never repaints a finished result", () => {
     for (const pull of [pr("failed"), pr("open", "failing"), pr("closed")]) {
       expect(taskStatusOf({ stage: "complete", checks: passed, pullRequest: pull }).headline).toBe("Complete");
-      expect(taskStatusOf({ stage: "finished", checks: passed, pullRequest: pull }).headline).toBe("Ready for review");
+      expect(taskStatusOf({ stage: "finished", checks: passed, pullRequest: pull }).headline).toBe("Ready");
     }
-    expect(taskStatusOf({ stage: "finished", checks: passed, evidence: { shortened: 3, missing: 1, damaged: 1 } }).headline).toBe("Ready for review");
+    expect(taskStatusOf({ stage: "finished", checks: passed, evidence: { shortened: 3, missing: 1, damaged: 1 } }).headline).toBe("Ready");
   });
 });
 

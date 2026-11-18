@@ -428,7 +428,7 @@ export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; it
 }
 
 /** Active work leads; finished work waits behind one disclosure. */
-/** Which Crew group a task sits in: a person is needed (Needs you, Failed, Ready for review), an agent is on it, or it waits. */
+/** Which Crew group a task sits in: a person is needed (Needs you, Failed, Ready), an agent is on it, or it waits. */
 type CrewGroup = "needs" | "running" | "waiting";
 export function crewGroupOf(item: BrowserCrewItem): CrewGroup {
   const glyph = headlineGlyph(item.tone);

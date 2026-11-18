@@ -115,10 +115,18 @@ export const threadFactsSchema = z.object({
   project: z.string().nullable(),
   level: flexibleLevelSchema.nullable(),
   agent: z.object({ provider: z.string(), model: z.string() }).nullable(),
-  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable() }).nullable(),
+  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable(),
+    /** Toolroll's own words for how the turn ended when it didn't simply finish (interrupted, unknown, withdrawn). */
+    endWords: z.string().optional(),
+    /** How the turn is billed: the person's plan (`subscription`) or a key. */
+    billing: z.enum(["subscription", "api-key"]).optional() }).nullable(),
   questions: z.array(threadQuestionSchema),
   runtime: z.enum(["stream-json", "interactive"]).optional(),
   terminal: threadTerminalSchema.optional(),
+  /** Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified. */
+  ended: z.object({ words: z.string(), stopPending: z.boolean() }).optional(),
+  /** Its latest Ship, in Toolroll's words (absent before its first). */
+  ship: z.object({ seq: z.number().int(), state: z.string(), words: z.string() }).optional(),
 });
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
@@ -148,7 +156,16 @@ export const liveThreadsSchema = z.object({
   /** Whether interactive agent threads are on (Settings → General): off, the list still has the threads already made. */
   on: z.boolean().optional(),
   threads: z.array(z.object({ id: hex32, title: z.string(), project: z.string().nullable(), level: flexibleLevelSchema.nullable(), live: z.boolean(), waiting: z.number().int(),
-    costUsd: z.number().nullable() })),
+    costUsd: z.number().nullable(),
+    /** Its latest turn's state (null before its first), whether it ended (End is final), and whether its agent's stop
+     * is still being verified. */
+    turn: z.string().nullable(), ended: z.boolean(), stopPending: z.boolean(),
+    /** Its latest Ship's state (null before its first). */
+    ship: z.string().nullable(),
+    /** Its latest turn's number (null before its first): with `turn` and `ship`, what the workbench marks seen. */
+    turnSeq: z.number().int().nullable(),
+    /** Its latest Ship's number (null before its first): which Ship `ship` is, so a second refusal is news too. */
+    shipSeq: z.number().int().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------
@@ -168,7 +185,9 @@ const needRowSchema = z.object({
 /** A queued task waiting to start again after a failed build (engine-reads.ts waitingOf): when the next try is due
  * (the backoff hold's own end; null: as soon as a builder is free) and the last build's failure in one short line
  * (needs-you.ts failedAttemptSentence; null when the last build didn't fail). Read facts only. */
-export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable() });
+export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable(),
+  /** Whether the attempt that failed, and the one that comes next, is a build or a plan (the planner's own backoff). */
+  attempt: z.enum(["build", "plan"]) });
 // (Null whenever a person's hold stands: engine-reads.ts waitingForTasks.)
 /** A Work row's group (work-index.ts WorkIndexGroup): a Needs-you ask, building, or everything else. */
 export const WORK_ROW_GROUPS = ["decide", "review", "unblock", "building", "rest"] as const;
@@ -295,6 +314,21 @@ export const stepCardsSchema = z.object({
    * to POST /t/<task>/requeue as `run` and `digest`, the same act the task page's Retry is (re-proved there). Null
    * unless the task failed and its approval stands as it is. */
   retry: z.object({ run: z.number().int(), digest: z.string() }).nullable(),
+  /** A plan that stopped on this version (engine-reads.ts planStoppedOf): its open planning incident (`kind` plan: the
+   * plan failed its checks; question: the planner's question did; stalled: planning failed again and again), what
+   * stopped it in one plain line, why the plan was refused and what the agent said (each cleaned, at most eight lines;
+   * null when none was kept), and what Plan again posts to POST /t/<task>/plan as `incident` and `source` (null when it
+   * can't be asked as it stands). Read facts only: Plan again proves them again. Null when no plan stopped. */
+  planStopped: z.object({ incident: z.number().int(), kind: z.enum(["plan", "question", "stalled"]), line: z.string(),
+    problems: z.array(z.string()).max(8).nullable(), agentSaid: z.array(z.string()).max(8).nullable(),
+    again: z.object({ source: z.string().regex(/^[0-9a-f]{64}$/) }).nullable() }).nullable(),
+  /** What asking for a plan posts to POST /t/<task>/plan as `source` (the planning source read: local-owner-acts.ts
+   * planSourceOf), under the task page's own "plan first" rule. Null when a plan can't be asked for. */
+  plan: z.object({ source: z.string().regex(/^[0-9a-f]{64}$/) }).nullable(),
+  /** A plan asked for that waits to start (engine-reads.ts planQueuedOf): queued, the plan requested, no approved scope,
+   * nothing running and no hold. Its planner starts on its own, so Stop retrying (a hold) applies to it; a task filed with
+   * no plan asked for and no approval reads false. Read facts only. */
+  planQueued: z.boolean(),
   /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
    * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
   approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),
@@ -346,7 +380,10 @@ export const resultDiffFileSchema = z.object({
   task: z.string(),
   run: z.number().int(),
   file: z.object({ file: z.number().int(), path: z.string(), oldPath: z.string().nullable(), meta: z.array(z.string()),
-    hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })) }),
+    hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })),
+    /** The file's length at the result, when the patch itself says it (an added file's one hunk is the whole file; a
+     * deleted file has none): a client draws no "more lines below" past its end. Null when only a context read knows. */
+    lineCount: z.number().int().nonnegative().nullable() }),
   linesTruncated: z.boolean(),
 });
 

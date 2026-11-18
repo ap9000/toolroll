@@ -456,9 +456,9 @@ async function exercise(feature, context) {
     await open(text, context.task);
     // A finished run is not yet a result to review: until its build process is recorded as exited, the row still reads
     // Building and Enter opens Live (app.rs Action::Open opens Diff only for a review ask). The pipeline's "Ready" stage
-    // is drawn on every row, and the title names src/math.js: wait for this task's own list row to read Result, as a
+    // is drawn on every row, and the title names src/math.js: wait for this task's own list row to read Ready (its list pane only), as a
     // person would, then open it and wait for its change list.
-    await wait(new RegExp(`●\\s+${text.slice(0, 14).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\n]*\\sResult\\b`));
+    await wait(new RegExp(`●\\s+${text.slice(0, 14).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\n│]*\\sReady\\b`));
     await press('enter', /\d+ files?\s+\+\d+/);
     await seen(() => projectView()?.tab === 'diff', 'Enter opened the result on the Diff tab');
   };
@@ -468,8 +468,60 @@ async function exercise(feature, context) {
     const expected = expectedFailureReason(world.scenario);
     if (!lastRun().reason?.includes(expected)) throw new Error(`Expected ${expected}, got ${lastRun().reason}`);
   };
+  /** File the task to plan first, as a person does: n, the words, then p at its terms (the Build sheet's "Plan it first"). */
+  const planFirst = async (text = TASK_TEXT) => {
+    if (context.planned) return;
+    const previousTask = task()?.id;
+    await taskApproval(term, text);
+    await wait(/Build approves exactly this:/);
+    await press('p', /Filed\. A plan comes first\./);
+    await seen(() => task() && task().id !== previousTask, 'planned task saved'); context.task = task().id;
+    context.planned = true;
+  };
+  const plannerRun = outcome => sql(`SELECT r.id, r.outcome, r.reason FROM run r JOIN task_ref ref ON ref.id=r.task_ref WHERE r.role='planner' AND ref.external_id='${context.task}' AND r.outcome='${outcome}' ORDER BY r.id DESC LIMIT 1`)[0];
   let shown, state;
   switch (feature.id) {
+    case 'plan-refused': {
+      await planFirst();
+      await seen(() => sql(`SELECT i.id FROM incident i JOIN run r ON r.id=i.run JOIN task_ref ref ON ref.id=r.task_ref WHERE i.kind='malformed-plan' AND i.resolved_at IS NULL AND ref.external_id='${context.task}'`)[0], 'the planning incident');
+      await open(TASK_TEXT, context.task);
+      await focusTab('steps');
+      shown = await wait(new RegExp(feature.expected));
+      // The way on is Plan again: never Retry, Stop retrying, or a reason nobody recorded.
+      if (/x\s+stop retrying|No reason was recorded|no reason was recorded/.test(shown)) throw new Error('A stopped plan still offered a retry or said no reason');
+      if (!/r\s+plan again/.test(shown)) throw new Error('The key bar did not offer r plan again');
+      state = 'a planning incident, its problems shown, Plan again offered'; break;
+    }
+    case 'plan-again': {
+      const before = sql(`SELECT COUNT(*) AS n FROM run r JOIN task_ref ref ON ref.id=r.task_ref WHERE r.role='planner' AND ref.external_id='${context.task}'`)[0]?.n ?? 0;
+      await press('r', /Plan again\?[\s\S]*Enter\s+Plan again/);
+      shown = await press('enter', /Planning again\./);
+      await seen(() => (sql(`SELECT COUNT(*) AS n FROM run r JOIN task_ref ref ON ref.id=r.task_ref WHERE r.role='planner' AND ref.external_id='${context.task}'`)[0]?.n ?? 0) > before, 'the planner ran again');
+      await seen(() => sql(`SELECT plan FROM task_ref WHERE external_id='${context.task}'`)[0]?.plan === 'drafted', 'the new plan drafted');
+      if (sql(`SELECT approved_digest FROM task_scope WHERE task_id='${context.task}'`)[0]?.approved_digest) throw new Error('Plan again approved the plan');
+      state = 'incident resolved, plan drafted, nothing approved'; break;
+    }
+    case 'plan-error': {
+      await planFirst();
+      await seen(() => plannerRun('failed'), 'the failed planning turn');
+      await open(TASK_TEXT, context.task);
+      await focusTab('live');
+      shown = await wait(new RegExp(feature.expected));
+      if (/Last build failed/.test(shown)) throw new Error('A planning backoff was said as a build');
+      state = 'the planner backoff with its words'; break;
+    }
+    case 'plan-first': {
+      const title = 'Explain the add function in a short note.';
+      const filed = run(world, process.execPath, [context.cli, 'task', 'add', title, '--repo', world.shop]);
+      if (!filed.includes('press p to ask for a plan')) throw new Error(`task add named no key that exists: ${filed}`);
+      const id = sql("SELECT id FROM task ORDER BY rowid DESC LIMIT 1")[0]?.id;
+      await open(title, id);
+      await seen(() => /p\s+plan/.test(term.text()), 'the key bar offers p plan');
+      await press('p', /Ask for a plan\?/);
+      shown = await press('enter', /Asked for a plan\./);
+      await seen(() => sql(`SELECT plan FROM task_ref WHERE external_id='${id}'`)[0]?.plan !== null, 'the plan asked for');
+      state = 'plan asked for from the workbench'; break;
+    }
     case 'welcome': case 'narrow': shown = await wait(new RegExp(feature.expected)); state = `${term.cols} columns`; break;
     case 'new-task': shown = await press('n', /New task:/); await normal(); break;
     case 'agents': case 'signed-out': {
@@ -575,13 +627,56 @@ async function exercise(feature, context) {
     case 'stop-resume': await failed(); await press('x', /Stop retrying this task\?/); await press('enter', /Stopped retrying|Resume retrying/); shown = await press('x', /Resume retrying this task\?/); await press('enter', /Resumed|[Rr]etrying/); break;
     case 'retry': await failed(); await wait(/The agent stopped with an error\.[\s\S]*What the agent said/); shown = await retryAttempt(term, lastRun, context.task); break;
     case 'cancel': await failed(); shown = await press('X', /Cancel/); await press('enter', /[Cc]ancelled|[Cc]anceled/); break;
-    case 'threads': shown = await startThread(term, 'Review the subtraction change.'); break;
+    case 'threads': {
+      shown = await startThread(term, 'Review the subtraction change.');
+      // The thread it started is selected (not the task that was selected before).
+      await seen(() => newestThread() && projectView()?.task === newestThread(), 'the new thread selected');
+      context.thread = newestThread();
+      break;
+    }
+    case 'thread-reply': {
+      // Reply in the thread `threads` started: once its first turn is over the row reads Ready, s opens the reply box,
+      // and Enter sends the next message as turn 2.
+      await open('Review the subtraction change.', context.thread);
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
+      await press('s', /Reply:/);
+      term.send('Now explain the change.');
+      await wait(/Reply:[^\n]*explain the change\./);
+      shown = await press('enter', /Sent\. Turn 2 started|Refused: /);
+      if (!/Sent\. Turn 2 started/.test(shown)) throw new Error(`The reply was not sent: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await seen(() => sql(`SELECT COUNT(*) AS n FROM thread_turn WHERE thread = '${context.thread}' AND request_key LIKE 'reply:%'`)[0]?.n === 1, 'one reply turn on the record');
+      break;
+    }
+    case 'thread-ship': {
+      // a on the thread asks for its Ship terms. This world's project has no check command, so Toolroll says it can't
+      // ship yet, in its own words (the whole press, laptop road and password road, is flexible-ship*.slow.test.ts).
+      await open('Review the subtraction change.', context.thread);
+      // Its reply's turn first ends (the row reads Ready again): Ship never starts while a turn works.
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
+      shown = await press('a', /Ship approves exactly this:|no check command|Refused: /);
+      if (!/Ship approves exactly this:|no check command/.test(shown)) throw new Error(`Ship said neither its terms nor why: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      if (/Ship approves exactly this:/.test(shown)) term.send(esc);
+      if (sql("SELECT COUNT(*) AS n FROM flexible_ship")[0]?.n !== 0) throw new Error('Asking for the terms recorded a Ship');
+      break;
+    }
+    case 'thread-end': {
+      // X on the thread, asked first; y ends it for good: it moves to Recent as Ended and takes no reply.
+      await open('Review the subtraction change.', context.thread);
+      await press('X', /End this thread\?/);
+      shown = await press('y', /Ended\.|This thread had already ended\.|Refused: /);
+      if (!/Ended\./.test(shown)) throw new Error(`The thread did not end: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await wait(/Review the subtraction[^\n]*\sEnded\b/);
+      await seen(() => sql(`SELECT ended_at FROM flexible_thread_meta WHERE thread = '${context.thread}'`)[0]?.ended_at, 'the end on the record');
+      shown = await press('s', /This thread has ended/);
+      break;
+    }
     case 'threads-sign-in': {
       // Your own Claude sign-in for threads, end to end through the product: removed at a terminal; T then names the
       // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying
       // whose plan powers it, and the thread starts. The world keeps a saved sign-in afterwards. It is the map's last
       // feature: the thread it starts would otherwise take one of the project's three live threads from a later one.
-      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], [{ prompt: /password:/, answer: world.password }]);
+      // A solo install: removing your own sign-in only narrows, so it asks for no password (threads-everyday S8, D5).
+      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], []);
       await term.press('T', /New thread:/);
       const message = 'Check the sign-in, then review the subtraction change.';
       term.send(message);
@@ -596,7 +691,13 @@ async function exercise(feature, context) {
       state = 'refused without a sign-in, saved through the CLI, then started on it';
       break;
     }
-    case 'task-show': await ready(); shown = run(world, process.execPath, [context.cli, 'task', 'show', context.task]); if (!shown.includes(context.task)) throw new Error('task show did not identify the selected task'); break;
+    case 'task-show': {
+      await ready(); shown = run(world, process.execPath, [context.cli, 'task', 'show', context.task]);
+      if (!shown.includes(context.task)) throw new Error('task show did not identify the selected task');
+      // One status word: the first line is the headline every surface says, never the raw lifecycle state.
+      if (/^\S+\s+(done|queued|running|failed)\s*$/m.test(shown.split('\n')[0] ?? '')) throw new Error(`task show led with the raw state: ${shown.split('\n')[0]}`);
+      break;
+    }
     case 'restore': {
       const before = JSON.stringify(stableView()); term.send('L');
       await seen(() => JSON.stringify(stableView()) !== before, 'changed layout saved');
@@ -611,12 +712,12 @@ async function exercise(feature, context) {
     }
     case 'jumps': {
       await ready();
-      // A thread's start keeps the selection where it was (no thread id comes back): open it, as a person would.
+      // A thread's start selects the new thread (threads-everyday S3); once its turn is over it waits on you too (Ready).
       const message = 'Review the subtraction change, then jump.';
       await startThread(term, message);
       const origin = newestThread(); await open(message, origin);
+      await wait(/Review the subtraction change, …\s+Ready\b|Review the subtraction change, then[^\n]*\sReady\b/);
       term.send('!'); await seen(() => projectView()?.task === context.task, 'next needs-you selects result');
-      term.send('@'); await wait(/waiting on you/);
       term.send("'"); await seen(() => projectView()?.task === origin, 'jump returns to thread');
       shown = term.text(); state = 'jump returned to original thread'; break;
     }

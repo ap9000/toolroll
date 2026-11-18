@@ -211,7 +211,7 @@ test("evidence keeps 28 days only while nobody chose: a saved choice, forever in
     .toEqual(["28 days → forever", "forever → 1 day"]);
 });
 
-test("a 1-day sweep never removes what a task still needs: Ready for review, unfinished, failed, on hold, live or a release candidate", () => {
+test("a 1-day sweep never removes what a task still needs: Ready, unfinished, failed, on hold, live or a release candidate", () => {
   const twoDaysAgo = new Date(NOW.getTime() - 2 * DAY);
   const completed = work("completed", twoDaysAgo);
   const ready = work("ready", twoDaysAgo);

@@ -96,7 +96,7 @@ const CASES: Case[] = [
 const PASSED_CLAIM = /\b(?:check|checks) passed\b|\bpassed against\b|\bPassed on\b|verified the result/i;
 /** The Project checks row's words for each answer. */
 const ROW: Record<ApprovedCheckState, RegExp> = {
-  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checked at release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
+  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
 };
 /** The road's Checks step for each answer. */
 const ROAD: Record<ApprovedCheckState, string> = {
@@ -222,7 +222,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
       if (one.held !== true) expect(status.sentence, one.id).toMatch(/couldn't be read|check command changed since this check/);
     }
     if (one.expect === "failed") expect(status.headline, one.id).toBe("Failed");
-    if (one.expect === "passed") expect(["Ready for review", "Needs you"], one.id).toContain(status.headline);
+    if (one.expect === "passed") expect(["Ready", "Needs you"], one.id).toContain(status.headline);
     const road = task.journey!.map(step => `${step.key}:${step.state}:${step.say ?? step.label}`);
     expect(road[3], `${one.id}: the road's Checks step`).toBe(`checks:${ROAD[one.expect]}`);
     // Fail closed: a failed or unreadable check never lets the road reach Ready.

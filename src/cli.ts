@@ -168,6 +168,8 @@ export const OPERATE_COMMANDS = new Set([
   "status",
   "ready",
   "task",
+  // A person's own interactive agent threads (threads for everyday use, S8): list, show, end, remove, ship.
+  "thread",
   "project",
   "ledger",
   "audit",

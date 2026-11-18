@@ -4,7 +4,8 @@
   "dialogKeys": {
     "f": "Mode::Build in app.rs: approval Usual fold",
     "s": "Mode::Help: settings",
-    "enter": "Dialog confirmation; never remappable"
+    "enter": "Dialog confirmation; never remappable",
+    "p": "Mode::Build in app.rs: file it to plan first"
   },
   "scenarios": {
     "smoke": "Empty first run; no model turns",
@@ -12,7 +13,9 @@
     "agent-error": "Scripted Claude init followed by error result",
     "never-initialized": "Claude auth works; turn exits before init",
     "signed-out": "Codex login status refuses; no provider turns",
-    "narrow": "Empty first run at 60 columns"
+    "narrow": "Empty first run at 60 columns",
+    "plan-refused": "Scripted plan that fails its checks (and its correction); then a valid plan",
+    "plan-error": "Scripted planner whose agent stops with an error once"
   },
   "features": [
     {
@@ -314,6 +317,69 @@
       ]
     },
     {
+      "id": "thread-reply",
+      "screen": "Work",
+      "reach": "Select the thread threads started; once it reads Ready, s; type the next message; Enter",
+      "expected": "Sent\\. Turn 2 started",
+      "scenario": "success",
+      "actions": [
+        "thread-reply",
+        "steer"
+      ],
+      "keys": [
+        "s"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "threads"
+      ]
+    },
+    {
+      "id": "thread-ship",
+      "screen": "Work",
+      "reach": "Select the thread; a asks for its Ship terms; with no project check the console says why it can't ship yet",
+      "expected": "no check command|Ship approves exactly this:",
+      "scenario": "success",
+      "actions": [
+        "thread-ship",
+        "accept"
+      ],
+      "keys": [
+        "a"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "thread-reply"
+      ]
+    },
+    {
+      "id": "thread-end",
+      "screen": "Work",
+      "reach": "Select the thread; X; y ends it; it moves to Recent as Ended and s says it ended",
+      "expected": "This thread has ended",
+      "scenario": "success",
+      "actions": [
+        "thread-end",
+        "thread-stop",
+        "cancel-task",
+        "stop"
+      ],
+      "keys": [
+        "X",
+        "x"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "thread-reply"
+      ]
+    },
+    {
       "id": "layout",
       "screen": "Work",
       "reach": "L",
@@ -474,7 +540,7 @@
       "scenario": "success",
       "actions": [],
       "keys": [],
-      "state": "CLI reads the same task id",
+      "state": "CLI reads the same task id; its first line says the status headline, never the raw state",
       "dependsOn": [
         "result"
       ]
@@ -524,6 +590,63 @@
       "needs": [
         "threads-on"
       ]
+    },
+    {
+      "id": "plan-refused",
+      "screen": "Steps",
+      "reach": "n; describe a change; at its terms p files it to plan first; the plan fails its checks; Steps",
+      "expected": "Plan didn't pass[\\s\\S]*Why the plan was refused[\\s\\S]*r\\s+Plan again",
+      "scenario": "plan-refused",
+      "actions": [],
+      "keys": [],
+      "dialogKeys": [
+        "p"
+      ],
+      "state": "a planning incident with its problems, never Retry or Stop retrying"
+    },
+    {
+      "id": "plan-again",
+      "screen": "Steps",
+      "reach": "On a plan that failed its checks: r; read Plan again; Enter; the new plan waits for approval",
+      "expected": "Planning again\\.",
+      "scenario": "plan-refused",
+      "actions": [
+        "send-back"
+      ],
+      "keys": [
+        "r"
+      ],
+      "dependsOn": [
+        "plan-refused"
+      ],
+      "state": "the planning incident resolved by Plan again, the plan drafted again"
+    },
+    {
+      "id": "plan-error",
+      "screen": "Live",
+      "reach": "File a planned task whose planner's agent stops with an error; Live",
+      "expected": "Last plan attempt failed[\\s\\S]*What the agent said[\\s\\S]*VERIFY_AGENT_WORDS_7f3a",
+      "scenario": "plan-error",
+      "actions": [],
+      "keys": [],
+      "dialogKeys": [
+        "p"
+      ],
+      "state": "the planner's own backoff, with what it said"
+    },
+    {
+      "id": "plan-first",
+      "screen": "Work",
+      "reach": "toolroll task add at a terminal; p on its row; Enter",
+      "expected": "Asked for a plan\\.",
+      "scenario": "smoke",
+      "actions": [
+        "pause"
+      ],
+      "keys": [
+        "p"
+      ],
+      "state": "a CLI-filed task's plan asked for from the workbench"
     }
   ],
   "intentionallyUnmapped": [
@@ -559,22 +682,6 @@
         "backtab"
       ],
       "feature": "Previous tab",
-      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
-    },
-    {
-      "action": "steer",
-      "keys": [
-        "s"
-      ],
-      "feature": "Steer: send the running agent a note",
-      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
-    },
-    {
-      "action": "pause",
-      "keys": [
-        "p"
-      ],
-      "feature": "Pause the build (again to resume)",
       "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
     },
     {

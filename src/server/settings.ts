@@ -165,7 +165,7 @@ import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup,parseIdle } from "../storage.js";
 import { setTaskSizing, taskSizingSetting } from "../task-sizing.js";
 import { localActNow } from "../local-owner.js";
-import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
+import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots,type Store } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
@@ -180,6 +180,7 @@ import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
 import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { loginHelpOf } from "./login-help.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -2866,8 +2867,9 @@ ${postForm("/settings/chat-approval/save", html`\
       if (wanted === "on") {
         if (!authenticateCredential(who, body.get("password") ?? "").ok) return false;
       } else {
-        if (who.authority !== "full" && localActNow(store, "flexible-switch") === null) return false;
-        if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+        // Off only narrows: the local owner's own act (no password), or anyone else's ordinary step-up.
+        if (who.authority === "local-owner") { if (localActNow(store, "flexible-switch") === null) return false; }
+        else if (who.authority !== "full" || !authenticateApprover(who, body.get("password") ?? "").ok) return false;
       }
       setFlexibleSetting(store, wanted === "on", who.name, now);
       return true;
@@ -3057,6 +3059,7 @@ ${postForm("/settings/chat-approval/save", html`\
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
     passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
+    savedLogin: savedLoginOf.bind(null, store),
     installMode: () => installModeNow(store),
     taskSizing: () => taskSizingSetting(store),
     flexible: () => flexibleSetting(store),
@@ -3179,7 +3182,12 @@ ${postForm("/settings/chat-approval/save", html`\
     const back = sayTo(response, "/settings/change/flexible-sign-in");
     if (["token", "password"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing was saved.");
     if (body.sent.has("person")) return back("problem", "Your Claude sign-in is always your own. Nothing was saved.");
-    if (who.authority !== "full") return back("problem", "Saving your Claude sign-in needs your Toolroll password, typed now. Nothing was saved.");
+    // A local owner's session (the workbench's `w` link) may save with a password typed into this form now (scope.ts
+    // LOCAL_PASSWORD_ACTS: checked as a password, never the act itself standing in); with no password set, it says how.
+    if (who.authority !== "full") {
+      if (who.authority !== "local-owner" || localActNow(store, "flexible-sign-in-save") === null) return back("problem", "Saving your Claude sign-in needs your Toolroll password, typed now. Nothing was saved.");
+      if (store.accountOf(who.name)?.passwordSet !== true) return back("problem", "Set a password first: run `toolroll password set`, then save your sign-in here with it. Nothing was saved.");
+    }
     const paste = setupTokenFromPaste(body.get("token") ?? "");
     if (!paste.ok) return back("problem", paste.message);
     const state = signInState();
@@ -3224,9 +3232,21 @@ ${postForm("/settings/chat-approval/save", html`\
     if (removed === null) return back("problem", self ? "Enter your Toolroll password to remove your Claude sign-in." : "An instance operator removes someone's Claude sign-in for threads, with their password.");
     const state = signInState();
     if (state !== null) void tidyFlexibleSignIns(store, state, { now, person }).catch(() => { /* the upkeep deletes it */ });
-    return done("said", !removed.removed ? (self ? "You had no Claude sign-in for threads saved." : `${person} had no Claude sign-in for threads saved.`)
-      : self ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
-        : `Removed ${person}'s Claude sign-in for threads. Their threads can't reach Claude until they add one again.`);
+    // Their running threads were stopped on the record in the removal's own transaction; each console stops the agents it
+    // holds on its next upkeep tick (a few seconds) and keeps trying until each exit is verified.
+    const stopping = removed.ended.threads.length;
+    const stopWords = stopping === 0 ? "" : ` Toolroll is stopping ${stopping === 1 ? "1 running thread" : `${stopping} running threads`}.`;
+    return done("said", !removed.removed ? (self ? `You had no Claude sign-in for threads saved.${stopWords}` : `${person} had no Claude sign-in for threads saved.${stopWords}`)
+      : self ? `Removed.${stopWords} Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account.`
+        : `Removed ${person}'s Claude sign-in for threads.${stopWords} Their threads can't reach Claude until they add one again.`);
   }
   return { registrations, modelsView };
+}
+
+/** Where `toolroll up` saved this install's first password, as it reads on the computer running Toolroll (login-help.ts
+ * loginHelpOf); null when none is saved. Kept last, outside createSettingsHandlers: password-freshness.test.ts pins the
+ * functions inside it by position. */
+function savedLoginOf(store: Store): string | null {
+  const help = loginHelpOf(store, { here: true });
+  return help.kind === "password" ? help.savedAt : null;
 }

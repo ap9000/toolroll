@@ -25,9 +25,10 @@ import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { flexibleAvailable } from "../flexible-available.js";
+import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
@@ -191,6 +192,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   let stopping = false;
   /** People's retired sign-ins are being tidied (one pass at a time). */
   let tidying = false;
+  /** Ended threads' copies are being tidied (one pass at a time). */
+  let tidyingEnded = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -250,7 +253,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const read = flexibleThreadsOf(store, flexible, { owner: who.name });
     if (!read.ok) return refusal(response, 404, "thread");
     const body: LiveThreads = { version: ENGINE_API_VERSION, on, threads: read.threads.filter(one => store.accountCanAccess(who.name, one.repo))
-      .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null })) };
+      .map(one => ({ id: one.id, title: one.title, project: one.project, level: one.level, live: one.live, waiting: one.waiting, costUsd: one.turn?.costUsd ?? null,
+        turn: one.turn?.status ?? null, ended: one.ended !== undefined, stopPending: one.stopPending, ship: one.ship?.state ?? null, turnSeq: one.turn?.seq ?? null,
+        shipSeq: one.ship?.seq ?? null })) };
     return sendChecked(response, 200, "liveThreads", body);
   }
 
@@ -274,17 +279,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     // generation and role, the same immutable bindings (authority, local-mode generation, key epoch and key hash,
     // creation), still held in memory, within its lifetime (an expired row that wasn't deleted yet refuses), and the
     // account's standing and the thread's project unchanged.
-    const sessionHash = runtime.sessions.hashOf(who.session);
-    const admitted = sessionHash === null ? null : store.webSession(sessionHash);
-    if (admitted === null || admitted.account !== who.name) return acted(response, 403, "refused", "Only a person signed in here can answer an agent.");
-    const held = (): boolean => {
-      const saved = store.webSession(admitted.idHash), account = store.accountOf(who.name);
-      return saved !== null && saved.idHash === admitted.idHash && saved.account === admitted.account && saved.generation === admitted.generation && saved.role === admitted.role
-        && saved.authority === admitted.authority && saved.localGeneration === admitted.localGeneration && saved.keyEpoch === admitted.keyEpoch && saved.keyHash === admitted.keyHash
-        && saved.createdAt === admitted.createdAt && sessionWithinLifetime(saved, Date.now()) && runtime.sessions.holds(who.session)
-        && account !== null && account.revokedAt === null && account.generation === saved.generation && account.generation === who.session.generation && account.role === saved.role
-        && admitFlexibleThreadOwner(store, flexible, { thread: id, viewer: { name: who.name }, canAccess: repo => store.accountCanAccess(who.name, repo) }).ok;
-    };
+    const held = sessionHeld(who, flexible, id);
+    if (held === null) return acted(response, 403, "refused", "Only a person signed in here can answer an agent.");
     const done = await answerFlexibleRequest(store, flexible, { thread: id, request: body.get("request") ?? "", shownDigest: body.get("card") ?? "",
       by: { kind: "person", name: who.name, generation: who.session.generation }, choice, held });
     return done.ok ? acted(response, 200, "done", "Sent to the agent.") : acted(response, 409, "refused", done.message);
@@ -331,7 +327,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const started = await startFlexibleThread(store, flexible, { repo, by, digest: card.digest, message, model: card.model, billing: card.billing, startKey: card.summary.key, launcher,
       freshProof: FRESH_PROOFS.has(proved.method), expectNetwork: card.network });
     if (!started.ok) return acted(response, 409, "refused", started.message);
-    return acted(response, 200, "done", started.replayed ? "This thread already started." : "The thread started.");
+    // The thread itself, so the terminal selects it (the same thread again for a replayed start).
+    return json(response, 200, { outcome: "done", words: started.replayed ? "This thread already started." : "The thread started.", thread: started.thread });
   }
 
   /** The task an address names, in view as its page would be (the route admitted its project already). */
@@ -452,6 +449,155 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "linkRedemption", body);
   }
 
+  // ---- threads for everyday use (threads-everyday S4/S5), kept after the reviewed handlers above ----
+
+  /** This very session, as a check run again later (inside a decision's or an admission's own transaction): the saved row
+   * as it stands then, compared whole with the one admitted now: the same row (its id hash), account, generation and
+   * role, the same immutable bindings (authority, local-mode generation, key epoch and key hash, creation), still held
+   * in memory, within its lifetime (an expired row that wasn't deleted yet refuses), and the account's standing and the
+   * thread's project unchanged. Null when the session isn't saved here at all. */
+  const sessionHeld = (who: Who & { via: "cookie" }, flexible: FlexibleSessions, id: string): (() => boolean) | null => {
+    const sessionHash = runtime.sessions.hashOf(who.session);
+    const admitted = sessionHash === null ? null : store.webSession(sessionHash);
+    if (admitted === null || admitted.account !== who.name) return null;
+    return (): boolean => {
+      const saved = store.webSession(admitted.idHash), account = store.accountOf(who.name);
+      return saved !== null && saved.idHash === admitted.idHash && saved.account === admitted.account && saved.generation === admitted.generation && saved.role === admitted.role
+        && saved.authority === admitted.authority && saved.localGeneration === admitted.localGeneration && saved.keyEpoch === admitted.keyEpoch && saved.keyHash === admitted.keyHash
+        && saved.createdAt === admitted.createdAt && sessionWithinLifetime(saved, Date.now()) && runtime.sessions.holds(who.session)
+        && account !== null && account.revokedAt === null && account.generation === saved.generation && account.generation === who.session.generation && account.role === saved.role
+        && admitFlexibleThreadOwner(store, flexible, { thread: id, viewer: { name: who.name }, canAccess: repo => store.accountCanAccess(who.name, repo) }).ok;
+    };
+  };
+  /**
+   * POST /agents/live/thread/<id>/turn: Reply. The thread's owner sends its agent their next message (`message`), named
+   * by `key` (32 hex, the client's: the same key again never takes a second turn). Proved as a start is (a password typed
+   * now, or where the rules let it stand in, the person's own session on a solo or Passwordless install, or the local
+   * owner's own act `reply-thread`); their session is re-read inside the admission's own transaction. Refused while
+   * interactive agent threads are off.
+   */
+  async function threadTurn(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response, posted } = ctx;
+    const flexible = threadsOn();
+    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can reply to a thread.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/turn".length);
+    const repo = ownedThread(request, who, flexible, id);
+    if (repo === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (launcher === null) return acted(response, 409, "refused", "This console can't give a thread its network, so nothing was sent.");
+    const body = readForm(posted, CONSOLE_FORMS.threadTurn);
+    const message = body.get("message") ?? "", key = body.get("key") ?? "";
+    if (message.trim() === "" || !/^[0-9a-f]{32}$/.test(key)) return acted(response, 400, "refused", "That reply isn't one Toolroll can read. Nothing was sent.");
+    const proved = authenticateApprover(store, who.name, body.get("password") ?? "", repo);
+    if (!proved.ok || !START_PROOFS.has(proved.method)) return acted(response, 403, "refused", "Replying here needs your password. Nothing was sent.");
+    if (proved.method === "local-owner" && localActNow(store, "reply-thread") === null) return acted(response, 403, "refused", "Replying here needs your password. Nothing was sent.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null) return acted(response, 403, "refused", "Only a person signed in here can reply to a thread.");
+    const sent = await continueFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, message, key, freshProof: FRESH_PROOFS.has(proved.method),
+      held, launcher });
+    if (!sent.ok) return acted(response, 409, "refused", sent.message);
+    return json(response, 200, { outcome: "done", words: sent.replayed ? "That reply was already sent." : sent.fresh ? `Sent. Turn ${sent.seq} started with a fresh agent: it doesn't remember earlier turns.` : `Sent. Turn ${sent.seq} started.`,
+      turn: sent.turn });
+  }
+
+  /**
+   * POST /agents/live/thread/<id>/stop and /end: the thread's owner stops its agent's turn (the thread stays open) or
+   * ends the thread (final; its work can still be shipped). Each only narrows: their own session (re-read), no
+   * password, and a local owner's own act (`stop-thread`, `end-thread`). Answered while interactive agent threads are
+   * off too: turning them off never stops anyone stopping or ending a thread.
+   */
+  const threadClose = (act: "stop" | "end") => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, request, response } = ctx;
+    const flexible = threadsRead();
+    if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -`/${act}`.length);
+    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.authority === "local-owner" && localActNow(store, act === "end" ? "end-thread" : "stop-thread") === null) return acted(response, 403, "refused", "Sign in with your password to do this.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const done = await closeFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, act });
+    if (!done.ok) return acted(response, 409, "refused", done.message);
+    const words = act === "end"
+      ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…" : "Ended. You can still ship its work."
+      : done.stopPending ? "Stopping its agent…" : "Stopped. Reply to go on.";
+    return acted(response, 200, "done", words);
+  };
+
+  /**
+   * POST /agents/live/thread/<id>/ship: Ship. Posted without `terms` it answers the exact terms a Ship would sign now
+   * (`{ outcome: "ship-terms", key, digest, lines, laptop, command }`) and does nothing. Posted with the terms' key and
+   * digest it presses, only on the laptop road (the owner's D1): this computer's local owner, in their live session, with
+   * the exact act `ship-thread`, on an install where nobody has a password (flexible-laptop.ts, read again at every step
+   * that acts on it). Anywhere else Ship takes a password typed now, which this road never takes: it answers the command
+   * that does (`toolroll thread ship <id> --key <key>`, a hidden password prompt). The press's own contract is
+   * flexible-ship.ts shipFlexible, unchanged. Its terms and press never check the switch (arming does, inside).
+   */
+  async function threadShip(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response, posted } = ctx;
+    const flexible = threadsRead();
+    if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can ship a thread's work.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/ship".length);
+    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    const by = { name: who.name, generation: who.session.generation };
+    const shown = await flexibleThreadShipTerms(store, { thread: id, by });
+    if (!shown.ok) return acted(response, 409, "refused", shown.message);
+    const laptop = who.authority === "local-owner" && who.session.localGeneration !== null
+      && laptopShipProblem(store, { owner: who.name, localGeneration: who.session.localGeneration }) === null;
+    const command = `toolroll thread ship ${id} --key ${shown.summary.key}`;
+    const body = readForm(posted, CONSOLE_FORMS.threadShip);
+    const key = body.get("terms") ?? "";
+    if (key === "") return json(response, 200, { outcome: "ship-terms", key: shown.summary.key, digest: shown.digest, lines: summaryLines(shown.summary), laptop, ...(laptop ? {} : { command }) });
+    if (!laptop) return acted(response, 403, "refused", `Shipping needs your password typed now. Run \`${command}\` in a terminal. Nothing was shipped.`);
+    if (localActNow(store, "ship-thread") === null) return acted(response, 403, "refused", "Shipping from here needs your own act at this computer. Nothing was shipped.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can ship a thread's work.");
+    // The session goes with the proof: asked again inside the consent's own transaction, after the lock, the agent's
+    // stop and the reads of the thread's branch (a session that ended meanwhile consents to nothing).
+    const shipped = await shipFlexibleThread(store, flexible, { thread: id, by, proof: { kind: "local-owner", held }, shownDigest: body.get("digest") ?? "", shownKey: key, now: new Date() });
+    if (!shipped.ok) return acted(response, 409, "refused", shipped.message);
+    const commit = latestFlexibleShip(store, id)?.candidate.slice(0, 12) ?? "";
+    return acted(response, 200, "done", `Shipping: checks run on commit ${commit}; Toolroll merges it once they pass.`);
+  }
+
+  /** POST /agents/live/thread/<id>/ship/cancel: the owner stops the thread's armed Ship for good (it only narrows). */
+  async function threadShipCancel(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response } = ctx;
+    const flexible = threadsRead();
+    if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/ship/cancel".length);
+    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.authority === "local-owner" && localActNow(store, "cancel-ship") === null) return acted(response, 403, "refused", "Sign in with your password to do this.");
+    const done = cancelFlexibleThreadShip(store, { thread: id, by: { name: who.name, generation: who.session.generation }, now: new Date() });
+    return done.ok ? acted(response, 200, "done", "Ship stopped for good. Nothing more is merged from it.") : acted(response, 409, "refused", done.message);
+  }
+
+  /** POST /agents/live/thread/<id>/ship/send-back: the owner ends the armed Ship and its `feedback` becomes the thread's
+   * next reply, proved as a reply is. */
+  async function threadShipSendBack(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response, posted } = ctx;
+    const flexible = threadsOn();
+    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/ship/send-back".length);
+    const repo = ownedThread(request, who, flexible, id);
+    if (repo === null) return acted(response, 404, "refused", "There's no such thread.");
+    const body = readForm(posted, CONSOLE_FORMS.threadSendBack);
+    const feedback = body.get("feedback") ?? "", key = body.get("key") ?? "";
+    if (feedback.trim() === "" || !/^[0-9a-f]{32}$/.test(key)) return acted(response, 400, "refused", "That note isn't one Toolroll can read. Nothing was sent.");
+    const proved = authenticateApprover(store, who.name, body.get("password") ?? "", repo);
+    if (!proved.ok || !START_PROOFS.has(proved.method)) return acted(response, 403, "refused", "Sending back here needs your password. Nothing was sent.");
+    if (proved.method === "local-owner" && localActNow(store, "reply-thread") === null) return acted(response, 403, "refused", "Sending back here needs your password. Nothing was sent.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const sent = await sendBackFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, feedback, key, freshProof: FRESH_PROOFS.has(proved.method),
+      held, launcher, now: new Date() });
+    if (!sent.ok) return acted(response, 409, "refused", sent.message);
+    return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started${sent.fresh ? " with a fresh agent: it doesn't remember earlier turns" : ""}.`);
+  }
+
   return {
     /** The console's upkeep tick (serve.ts, every five seconds): a thread's answers past their deadlines are settled, and
      * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
@@ -470,6 +616,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       const host = flexible;
       if (host === null) return;
       try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }
+      // Ended threads' working copies, a week after they ended (unless a Ship is open): one pass at a time.
+      if (!tidyingEnded) {
+        tidyingEnded = true;
+        void tidyEndedFlexibleThreads(store, { now: new Date() }).catch(() => { /* the next tick tries again */ }).finally(() => { tidyingEnded = false; });
+      }
       if (stopping) return;
       stopping = true;
       void settleFlexibleStops(store, host).catch(() => { /* the next tick tries again */ }).finally(() => { stopping = false; });
@@ -483,7 +634,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
-        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart }),
+        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],

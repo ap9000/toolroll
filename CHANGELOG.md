@@ -4,6 +4,41 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.115 — 2026-11-18
+
+Interactive agent threads (beta) get their everyday loop, a failed plan is no longer a dead end, and every screen
+uses the same status words.
+
+### New
+
+- **Reply, Stop, End and Ship a thread** in the workbench (`s`, `x`, `X`, `a`), or with `toolroll thread`. Agents →
+  Live in the browser lists your threads. A reply after a stop starts a fresh agent, and the reply box says so.
+- **Ship a thread's work.** You read the full terms first; the merge happens only once its check passes on that
+  exact commit. On a laptop install with no password one key ships; with a password, `toolroll thread ship` asks.
+- **Plan again.** When a plan doesn't pass its checks, the task says why (for example "plan must start with
+  ## Approach") and what the agent said, and `r` or **Plan again** has the planner try again.
+- **`p` asks for a plan** on a task you filed from the command line.
+
+### Changed
+
+- **One set of status words everywhere:** Ready (open the result) before you accept, Complete after. A newly
+  finished thread turn waits in Needs you with an unread dot until you look at it, then moves to Recent.
+- **Retry words say what is true:** "Retry due; waiting to start", **Pause task** for work that hasn't run yet, and
+  **Stop retrying** only for real retries.
+- **A release waiting on CI says Waiting** (for example "Waiting for PR checks"); only its approval says Needs you.
+  With checks off, a task reads "Checks deferred to release" until a release check passes on it.
+- **Turning threads off, removing your sign-in or showing its status** needs no password on a solo install, and
+  prompts offer your name.
+
+### Fixed
+
+- **Removing a sign-in, changing a password or removing an account** stops that person's running thread turns,
+  including from another window, with Toolroll's own words instead of a raw API error.
+- **The workbench acts on the version you're looking at;** an old dialog refuses rather than act on a newer one.
+- **Open build shell no longer drops the first keys** you type while it opens.
+- **The `w` link can finish thread setup:** the password you type into its form counts.
+- **`toolroll password set` no longer stops Toolroll;** the workbench asks to open again.
+
 ## 0.9.114 — 2026-11-17
 
 Interactive agent threads (beta) now run on each person's own Claude sign-in.

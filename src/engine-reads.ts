@@ -8,9 +8,9 @@
  * task's facts, never the whole Work projection or the task page); the diff reads the sealed patch and parses only the
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
-import { agentSaidOf, type Run, type Store, type TaskFamily } from "./store.js";
+import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
 import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
-import { retryPinsOf } from "./local-owner-acts.js";
+import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
@@ -79,7 +79,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
   const rows = stepRowsOf(facts);
   const builds = runs.filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair");
   const reviews = runs.filter(run => run.role === "reviewer");
-  const behind: Record<StepCard["key"], Run[]> = { plan: plannerRuns, approve: [], build: builds, checks: [], review: reviews, ready: [] };
+  // The Plan card's attempts are the planning attempts (root planner runs), never their correction children.
+  const behind: Record<StepCard["key"], Run[]> = { plan: plannerRuns.filter(run => run.parentRun === null), approve: [], build: builds, checks: [], review: reviews, ready: [] };
   // The waiting approval's terms: the one summary every surface shows (approval-summary.ts), its key what a yes pins.
   const terms = scope === null || approved ? null : (() => {
     const summary = approvalSummaryOf(scope, summaryContextOf(store, current.id, scope, now));
@@ -125,13 +126,17 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
       if (waiting === null) return null;
-      // What the agent said on its way out of the last build, while it waits to try again (the Steps tab shows it).
-      const last = latestFinishedAttempt(builds);
+      // What the agent said on its way out of the attempt that failed (a build, or a plan attempt), while it waits to try
+      // again (the Steps tab shows it).
+      const last = waiting.attempt === "plan" ? latestFinishedPlanner(plannerRuns) : latestFinishedAttempt(builds);
       return { ...waiting, agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null };
     })(),
     // A hold matters only while the task could still run: a cancelled or finished task has nothing to resume.
     held: current.state === "cancelled" || current.state === "done" ? null : heldOf(store, ref?.id ?? null, builds, now),
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
+    planStopped: planStoppedOf(store, current.id, ref?.id ?? null, plannerRuns),
+    plan: planAskOf(store, current.id, current.state, ref, scope, live !== null, now),
+    planQueued: planQueuedOf(store, current.state, ref, scope, live !== null, now),
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
@@ -192,8 +197,9 @@ function heldOf(store: Store, taskRef: number | null, builds: readonly Run[], no
     lastFailure: last !== null && last.outcome === "failed" ? failedAttemptSentence(last.reason).replace(/[.\s]+$/, "") : null };
 }
 
-/** When a waiting task tries again and why its last build stopped (contracts/engine-api.ts waitingSchema). */
-type Waiting = { retryAt: string | null; lastFailure: string | null };
+/** When a waiting task tries again, why its last attempt stopped, and whether that attempt was a build or a plan
+ * (contracts/engine-api.ts waitingSchema). */
+type Waiting = { retryAt: string | null; lastFailure: string | null; attempt: "build" | "plan" };
 
 /** A queued task waiting to start again: when the next try is due (its backoff hold's end; null: when a builder is
  * free) and the last build's failure in one short line. Null unless the task is queued and its last build failed or a
@@ -216,8 +222,9 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
   const rows = store.handle.prepare(`SELECT task.id AS task,
       EXISTS (SELECT 1 FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?)) AS held,
       (SELECT hold.until FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?) ORDER BY hold.held_at, hold.id LIMIT 1) AS until,
-      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
-      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason
+      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
+      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason,
+      (SELECT run.role FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS role
     FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
     WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})
       -- A person's hold (Stop retrying, a pause, a question, an incident) means it isn't waiting to try again.
@@ -229,6 +236,8 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
     out.set(String(row["task"]), {
       retryAt: held && row["until"] != null ? String(row["until"]) : null,
       lastFailure: failed ? failedAttemptSentence(row["reason"] == null ? null : String(row["reason"])).replace(/[.\s]+$/, "") : null,
+      // The latest attempt that ended was a planning turn (the planner's own backoff): the plan is tried again, not a build.
+      attempt: row["role"] === "planner" ? "plan" : "build",
     });
   }
   return out;
@@ -303,7 +312,7 @@ export function resultDiffFileOf(store: Store, evidenceRoot: string, taskId: str
   const parsed = parseReviewDiff(text);
   const one = parsed.files[0];
   if (one === undefined) return null;
-  return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks }, linesTruncated: parsed.linesTruncated };
+  return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks, lineCount: patchLineCount(one.hunks) }, linesTruncated: parsed.linesTruncated };
 }
 
 /** What accepting a waiting result means for `viewer`, read the way the completion reads it (assignment.ts
@@ -436,4 +445,113 @@ export function agentsReadOf(detection: AgentDetection | null, view: "full" | "s
     return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines };
   }
   return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection) };
+}
+
+// ---- Plan failures (the stranger test, round 10) --------------------------------------------------------------------
+
+/** The incidents only a planning turn opens (claim.ts sealPlanFailure): Plan again resolves them, never Retry. */
+export const PLANNER_INCIDENTS: Readonly<Record<string, "plan" | "question" | "stalled">> = Object.freeze({
+  "malformed-plan": "plan", "malformed-decision": "question", "plan-attempts-exhausted": "stalled",
+});
+
+/** The newest planning attempt that ended (a finish time or an outcome), or null: a root planner run, never its
+ * correction child (claim.ts sealPlanFailure keeps the attempt's reason and what the agent said on the root). */
+function latestFinishedPlanner(planners: readonly Run[]): Run | null {
+  let latest: Run | null = null;
+  for (const run of planners) if (run.parentRun === null && (run.finishedAt !== null || (run.outcome ?? null) !== null) && (latest === null || run.id > latest.id)) latest = run;
+  return latest;
+}
+
+/** The line a stopped plan reads as: what stopped it, in plain words (needs-you.ts), never the attempt's own message. */
+export function planStoppedLine(kind: "plan" | "question" | "stalled", strikes: number, reason: string | null): string {
+  if (kind === "plan") return "The plan didn't pass its checks.";
+  if (kind === "question") return "The planner's question didn't pass its checks.";
+  const why = failedAttemptSentence(reason).replace(/[.\s]+$/, "").replace(/^./, first => first.toLowerCase());
+  return `Planning stopped after ${Math.max(strikes, 1)} failed attempts in a row: ${why}.`;
+}
+
+/**
+ * A plan that stopped and waits for Plan again (contracts/engine-api.ts stepCardsSchema.planStopped): this version's open
+ * incident from a planning turn, what stopped it in plain words, why the plan was refused and what the agent said
+ * (cleaned: planProblemsOf, agentSaidOf), and what Plan again binds to (the incident and the planning source the screen
+ * read; null when it can't be asked as it stands). Read facts only: Plan again proves every one of them again.
+ */
+function planStoppedOf(store: Store, taskId: string, taskRef: number | null, planners: readonly Run[]): StepCards["planStopped"] {
+  if (taskRef === null) return null;
+  const row = store.handle.prepare(`SELECT incident.id, incident.kind, incident.run FROM incident JOIN run ON run.id = incident.run
+      WHERE run.task_ref = ? AND run.role = 'planner' AND incident.resolved_at IS NULL ORDER BY incident.id DESC LIMIT 1`).get(taskRef);
+  if (row === undefined) return null;
+  const kind = PLANNER_INCIDENTS[String(row["kind"])];
+  if (kind === undefined) return null;
+  const run = Number(row["run"]);
+  const reason = planners.find(one => one.id === run)?.reason ?? null;
+  const strikes = Number(store.handle.prepare("SELECT plan_strikes FROM task_ref WHERE id = ?").get(taskRef)?.["plan_strikes"] ?? 0);
+  const source = planSourceOf(store, taskId);
+  const plan = store.handle.prepare("SELECT plan FROM task_ref WHERE id = ?").get(taskRef)?.["plan"];
+  return {
+    incident: Number(row["id"]), kind, line: planStoppedLine(kind, strikes, reason),
+    problems: planProblemsOf(store, run), agentSaid: agentSaidOf(store, run),
+    again: source !== null && plan === "requested" ? { source } : null,
+  };
+}
+
+/**
+ * What asking for a plan binds to (stepCardsSchema.plan), under the task page's own "plan first" rule
+ * (render-tasks.ts canPlan): no plan asked for yet, no approved scope, nothing running, queued, and not a coordinator's
+ * filing. Null otherwise. The request proves it all again.
+ */
+function planAskOf(store: Store, taskId: string, state: string, ref: { id: number; plan: string | null } | null,
+  scope: ReturnType<Store["getScope"]>, live: boolean, now: Date): StepCards["plan"] {
+  if (ref === null || ref.plan !== null || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return null;
+  if (scope !== null && approvalOf(scope).approved) return null;
+  if (store.coordinatorProvenanceOf(taskId) !== null) return null;
+  const source = planSourceOf(store, taskId);
+  return source === null ? null : { source };
+}
+
+/** planStoppedOf for one task as its page reads it (server/task-views.ts): the same facts the steps carry. */
+export function planStoppedFor(store: Store, taskId: string): StepCards["planStopped"] {
+  const ref = store.lookupRef(taskId);
+  return ref === null ? null : planStoppedOf(store, taskId, ref.id, store.runsFor(ref.id).filter(run => run.role === "planner"));
+}
+
+/** A file's length at the result when its own patch says it: an added file (one hunk from nothing, `-0,0 +1,N`) is N
+ * lines; a deleted one (`-1,N +0,0`) is none. Null for every other file (only a context read at the result knows). */
+export function patchLineCount(hunks: readonly { header: string }[]): number | null {
+  if (hunks.length !== 1) return null;
+  const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunks[0]!.header);
+  if (header === null) return null;
+  const [oldStart, oldCount, newStart, newCount] = [header[1], header[2] ?? "1", header[3], header[4] ?? "1"].map(Number) as [number, number, number, number];
+  if (oldStart === 0 && oldCount === 0) return newStart === 1 || newCount === 0 ? newCount : null;
+  if (newStart === 0 && newCount === 0) return 0;
+  return null;
+}
+
+/**
+ * A planner's own backoff as a page reads it (server/task-views.ts): the latest root planning attempt's failure in one
+ * line and what its agent said (cleaned: agentSaidOf), while Toolroll waits to plan again. Null unless the task waits
+ * on a planning attempt. Words for the person's own page only: never sent outside Toolroll.
+ */
+export function planBackoffFor(store: Store, taskId: string, now: Date): { line: string; agentSaid: string[] | null } | null {
+  const waiting = waitingOf(store, taskId, now);
+  if (waiting === null || waiting.attempt !== "plan") return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const last = latestFinishedPlanner(store.runsFor(ref.id).filter(run => run.role === "planner"));
+  return {
+    line: waiting.lastFailure === null ? "Toolroll tries the plan again soon." : `Last plan attempt failed · ${waiting.lastFailure}. Toolroll tries the plan again soon.`,
+    agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null,
+  };
+}
+
+/**
+ * A plan asked for that waits to start (stepCardsSchema.planQueued): queued, the plan requested, no approved scope, nothing
+ * running and no hold of any kind. Dispatch starts its planner on its own (operate.ts: a requested plan is the one spend
+ * on a task with no approved scope), so a person can stop it before it starts; a task filed with no plan asked for and
+ * no approval reads false (nothing would start). Read facts only: the hold proves its own.
+ */
+function planQueuedOf(store: Store, state: string, ref: { id: number; plan: string | null } | null, scope: ReturnType<Store["getScope"]>, live: boolean, now: Date): boolean {
+  if (ref === null || ref.plan !== "requested" || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return false;
+  if (scope !== null && approvalOf(scope).approved) return false;
+  return store.activeHolds(ref.id, now).length === 0;
 }

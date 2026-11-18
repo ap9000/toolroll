@@ -64,7 +64,7 @@ function chipOf(row: Pick<BrowserAgentRow, "group" | "label">): { word: string; 
 }
 function StateChip({ row }: { row: Pick<BrowserAgentRow, "group" | "label"> }) {
   const { word, tone } = chipOf(row);
-  return <span className="agents-chip" data-agent-state={row.label}><KChip word={word} tone={tone} /></span>;
+  return <span className="agents-chip" data-agent-state={row.label}><KChip word={word} tone={tone} />{row.group === "done" && <span className="agents-unread" role="img" aria-label="Unread" title="Unread" />}</span>;
 }
 
 function Elapsed({ row }: { row: Pick<BrowserAgentRow, "startedAt" | "endedAt"> }) {
@@ -192,7 +192,8 @@ function AgentsList({ view }: { view: BrowserAgentsView }) {
   const rows = view.groups.flatMap(group => group.rows);
   const needs = rows.filter(row => row.group === "needs-you");
   const working = rows.filter(row => row.endedAt === null && row.group !== "needs-you");
-  const finished = rows.filter(row => row.endedAt !== null && row.group !== "needs-you" && now - Date.parse(row.endedAt) <= WINDOW_MS[range]);
+  const finished = rows.filter(row => row.endedAt !== null && row.group !== "needs-you" && now - Date.parse(row.endedAt) <= WINDOW_MS[range])
+    .sort((a, b) => Number(b.group === "done") - Number(a.group === "done"));
   const offline = (view.computers?.list ?? []).filter(one => one.state === "offline" && !one.retired);
   const alive = (view.computers?.list ?? []).some(one => one.state !== "offline");
   const seg = <KSeg label="Finished in" current={range} onChange={choose} items={[{ key: "30m", label: "30 min" }, { key: "2h", label: "2 h" }, { key: "24h", label: "24 h" }]} />;

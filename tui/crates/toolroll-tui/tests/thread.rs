@@ -684,3 +684,576 @@ fn an_answer_while_a_thread_is_open_follows_no_task() {
         Some("The thread started.")
     );
 }
+
+#[test]
+fn a_stopped_turn_says_so_in_plain_words_with_toolrolls_own_note() {
+    let mut w = window();
+    w["thread"]["version"] = json!("2222222222222222");
+    w["thread"]["questions"] = json!([]);
+    w["thread"]["turn"]["status"] = json!("interrupted");
+    w["thread"]["turn"]["endWords"] = json!("Your Claude sign-in for threads was removed, so Toolroll stopped this turn. Add one again, then reply to continue.");
+    let mut app = thread_app(w);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("turn 2 stopped"), "{shown}");
+    assert!(screen(&mut app, 160, 30).contains("turn 2 stopped · on your plan"));
+    assert!(!shown.contains("total unknown"), "{shown}");
+    assert!(
+        shown.contains("Toolroll: Your Claude sign-in for threads was removed, so Toolroll"),
+        "{shown}"
+    );
+}
+
+/// The threads list with the selected thread's turn in `turn` (and its agent live or not).
+fn threads_with(turn: &str, live: bool) -> Value {
+    let mut list = fake::fixture("live-threads.json");
+    list["threads"][0]["turn"] = json!(turn);
+    list["threads"][0]["live"] = json!(live);
+    list
+}
+
+#[test]
+fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
+    let mut app = thread_app(window());
+    // While its turn is still working, s says so and opens nothing.
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(
+        app.status
+            .as_ref()
+            .is_some_and(|(_, w)| w.contains("still working")),
+        "{:?}",
+        app.status
+    );
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(
+        matches!(&app.mode, Mode::ThreadReply(t, _) if t == fake::THREAD),
+        "{:?}",
+        app.mode
+    );
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Reply:"), "{shown}");
+    assert!(
+        shown.contains("This starts a fresh agent: it won't remember earlier turns."),
+        "{shown}"
+    );
+    for c in "Now add a test".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(path, &format!("/agents/live/thread/{}/turn", fake::THREAD));
+    assert_eq!(
+        fields[0],
+        ("message".to_string(), "Now add a test".to_string())
+    );
+    assert_eq!(fields[1].0, "key");
+    assert_eq!(fields[1].1.len(), 32);
+    assert!(fields[1].1.bytes().all(|b| b.is_ascii_hexdigit()));
+    // Each reply has a key of its own.
+    app.key(key('s'));
+    for c in "again".chars() {
+        app.key(key(c));
+    }
+    let again = app.key(enter());
+    let [Effect::Act { fields: second, .. }] = again.as_slice() else {
+        panic!("{again:?}")
+    };
+    assert_ne!(second[1].1, fields[1].1);
+}
+
+#[test]
+fn an_ended_thread_takes_no_reply() {
+    let mut app = thread_app(window());
+    let mut list = threads_with("interrupted", false);
+    list["threads"][0]["ended"] = json!(true);
+    app.update(Msg::Threads(Ok(parse(list))));
+    // Still selected (an ended thread moves to Recent): s says it ended.
+    app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    assert_eq!(app.key(key('s')), vec![]);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(
+        app.status
+            .as_ref()
+            .is_some_and(|(_, w)| w.contains("This thread has ended")),
+        "{:?}",
+        app.status
+    );
+}
+
+#[test]
+fn x_and_capital_x_on_a_thread_ask_first_then_post_stop_or_end_for_that_thread() {
+    for (k, verb, asked) in [
+        ('x', "stop", "Stop the agent's turn?"),
+        ('X', "end", "End this thread?"),
+    ] {
+        let mut app = thread_app(window());
+        assert_eq!(app.key(key(k)), vec![]);
+        assert!(
+            matches!(&app.mode, Mode::ConfirmThreadAct(t, _) if t == fake::THREAD),
+            "{:?}",
+            app.mode
+        );
+        let shown = screen(&mut app, 120, 30);
+        assert!(shown.contains(asked), "{shown}");
+        // Any other key cancels; nothing is posted.
+        assert_eq!(app.key(key('n')), vec![]);
+        assert!(matches!(app.mode, Mode::Normal));
+        app.key(key(k));
+        let fx = app.key(key('y'));
+        let [Effect::Act { path, fields, .. }] = fx.as_slice() else {
+            panic!("{fx:?}")
+        };
+        assert_eq!(
+            path,
+            &format!("/agents/live/thread/{}/{verb}", fake::THREAD)
+        );
+        assert!(fields.is_empty());
+    }
+}
+
+fn ship_terms(laptop: bool) -> ActOutcome {
+    ActOutcome::ShipTerms {
+        key: "3".repeat(32),
+        digest: "4".repeat(32),
+        lines: vec![
+            "  Task      Changes from a Flexible thread".into(),
+            "  Ships     1 changed file from this thread, as commit 0123456789ab".into(),
+            "  Merges    Toolroll merges it by itself once the project's checks pass on this exact commit.".into(),
+        ],
+        laptop,
+        command: (!laptop).then(|| format!("toolroll thread ship {} --key {}", fake::THREAD, "3".repeat(32))),
+    }
+}
+
+#[test]
+fn a_on_a_thread_reads_the_ship_terms_whole_then_enter_ships_on_the_laptop_road_only() {
+    let mut app = thread_app(window());
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    let fx = app.key(key('a'));
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship", fake::THREAD));
+    assert!(fields.is_empty(), "asking for the terms ships nothing");
+    // The laptop road: the sheet, read to the end, then Enter presses exactly its key and digest.
+    app.update(Msg::Acted(Ok(ship_terms(true))));
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Ship approves exactly this:"), "{shown}");
+    assert!(
+        shown.contains("Enter") && shown.contains("Ship it"),
+        "{shown}"
+    );
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(path, &format!("/agents/live/thread/{}/ship", fake::THREAD));
+    assert_eq!(
+        fields,
+        &vec![
+            ("terms".to_string(), "3".repeat(32)),
+            ("digest".to_string(), "4".repeat(32))
+        ]
+    );
+    // Off it: Enter hands the yes to the command line (a password typed there), and posts nothing.
+    app.update(Msg::Acted(Ok(ship_terms(false))));
+    screen(&mut app, 120, 40);
+    let fx = app.key(enter());
+    assert_eq!(
+        fx,
+        vec![Effect::Scrollback(vec![format!(
+            "toolroll thread ship {} --key {}",
+            fake::THREAD,
+            "3".repeat(32)
+        )])]
+    );
+    assert!(
+        app.status
+            .as_ref()
+            .is_some_and(|(_, w)| w.contains("password typed now")),
+        "{:?}",
+        app.status
+    );
+}
+
+#[test]
+fn while_a_thread_ships_x_stops_the_ship_and_r_sends_it_back_with_a_note() {
+    let mut app = thread_app(window());
+    let mut list = threads_with("finished", false);
+    list["threads"][0]["ship"] = json!("armed");
+    app.update(Msg::Threads(Ok(parse(list))));
+    assert_eq!(
+        app.selected_item().map(|i| i.word.as_str()),
+        Some("Question")
+    );
+    app.key(key('x'));
+    assert!(screen(&mut app, 120, 30).contains("Stop this Ship for good?"));
+    let fx = app.key(key('y'));
+    let [Effect::Act { path, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(
+        path,
+        &format!("/agents/live/thread/{}/ship/cancel", fake::THREAD)
+    );
+    app.key(key('r'));
+    for c in "Keep the old name".chars() {
+        app.key(key(c));
+    }
+    assert!(screen(&mut app, 120, 30).contains("Send back:"));
+    let fx = app.key(enter());
+    let [Effect::Act { path, fields, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(
+        path,
+        &format!("/agents/live/thread/{}/ship/send-back", fake::THREAD)
+    );
+    assert_eq!(
+        fields[0],
+        ("feedback".to_string(), "Keep the old name".to_string())
+    );
+    assert_eq!(fields[1].1.len(), 32);
+}
+
+/// A threads list row with these facts (the fixture's second thread, made to order).
+fn row(turn: Option<&str>, ship: Option<&str>, waiting: i64, ended: bool) -> ThreadRow {
+    let mut r: ThreadRow = parse(fake::fixture("live-threads.json")["threads"][1].clone());
+    r.turn = turn.map(str::to_string);
+    r.ship = ship.map(str::to_string);
+    r.waiting = waiting;
+    r.ended = ended;
+    r
+}
+
+#[test]
+fn each_thread_state_has_its_own_place_and_word() {
+    use toolroll_tui::app::Section::{NeedsYou, Recent, Working};
+    use toolroll_tui::thread::thread_place;
+    // (turn, ship, questions waiting, ended) → unseen, then seen.
+    type Place = (toolroll_tui::app::Section, &'static str);
+    type Case = (
+        Option<&'static str>,
+        Option<&'static str>,
+        i64,
+        bool,
+        Place,
+        Place,
+    );
+    let table: &[Case] = &[
+        // A question or permission always needs you, read or not.
+        (
+            Some("running"),
+            None,
+            1,
+            false,
+            (NeedsYou, "Question"),
+            (NeedsYou, "Question"),
+        ),
+        (
+            Some("finished"),
+            Some("merged"),
+            2,
+            false,
+            (NeedsYou, "Question"),
+            (NeedsYou, "Question"),
+        ),
+        // A running thread is Working, never "Thread".
+        (
+            Some("running"),
+            None,
+            0,
+            false,
+            (Working, "Working"),
+            (Working, "Working"),
+        ),
+        (
+            Some("admitted"),
+            None,
+            0,
+            false,
+            (Working, "Working"),
+            (Working, "Working"),
+        ),
+        (
+            Some("finished"),
+            Some("armed"),
+            0,
+            false,
+            (Working, "Shipping"),
+            (Working, "Shipping"),
+        ),
+        // News needs you once, then sits in Recent.
+        (
+            Some("finished"),
+            None,
+            0,
+            false,
+            (NeedsYou, "Ready"),
+            (Recent, "Ready"),
+        ),
+        (
+            Some("finished"),
+            Some("merged"),
+            0,
+            false,
+            (NeedsYou, "Ready"),
+            (Recent, "Ready"),
+        ),
+        // Unknown, stopped and ended are three states.
+        (
+            Some("unknown"),
+            None,
+            0,
+            false,
+            (NeedsYou, "Outcome unknown"),
+            (Recent, "Outcome unknown"),
+        ),
+        (
+            Some("interrupted"),
+            None,
+            0,
+            false,
+            (NeedsYou, "Stopped"),
+            (Recent, "Stopped"),
+        ),
+        (
+            Some("unknown"),
+            None,
+            0,
+            true,
+            (Recent, "Ended"),
+            (Recent, "Ended"),
+        ),
+        // A refused or stopped Ship says so (never plain Ready), unless the newest turn's own end says more.
+        (
+            Some("finished"),
+            Some("cancelled"),
+            0,
+            false,
+            (NeedsYou, "Ship stopped"),
+            (Recent, "Ship stopped"),
+        ),
+        (
+            Some("finished"),
+            Some("refused"),
+            0,
+            false,
+            (NeedsYou, "Ship refused"),
+            (Recent, "Ship refused"),
+        ),
+        (
+            Some("finished"),
+            Some("failed"),
+            0,
+            false,
+            (NeedsYou, "Ship refused"),
+            (Recent, "Ship refused"),
+        ),
+        (
+            Some("interrupted"),
+            Some("refused"),
+            0,
+            false,
+            (NeedsYou, "Stopped"),
+            (Recent, "Stopped"),
+        ),
+    ];
+    for (turn, ship, waiting, ended, unseen, seen) in table {
+        let r = row(*turn, *ship, *waiting, *ended);
+        assert_eq!(
+            thread_place(&r, false),
+            *unseen,
+            "{turn:?} {ship:?} {waiting} {ended} unseen"
+        );
+        assert_eq!(
+            thread_place(&r, true),
+            *seen,
+            "{turn:?} {ship:?} {waiting} {ended} seen"
+        );
+    }
+    // A merged Ship reads Merged as its Ship outcome, apart from the thread's own state.
+    assert_eq!(
+        toolroll_tui::thread::ship_outcome(Some("merged")),
+        Some("Ship: Merged")
+    );
+    assert_eq!(toolroll_tui::thread::ship_outcome(Some("refused")), None);
+    assert_eq!(
+        toolroll_tui::thread::turn_status_words("unknown"),
+        "outcome unknown"
+    );
+}
+
+#[test]
+fn a_finished_turn_needs_you_with_a_dot_until_looked_at_once_then_moves_to_recent_and_a_new_one_is_news_again(
+) {
+    let mut app = thread_app(window());
+    // Selected now: the fixture's first thread (a question waiting). The second finished a turn, unseen.
+    let second = "0a9b8c7d6e5f40312a3b4c5d6e7f8091";
+    let placed = |app: &App| {
+        app.all_items
+            .iter()
+            .find(|i| i.id == second)
+            .map(|i| (i.section, i.word.clone()))
+    };
+    assert_eq!(
+        placed(&app),
+        Some((toolroll_tui::app::Section::NeedsYou, "Ready".to_string()))
+    );
+    assert!(app.unread.contains(second));
+    // Counted with Work's own rows: the top bar, the jump and the window title agree.
+    let needs = app
+        .all_items
+        .iter()
+        .filter(|i| i.section == toolroll_tui::app::Section::NeedsYou)
+        .count() as i64;
+    assert!(needs >= 2);
+    let work_needs = app
+        .all_items
+        .iter()
+        .filter(|i| !i.thread && i.section == toolroll_tui::app::Section::NeedsYou)
+        .count() as i64;
+    assert_eq!(app.needs_count, work_needs + 2, "{needs}");
+    // Looked at once: selecting it clears the dot and moves it to Recent, and nothing was answered or sent.
+    let at = app
+        .items
+        .iter()
+        .position(|i| i.id == second)
+        .expect("listed");
+    let mut sent = vec![];
+    while app.selected_item().map(|i| i.id.as_str()) != Some(second) {
+        sent.extend(app.key(key(if app.selected < at { 'j' } else { 'k' })));
+    }
+    // The selection follows it to where it now sits.
+    assert_eq!(app.selected_item().map(|i| i.id.as_str()), Some(second));
+    assert!(
+        sent.iter()
+            .all(|e| !matches!(e, Effect::Act { .. } | Effect::Send { .. })),
+        "{sent:?}"
+    );
+    assert!(!app.unread.contains(second));
+    assert_eq!(
+        placed(&app),
+        Some((toolroll_tui::app::Section::Recent, "Ready".to_string()))
+    );
+    assert_eq!(app.needs_count, work_needs + 1);
+    // Kept in the workbench's own view state.
+    assert!(app
+        .view_now()
+        .thread_seen
+        .iter()
+        .any(|(id, _)| id == second));
+    // The question waiting on the first thread still needs you, read or not.
+    assert!(app
+        .all_items
+        .iter()
+        .any(|i| i.id == fake::THREAD && i.section == toolroll_tui::app::Section::NeedsYou));
+    // A new finished turn is news again.
+    let mut list = fake::fixture("live-threads.json");
+    list["threads"][1]["turnSeq"] = json!(2);
+    app.update(Msg::Threads(Ok(parse(list))));
+    assert_eq!(
+        placed(&app).map(|p| p.0),
+        Some(toolroll_tui::app::Section::Recent),
+        "the one being looked at is seen at once"
+    );
+    // …unless the person is elsewhere when it lands.
+    while app.selected > 0 {
+        app.key(key('k'));
+    }
+    let mut list = fake::fixture("live-threads.json");
+    list["threads"][1]["turnSeq"] = json!(3);
+    app.update(Msg::Threads(Ok(parse(list))));
+    if app.selected_item().map(|i| i.id.as_str()) != Some(second) {
+        assert_eq!(
+            placed(&app).map(|p| p.0),
+            Some(toolroll_tui::app::Section::NeedsYou)
+        );
+        assert!(app.unread.contains(second));
+    }
+}
+
+#[test]
+fn the_newest_turns_stop_comes_before_an_older_ships_words() {
+    let mut w = window();
+    w["thread"]["version"] = json!("3333333333333333");
+    w["thread"]["questions"] = json!([]);
+    w["thread"]["turn"]["status"] = json!("interrupted");
+    w["thread"]["turn"]["endWords"] = json!(
+        "Your Claude sign-in for threads was removed. Add one again, then reply to continue."
+    );
+    w["thread"]["ship"] =
+        json!({ "seq": 1, "state": "refused", "words": "An older Ship was refused." });
+    let facts: ThreadFacts = parse(w["thread"].clone());
+    let note = toolroll_tui::thread::end_note(Some(&facts), 200);
+    assert_eq!(note[0], "Toolroll: Your Claude sign-in for threads was removed. Add one again, then reply to continue.");
+    assert_eq!(
+        note.get(1).map(String::as_str),
+        Some("An older Ship was refused.")
+    );
+    // An unknown outcome is never "ended": it says to check the activity.
+    w["thread"]["turn"]["status"] = json!("unknown");
+    w["thread"]["turn"]["endWords"] = Value::Null;
+    let facts: ThreadFacts = parse(w["thread"].clone());
+    assert!(toolroll_tui::thread::end_note(Some(&facts), 200)[0]
+        .starts_with("Toolroll: Outcome unknown:"));
+    assert!(toolroll_tui::thread::end_note(Some(&facts), 200)[0].ends_with("Check its activity."));
+}
+
+#[test]
+fn a_second_ship_refusal_on_the_same_turn_is_news_again() {
+    let mut app = thread_app(window());
+    let second = "0a9b8c7d6e5f40312a3b4c5d6e7f8091";
+    let placed = |app: &App| {
+        app.all_items
+            .iter()
+            .find(|i| i.id == second)
+            .map(|i| (i.section, i.word.clone()))
+    };
+    let refused = |ship_seq: i64| {
+        let mut list = fake::fixture("live-threads.json");
+        list["threads"][1]["ship"] = json!("refused");
+        list["threads"][1]["shipSeq"] = json!(ship_seq);
+        list
+    };
+    let go_to = |app: &mut App, id: &str| {
+        for _ in 0..app.items.len() * 2 {
+            if app.selected_item().map(|i| i.id.as_str()) == Some(id) {
+                return;
+            }
+            let at = app.items.iter().position(|i| i.id == id).expect("listed");
+            app.key(key(if app.selected < at { 'j' } else { 'k' }));
+        }
+        panic!("couldn't select {id}");
+    };
+    // The first refusal lands while the person is on another thread: news, with a dot.
+    app.update(Msg::Threads(Ok(parse(refused(1)))));
+    assert_eq!(
+        placed(&app),
+        Some((
+            toolroll_tui::app::Section::NeedsYou,
+            "Ship refused".to_string()
+        ))
+    );
+    assert!(app.unread.contains(second));
+    // Read once: Recent.
+    go_to(&mut app, second);
+    assert_eq!(
+        placed(&app).map(|p| p.0),
+        Some(toolroll_tui::app::Section::Recent)
+    );
+    // Ship again without a new turn, from elsewhere; it is refused too: the same turn, the same state, another Ship.
+    go_to(&mut app, fake::THREAD);
+    app.update(Msg::Threads(Ok(parse(refused(2)))));
+    assert_eq!(
+        placed(&app),
+        Some((
+            toolroll_tui::app::Section::NeedsYou,
+            "Ship refused".to_string()
+        ))
+    );
+    assert!(app.unread.contains(second));
+}

@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
-import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { RELAY_CALL_ANSWERS, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleSignInBilling, flexibleSignInStatus, removeFlexibleSignIn, signInEpochOf, signInStandsAt } from "./flexible-sign-in.js";
 import { hashPassword } from "./scope.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
@@ -38,7 +38,7 @@ const relays: FlexibleRelayServer[] = [];
 
 /** A ready thread of `by`'s, its relay, a running turn of `owner`'s (its starter, unless a test says otherwise), and a
  * live launch's relay token. */
-async function thread(by = "alex", owner = by): Promise<{ id: string; relay: FlexibleRelayServer; turn: string; token: string }> {
+async function thread(by = "alex", owner = by): Promise<{ id: string; relay: FlexibleRelayServer; turn: string; token: string; launch: string }> {
   const made = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by, now: NOW });
   if (!made.ok) throw new Error(made.message);
   const id = made.thread.id;
@@ -54,7 +54,7 @@ async function thread(by = "alex", owner = by): Promise<{ id: string; relay: Fle
   const launch = randomBytes(16).toString("hex");
   world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
     VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, ?, 't1', 'live', ?)`).run(launch, id, "f".repeat(32), "9".repeat(32), fakePid(relays.length), NOW.toISOString());
-  return { id, relay: started, turn, token: started.issue({ thread: id, turn, launch }).token };
+  return { id, relay: started, turn, token: started.issue({ thread: id, turn, launch }).token, launch };
 }
 function admitAndBegin(id: string, by: string): string {
   const made = admitFlexibleTurn(world.store, { thread: id, starter: { name: by, generation: world.store.accountOf(by)!.generation }, digest, level: "full", freshProof: false,
@@ -121,15 +121,17 @@ describe("R1: the dispatch invariant", () => {
     standInSignIn(world.store, world.state, "alex");
     const one = await thread("alex");
     expect((await call(one)).status).toBe(200);
-    // A password reset moves the account's generation: the turn (and the sign-in) were made at the old one.
+    // A password reset moves the account's generation: the turn (and the sign-in) were made at the old one. The change's
+    // own transaction ends the turn with Toolroll's words and requires its agent to stop (flexible-authority-end.ts).
     world.store.saveApprover("alex", hashPassword("alex-password-2"), NOW);
-    expect((await call(one)).status).toBe(403);
-    expect(records().at(-1)).toMatchObject({ status: "refused", reason: "no-sign-in" });
+    expect(flexibleTurn(world.store, one.turn)!.status).toBe("interrupted");
+    expect((await call(one)).status).toBe(409);
+    expect(records().at(-1)).toMatchObject({ status: "refused", reason: "no-turn" });
     // A new sign-in at the new generation doesn't revive the old turn: it was admitted at the old one.
     standInSignIn(world.store, world.state, "alex");
-    expect((await call(one)).status).toBe(403);
+    expect((await call(one)).status).toBe(409);
     expect(seen).toHaveLength(1);
-    expect(flexibleTurn(world.store, one.turn)!.status).toBe("running");
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_stop_request WHERE thread = ? AND settled_at IS NULL").get(one.id)?.["n"]).toBe(1);
   });
 
   test("R1 an old running turn after a new sign-in save uses the new generation from its next call, never the old one", async () => {
@@ -193,9 +195,30 @@ describe("R1: the dispatch invariant", () => {
     expect(seen).toHaveLength(1);
     expect(records().at(-1)).toMatchObject({ thread: second.id, status: "refused", reason: "sign-in-refused" });
     expect(flexibleSignInBilling(world.store, { name: "alex", generation: world.store.accountOf("alex")!.generation })).toEqual({ ok: false, reason: "sign-in-refused" });
-    // Only saving a new one clears it.
+    // That refusal ends the second thread's turn too, in the relay's words, and requires its agent to stop.
+    expect(flexibleTurn(world.store, second.turn)!.status).toBe("interrupted");
+    expect(world.store.handle.prepare("SELECT end_detail FROM thread_turn WHERE id = ?").get(second.turn)?.["end_detail"]).toBe(RELAY_CALL_ANSWERS["sign-in-refused"].message);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_stop_request WHERE launch = ?").get(second.launch)?.["n"]).toBe(1);
+    // Only saving a new one clears it: the thread's next turn goes.
     standInSignIn(world.store, world.state, "alex");
-    expect((await call(second)).status).toBe(200);
+    const next = admitAndBegin(second.id, "alex");
+    expect((await call({ relay: second.relay, token: second.relay.issue({ thread: second.id, turn: next, launch: second.launch }).token })).status).toBe(200);
+  });
+});
+
+describe("a refusal of Toolroll's own that ends the turn", () => {
+  test("no sign-in that counts (retired behind the record's back): the call is refused, the turn ends in the relay's words, and its agent is required to stop", async () => {
+    standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    removeStandInSignIn(world.store, "alex");
+    expect((await call(one)).status).toBe(403);
+    expect(seen).toHaveLength(0);
+    expect(records().at(-1)).toMatchObject({ status: "refused", reason: "no-sign-in" });
+    expect(flexibleTurn(world.store, one.turn)!.status).toBe("interrupted");
+    expect(world.store.handle.prepare("SELECT end_detail FROM thread_turn WHERE id = ?").get(one.turn)?.["end_detail"]).toBe(RELAY_CALL_ANSWERS["no-sign-in"].message);
+    expect(world.store.handle.prepare("SELECT launch, settled_at FROM flexible_stop_request").all().map(row => ({ ...row }))).toEqual([{ launch: one.launch, settled_at: null }]);
+    // Its next call finds no turn: nothing more is asked of the model on a turn the record says is over.
+    expect((await call(one)).status).toBe(409);
   });
 });
 

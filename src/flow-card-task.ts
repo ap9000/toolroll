@@ -59,5 +59,5 @@ export function flowCardTaskLine(store: Store, taskId: string, repo: string, now
     if (progress !== null) return `Building · step ${progress.step} of ${progress.total}`;
   }
   if (status.headline === "Failed") return `Stuck: ${cardReason(status.sentence, "Open the task", secrets)}`;
-  return status.headline === "Ready for review" ? "Ready" : status.headline;
+  return status.headline;
 }

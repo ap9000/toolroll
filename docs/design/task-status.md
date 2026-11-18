@@ -37,7 +37,7 @@ Crew is not exempt: it reads the Tasks list's own words for each task, the headl
 
 **2. Details as a quiet list underneath**, one row each, neutral text with a small icon. Colour only on the icon, and only when it matters:
 
-- Project checks: passed / failed / running / couldn't run. A quick check says so ("Quick checks passed on a1b2c3d"); Off reads "Checked at release" with **Run checks**, then "Passed at release on <commit>" once a passing full release check's commit contains it (read from the existing receipts and Git ancestry, never stored); a follow-up check reads "Full checks running"
+- Project checks: passed / failed / running / couldn't run. A quick check says so ("Quick checks passed on a1b2c3d"); Off reads "Checks deferred to release" with **Run checks**, then "Release checks passed on <commit>" once a passing full release check's commit contains it (read from the existing receipts and Git ancestry, never stored); a follow-up check reads "Full checks running"
 - Pull request: none · opening · #12 open · PR CI running · #12 merged · couldn't open
 - Requirements: "3 of 3 met" · "You check 1" (not "Not assessed")
 - Saved evidence: complete · some output shortened

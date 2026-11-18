@@ -140,6 +140,14 @@ export const CONSOLE_FORMS = {
   // message, model and the Flexible terms digest the person was shown (`terms`). Both refused while Flexible is off.
   threadAnswer: formContract("POST /agents/live/thread/<id>/answer", ["request", "card", "decision", "question", "answer"]),
   threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms", "password", "agent"]),
+  // Reply: the thread's next message, named by the client's own key (the same key never takes a second turn).
+  threadTurn: formContract("POST /agents/live/thread/<id>/turn", ["message", "key", "password"]),
+  // Ship: without `terms` its exact terms; with the terms' key and digest, the laptop road's press.
+  threadShip: formContract("POST /agents/live/thread/<id>/ship", ["terms", "digest"]),
+  // Send back: the armed Ship ends and its note is the thread's next reply (named by the client's key).
+  threadSendBack: formContract("POST /agents/live/thread/<id>/ship/send-back", ["feedback", "key", "password"]),
+  // Stop a thread's agent, End the thread, cancel its armed Ship: the thread's owner, by the address alone (no fields).
+  threadClose: formContract("POST /agents/live/thread/<id>/stop, /agents/live/thread/<id>/end, /agents/live/thread/<id>/ship/cancel", []),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   // The Agents screen: an agent's own sign-in, or its install with the exact command the person confirmed.
@@ -287,7 +295,7 @@ export const CONSOLE_FORMS = {
   // Local-owner slice 3: the build and approved plan the page read (`run`, `digest`), read only for the laptop's local owner.
   taskRequeue: formContract("POST /t/<task>/requeue", ["context", "note", "return", "run", "digest"]),
   // Local-owner slice 2: the planning source the page read (planner-source.ts), read only for the laptop's local owner.
-  taskPlan: formContract("POST /t/<task>/plan", ["source"]),
+  taskPlan: formContract("POST /t/<task>/plan", ["source", "incident"]),
   taskFollowUp: formContract("POST /t/<task>/follow-up", ["index"]),
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),

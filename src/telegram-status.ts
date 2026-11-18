@@ -83,7 +83,7 @@ function headlineFor(store: Store, id: string, d: DispatchDiagnosis, read_: Phon
 function groupOf(d: DispatchDiagnosis): string {
   if (d.condition === "running") return "Working";
   if (d.code === "cancelled") return d.summary.startsWith("Replaced by ") ? "Replaced" : "Cancelled";
-  if (d.code === "complete") return "Finished";
+  if (d.code === "complete") return "Complete";
   if (d.code === "review-pending" || d.action === null) return "Waiting / next up";
   return "Needs attention";
 }
@@ -121,7 +121,7 @@ export function phoneStatus(store: Store, repos: readonly string[], now: Date, f
     const lines = [homeFiguresLine(figures), "", ...(focused === null ? [] : [`Talking about: ${focused} · /lead to switch back`, ""]), "Recent work", `As of ${now.toISOString().replace("T", " ").slice(0, 19)} UTC · ${repos.length} project(s)`, ""];
     if (snapshot.tasksSaturated) lines.push("Newest 60 tasks only — older work may still need attention.", "");
     if (snapshot.tasks.length === 0) lines.push("No tasks are recorded in these projects.");
-    for (const group of ["Needs attention", "Working", "Waiting / next up", "Finished", "Replaced", "Cancelled"]) {
+    for (const group of ["Needs attention", "Working", "Waiting / next up", "Complete", "Replaced", "Cancelled"]) {
       const rows = snapshot.tasks.filter(t => t.dispatch !== null && t.dispatch !== undefined && groupOf(t.dispatch) === group);
       if (rows.length === 0) continue;
       lines.push(`${group} · ${rows.length}${snapshot.tasksSaturated ? " in this snapshot" : ""}`);
@@ -138,7 +138,7 @@ export function phoneStatus(store: Store, repos: readonly string[], now: Date, f
 
 /** One task a person can pick to talk about from a chat app. */
 export type PhoneTaskChoice = { id: string; title: string; label: string; group: string };
-const PICK_GROUPS = ["Needs attention", "Working", "Waiting / next up", "Finished"];
+const PICK_GROUPS = ["Needs attention", "Working", "Waiting / next up", "Complete"];
 
 /** The tasks a paired chat can pick from: what needs the person first,
  * then work in progress, waiting work and recent results; one entry per

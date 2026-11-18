@@ -1,7 +1,7 @@
 /** A compact projection of saved work, never a percentage or an ETA. The
  * headline, sentence and detail rows come from the shared task status
  * (task-status.ts), read from the same assignment record the console and the
- * CLI show: Ready for review once the saved result can be inspected, Complete
+ * CLI show: Ready once the saved result can be inspected, Complete
  * once the lead or a person has marked that exact result. Slack, Discord and
  * Teams send this same card. */
 import { machineChecked } from "./machine-check.js";

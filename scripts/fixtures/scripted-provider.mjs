@@ -27,6 +27,7 @@
  *             written to the nonce-bound PLAN or PARK file the brief names, and nothing else changes.
  *   builder   { files: { path: text }, status, conclusion } or { park: { question, options, … } }: the files are
  *             written in the worktree, uncommitted, then the nonce-bound handoff (or park) file the brief names.
+ *   thread    { text }: an interactive thread's turn (Claude live input, no handoff file) answers in those words.
  *   lead step { fail } fails that step alone; { streamMs } streams its structured answer as input_json_delta frames that far apart (Claude stream-json
  *             with --include-partial-messages, as the live chat preview reads it); 0 by default.
  *   any role  { delayMs } waits first; { mcp: [{ server, tool, arguments }] } calls tools of the MCP servers the run
@@ -202,9 +203,12 @@ export function turnsOf(entries) {
 
 // ------------------------------------------------------------------ the stand-in
 
-export const ROLES = ["lead", "subagent", "draft", "sizing", "reviewer", "memory", "scout", "planner", "builder"];
+export const ROLES = ["lead", "subagent", "draft", "sizing", "reviewer", "memory", "scout", "planner", "builder", "thread"];
 const DONE_FILE = /write ONE file named exactly (STANDING-ORDERS-DONE-[0-9a-f]{16}\.json)/;
 const PLAN_FILE = /`(STANDING-ORDERS-PLAN-[0-9a-f]{16}\.json)`/;
+/** A planner's correction turn (planner.ts plannerRepairBrief) names its files bare: "Rewrite <file> and remove <file>". */
+const PLAN_REPAIR = /^Your previous structured planner output failed validation\./m;
+const ANY_PLAN_FILE = /(STANDING-ORDERS-PLAN-[0-9a-f]{16}\.json)/, ANY_PARK_FILE = /(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)/;
 const PARK_FILE = /(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)/;
 
 /** What every world answers when no journey scripted the turn: the turns a world makes in the background. */
@@ -251,10 +255,12 @@ export function roleOf(call, prompt) {
   if (props.findings) return "reviewer";
   if (props.calls && props.text) return /You are auditing one past session/.test(prompt) ? "memory" : "lead";
   if (props.kind) return "scout";
-  if (/You are a PLANNER/.test(prompt) || PLAN_FILE.test(prompt)) return "planner";
+  if (/You are a PLANNER/.test(prompt) || PLAN_FILE.test(prompt) || PLAN_REPAIR.test(prompt)) return "planner";
   if (DONE_FILE.test(prompt)) return "builder";
   if (/You are the automatic REVIEWER/.test(prompt)) return "reviewer";
   if (call.provider === "claude" && call.schema === null && call.format === "json" && call.tools === "") return "draft";
+  // A Claude session with live input that is no build (no handoff file): an interactive thread's turn.
+  if (call.provider === "claude" && call.input === "stream-json" && call.schema === null) return "thread";
   return "unknown";
 }
 
@@ -398,7 +404,8 @@ async function perform(role, answer, { prompt, call, cwd, step, signal }) {
     case "memory": return { value: { text: JSON.stringify({ positive: answer.positive ?? [], negative: answer.negative ?? [], gaps: answer.gaps ?? [] }), calls: [] }, mcp };
     case "scout": return { value: answer.decision ? { kind: "question", decision: decision(answer.decision) } : { kind: "report", report: answer.report ?? DEFAULTS.scout.report }, mcp };
     case "planner": {
-      const park = /`(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)`/.exec(prompt)?.[1], plan = PLAN_FILE.exec(prompt)?.[1];
+      const repair = PLAN_REPAIR.test(prompt);
+      const park = (repair ? ANY_PARK_FILE : /`(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)`/).exec(prompt)?.[1], plan = (repair ? ANY_PLAN_FILE : PLAN_FILE).exec(prompt)?.[1];
       if (answer.question !== undefined) {
         if (park === undefined) throw new Error("the planner's brief names no question file");
         writeWhole(join(cwd, park), JSON.stringify(decision(answer.question), null, 2));
@@ -422,6 +429,8 @@ async function perform(role, answer, { prompt, call, cwd, step, signal }) {
       writeWhole(join(cwd, done), JSON.stringify({ version: 2, status, conclusion: answer.conclusion ?? "Made the change, with a test." }));
       return { text: "Done; the handoff is written.", mcp };
     }
+    // An interactive thread's message: the scripted words.
+    case "thread": return { text: String(answer.text ?? ""), mcp };
     default: throw new Error(`no scripted answer for a ${role} turn`);
   }
 }

@@ -6612,7 +6612,7 @@ $ task add Tidy the README --id t-readme --repo <dir>/shop --json → 0
     "priority": 0
   },
   "repo": "<dir>/shop",
-  "next": "Next: open `toolroll` and press p on it to ask for its plan."
+  "next": "Next: run `toolroll`, select it and press p to ask for a plan."
 }
 
 $ task add Fix the login form --id t-login --repo <dir>/shop --json → 0
@@ -6629,7 +6629,7 @@ $ task add Fix the login form --id t-login --repo <dir>/shop --json → 0
     "priority": 0
   },
   "repo": "<dir>/shop",
-  "next": "Next: open `toolroll` and press p on it to ask for its plan."
+  "next": "Next: run `toolroll`, select it and press p to ask for a plan."
 }
 
 $ task list --json → 0

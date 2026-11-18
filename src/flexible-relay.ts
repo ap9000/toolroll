@@ -53,7 +53,8 @@ import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { issueRelayGrant, revokeRelayGrant } from "./flexible-launch.js";
 import { onRelayCancel } from "./flexible-relay-cancel.js";
 import { FLEXIBLE_RELAY_UPSTREAMS, type RelayUpstream } from "./flexible-relay-upstreams.js";
-import { chargeFlexibleTurn, flexibleTurn, interruptFlexibleTurnSignIn, type FlexibleCostBasis, type FlexibleTurnRow } from "./flexible-turns.js";
+import { interruptTurnAndStop } from "./flexible-authority-end.js";
+import { chargeFlexibleTurn, flexibleTurn, type FlexibleCostBasis, type FlexibleTurnRow } from "./flexible-turns.js";
 import { signInEpochOf, signInForTurn, signInHoldsFor, signInRefusedBy, signInRefusedWords, signInStandsAt, type DispatchSignIn } from "./flexible-sign-in.js";
 import type { Store } from "./store.js";
 
@@ -111,6 +112,8 @@ export const RELAY_CALL_ANSWERS: Readonly<Record<CallReason, { status: number; t
   "server-tool": { status: 400, type: "invalid_request_error", message: "Server tools and connectors would reach the network outside this thread's proxy, so Toolroll's sign-in relay doesn't forward them." },
   "server-fetch": { status: 400, type: "invalid_request_error", message: "That request asks the model service to fetch something itself (a URL or a stored file), outside this thread's proxy, so Toolroll's sign-in relay doesn't forward it. Send the content inline." },
 });
+/** Refusals of Toolroll's own after which a turn can't go on: each ends its turn and stops its agent (settle). */
+const TURN_ENDING_REFUSALS: ReadonlySet<CallReason> = new Set<CallReason>(["no-sign-in", "sign-in-refused", "billing-mismatch", "threads-off"]);
 const UNAUTHORIZED = "This relay token isn't authorized (it was never issued, its launch ended, or its thread was stopped).";
 const errorBody = (type: string, message: string) => JSON.stringify({ type: "error", error: { type, message } });
 
@@ -478,7 +481,15 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           detail === null ? null : redact(detail, secrets).slice(0, 500), signIn?.person ?? null, signIn?.generation ?? null, signInRefused ? 1 : null, signIn?.epoch ?? null);
         // Claude refused the sign-in: that generation is refused from this row on (derived), and the turn ends with
         // Toolroll's own words, in the same transaction (a row that can't be written marks nothing and ends nothing).
-        if (signInRefused && record.turn !== null && record.httpStatus !== null) interruptFlexibleTurnSignIn(store, { turn: record.turn, detail: signInRefusedWords(record.httpStatus) });
+        if (signInRefused && record.turn !== null && record.httpStatus !== null) {
+          interruptTurnAndStop(store, { turn: record.turn, words: signInRefusedWords(record.httpStatus), reason: "Claude refused its owner's sign-in for threads", at: new Date().toISOString(), launch: grant.launch });
+        }
+        // A refusal of Toolroll's own that means this turn can't go on (no sign-in that counts, one Claude refused, a
+        // billing that moved, threads turned off) ends the turn the same way, with the words the agent was sent, and its
+        // agent is required to stop: it never keeps asking on a turn the record says is over.
+        if (refused && record.turn !== null && record.reason !== null && TURN_ENDING_REFUSALS.has(record.reason)) {
+          interruptTurnAndStop(store, { turn: record.turn, words: RELAY_CALL_ANSWERS[record.reason].message, reason: `the relay refused its call (${record.reason})`, at: new Date().toISOString(), launch: grant.launch });
+        }
         written = true;
       });
     } catch (error) {

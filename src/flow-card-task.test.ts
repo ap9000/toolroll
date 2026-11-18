@@ -19,7 +19,7 @@ test("an unapproved plan names the action, without pretending work is running", 
   fixture.finish();
   store.setTaskState(fixture.id, "queued", now);
   store.handle.prepare("UPDATE task_scope SET approved_digest = NULL, approved_at = NULL WHERE task_id = ?").run(fixture.id);
-  expect(line()).toBe("Waiting on you: Approve plan");
+  expect(line()).toBe("Waiting on you: Review plan");
 });
 
 test("finished work is Ready without optional historical proof, while a failed check stays visible", () => {

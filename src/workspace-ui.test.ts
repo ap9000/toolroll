@@ -249,21 +249,21 @@ describe("the task page's step rows (stepRowsOf)", () => {
 
   test("ready for review waits on the viewer at Ready; a finished task opens its last step", () => {
     const review = facts({ journey: taskRoad({ stage: "needs-you", need: "review-result" }, true, true, { checks: "passed" }),
-      status: { status: { headline: "Ready for review", sentence: "Ready." }, attempts: [] } });
+      status: { status: { headline: "Ready", sentence: "Ready." }, attempts: [] } });
     // The open row's head says how it stands; the box under it says the rest (no sentence twice).
     expect(rows(review).slice(3)).toEqual(["checks:done:Project checks passed", "ready:needs+:"]);
     // A finished road with a result still waiting on the viewer: Ready is theirs, never one done line.
-    const finished = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "passed" }), status: { status: { headline: "Ready for review" }, attempts: [] } });
+    const finished = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "passed" }), status: { status: { headline: "Ready" }, attempts: [] } });
     expect(rows(finished).at(-1)).toBe("ready:needs+:");
     const done = facts({ journey: taskRoad({ stage: "complete" }, true, true, { checks: "passed" }), status: { status: { headline: "Complete", sentence: "Done." }, attempts: [] } });
-    expect(rows(done).at(-1)).toBe("ready:done+:Finished");
+    expect(rows(done).at(-1)).toBe("ready:done+:Complete");
     expect(stepRowsOf(done)!.filter(one => one.open)).toHaveLength(1);
   });
 
   test("a report has four rows and no Checks; skipped checks say why", () => {
     const report = facts({ scout: true, journey: taskRoad({ stage: "finished" }, true, true, { report: true }), status: { status: { headline: "Complete", sentence: "" }, attempts: [] } });
     expect(stepRowsOf(report)!.map(one => one.label)).toEqual(["Plan", "Approval", "Build", "Ready"]);
-    expect(rows(report).at(-1)).toBe("ready:done+:Finished");
+    expect(rows(report).at(-1)).toBe("ready:done+:Complete");
     expect(rows({ ...report, status: { status: { headline: "Waiting", sentence: "" }, attempts: [] } }).at(-1)).toBe("ready:done+:Report ready");
     const notRun = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "not-run" }) });
     expect(rows(notRun)[3]).toBe("checks:skipped:The checks didn't run");

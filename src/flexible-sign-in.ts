@@ -34,6 +34,7 @@ import { CLAUDE_EXACT } from "./model-catalog.js";
 import { FLEXIBLE_RELAY_UPSTREAMS } from "./flexible-relay-upstreams.js";
 import { credentialProof, freshFacts, proveCredential } from "./scope.js";
 import { createSignInSecret, readSignInSecret, removeSignInSecret, withSignInLockAsync, type SignInSecret } from "./tool-secret-store.js";
+import { endThreadAuthorityFor, type ThreadAuthorityEnded } from "./flexible-authority-end.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
 import type { Store } from "./store.js";
 
@@ -232,7 +233,7 @@ export async function saveFlexibleSignIn(store: Store, input: { state: string; p
  * rows, so a save still under way fails at its activation. Never blocked: no keychain, no network, no switch. Its
  * secrets are deleted afterwards (tidyFlexibleSignIns). With its ledger row.
  */
-export function removeFlexibleSignIn(store: Store, input: { person: string; by: string; now: Date }): { removed: boolean } {
+export function removeFlexibleSignIn(store: Store, input: { person: string; by: string; now: Date }): { removed: boolean; ended: ThreadAuthorityEnded } {
   return store.transact(() => {
     const at = input.now.toISOString();
     const removed = Number(store.handle.prepare("UPDATE flexible_sign_in SET state = 'retiring', save_op = NULL, retire_after = NULL, retired_at = ? WHERE person = ? AND state IN ('staged', 'active')")
@@ -243,7 +244,10 @@ export function removeFlexibleSignIn(store: Store, input: { person: string; by: 
     // saved after (another process's relay too); in this process, it is cut at once.
     raiseSignInEpoch(store, input.person);
     if (removed) relayCancel({ person: input.person });
-    return { removed };
+    // Their threads stop with it, in this transaction (flexible-authority-end.ts): running turns interrupted with
+    // Toolroll's words, waiting ones withdrawn, every agent of theirs required to stop (whichever console holds it).
+    const ended = endThreadAuthorityFor(store, { person: input.person, cause: input.by === input.person ? "removed" : "removed-by-operator", at, signInsEnded: true });
+    return { removed, ended };
   });
 }
 
@@ -258,6 +262,10 @@ export function resetFlexibleSignInsForRestore(store: Store, input: { now: Date;
   // Every person's removal epoch moves too (no call of the restored database's era may ever count as current).
   for (const row of store.handle.prepare("SELECT DISTINCT person FROM flexible_sign_in UNION SELECT person FROM flexible_sign_in_epoch").all()) raiseSignInEpoch(store, String(row["person"]));
   for (const one of input.carried) if (PERSON(one.person)) raiseSignInEpoch(store, one.person);
+  // Every turn of the restored database's era ends, and every agent it names is required to stop.
+  for (const row of store.handle.prepare("SELECT DISTINCT owner AS person FROM thread_turn WHERE status IN ('admitted', 'running') UNION SELECT created_by AS person FROM flexible_thread").all()) {
+    endThreadAuthorityFor(store, { person: String(row["person"]), cause: "restored", at, signInsEnded: true });
+  }
   for (const one of input.carried) {
     if (!PERSON(one.person) || !GENERATION.test(one.generation) || !Number.isSafeInteger(one.accountGeneration) || one.accountGeneration < 0) continue;
     store.handle.prepare(`INSERT INTO flexible_sign_in (person, account_generation, generation, kind, state, save_op, proof, staged_at, retired_at)
