@@ -91,7 +91,7 @@ export type FlexibleCap = "project-threads" | "project-turns" | "person-turns" |
   | "mode-runs" | "mode-dollars" | "plan" | "budget";
 export type FlexibleTurnRefusalReason = "not-available" | "invalid-request" | "thread-unknown" | "thread-not-ready" | "not-owner" | "already-sent" | "turn-in-progress"
   | "level-pending" | "cap-reached" | "spend-unknown" | "turn-unknown" | "turn-not-admitted" | "turn-not-running" | "held-elsewhere" | "not-an-operator"
-  | "request-changed" | "turn-expired" | "level-unavailable";
+  | "request-changed" | "turn-expired" | "level-unavailable" | "thread-ended";
 export type FlexibleTurnRefusal = { ok: false; reason: FlexibleTurnRefusalReason | FlexibleRefusalReason; message: string;
   /** For `cap-reached` and `spend-unknown`: the limit, and when it has room again (null: when a running turn ends). */
   cap?: FlexibleCap; resetsAt?: string | null };
@@ -111,7 +111,11 @@ const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | 
   "not-an-operator": "Only an instance operator can change the installation's Flexible limits. Nothing changed.",
   "request-changed": "That message is already waiting to start with different settings (level, agent, billing or session). Send it again as a new message.",
   "turn-expired": "This turn waited past midnight UTC, so it didn't start. Send the message again.",
+  "thread-ended": "This thread has ended. Start a new thread to go on.",
 });
+/** Whether a thread ended (End is final: flexible_thread_meta, v174). Read inside the caller's transaction. */
+const threadEnded = (store: Store, thread: string): boolean =>
+  store.handle.prepare("SELECT 1 AS ended FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(thread) !== undefined;
 const refuse = (reason: keyof typeof WORDS): FlexibleTurnRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
 /** A clock: every writer here reads it once, inside its write transaction (after the write lock is held, however long
@@ -285,6 +289,8 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
       && store.handle.prepare("SELECT 1 AS hit FROM thread_turn WHERE thread = ? LIMIT 1").get(input.thread) === undefined;
     if (thread["state"] !== "ready" && !opening) return refuse("thread-not-ready");
     if (thread["created_by"] !== input.starter.name) return refuse("not-owner");
+    // End is final: an ended thread admits nothing, whoever asks and however (its barrier; beginFlexibleTurn reads it too).
+    if (threadEnded(store, input.thread)) return refuse("thread-ended");
     const repo = String(thread["repo"]);
     const delegation = flexibleDelegationAtUse(store, { repo, starter: input.starter, digest: input.digest, level: input.level, freshProof: input.freshProof });
     if (!delegation.ok) return delegation;
@@ -432,6 +438,7 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     const thread = store.handle.prepare("SELECT state, created_by FROM flexible_thread WHERE id = ?").get(turn.thread);
     if (thread === undefined || thread["state"] !== "ready") return withdraw(refuse("thread-not-ready"));
     if (thread["created_by"] !== turn.owner) return withdraw(refuse("not-owner"));
+    if (threadEnded(store, turn.thread)) return withdraw(refuse("thread-ended"));
     // The admission already required a fresh proof where this level needs one, for exactly this turn.
     const delegation = flexibleDelegationAtUse(store, { repo: turn.repo, starter: { name: turn.owner, generation: turn.ownerGeneration }, digest: turn.termsDigest, level: turn.level, freshProof: true });
     if (!delegation.ok) return withdraw(delegation);
@@ -448,6 +455,11 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, now, true);
     if (spend !== null) return withdraw(spend);
     store.handle.prepare("UPDATE thread_turn SET status = 'running', started_at = ? WHERE id = ? AND status = 'admitted'").run(at, turn.id);
+    // What it was begun under (v174): its owner's removal epoch and account generation now, written once. The upkeep's
+    // backstop compares these, never today's, so a removal and a fresh save since still end it.
+    const epoch = Number(store.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(turn.owner)?.["epoch"] ?? 0);
+    store.handle.prepare("INSERT INTO flexible_turn_dispatch (turn, person, sign_in_epoch, account_generation) VALUES (?, ?, ?, ?) ON CONFLICT (turn) DO NOTHING")
+      .run(turn.id, turn.owner, epoch, turn.ownerGeneration);
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
   });
 }

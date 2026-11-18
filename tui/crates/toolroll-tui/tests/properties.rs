@@ -277,6 +277,7 @@ fn view() -> impl Strategy<Value = View> {
                 tab,
                 task,
                 unread,
+                thread_seen: vec![],
             },
         )
 }

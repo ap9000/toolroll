@@ -1187,7 +1187,7 @@ async fn act(
                 ),
                 Some(START_KEY) => json_answer(
                     200,
-                    json!({ "outcome": "done", "words": "The thread started." }),
+                    json!({ "outcome": "done", "words": "The thread started.", "thread": THREAD }),
                 ),
                 Some(_) => json_answer(
                     409,

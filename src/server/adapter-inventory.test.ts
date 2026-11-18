@@ -29,8 +29,17 @@ test("every route row is marked for the local owner; an allow names one of its a
   expect(ROUTES.filter(row => row.stage === "console" && row.method === "POST" && row.local === "allow").map(row => `${row.id}=${row.localAct}`).sort()).toEqual([
     // A Flexible thread's owner answers its agent's request, as a task's question is answered (F3; refused while Flexible is off).
     "agents.live.thread.answer=answer-question",
+    // Ending one's own thread (final; it only narrows: engine-api.ts threadClose checks the act).
+    "agents.live.thread.end=end-thread",
+    // Ship on a password-free laptop (the owner's D1: engine-api.ts threadShip checks this exact act and the laptop
+    // predicate); cancelling a Ship only narrows; sending one back is a reply.
+    "agents.live.thread.ship-cancel=cancel-ship", "agents.live.thread.ship-send-back=reply-thread", "agents.live.thread.ship=ship-thread",
     // Starting a thread: the laptop owner's yes to its terms card (engine-api.ts threadStart checks this exact act).
     "agents.live.thread.start=start-thread",
+    // Stopping one's own thread's agent (it only narrows: engine-api.ts threadClose checks the act).
+    "agents.live.thread.stop=stop-thread",
+    // Reply: the owner's next message to their own thread (engine-api.ts threadTurn checks this exact act).
+    "agents.live.thread.turn=reply-thread",
     "agents.seen=mark-seen", "agents.watch=watch-agent", "chat.file=file-task", "chat.mate-end=lead-send", "chat.mate-follow=lead-send", "chat.mate-mint=lead-send",
     "chat.mate-stop=lead-send", "chat.proposal.confirm=lead-send", "chat.proposal.dismiss=lead-send", "chat.queued-remove=lead-send", "chat.send=lead-send",
     "decision.answer=answer-question",
@@ -38,10 +47,17 @@ test("every route row is marked for the local owner; an allow names one of its a
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
     "engine.agents-check=check-agents", "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
     "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
-    // Settings → General: interactive agent threads on or off (the handler re-checks `flexible-switch` in its write).
-    "settings.flexible=flexible-switch", "settings.knowledge-note=memory-review", "settings.knowledge-tidy=memory-review", "settings.lead-on=choose-default-agent",
+    // Threads' setup from the workbench's `w` link (threads-everyday S6): saving, checking and turning terms on take a
+    // password typed into the form (local-owner.ts LOCAL_PASSWORD_ACTS); removing your own sign-in only narrows.
+    "settings.flexible-sign-in-check=flexible-sign-in-check", "settings.flexible-sign-in-clear=flexible-sign-in-clear", "settings.flexible-sign-in=flexible-sign-in-save",
+    // Settings → General: interactive agent threads on (a password typed into the form) or off (the handler re-checks
+    // `flexible-switch` in its write).
+    "settings.flexible=flexible-switch",
+    "settings.knowledge-note=memory-review", "settings.knowledge-tidy=memory-review", "settings.lead-on=choose-default-agent",
     // Results routing: lowering only, each in its exact act (route-store.ts proveRuleDoor re-checks it in the write).
     "settings.models-agent=change-models", "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
+    // A project's Flexible terms: turning on takes a password typed into the form; lowering and off only narrow.
+    "settings.project-flexible=project-flexible",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",

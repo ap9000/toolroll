@@ -1,5 +1,5 @@
 {
-  "digest": "1971d350f1a07ad23ea8458e5c3f762298939bf62d9215359a7fbc89f361f919",
+  "digest": "bcb9ce57cba09ad043b4cabc958d86375a5fab75a5b1d1844ca751e0be91ea2e",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -515,6 +515,16 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "endWords": {
+                      "type": "string"
+                    },
+                    "billing": {
+                      "type": "string",
+                      "enum": [
+                        "subscription",
+                        "api-key"
+                      ]
                     }
                   },
                   "required": [
@@ -625,6 +635,44 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "ended": {
+              "type": "object",
+              "properties": {
+                "words": {
+                  "type": "string"
+                },
+                "stopPending": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "words",
+                "stopPending"
+              ],
+              "additionalProperties": false
+            },
+            "ship": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string"
+                },
+                "words": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "seq",
+                "state",
+                "words"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -705,6 +753,48 @@
                   "number",
                   "null"
                 ]
+              },
+              "turn": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended": {
+                "type": "boolean"
+              },
+              "stopPending": {
+                "type": "boolean"
+              },
+              "ship": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "turnSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "shipSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -714,7 +804,13 @@
               "level",
               "live",
               "waiting",
-              "costUsd"
+              "costUsd",
+              "turn",
+              "ended",
+              "stopPending",
+              "ship",
+              "turnSeq",
+              "shipSeq"
             ],
             "additionalProperties": false
           }

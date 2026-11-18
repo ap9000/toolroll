@@ -56,6 +56,8 @@ import { fileTaskProposal } from "./proposal.js";
 import { validateTaskText } from "./task-text.js";
 import { taskBranch } from "./names.js";
 import { verifyApproverStanding } from "./principal.js";
+import { laptopShipBinding, laptopShipProblem } from "./flexible-laptop.js";
+import { localActNow } from "./local-owner.js";
 import { assignmentOf } from "./assignment.js";
 import { completeAndOpenPullRequest, mergePullRequest, type PullRequestSeen } from "./pull-request-flow.js";
 import type { PublishExec } from "./publish.js";
@@ -149,7 +151,7 @@ export function flexibleShipSummary(terms: FlexibleShipTerms, digest: string): A
 
 export type FlexibleShipReason = "not-available" | "thread-unknown" | "not-owner" | "not-an-approver" | "stale-generation" | "two-person" | "not-flexible"
   | "no-check" | "thread-running" | "invalid-request" | "changed" | "machine-proof" | "proof-refused" | "handoff-failed" | "approval-refused"
-  | "not-found" | "wrong-state" | "cancelled" | "no-publishing" | "merging";
+  | "not-found" | "wrong-state" | "cancelled" | "no-publishing" | "merging" | "laptop";
 export type FlexibleShipRefusal = { ok: false; reason: FlexibleShipReason; message: string };
 
 const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
@@ -173,6 +175,7 @@ const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
   "cancelled": "The merge was stopped for good.",
   "no-publishing": "This project can't publish pull requests, so a Flexible thread's work can't merge from it. Set up pull requests first. Nothing changed.",
   "merging": "Too late: the merge is already happening. Its outcome is read back from GitHub.",
+  "laptop": "Shipping from the workbench without a password works only on a laptop install where nobody has a password. Ship with your password instead: `toolroll thread ship`. Nothing was shipped.",
 });
 const refuse = (reason: FlexibleShipReason, detail?: string): FlexibleShipRefusal =>
   ({ ok: false, reason, message: detail === undefined ? WORDS[reason] : `${WORDS[reason]} (${detail})` });
@@ -192,14 +195,37 @@ function ownerStanding(store: Store, thread: FlexibleThreadRow, by: string): { g
   return { generation: account.generation, termsId: standing.id, termsDigest: standing.digest };
 }
 
-/** The person, proved as an ordinary approval proves them (scope.ts authenticateApprover: a password, a remembered
- * sign-in, or their own live session where it stands in); a machine's credential, or a machine acting, never. */
-function personNow(store: Store, by: string, token: string, repo: string): FlexibleShipRefusal | { method: string } {
+/**
+ * How a Ship's press is proved (threads-everyday S7; Codex round 2 finding 2, and the owner's D1). Exactly one of:
+ * - `password-now`: the person's password typed for this press (the CLI's hidden prompt), checked as a password typed
+ *   now; never a session standing in, a remembered login, `cli-login`, Passwordless or freshness;
+ * - `local-owner`: the laptop road (D1): the local owner's own act `ship-thread` in their live session, on an install
+ *   where nobody has a password (flexible-laptop.ts laptopShipProblem, read at every step that acts on it).
+ */
+export type ShipProof = { kind: "password-now"; password: string }
+  /** `held`: the person's own live session, compared whole with the one admitted (its lifetime included); asked before
+   * the lock and again inside the consent's transaction (Codex round 1 of the build, finding 2). */
+  | { kind: "local-owner"; held: () => boolean };
+type ShipProved = { method: "password-now" } | { method: "local-owner"; localGeneration: number; accountGeneration: number };
+
+/** The press's proof, now (before the lock, and again inside the consent's own transaction); a machine never ships. */
+function shipProofNow(store: Store, by: string, proof: ShipProof, repo: string): FlexibleShipRefusal | ShipProved {
   if (machineActing()) return refuse("machine-proof");
-  const proved = authenticateApprover(store, by, token, repo);
-  if (!proved.ok) return refuse("proof-refused");
-  if (!personProof(proved.method)) return refuse("machine-proof");
-  return { method: proved.method };
+  if (proof?.kind === "password-now") {
+    if (typeof proof.password !== "string" || proof.password === "") return refuse("proof-refused");
+    const proved = authenticateApprover(store, by, proof.password, repo);
+    if (!proved.ok || !personProof(proved.method)) return refuse("proof-refused");
+    // A password typed now, and nothing standing in for one.
+    if (proved.method !== "password-now") return refuse("proof-refused");
+    return { method: "password-now" };
+  }
+  if (proof?.kind !== "local-owner" || typeof proof.held !== "function") return refuse("proof-refused");
+  if (!proof.held()) return refuse("proof-refused");
+  const local = localActNow(store, "ship-thread");
+  if (local === null || local.account !== by) return refuse("proof-refused");
+  const problem = laptopShipProblem(store, { owner: by, localGeneration: local.localGeneration });
+  if (problem !== null) return refuse("laptop", problem);
+  return { method: "local-owner", localGeneration: local.localGeneration, accountGeneration: local.accountGeneration };
 }
 
 const turnRunning = (store: Store, thread: string): boolean =>
@@ -264,13 +290,14 @@ export type FlexibleShipped = { ok: true; ship: string; seq: number; taskId: str
  * approval proves them; then the controlled import; then the verify-only task filed and sealed and the merge armed. See
  * the module comment.
  */
-export async function shipFlexible(store: Store, input: { thread: string; by: string; token: string; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner }):
+export async function shipFlexible(store: Store, input: { thread: string; by: string; proof: ShipProof; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner }):
   Promise<FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal> {
   const first = flexibleThread(store, input.thread);
   if (first === null) return refuse("thread-unknown");
-  const proved = personNow(store, input.by, input.token, first.repo);
+  // Proved before the lock (a quick refusal), and again inside the transaction that records the yes.
+  const proved = shipProofNow(store, input.by, input.proof, first.repo);
   if ("ok" in proved) return proved;
-  const locked = await withFlexibleThreadLock(input.thread, () => shipLocked(store, input, proved.method));
+  const locked = await withFlexibleThreadLock(input.thread, () => shipLocked(store, input));
   if (locked.ok === false && (locked.reason === "not-available" || locked.reason === "thread-unknown")) return refuse(locked.reason);
   return locked as FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal;
 }
@@ -278,8 +305,8 @@ export async function shipFlexible(store: Store, input: { thread: string; by: st
 /** A refusal raised inside a transaction to roll it back whole. */
 class ShipStop extends Error { constructor(readonly refusal: FlexibleShipRefusal) { super(refusal.message); } }
 
-async function shipLocked(store: Store, input: { thread: string; by: string; token: string; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner },
-  method: string): Promise<FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal> {
+async function shipLocked(store: Store, input: { thread: string; by: string; proof: ShipProof; shownDigest: string; shownKey: string; text?: FlexibleShipText; now: Date; runner?: Runner }):
+  Promise<FlexibleShipped | FlexibleShipRefusal | FlexibleImportRefusal> {
   if (turnRunning(store, input.thread) || unsettledLaunch(store, input.thread) !== null) return refuse("thread-running");
   // The terms again, from the records and the thread's branch as they are now: anything different is a stale press.
   const shown = await flexibleShipTerms(store, { thread: input.thread, by: input.by, ...(input.text === undefined ? {} : { text: input.text }), ...(input.runner === undefined ? {} : { runner: input.runner }) });
@@ -292,15 +319,25 @@ async function shipLocked(store: Store, input: { thread: string; by: string; tok
   const recorded = store.transact((): FlexibleShipRefusal | { branchBefore: string | null } => {
     const thread = flexibleThread(store, input.thread);
     if (thread === null || thread.state !== "ready") return refuse("thread-unknown");
+    // The proof again, here, in the transaction that records the yes, before anything is imported: a password
+    // changed, a session ended or the laptop road gone since the first check refuses it.
+    const again = shipProofNow(store, input.by, input.proof, thread.repo);
+    if ("ok" in again) return again;
+    const method = again.method;
     const standing = ownerStanding(store, thread, input.by);
     if ("ok" in standing) return standing;
     if (standing.generation !== terms.ownerGeneration) return refuse("stale-generation");
+    if (again.method === "local-owner" && again.accountGeneration !== standing.generation) return refuse("stale-generation");
     if (standing.termsDigest !== terms.delegation) return refuse("changed");
     if (nextSeq(store, thread.id) !== terms.seq || store.handle.prepare("SELECT 1 FROM flexible_ship WHERE id = ?").get(digest) !== undefined) return refuse("changed");
     const branchBefore = branchHeld(store, thread.id);
     store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, branch_before, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, delegation_id, state, state_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`).run(digest, thread.id, terms.seq, thread.repo, terms.base, terms.candidate, terms.importRef, terms.branch, branchBefore,
       canonicalJson(terms), digest, shown.summary.key, input.by, standing.generation, method, now, standing.termsId, now);
+    // The laptop consent (D1), bound to the local-mode and account generations it was made under: every later step
+    // that acts on it reads the laptop predicate again at that generation.
+    if (again.method === "local-owner") store.handle.prepare("INSERT INTO flexible_ship_laptop (ship, owner, local_generation, account_generation, consented_at) VALUES (?, ?, ?, ?, ?)")
+      .run(digest, input.by, again.localGeneration, again.accountGeneration, now);
     store.recordAction({ at: now, actor: input.by, repo: thread.repo, taskId: null, runId: null, source: "work", action: "flexible ship approved", outcome: "flexible-ship",
       detail: `thread ${thread.id} · ship ${terms.seq} · terms ${digest} · candidate ${terms.candidate} · ${method} · generation ${standing.generation}` });
     return { branchBefore };
@@ -318,7 +355,8 @@ async function shipLocked(store: Store, input: { thread: string; by: string; tok
     return imported;
   }
   store.transact(() => { store.handle.prepare("UPDATE flexible_ship SET state = 'imported', state_at = ? WHERE id = ? AND state = 'approved'").run(now, digest); });
-  return fileAndSeal(store, { terms, digest, by: input.by, token: input.token, now: input.now, refsChanged: imported.refsChanged, ...(input.runner === undefined ? {} : { runner: input.runner }) });
+  return fileAndSeal(store, { terms, digest, by: input.by, token: input.proof.kind === "password-now" ? input.proof.password : "", now: input.now, refsChanged: imported.refsChanged,
+    ...(input.runner === undefined ? {} : { runner: input.runner }) });
 }
 
 /** The verify-only task for an import: its branch made at the thread's base, then (one transaction) the task filed, its
@@ -343,6 +381,12 @@ async function fileAndSeal(store: Store, input: { terms: FlexibleShipTerms; dige
       if (!flexibleAvailable(store)) throw new ShipStop(refuse("not-available"));
       const row = store.handle.prepare("SELECT state FROM flexible_ship WHERE id = ?").get(digest);
       if (row?.["state"] !== "imported") throw new ShipStop(refuse("wrong-state"));
+      // The laptop road (D1), read again in the transaction that seals: gone since the press, nothing is sealed.
+      const laptop = laptopShipBinding(store, digest);
+      if (laptop !== null) {
+        const problem = laptopShipProblem(store, { owner: laptop.owner, localGeneration: laptop.localGeneration });
+        if (problem !== null) throw new ShipStop(refuse("laptop", problem));
+      }
       const made = fileTaskProposal(store, { id: taskId, title: terms.title, repo: terms.repo, goal: terms.goal, outOfScope: terms.outOfScope, acceptance: terms.acceptance,
         filedVia: `${FLEXIBLE_FILED_PREFIX}${digest}`, filedBy: { name: input.by, kind: "person" as const }, planning: "skip", admittedRepos: [terms.repo] }, input.now);
       if (!made.ok) throw new ShipStop(refuse("handoff-failed", made.message));
@@ -367,16 +411,40 @@ async function fileAndSeal(store: Store, input: { terms: FlexibleShipTerms; dige
     });
   } catch (error) {
     await flexibleTaskBranch(store, { thread: terms.thread, branch, at: terms.base, make: false, ...runner });
+    // The laptop road gone at the seal: nothing on this install can carry this press on, so the Ship ends here, for good
+    // and with its reason shown (never an import left Shipping that the workbench can neither go on with nor cancel).
+    if (error instanceof ShipStop && error.refusal.reason === "laptop") return endedAtSeal(store, { terms, digest, by: input.by, now: input.now, refusal: error.refusal, ...runner });
     if (error instanceof ShipStop) return kept(error.refusal);
     return kept(refuse("handoff-failed", error instanceof Error ? error.message.slice(0, 300) : undefined));
   }
+}
+
+/** A Ship refused at the seal, ended for good: its quarantined import taken back (the thread's branch put back to what
+ * the import found) and the Ship removed with its reason and words (shown as refused: flexible-session.ts shipFactsOf).
+ * Should the refs not come back, the import stays (shown, removable) as any other refusal at the seal leaves it. */
+async function endedAtSeal(store: Store, input: { terms: FlexibleShipTerms; digest: string; by: string; now: Date; refusal: FlexibleShipRefusal; runner?: Runner }): Promise<FlexibleShipRefusal> {
+  const { terms, digest, refusal } = input;
+  const at = input.now.toISOString();
+  const row = store.handle.prepare("SELECT branch_before FROM flexible_ship WHERE id = ? AND state = 'imported' AND task_id IS NULL").get(digest);
+  const putBack = row === undefined ? null : await removeFlexibleImportRefs(store, { thread: terms.thread, seq: terms.seq, candidate: terms.candidate,
+    branchBefore: row["branch_before"] === null ? null : String(row["branch_before"]), ...(input.runner === undefined ? {} : { runner: input.runner }) });
+  store.transact(() => {
+    if (putBack?.ok === true) store.handle.prepare("UPDATE flexible_ship SET state = 'removed', reason = ?, detail = ?, state_at = ? WHERE id = ? AND state = 'imported' AND task_id IS NULL")
+      .run(refusal.reason, refusal.message.slice(0, 2000), at, digest);
+    else store.handle.prepare("UPDATE flexible_ship SET detail = ?, state_at = ? WHERE id = ? AND state = 'imported'").run(refusal.message.slice(0, 2000), at, digest);
+    store.recordAction({ at, actor: input.by, repo: terms.repo, taskId: null, runId: null, source: "work", action: "flexible ship refused", outcome: refusal.reason,
+      detail: `thread ${terms.thread} · ship ${terms.seq} · at the seal · ${putBack?.ok === true ? "import taken back" : "import kept"} · ${refusal.message}`.slice(0, 2000) });
+  });
+  return refusal;
 }
 
 // ---- reading a Ship ---------------------------------------------------------------------------------------------------
 
 export type FlexibleShipRow = { id: string; thread: string; seq: number; repo: string; base: string; candidate: string; importRef: string; branch: string; branchBefore: string | null;
   terms: FlexibleShipTerms; approvedBy: string; approvedGeneration: number; state: string; reason: string | null; detail: string | null; taskId: string | null; scopeDigest: string | null;
-  feedback: string | null; mergeHead: string | null; checkReceipt: string | null; mergeToken: string | null; mergeReservedAt: string | null; delegationId: number; stateAt: string };
+  feedback: string | null; mergeHead: string | null; checkReceipt: string | null; mergeToken: string | null; mergeReservedAt: string | null; delegationId: number; stateAt: string;
+  /** How the press was proved (flexible_ship.proof): `local-owner` is the laptop road (D1). */
+  proof: string };
 
 /** A Ship, read exactly: its terms canonical and hashing to its digest, which is its id; its fixed columns the terms'
  * own. Null for anything else (never a guess). */
@@ -391,7 +459,7 @@ function readRow(row: Record<string, unknown> | undefined): FlexibleShipRow | nu
   return { id: String(row["id"]), thread: terms.thread, seq: terms.seq, repo: terms.repo, base: terms.base, candidate: terms.candidate, importRef: terms.importRef, branch: terms.branch,
     branchBefore: text("branch_before"), terms, approvedBy: String(row["approved_by"]), approvedGeneration: Number(row["approved_generation"]), state: String(row["state"]), reason: text("reason"),
     detail: text("detail"), taskId: text("task_id"), scopeDigest: text("scope_digest"), feedback: text("feedback"), mergeHead: text("merge_head"), checkReceipt: text("check_receipt"),
-    mergeToken: text("merge_token"), mergeReservedAt: text("merge_reserved_at"), delegationId: Number(row["delegation_id"]), stateAt: String(row["state_at"]) };
+    mergeToken: text("merge_token"), mergeReservedAt: text("merge_reserved_at"), delegationId: Number(row["delegation_id"]), stateAt: String(row["state_at"]), proof: String(row["proof"]) };
 }
 
 /** Every Ship of a thread, newest first: what the thread's Ship view shows (an imported Ship with no task among them). */
@@ -451,6 +519,15 @@ function authorityProblem(store: Store, ship: FlexibleShipRow): string | null {
   const destination = destinationOf(store, ship.repo);
   if (destination === null || canonicalJson(destination) !== canonicalJson(ship.terms.github)) return "where it merges, or what Toolroll may do there, changed since it was shipped";
   if (store.liveVerifyCommand(ship.repo)?.digest !== ship.terms.check.digest) return "the project's check command changed since it was shipped";
+  // A laptop Ship (D1) holds only while the install is still one where nobody has a password, at the local-mode
+  // generation it was shipped under: read here at every step that acts on it, and when it isn't, the Ship ends for
+  // good (the caller cancels it), so putting the settings back never revives it.
+  if (ship.proof === "local-owner") {
+    const laptop = laptopShipBinding(store, ship.id);
+    if (laptop === null) return "its laptop consent can't be read";
+    const problem = laptopShipProblem(store, { owner: laptop.owner, localGeneration: laptop.localGeneration });
+    if (problem !== null) return `it was shipped without a password from the workbench, and ${problem}`;
+  }
   return null;
 }
 
@@ -515,6 +592,9 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
     if (check === null) return { ok: true, state: "waiting", why: "the check hasn't passed on this exact commit" };
     const receipt = assignmentOf(store, input.taskId, clock(), { principal: "operator", repos: [found.repo] }, input.root)?.receipt ?? null;
     if (receipt === null || receipt.runId !== newest.id || (receipt.head !== null && receipt.head !== head)) return { ok: true, state: "waiting", why: "its result isn't ready to complete yet" };
+    // A lapsed authority ends the Ship for good: that cancellation is written and COMMITTED by the transaction below
+    // (it returns; only the other refusals throw, to roll back what they began), and is said only after the commit.
+    let cancelled: FlexibleShipRefusal | null = null;
     try {
       store.transact(() => {
         // Interactive agent threads still on, read in the transaction that completes (the reads above were async).
@@ -522,7 +602,7 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
         const again = rowOfTask(store, input.taskId);
         if (again === null || again.state !== "armed") throw new ShipStop(refuse("wrong-state"));
         const problem = authorityProblem(store, again);
-        if (problem !== null) { cancelArmed(store, again, problem, clock()); throw new ShipStop(refuse("cancelled", problem)); }
+        if (problem !== null) { cancelArmed(store, again, problem, clock()); cancelled = refuse("cancelled", problem); return; }
         const who = verifyApproverStanding(store, again.approvedBy, again.approvedGeneration, [again.repo]);
         if (!who.ok) throw new ShipStop(refuse("not-an-approver"));
         const opened = completeAndOpenPullRequest(store, { taskId: input.taskId, digest: receipt.digest, runId: newest.id, who: who.who, root: input.root }, clock());
@@ -539,6 +619,7 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
       if (error instanceof ShipStop) return error.refusal.reason === "cancelled" ? error.refusal : { ok: true, state: "waiting", why: error.refusal.message };
       throw error;
     }
+    if (cancelled !== null) return cancelled;
     return { ok: true, state: "completed" };
   }
   // Completed: merge exactly the checked head, through its pull request to the signed destination.

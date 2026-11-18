@@ -217,7 +217,10 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       // (Toolroll's own turn-ending 403; nothing was sent).
       expect(out).toContain("relay-status 403");
       expect(world.store.handle.prepare("SELECT status, reason, turn FROM thread_relay_call").all().map(row => ({ ...row }))).toEqual([{ status: "refused", reason: "no-sign-in", turn: admitted.turn }]);
-      expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("running");
+      // That refusal ends the turn in the relay's own words and requires the agent to stop (threads-everyday S1); the
+      // lowering below is still what stops it here, and every stop still verifies the whole tree's exit.
+      expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("interrupted");
+      expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_stop_request WHERE thread = ? AND settled_at IS NULL").get(id)?.["n"]).toBe(1);
       const lowered = await lowerFlexibleThreadLevel(world.store, { thread: id, by: { name: "alex", generation: world.store.accountOf("alex")!.generation }, level: "supervised" });
       expect(lowered).toMatchObject({ ok: true, stopped: "stopped", message: "Lowered to Supervised; the current step was stopped." });
       await closed;

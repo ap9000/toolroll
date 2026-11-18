@@ -65,7 +65,8 @@
       "seq": 2,
       "status": "running",
       "costUsd": 0.0412,
-      "costBasis": "measured"
+      "costBasis": "measured",
+      "billing": "subscription"
     },
     "questions": [
       {

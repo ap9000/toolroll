@@ -209,6 +209,12 @@ pub struct ThreadTurn {
     pub status: String,
     pub cost_usd: Option<f64>,
     pub cost_basis: Option<String>,
+    /// Toolroll's own words for how the turn ended when it didn't simply finish (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_words: Option<String>,
+    /// `subscription` (the person's plan) or `api-key` (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +228,29 @@ pub struct ThreadFacts {
     pub agent: Option<ThreadAgent>,
     pub turn: Option<ThreadTurn>,
     pub questions: Vec<ThreadQuestion>,
+    /// Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<ThreadEnded>,
+    /// Its latest Ship, in Toolroll's words (absent before its first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ship: Option<ThreadShip>,
+}
+
+/// A thread's latest Ship, as its facts say it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadShip {
+    pub seq: i64,
+    pub state: String,
+    pub words: String,
+}
+
+/// How a thread ended (End is final).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadEnded {
+    pub words: String,
+    pub stop_pending: bool,
 }
 
 /// One of the person's threads, as the work list shows it.
@@ -235,6 +264,24 @@ pub struct ThreadRow {
     pub live: bool,
     pub waiting: i64,
     pub cost_usd: Option<f64>,
+    /// Its latest turn's state (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub turn: Option<String>,
+    /// Ended (End is final; an older engine leaves it out: false).
+    #[serde(default)]
+    pub ended: bool,
+    /// Its agent's stop is still being verified.
+    #[serde(default)]
+    pub stop_pending: bool,
+    /// Its latest Ship's state (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship: Option<String>,
+    /// Its latest turn's number (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub turn_seq: Option<i64>,
+    /// Its latest Ship's number (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship_seq: Option<i64>,
 }
 
 /// `GET /agents/live/threads`: the person's own Flexible threads, and whether interactive agent threads are on (`on`;

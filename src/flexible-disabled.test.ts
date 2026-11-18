@@ -258,9 +258,11 @@ describe("the switch can't become an override", () => {
   test("only a person's step-up writes it: the Settings route and the CLI twin, each proving and writing in one transaction", () => {
     const writers = product.filter(one => /\bsetFlexibleSetting\(/.test(code(one.text)) && one.path !== join("src", "flexible-available.ts")).map(one => one.path).sort();
     expect(writers).toEqual([join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
-    // On is a credential act (a password typed now, every install); off the ordinary step-up or the laptop owner's act.
-    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(wanted === "on"\) \{\n {8}if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\} else \{\n {8}if \(who\.authority !== "full" && localActNow\(store, "flexible-switch"\) === null\) return false;\n {8}if \(!authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\}\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
-    expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\) => \{\n[^\n]*\n {4}const verified = value === "on" \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\);\n {4}if \(!verified\.ok \|\| !personProof\(verified\.method\) \|\| !store\.isInstanceOperator\(acting\.name\)\) return false;\n {4}setFlexibleSetting\(store, value === "on", acting\.name, clock\(\)\);/);
+    // On is a credential act (a password typed now, every install; a laptop owner's session types it into the form:
+    // scope.ts LOCAL_PASSWORD_ACTS); off the ordinary step-up or the laptop owner's own act, no password.
+    expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\): boolean => \{\n {6}if \(!store\.isInstanceOperator\(who\.name\)\) return false;\n {6}if \(wanted === "on"\) \{\n {8}if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\} else \{\n {8}\/\/[^\n]*\n {8}if \(who\.authority === "local-owner"\) \{ if \(localActNow\(store, "flexible-switch"\) === null\) return false; \}\n {8}else if \(who\.authority !== "full" \|\| !authenticateApprover\(who, body\.get\("password"\) \?\? ""\)\.ok\) return false;\n {6}\}\n {6}setFlexibleSetting\(store, wanted === "on", who\.name, now\);/);
+    // Off on a solo install: its one operator with no password, solo re-read in the write (the owner's D5).
+    expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const saved = store\.transact\(\(\) => \{\n[^\n]*\n {4}const verified = by\.token === "" && value === "off" \? null\n {6}: value === "on" \? credentialApprover\(store, by\.name, by\.token\) : authenticateApprover\(store, by\.name, by\.token\);\n {4}const proved = verified === null \? soloOperatorOf\(store\) === by\.name : verified\.ok && personProof\(verified\.method\);\n {4}if \(!proved \|\| !store\.isInstanceOperator\(by\.name\)\) return false;\n {4}setFlexibleSetting\(store, value === "on", by\.name, clock\(\)\);/);
     // Every write is a browser sign-in's only (the change document is a page that reads); no token, MCP tool or chat
     // action reaches the switch or a project's terms.
     const writes = ROUTES.filter(row => row.method !== "GET" && (/flexible/i.test(row.id) || /flexible/i.test(row.pattern)));
@@ -302,9 +304,11 @@ describe("the switch can't become an override", () => {
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
       ["streamAnswerSender", "openFlexibleAnswerCatalog", "decideFlexibleAnswerByPolicy", "cancelFlexibleAnswer", "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers",
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
-    decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest"],
+    decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "continueFlexibleThread", "sendBackFlexibleThread"],
       ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
-        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange"]);
+        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads", "flexibleThreadShipTerms", "shipFlexibleThread", "latestFlexibleShip", "cancelFlexibleThreadShip", "flexibleThreadRecords", "removeFlexibleThreadCopy"]);
+    // Ending a person's threads' authority only ever stops and settles.
+    decided("src/flexible-authority-end.ts", [], ["requireFlexibleStop", "settleExitedStops", "openFlexibleStops", "interruptTurnAndStop", "endThreadAuthorityFor"]);
     // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated.
     decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"]);
     decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
@@ -369,14 +373,18 @@ describe("the switch can't become an override", () => {
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-start.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-answers.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-answers\.js"/);
     for (const one of product.filter(engine("flexible-session.ts", join("server", "engine-api.ts"), "operate.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-session\.js"/);
-    // The CLI's switch-off reaches the thread host's module only for the stop.
-    expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["stopFlexibleThreadsEverywhere"]);
+    // The CLI reaches the thread host's module for the stop (the switch turned off, a sign-in removed), a thread's title,
+    // and its own thread commands (list, show, end, remove, ship: threads-everyday S8).
+    expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport"]);
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
     for (const one of product.filter(engine("flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
     for (const one of product.filter(engine("flexible-ship.ts"))) {
       const named = [...one.text.matchAll(/import \{([^}]*)\} from "\.\.?\/flexible-ship\.js"/g)].flatMap(match => match[1]!.split(",").map(name => name.trim()).filter(Boolean));
-      expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"] : []);
+      // The watch loop's pass (operate.ts), and the thread host's Ship doors (flexible-session.ts: its terms, the press
+      // under the thread's lock, cancel and send back; threads-everyday S7).
+      expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"]
+        : one.path === join("src", "flexible-session.ts") ? ["cancelFlexibleShip", "flexibleShipsOf", "flexibleShipTerms", "sendBackFlexible", "shipFlexible", "type ShipProof"] : []);
     }
   });
 });

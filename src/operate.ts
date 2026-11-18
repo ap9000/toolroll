@@ -1,6 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
-import { stopFlexibleThreadsEverywhere } from "./flexible-session.js";
+import { closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -93,7 +93,7 @@ import { scheduledTidy } from "./memory-tidy.js";
 import { CI_READ_EVERY_MS, ciCursorKey, ciRepositoriesOf, observeCiAttempts } from "./flaky-ci.js";
 import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
-import { approvalSummaryFor, approvalSummaryOf, describeScope, summaryContextOf } from "./approval-summary.js";
+import { approvalSummaryFor, approvalSummaryOf, describeScope, summaryContextOf, summaryLines } from "./approval-summary.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
@@ -347,7 +347,7 @@ import { fileGithubItem, readGithubItem } from "./github-import.js";
 import { runRelease } from "./release.js";
 import { releaseAdapters } from "./release-adapters.js";
 import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
-import { sessionStandsIn } from "./install-mode.js";
+import { installModeNow, sessionStandsIn } from "./install-mode.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -1727,6 +1727,8 @@ async function dispatch(
       return incidentCommand(positional, flags, context);
     case "flows":
       return flowsCommand(positional, flags, context);
+    case "thread":
+      return threadCommand(positional, flags, context);
     case "config":
       if (positional[0] === "unconfined-agents") return unconfinedAgentsCommand(positional, flags, context);
       return configCommand(positional, flags, context);
@@ -11506,7 +11508,9 @@ async function askCredentials(
   const local = currentLocalOwner();
   if (local !== null) return { name: local.account, token: "" };
   if ((name === undefined || token === undefined) && interactive() && !context.json) {
-    name ??= await ask("username: ");
+    // The name this install would mean (its one operator on a solo install), offered: Enter takes it.
+    const usual = name === undefined ? soloOperatorOf(context.store) : null;
+    if (name === undefined) { const answered = await ask(usual === null ? "username: " : `username [${usual}]: `); name = answered === "" && usual !== null ? usual : answered; }
     token ??= await askHidden("password: ");
   }
   if (name === undefined || token === undefined || name === "" || token === "") return null;
@@ -15317,21 +15321,33 @@ async function flexibleConfig(action: string, value: string | undefined, repoGiv
     ? "Only an instance operator, with their password typed for this command, turns interactive agent threads on; never a remembered sign-in, a token, the lead or a chat app."
     : "Only an instance operator, as a person with their password, turns interactive agent threads off; never a token, the lead or a chat app.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
-  // No password on this computer yet (a laptop's owner who never set one): no sign-in here can succeed, so say how to
-  // get one instead of asking for it. Words only: the rule below is unchanged.
-  if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
-  const acting = await askCredentials(flags, context);
-  if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked, or add `--as <your Toolroll name> --token <your password>`.", EXIT.usage);
+  // Off only narrows: on a solo install its one operator turns threads off with no password (threads-everyday S8, the
+  // owner's D5), solo mode and that operator read again inside the write. Anywhere else, the ordinary step-up below.
+  const solo = value === "off" && !flags.has("token") ? soloOperatorOf(store) : null;
+  let acting: { name: string; token: string } | null = solo !== null && (text(flags, "as") ?? solo) === solo ? { name: solo, token: "" } : null;
+  if (acting === null) {
+    // No password on this computer yet (a laptop's owner who never set one): no sign-in here can succeed, so say how to
+    // get one instead of asking for it. Words only: the rule below is unchanged.
+    if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
+    // On is a credential act: a password typed at a hidden prompt for this command, never --token or a remembered login.
+    acting = value === "on" ? await typedForCommand(flags, context) : await askCredentials(flags, context);
+  }
+  if (acting === null) return fail(write, json, command, "usage", value === "on" ? "Turning threads on asks for your Toolroll password at a hidden prompt: run it in your own terminal." : "This needs your name and password: run it in your own terminal to be asked, or add `--as <your Toolroll name> --token <your password>`.", EXIT.usage);
+  const by = acting;
+  // The solo operator's password-free Off is no credential reading of any kind (no session, no method): it stands only
+  // while this install is solo and they are its one operator, read again in the write. Every other road proves a password.
   const saved = store.transact(() => {
     // On relays the person's Claude sign-in: a credential act (a password typed for this command). Off only narrows.
-    const verified = value === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token);
-    if (!verified.ok || !personProof(verified.method) || !store.isInstanceOperator(acting.name)) return false;
-    setFlexibleSetting(store, value === "on", acting.name, clock());
+    const verified = by.token === "" && value === "off" ? null
+      : value === "on" ? credentialApprover(store, by.name, by.token) : authenticateApprover(store, by.name, by.token);
+    const proved = verified === null ? soloOperatorOf(store) === by.name : verified.ok && personProof(verified.method);
+    if (!proved || !store.isInstanceOperator(by.name)) return false;
+    setFlexibleSetting(store, value === "on", by.name, clock());
     return true;
   });
   if (!saved) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
   const shown = said();
-  if (value === "on") return succeed(write, json, command, shown.payload, shown.lines);
+  if (value === "on") return succeed(write, json, command, shown.payload, () => [...shown.lines(), ...flexibleNextStepWords(store, by.name)]);
   // Off: every thread's agent still running anywhere (a console's, or one a crashed console left) is stopped here, by
   // its recorded process identities only, its exit verified and its turn interrupted. The console's upkeep stays the
   // second line for what can't be proved gone yet.
@@ -15370,21 +15386,30 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   if (flags.has("check") && action !== "show") return fail(write, json, command, "usage", "--check is only for `config show flexible-sign-in --check`", EXIT.usage);
   const personOnly = "Only you, as a person with your Toolroll password, change your own Claude sign-in for threads; never a token, the lead, a chat app or a machine.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
-  if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
   if (action !== "show" && action !== "set" && action !== "clear") return fail(write, json, command, "usage", "`toolroll config set|clear|show flexible-sign-in`", EXIT.usage);
+  if (action === "set" && passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
   // Saving is a credential act: your password typed at a hidden prompt for this command, never --token and never the
   // login remembered on this computer (which would otherwise stand in as typed with Passwordless off). Show and clear
   // keep the ordinary step-up.
   let acting: { name: string; token: string } | null;
-  if (action === "set") {
+  // Plain status and removing your own sign-in only read or narrow: on a solo install its one operator needs no password
+  // (the owner's D5; re-read inside each write). `--check` sends the saved credential to Claude, so it keeps its proof.
+  const solo = (action === "clear" || (action === "show" && !flags.has("check"))) && !flags.has("token") ? soloOperatorOf(store) : null;
+  if (solo !== null && (text(flags, "as") ?? solo) === solo) acting = { name: solo, token: "" };
+  else if (action === "set") {
     if (flags.has("token")) return fail(write, json, command, "usage", "Saving your Claude sign-in asks for your Toolroll password at a hidden prompt, typed for this command: never --token or a saved sign-in.", EXIT.usage);
     const typed = context.easySeams?.askHidden ?? (interactive() && !json ? askHidden : null);
     const named = context.easySeams?.ask ?? (interactive() && !json ? ask : null);
     if (typed === null) return fail(write, json, command, "usage", "Run this in your own terminal: it asks for your Toolroll password and the token from `claude setup-token` at hidden prompts.", EXIT.usage);
-    const name = text(flags, "as") ?? (named === null ? undefined : await named("username: "));
+    const usual = soloOperatorOf(store) ?? savedLoginName(context);
+    const answered = text(flags, "as") ?? (named === null ? undefined : await named(usual === null ? "username: " : `username [${usual}]: `));
+    const name = answered === "" && usual !== null ? usual : answered;
     const password = await typed("password: ");
     acting = name === undefined || name.length === 0 || password.length === 0 ? null : { name, token: password };
-  } else acting = await askCredentials(flags, context);
+  } else {
+    if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
+    acting = await askCredentials(flags, context);
+  }
   if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked.", EXIT.usage);
   const statusWords = (status: ReturnType<typeof flexibleSignInStatus>): string => status.state === "none"
     ? "Your Claude sign-in for threads: none. Run `claude setup-token`, then `toolroll config set flexible-sign-in`."
@@ -15395,6 +15420,7 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
 
   if (action === "show") {
     const shown = store.transact(() => {
+      if (acting.token === "" && !flags.has("check")) return soloOperatorOf(store) === acting.name ? flexibleSignInStatus(store, acting.name) : null;
       const proved = authenticateApprover(store, acting.name, acting.token);
       return proved.ok && personProof(proved.method) ? flexibleSignInStatus(store, acting.name) : null;
     });
@@ -15410,15 +15436,25 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   }
   if (action === "clear") {
     const removed = store.transact(() => {
-      const proved = authenticateApprover(store, acting.name, acting.token);
-      if (!proved.ok || !personProof(proved.method)) return null;
+      if (acting.token === "") { if (soloOperatorOf(store) !== acting.name) return null; }
+      else {
+        const proved = authenticateApprover(store, acting.name, acting.token);
+        if (!proved.ok || !personProof(proved.method)) return null;
+      }
       return removeFlexibleSignIn(store, { person: acting.name, by: acting.name, now: clock() });
     });
     if (removed === null) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
     try { await tidyFlexibleSignIns(store, dirname(realpathSync(context.databaseFile)), { now: clock(), person: acting.name }); } catch { /* the console's upkeep deletes it */ }
-    return succeed(write, json, command, { removed: removed.removed }, () => [removed.removed
+    // Their running threads stopped on the record with the removal; their agents are stopped here now, by their recorded
+    // process identities only (as `config set flexible off` does), and a console's upkeep keeps trying any it couldn't.
+    const report = removed.ended.threads.length === 0 ? { stopped: [], survivors: [] } as FlexibleStopReport
+      : await stopFlexibleThreadsEverywhere(store, { reason: "its owner's Claude sign-in for threads was removed", owner: acting.name, clock });
+    const named = (ids: readonly string[]) => ids.map(id => flexibleThreadTitleOf(store, id)).join(", ");
+    const stoppedWords = report.stopped.length === 0 ? [] : [`Stopped ${report.stopped.length === 1 ? "1 running thread" : `${report.stopped.length} running threads`} (${named(report.stopped.map(one => one.thread))}).`];
+    const leftWords = report.survivors.length === 0 ? [] : [`${named(report.survivors.map(one => one.thread))} couldn't be stopped yet; a running console keeps trying every few seconds.`];
+    return succeed(write, json, command, { removed: removed.removed, stopped: report.stopped, survivors: report.survivors }, () => [removed.removed
       ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
-      : "You had no Claude sign-in for threads saved. Nothing changed."]);
+      : "You had no Claude sign-in for threads saved. Nothing changed.", ...stoppedWords, ...leftWords]);
   }
   // set: the token from a hidden prompt at your own terminal only.
   const typeHidden = context.easySeams?.askHidden ?? (interactive() && !json ? askHidden : null);
@@ -15449,4 +15485,155 @@ function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, ke
   const binding = localOwnerBinding(store);
   if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
   return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
+}
+
+// ---- threads for everyday use (threads-everyday S8): the CLI's own thread commands and config helpers -----------------
+
+/** A solo install's one instance operator (install-mode.ts), or null: whom a password-free narrowing act names. */
+function soloOperatorOf(store: Store): string | null {
+  if (installModeNow(store).mode !== "solo") return null;
+  const operators = store.accountFacts().filter(one => store.isInstanceOperator(one.name)).map(one => one.name);
+  return operators.length === 1 ? operators[0]! : null;
+}
+
+/** The name of this machine's remembered login, or null (it names; it never proves anything here). */
+function savedLoginName(context: Context): string | null {
+  try { return readLoginFile(savedLoginFile(dirname(context.databaseFile)))?.name ?? null; } catch { return null; }
+}
+
+/** A credential act's person: their name (offered from this install) and their password typed for this command, at a
+ * hidden prompt (or as --token, unless `promptOnly`); never the remembered login. Null when nothing was typed. */
+async function typedForCommand(flags: Map<string, string | true>, context: Context, promptOnly = false): Promise<{ name: string; token: string } | null> {
+  const given = text(flags, "token");
+  if (given !== undefined) {
+    const name = text(flags, "as") ?? soloOperatorOf(context.store);
+    return promptOnly || given === "" || name === null || name === undefined ? null : { name, token: given };
+  }
+  const typed = context.easySeams?.askHidden ?? (interactive() && !context.json ? askHidden : null);
+  const named = context.easySeams?.ask ?? (interactive() && !context.json ? ask : null);
+  if (typed === null) return null;
+  const usual = soloOperatorOf(context.store) ?? savedLoginName(context);
+  const answered = text(flags, "as") ?? (named === null ? undefined : await named(usual === null ? "username: " : `username [${usual}]: `));
+  const name = answered === "" && usual !== null ? usual : answered;
+  const password = await typed("password: ");
+  if (name === undefined || name.length === 0 || password.length === 0) return null;
+  return { name, token: password };
+}
+
+/** What's still missing for `person` to start a thread, said after threads are turned on (the order T asks for them). */
+function flexibleNextStepWords(store: Store, person: string): string[] {
+  const steps: string[] = [];
+  if (flexibleSignInStatus(store, person).state !== "active") steps.push("your own Claude sign-in: run `claude setup-token`, then `toolroll config set flexible-sign-in`");
+  steps.push("this project's terms: `toolroll project flexible enable --repo <path>`");
+  return [`Next: ${steps.map((one, at) => `${at + 1}) ${one}`).join(" ")}.`];
+}
+
+/**
+ * `toolroll thread list|show|end|remove|ship <id>`: a person's own interactive agent threads, from the command line.
+ * Reply stays in the workbench (`s`): the console holds the agent's input. Reads and the narrowing acts (end, remove)
+ * name the person as the config commands do (a solo install's one operator with no password, re-read in each write;
+ * anywhere else the ordinary step-up). Ship takes a password typed now at a hidden prompt, never --token or a
+ * remembered login; it shows the whole terms first and asks before it ships. On an install where nobody has a password,
+ * Ship is the workbench's one key instead.
+ */
+async function threadCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const verb = positional[0] ?? "list";
+  const command = `thread ${verb}`;
+  if (!["list", "show", "end", "remove", "ship"].includes(verb)) return fail(write, json, command, "usage", "`toolroll thread list|show|end|remove|ship <thread>`", EXIT.usage);
+  const personOnly = "Only you, as a person, work with your own threads here; never a token, the lead, a chat app or a machine.";
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
+  // The thread, by its id or the first characters of it (8 or more), among the person's own.
+  const pick = (owner: string): string | null => {
+    const asked = positional[1] ?? "";
+    if (!/^[0-9a-f]{8,32}$/.test(asked)) return null;
+    const found = flexibleThreadRecords(store, { owner }).filter(one => one.id.startsWith(asked));
+    return found.length === 1 ? found[0]!.id : null;
+  };
+  if (verb === "ship") {
+    if (passwordFreeOwner(store)) return fail(write, json, command, "laptop", "Nobody on this install has a password, so this thread ships from the workbench (`toolroll`), after its terms are read there.", EXIT.refused);
+    const acting = await typedForCommand(flags, context, true);
+    if (acting === null) return fail(write, json, command, "usage", "Shipping asks for your Toolroll password at a hidden prompt, typed for this command: run it in your own terminal (never --token).", EXIT.usage);
+    const account = store.accountOf(acting.name);
+    const thread = account === null ? null : pick(acting.name);
+    if (account === null || thread === null) return fail(write, json, command, "not-found", "You have no such thread.", EXIT.refused);
+    const by = { name: acting.name, generation: account.generation };
+    const shown = await flexibleThreadShipTerms(store, { thread, by });
+    if (!shown.ok) return fail(write, json, command, shown.reason, shown.message, EXIT.refused);
+    const key = text(flags, "key");
+    const changed = key !== undefined && key !== shown.summary.key;
+    const lines = [...(changed ? ["The terms changed since the workbench showed them. Here they are again."] : []), "Ship approves exactly this:", ...summaryLines(shown.summary)];
+    if (json) return fail(write, json, command, "usage", "Ship asks before it ships: run it in your own terminal.", EXIT.usage);
+    for (const line of lines) write(line);
+    const confirm = context.easySeams?.ask ?? (interactive() ? ask : null);
+    const yes = confirm === null ? "" : await confirm("Ship exactly this? [y/N] ");
+    if (!/^y(es)?$/i.test(yes.trim())) return fail(write, json, command, "declined", "Nothing was shipped.", EXIT.refused);
+    const shipped = await shipFlexibleThread(store, null, { thread, by, proof: { kind: "password-now", password: acting.token }, shownDigest: shown.digest, shownKey: shown.summary.key, now: clock(), waitMs: 15_000 });
+    if (!shipped.ok) return fail(write, json, command, shipped.reason, shipped.message, EXIT.refused);
+    const ship = latestFlexibleShip(store, thread);
+    return succeed(write, json, command, { thread, ship: ship?.id ?? null, seq: ship?.seq ?? null, task: ship?.taskId ?? null },
+      () => [`Shipping: checks run on commit ${ship?.candidate.slice(0, 12) ?? ""}; Toolroll merges it once they pass.`]);
+  }
+  // Reads and the narrowing acts: the solo operator with no password, or the ordinary step-up.
+  const solo = !flags.has("token") ? soloOperatorOf(store) : null;
+  let acting: { name: string; token: string } | null = solo !== null && (text(flags, "as") ?? solo) === solo ? { name: solo, token: "" } : null;
+  if (acting === null) {
+    if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
+    acting = await askCredentials(flags, context);
+  }
+  if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked.", EXIT.usage);
+  // Named as the solo operator (no password: the narrowing acts and reads), or proved by the ordinary step-up.
+  const who = { ...acting, solo: solo !== null && acting.name === solo && !flags.has("token") && acting.token.length === 0 };
+  const proveNow = (): boolean => {
+    if (who.solo) return soloOperatorOf(store) === who.name;
+    const one = authenticateApprover(store, who.name, who.token);
+    return one.ok && personProof(one.method);
+  };
+  const proved = store.transact(proveNow);
+  if (!proved) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
+  const account = store.accountOf(who.name)!;
+  if (verb === "list") {
+    const rows = flexibleThreadRecords(store, { owner: who.name });
+    return succeed(write, json, command, { threads: rows }, () => rows.length === 0 ? ["You have no threads yet. Start one in the workbench (`toolroll`)."]
+      : rows.map(one => `${one.id.slice(0, 8)}  ${one.title}  · ${threadStateWord(one)}${one.project === null ? "" : ` · ${one.project}`}${shipOutcomeWord(one.ship)}`));
+  }
+  const thread = pick(who.name);
+  if (thread === null) return fail(write, json, command, "not-found", "You have no such thread.", EXIT.refused);
+  const row = flexibleThreadRecords(store, { owner: who.name }).find(one => one.id === thread)!;
+  if (verb === "show") {
+    return succeed(write, json, command, { thread: row }, () => [`${row.title} (${row.id})`, `Project: ${row.project ?? row.repo}`,
+      `Latest turn: ${row.turn ?? "none"}${row.endWords === null ? "" : `. ${row.endWords}`}`, ...(row.ended ? ["Ended."] : []),
+      ...(row.shipWords === null ? [] : [row.shipWords]), "Reply to it in the workbench (`toolroll`)."]);
+  }
+  // The same proof is asked again inside each write (End's and removal's own transactions): an account added meanwhile
+  // ends a password-free solo one.
+  if (verb === "end") {
+    const done = await closeFlexibleThread(store, null, { thread, by: { name: who.name, generation: account.generation }, act: "end", clock, prove: proveNow });
+    if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+    // Its agent stopped here too, by its own recorded launches' process identities only (the console that holds it
+    // closes the rest); no other thread is touched.
+    if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
+    return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
+  }
+  // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
+  const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });
+  return removed.ok ? succeed(write, json, command, { thread }, () => ["Removed its working copy. Its record stays."]) : fail(write, json, command, removed.reason, removed.message, EXIT.refused);
+}
+
+/** A thread's own state in one word, as the workbench and the browser say it (a question waiting isn't on the record
+ * here: the console holds it). */
+export function threadStateWord(one: { ended: boolean; turn: string | null; ship: string | null }): string {
+  if (one.ended) return "Ended";
+  if (one.turn === "admitted" || one.turn === "running") return "Working";
+  if (one.ship !== null && ["approved", "imported", "armed", "completed", "merging"].includes(one.ship)) return "Shipping";
+  if (one.turn === "unknown") return "Outcome unknown";
+  if (one.turn === "interrupted") return "Stopped";
+  if (one.ship === "cancelled") return "Ship stopped";
+  if (one.ship === "refused" || one.ship === "failed") return "Ship refused";
+  return "Ready";
+}
+/** A thread's Ship outcome, kept apart from its own state. */
+export function shipOutcomeWord(ship: string | null): string {
+  const word = ship === "merged" ? "Merged" : ship === "sent-back" ? "sent back" : null;
+  return word === null ? "" : ` · Ship: ${word}`;
 }

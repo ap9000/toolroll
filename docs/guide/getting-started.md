@@ -160,6 +160,8 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
 | `n` | New task (in Diff, next note instead) |
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
+| `s` / `a` / `x` / `X` on a thread | Reply to it / Ship its work / stop its agent's turn / end it (asks first) |
+| `x` / `r` on a thread that is shipping | Stop the Ship for good / send it back with a note |
 | `s` | Send the running agent a note |
 | `p` | Pause the build; press again to resume |
 | `x` | Stop a build or its retries; resume retries on a task you held |
@@ -323,7 +325,29 @@ sandbox, instead of a task that plans, builds and stops. Press `T`, type
 your first message, read the thread's terms, then press Enter to start.
 Each thread works in its own copy of the project. Your repository changes
 only when you **Ship**, and only when the project's required check passes
-on that exact commit.
+on that exact commit. A project whose terms let threads start like this is
+**Flexible**: people there start threads right away, without a plan
+approved first.
+
+Working with a thread, select it in the workbench:
+
+- **Reply** (`s`): its next message, once the agent finished the last one.
+  If its agent isn't running any more, the reply starts a fresh agent that
+  doesn't remember earlier turns; your files are as it left them.
+- **Ship** (`a`): its terms are shown whole; read them to the end, then
+  Enter. On a laptop install where nobody has a password, that ships it.
+  Anywhere else Ship needs your password typed now: Enter puts
+  `toolroll thread ship <thread>` in your scrollback, which shows the same
+  terms, asks, and takes your password at a hidden prompt. Shipping stops
+  the thread's agent first.
+- **Stop** (`x`) ends the agent's current turn; the thread stays open.
+- **End** (`X`) ends the thread for good: it moves to Recent and can't be
+  reopened. Its work can still be shipped for a week; then its copy is
+  tidied away.
+
+A thread whose turn finished sits in **Needs you** as Ready. The browser's
+Agents → Live lists your threads, read-only. From a terminal,
+`toolroll thread list|show|end|remove|ship` work with your own threads.
 
 Three steps, in this order, before a thread can start:
 
@@ -349,14 +373,17 @@ Three steps, in this order, before a thread can start:
 If you press `T` before a step is done, the workbench says which one: `w`
 opens its page in the browser and `c` puts its command in your terminal's
 scrollback. `toolroll config show flexible` and
-`toolroll config show flexible-sign-in` show where you are;
+`toolroll config show flexible-sign-in` show where you are (on a solo
+install, with no password);
 `toolroll config show flexible-sign-in --check` checks your sign-in again.
 
 Your sign-in ends when you remove it (Settings, or
 `toolroll config clear flexible-sign-in`), when your Toolroll password is
 reset, when you are removed from Toolroll, and when a backup is restored. If
 Claude refuses it during a thread, the turn ends with Toolroll's own words
-and your new threads wait until you save a new one. Removing it in Toolroll
+and your new threads wait until you save a new one. Removing it, a password
+reset or an account change stops your running turns at once, in Toolroll's
+own words, and stops their agents. Removing it in Toolroll
 doesn't revoke it at Claude: do that in your Claude account. An instance
 operator can remove someone's sign-in from People, but can never see or set
 it.

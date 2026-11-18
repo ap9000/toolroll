@@ -96,7 +96,7 @@ describe("a team install: the card, a stale key, and a password typed now", () =
     expect(await start({ terms: card.key })).toEqual({ status: 403, body: { outcome: "refused", words: "Starting a thread needs your password here. Nothing was started." } });
     expect(held.starts).toEqual([]);
     const done = await start({ terms: card.key, password: patToken });
-    expect(done).toEqual({ status: 200, body: { outcome: "done", words: "The thread started." } });
+    expect(done).toEqual({ status: 200, body: { outcome: "done", words: "The thread started.", thread: "e".repeat(32) } });
     expect(held.starts).toHaveLength(1);
     expect(held.starts[0]).toMatchObject({ repo: world.project, digest, model: "claude-sonnet-5-5", message: "Fix the README", freshProof: true, expectNetwork: expect.stringMatching(/^[0-9a-f]{32}$/),
       billing: "subscription", startKey: card.key });
@@ -166,7 +166,7 @@ describe("a laptop install: the local owner's own act at this computer", () => {
     expect(card.outcome).toBe("thread-terms");
     expect(held.starts).toEqual([]);
     const started = await post({ terms: card.key });
-    expect(JSON.parse(started.body)).toEqual({ outcome: "done", words: "The thread started." });
+    expect(JSON.parse(started.body)).toEqual({ outcome: "done", words: "The thread started.", thread: "e".repeat(32) });
     expect(held.starts).toHaveLength(1);
     expect(held.starts[0]).toMatchObject({ repo: world.repo, freshProof: true, by: { name: "alex" }, billing: "subscription" });
     // A stale key is refused for the owner too.

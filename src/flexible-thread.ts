@@ -315,14 +315,16 @@ export async function prepareFlexibleThread<R extends { ok: false; reason: strin
  * first, stopFlexibleThreadAgent); processes a stopped or crashed launch left behind are found and stopped first, and
  * nothing is removed until the whole tree's exit is verified (F2c custody).
  */
-export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
+export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO;
+  /** The caller's own proof of the person, asked again inside the transaction that claims the removal. */
+  prove?: () => boolean }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   // The thread's lock (withThreadLock), taken before anything else: a launch admitted, probed and spawned under it is
   // wholly before this removal (whose check then sees its process) or wholly after it (and finds the thread gone).
   return withThreadLock(input.id, () => removeLocked(store, input));
 }
 
-async function removeLocked(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
+async function removeLocked(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO; prove?: () => boolean }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
   const thread = flexibleThread(store, input.id);
@@ -344,7 +346,7 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
   // A group registered without a launch record (a build before custody): its files stay while it may run.
   const after = flexibleThread(store, thread.id)!;
   if (after.livePid !== null && processMayBeAlive(after.livePid, true)) return refuse("thread-running");
-  const claimed = store.transact(() => Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing', live_pid = NULL, live_since = NULL WHERE id = ? AND state IN ('ready', 'removing') AND live_pid IS ? AND NOT EXISTS (SELECT 1 FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited')")
+  const claimed = store.transact(() => (input.prove === undefined || input.prove()) && Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing', live_pid = NULL, live_since = NULL WHERE id = ? AND state IN ('ready', 'removing') AND live_pid IS ? AND NOT EXISTS (SELECT 1 FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited')")
     .run(thread.id, after.livePid, thread.id).changes) === 1);
   if (!claimed) return refuse("thread-not-ready");
   const inner = input.runner ?? run;
