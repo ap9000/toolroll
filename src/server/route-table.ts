@@ -231,6 +231,13 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // Interactive agent threads (beta): an installation setting the laptop's owner may turn on or off (its handler proves
   // the step-up and this exact act inside its write).
   "settings.flexible": "flexible-switch",
+  // Threads' setup from the workbench's `w` link (threads-everyday S6): each handler takes a password typed into its form
+  // for saving, checking and turning terms on (scope.ts LOCAL_PASSWORD_ACTS); removing your own sign-in, lowering and
+  // turning terms off only narrow.
+  "settings.flexible-sign-in": "flexible-sign-in-save",
+  "settings.flexible-sign-in-check": "flexible-sign-in-check",
+  "settings.flexible-sign-in-clear": "flexible-sign-in-clear",
+  "settings.project-flexible": "project-flexible",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });

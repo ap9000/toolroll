@@ -396,7 +396,7 @@ describe("where freshness may be honoured", () => {
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 2, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
       // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
       "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
@@ -409,7 +409,7 @@ describe("where freshness may be honoured", () => {
 
   test("a password is checked only at known places, and every console empty-field step-up goes through proveAccountNow", () => {
     expect(hits["authenticateAccount()"]).toEqual({
-      "src/operate.ts": 2, "src/principal.ts": 1, "src/scope.ts": 1, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
+      "src/operate.ts": 2, "src/principal.ts": 1, "src/scope.ts": 2, "src/server/guards.ts": 1, "src/server/people-tokens.ts": 3,
       "src/server/settings.ts": 2, "src/tokens-cli.ts": 1,
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
@@ -456,7 +456,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/principal.ts#<module>": 2,
     "src/principal.ts#verifyApproverByPassword@4": 1,
     "src/scope.ts#authenticateAccount@32": 1,
-    "src/scope.ts#proveAccountNow@38": 1,
+    "src/scope.ts#proveAccountNow@38": 2,
     "src/server/guards.ts#<module>": 2,
     "src/server/guards.ts#createSharedGuards@1>identify@15": 1,
     "src/server/people-tokens.ts#<module>": 2,
@@ -572,6 +572,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
     "src/server/engine-api.ts#<module>": 2,
     "src/server/engine-api.ts#createEngineHandlers@6>threadStart@13": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
@@ -755,6 +756,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/checkout-cleanup.ts#slimKeptCheckouts@19>wanted@3": 2,
     "src/discord-chat.ts#deliverDiscordPart@8": 3,
     "src/evidence-pack.ts#ledgerExportChunks@4": 1,
+    "src/flexible-session.ts#continueFlexibleThread@32": 1,
+    "src/flexible-session.ts#continueFlexibleThread@32>locked:withFlexibleThreadLock(input.thread,_)@1": 1,
     "src/flow-engine.ts#workStage@10>filed:store.transact(_)@3": 12,
     "src/flow-pull-request.ts#pullRequestStep@2": 2,
     "src/flow-send.ts#chooseStep@15": 3,
@@ -798,6 +801,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>sendScreen@130": 2,
     "src/serve.ts#createDecisionServer@1>sendScreen@130>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 2,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,

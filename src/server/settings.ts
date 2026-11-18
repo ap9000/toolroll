@@ -2866,8 +2866,9 @@ ${postForm("/settings/chat-approval/save", html`\
       if (wanted === "on") {
         if (!authenticateCredential(who, body.get("password") ?? "").ok) return false;
       } else {
-        if (who.authority !== "full" && localActNow(store, "flexible-switch") === null) return false;
-        if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+        // Off only narrows: the local owner's own act (no password), or anyone else's ordinary step-up.
+        if (who.authority === "local-owner") { if (localActNow(store, "flexible-switch") === null) return false; }
+        else if (who.authority !== "full" || !authenticateApprover(who, body.get("password") ?? "").ok) return false;
       }
       setFlexibleSetting(store, wanted === "on", who.name, now);
       return true;
@@ -3179,7 +3180,12 @@ ${postForm("/settings/chat-approval/save", html`\
     const back = sayTo(response, "/settings/change/flexible-sign-in");
     if (["token", "password"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing was saved.");
     if (body.sent.has("person")) return back("problem", "Your Claude sign-in is always your own. Nothing was saved.");
-    if (who.authority !== "full") return back("problem", "Saving your Claude sign-in needs your Toolroll password, typed now. Nothing was saved.");
+    // A local owner's session (the workbench's `w` link) may save with a password typed into this form now (scope.ts
+    // LOCAL_PASSWORD_ACTS: checked as a password, never the act itself standing in); with no password set, it says how.
+    if (who.authority !== "full") {
+      if (who.authority !== "local-owner" || localActNow(store, "flexible-sign-in-save") === null) return back("problem", "Saving your Claude sign-in needs your Toolroll password, typed now. Nothing was saved.");
+      if (store.accountOf(who.name)?.passwordSet !== true) return back("problem", "Set a password first: run `toolroll password set`, then save your sign-in here with it. Nothing was saved.");
+    }
     const paste = setupTokenFromPaste(body.get("token") ?? "");
     if (!paste.ok) return back("problem", paste.message);
     const state = signInState();

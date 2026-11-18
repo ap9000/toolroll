@@ -11,7 +11,7 @@ import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from ".
 import { validateScopeText } from "./task-text.js";
 import { contractChangesOf } from "./contract-changes.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { currentLocalOwner, localModeOn, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow, type LocalTransport } from "./local-owner.js";
+import { currentLocalOwner, LOCAL_PASSWORD_ACTS, localModeOn, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow, type LocalOwnerAct, type LocalTransport } from "./local-owner.js";
 import { projectAuthority } from "./project-access.js";
 import { activeRemote } from "./remote-run.js";
 import { claimActor, currentActor } from "./actor.js";
@@ -1360,6 +1360,16 @@ export function proveAccountNow(store: Store, by: string, token: string, options
   // a credential act, a read, another person, local mode moved — proves nothing. It never upgrades to a typed password.
   // A lead's token or a remote API token in that chain is never the local owner (it stays a machine's proof below).
   const local = activeRemote() === null && currentActor()?.lead !== true ? currentLocalOwner() : null;
+  // Threads-everyday S6 (the owner's D2): on the closed list of acts that take a password typed into the form, it is
+  // checked here, before the local owner's own act could answer: the owner standing now at the bound generations, then
+  // the account's real password through the sign-in lockouts. Empty or wrong proves nothing (and never falls back to the
+  // act); right is "password-now" for this one act only: no remembered password is stamped and the session is unchanged.
+  if (local !== null && LOCAL_PASSWORD_ACTS.has(local.act as LocalOwnerAct)) {
+    if (local.account !== by || !localOwnerInFlight(local) || !localOwnerStandsNow(store, local) || token === "") return { ok: false, reason: "not-an-approver" };
+    const typed = authenticateAccount(store, by, token);
+    if (!typed.ok) return { ok: false, reason: typed.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
+    return { ok: true, method: "password-now", at: now };
+  }
   if (local !== null) {
     if (options.credential === true || local.account !== by || local.act === "read" || !localOwnerInFlight(local) || !localOwnerStandsNow(store, local)) return { ok: false, reason: "not-an-approver" };
     return { ok: true, method: "local-owner", at: now };
