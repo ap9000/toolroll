@@ -418,19 +418,31 @@ export function defaultEasyStartSeams(options: {
       const choice = chooseTuiBinary({ env: process.env, screenReader: options.screenReader === true, platform: process.platform, arch: process.arch, contract: engineContractDigest(), devBinary: options.tuiBinary ?? null });
       if (choice.notice !== undefined) options.write(`${choice.notice}.`);
       let why: string | null = choice.ok ? null : choice.why;
-      if (choice.ok) {
+      // A screen signed out under the person (a password set, a sign-out elsewhere) opens again only on their own Enter
+      // at this terminal, by the same start as `toolroll` (a fresh link the console proves); a few times at most.
+      for (let opened = 0; choice.ok && opened < 5; opened++) {
         const reader = openStoreReadOnly(file);
         const link = reader === null ? { ok: false as const, message: "Toolroll's database can't be read" }
           : await requestLocalLink(file, reader, options.build).finally(() => reader.close());
-        if (!link.ok) why = `the terminal workbench couldn't sign in (${link.message})`;
-        else {
-          const { checkoutTop } = await import("./teardown-git.js");
-          const end = await runTuiBinary({ binary: choice.binary, identity: choice.identity, link: link.url, session, project: checkoutTop(cwd), cwd });
-          if (end === "changed") why = "the terminal workbench changed after it was checked";
-          else if (end !== "classic") return end;
-          // The workbench said why on its own way out.
-          else why = null;
+        if (!link.ok) {
+          // Reopening after a sign-out with no local sign-in to give (local mode off, the owner revoked): stop, said.
+          if (opened > 0) { options.write("Toolroll can't sign this screen in again here. Sign in with your password in the browser."); return "leave"; }
+          why = `the terminal workbench couldn't sign in (${link.message})`;
+          break;
         }
+        const { checkoutTop } = await import("./teardown-git.js");
+        const end = await runTuiBinary({ binary: choice.binary, identity: choice.identity, link: link.url, session, project: checkoutTop(cwd), cwd });
+        if (end === "ended") {
+          const { askLineOrEof, reopenAfterSignOut } = await import("./tui-launch.js");
+          const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+          if (opened < 4 && await reopenAfterSignOut({ terminal, agent: underAgent(process.env), ask: askLineOrEof })) continue;
+          return "leave";
+        }
+        if (end === "changed") why = "the terminal workbench changed after it was checked";
+        else if (end !== "classic") return end;
+        // The workbench said why on its own way out.
+        else why = null;
+        break;
       }
       if (why !== null) options.write(`Opening the classic screen: ${why}.`);
       const { createTuiSource } = await import("./tui-source.js");

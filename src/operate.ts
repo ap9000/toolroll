@@ -14245,6 +14245,7 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   if (binding === null) return fail(write, json, command, "not-local", "This Toolroll already signs in with a password. Sign in with it in the browser.", EXIT.refused);
   if (store.accountOf(binding.account)?.passwordSet === true) return fail(write, json, command, "already-set", "A password is already set. Sign in with it in the browser.", EXIT.refused);
   const typeHidden = context.easySeams?.askHidden ?? askHidden;
+  write("Setting a password signs out open browser tabs and the open Toolroll screen. You can open it again right after.");
   write(`Choose a password for ${binding.account}. It signs you in from other devices and approves what this computer's browser can't.`);
   const chosen = await typeHidden("New password: ");
   if (chosen.length < 8) return fail(write, json, command, "weak-password", "A password needs at least 8 characters. Nothing changed.", EXIT.refused);
@@ -14259,7 +14260,7 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   }
   return succeed(write, json, command, { account: binding.account, generation: enrolled.generation }, () => [
     "Password set.",
-    "Open browser tabs and the terminal UI sign in again: run `toolroll`, or sign in with your password.",
+    "Sign in with it in your browser; an open Toolroll screen asks to open again.",
   ]);
 }
 
