@@ -145,7 +145,9 @@ export const liveThreadsSchema = z.object({
     /** Its latest Ship's state (null before its first). */
     ship: z.string().nullable(),
     /** Its latest turn's number (null before its first): with `turn` and `ship`, what the workbench marks seen. */
-    turnSeq: z.number().int().nullable() })),
+    turnSeq: z.number().int().nullable(),
+    /** Its latest Ship's number (null before its first): which Ship `ship` is, so a second refusal is news too. */
+    shipSeq: z.number().int().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------

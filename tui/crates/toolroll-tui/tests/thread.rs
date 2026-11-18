@@ -1202,3 +1202,58 @@ fn the_newest_turns_stop_comes_before_an_older_ships_words() {
         .starts_with("Toolroll: Outcome unknown:"));
     assert!(toolroll_tui::thread::end_note(Some(&facts), 200)[0].ends_with("Check its activity."));
 }
+
+#[test]
+fn a_second_ship_refusal_on_the_same_turn_is_news_again() {
+    let mut app = thread_app(window());
+    let second = "0a9b8c7d6e5f40312a3b4c5d6e7f8091";
+    let placed = |app: &App| {
+        app.all_items
+            .iter()
+            .find(|i| i.id == second)
+            .map(|i| (i.section, i.word.clone()))
+    };
+    let refused = |ship_seq: i64| {
+        let mut list = fake::fixture("live-threads.json");
+        list["threads"][1]["ship"] = json!("refused");
+        list["threads"][1]["shipSeq"] = json!(ship_seq);
+        list
+    };
+    let go_to = |app: &mut App, id: &str| {
+        for _ in 0..app.items.len() * 2 {
+            if app.selected_item().map(|i| i.id.as_str()) == Some(id) {
+                return;
+            }
+            let at = app.items.iter().position(|i| i.id == id).expect("listed");
+            app.key(key(if app.selected < at { 'j' } else { 'k' }));
+        }
+        panic!("couldn't select {id}");
+    };
+    // The first refusal lands while the person is on another thread: news, with a dot.
+    app.update(Msg::Threads(Ok(parse(refused(1)))));
+    assert_eq!(
+        placed(&app),
+        Some((
+            toolroll_tui::app::Section::NeedsYou,
+            "Ship refused".to_string()
+        ))
+    );
+    assert!(app.unread.contains(second));
+    // Read once: Recent.
+    go_to(&mut app, second);
+    assert_eq!(
+        placed(&app).map(|p| p.0),
+        Some(toolroll_tui::app::Section::Recent)
+    );
+    // Ship again without a new turn, from elsewhere; it is refused too: the same turn, the same state, another Ship.
+    go_to(&mut app, fake::THREAD);
+    app.update(Msg::Threads(Ok(parse(refused(2)))));
+    assert_eq!(
+        placed(&app),
+        Some((
+            toolroll_tui::app::Section::NeedsYou,
+            "Ship refused".to_string()
+        ))
+    );
+    assert!(app.unread.contains(second));
+}

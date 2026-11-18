@@ -13,7 +13,8 @@
       "ended": false,
       "stopPending": false,
       "ship": null,
-      "turnSeq": 2
+      "turnSeq": 2,
+      "shipSeq": null
     },
     {
       "id": "0a9b8c7d6e5f40312a3b4c5d6e7f8091",
@@ -27,7 +28,8 @@
       "ended": false,
       "stopPending": false,
       "ship": null,
-      "turnSeq": 1
+      "turnSeq": 1,
+      "shipSeq": null
     },
     {
       "id": "6c2f1d0b8e4a43f9b7d2c1e0f9a8b7c6",
@@ -41,7 +43,8 @@
       "ended": true,
       "stopPending": false,
       "ship": "merged",
-      "turnSeq": 3
+      "turnSeq": 3,
+      "shipSeq": 1
     }
   ]
 }

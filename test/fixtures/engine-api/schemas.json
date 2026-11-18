@@ -1,5 +1,5 @@
 {
-  "digest": "136a86d8ea58a62dc36777071d87327315901fb8bff66d24adc30c84f7dc14fd",
+  "digest": "7f14a2cca1d8e0cfa5cb368c0f0438cce97d6d7c2f62c545ddbf91a4106a000c",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -783,6 +783,18 @@
                     "type": "null"
                   }
                 ]
+              },
+              "shipSeq": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -797,7 +809,8 @@
               "ended",
               "stopPending",
               "ship",
-              "turnSeq"
+              "turnSeq",
+              "shipSeq"
             ],
             "additionalProperties": false
           }

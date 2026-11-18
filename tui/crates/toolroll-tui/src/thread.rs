@@ -96,13 +96,15 @@ pub struct Threads {
     pub seen: std::collections::BTreeMap<String, String>,
 }
 
-/// A thread's news: its latest turn (number and state) and its latest Ship's state. A new finished turn, or a Ship
-/// that moved, is news again; reading it clears only the news, never answers anything.
+/// A thread's news: its latest turn (number and state) and its latest Ship (number and state). A new finished turn, a
+/// new Ship or a Ship that moved is news again (a second refusal on the same turn too); reading it clears only the
+/// news, never answers anything.
 pub fn news_key(t: &ThreadRow) -> String {
     format!(
-        "{}:{}:{}",
+        "{}:{}:{}:{}",
         t.turn_seq.unwrap_or(0),
         t.turn.as_deref().unwrap_or("-"),
+        t.ship_seq.unwrap_or(0),
         t.ship.as_deref().unwrap_or("-")
     )
 }

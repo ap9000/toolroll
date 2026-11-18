@@ -359,10 +359,10 @@ pub fn save(_path: &Path, _home: Option<&Path>, _file: &ViewFile) -> Result<(), 
     Ok(())
 }
 
-/// A thread's news key as thread.rs news_key writes it: a turn number, a turn state and a Ship state, short and plain.
+/// A thread's news key as thread.rs news_key writes it: a turn number and state, a Ship number and state, short and plain.
 fn news_key_ok(key: &str) -> bool {
     key.len() <= 64
-        && key.split(':').count() == 3
+        && key.split(':').count() == 4
         && key
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-')
@@ -395,7 +395,7 @@ mod tests {
             unread: vec!["t-2".into(), "bad id!".into()],
             // A thread's news seen is kept; a key that isn't one (a mark it didn't write) is dropped.
             thread_seen: vec![
-                ("th-1".into(), "3:finished:-".into()),
+                ("th-1".into(), "3:finished:0:-".into()),
                 ("th-2".into(), "x\u{1b}]0;y".into()),
             ],
         };
@@ -407,7 +407,7 @@ mod tests {
             got,
             &View {
                 unread: vec!["t-2".into()],
-                thread_seen: vec![("th-1".into(), "3:finished:-".into())],
+                thread_seen: vec![("th-1".into(), "3:finished:0:-".into())],
                 ..v
             }
         );

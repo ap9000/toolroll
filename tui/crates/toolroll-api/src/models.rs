@@ -279,6 +279,9 @@ pub struct ThreadRow {
     /// Its latest turn's number (None before its first; an older engine leaves it out).
     #[serde(default)]
     pub turn_seq: Option<i64>,
+    /// Its latest Ship's number (None before its first; an older engine leaves it out).
+    #[serde(default)]
+    pub ship_seq: Option<i64>,
 }
 
 /// `GET /agents/live/threads`: the person's own Flexible threads, and whether interactive agent threads are on (`on`;
