@@ -4,6 +4,30 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.114 — 2026-11-17
+
+Interactive agent threads (beta) now run on each person's own Claude sign-in.
+
+### New
+
+- **Your Claude sign-in for threads.** Settings → General, or `toolroll config set flexible-sign-in`: paste a Claude
+  setup-token and confirm with your password. Toolroll checks it with a free token count and says what it found.
+- **Each person uses their own.** A thread always runs on the sign-in of the person who started it, never someone
+  else's. Operators can remove a person's sign-in on People but never see or set it.
+
+### Changed
+
+- **Turning on threads walks you through it in order:** threads on, then your sign-in, then the project's terms. The
+  workbench and the Agents page point to the next step.
+- **When Claude can't be used, the thread says why and stops** (no sign-in, a refused sign-in, threads turned off)
+  instead of retrying silently or suggesting `/login`.
+
+### Fixed
+
+- **Removing a sign-in, a password reset or a removed account** stops that person's running threads
+  at once, mid-answer too.
+- **Saving a sign-in in the terminal always asks for your password,** even when a login is remembered on the computer.
+
 ## 0.9.113 — 2026-11-17
 
 The terminal workbench for people coming from herdr: a clear first screen, a build shell that can't take your keys by
