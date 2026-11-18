@@ -254,6 +254,9 @@ export type BrowserTaskView = {
    * reason), the evidence line behind it, one suggestion of what to change, and where to see it (its build's result
    * page, or that exact check-log line); and Retry itself, its note starting with the suggestion. */
   failure?: BrowserFailure | null;
+  /** A planner's own backoff: the last planning attempt's failure in one line, and what its agent said (cleaned by the
+   * engine, at most eight lines; null when nothing was kept). Null unless it waits to plan again. */
+  planning?: { line: string; agentSaid: string[] | null } | null;
   retry?: { action: string; note?: string; pins?: { run: number; digest: string } | null } | null;
   /** Run checks in place, on a status row that offers it: posts and comes back to this page. */
   runChecks?: BrowserRunChecks | null;

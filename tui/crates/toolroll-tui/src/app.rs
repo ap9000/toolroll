@@ -1183,6 +1183,9 @@ impl App {
                 && s.held.is_none()
                 // A plan stopped on its checks isn't retrying: Plan again is its way on (r), never Stop retrying.
                 && s.plan_stopped.is_none()
+                // Something would start on its own: a try is due (a backoff), or its approved work waits for a builder.
+                // A task filed with no plan and no approval (from the CLI, say) has nothing to stop.
+                && (s.waiting.is_some() || s.approval.is_some())
         }) && !self.approval_waiting()
     }
 

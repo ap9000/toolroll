@@ -1856,7 +1856,10 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         // The task's attempt, and the console's own build id beside it (here only: the details).
         if let Some(newest) = card.runs.first() {
             let n = card.runs.len();
-            facts.push(if wait.is_some() {
+            // A planning attempt is never a build: no build number on the Plan card.
+            facts.push(if card.key == "plan" {
+                format!("plan attempt {n}")
+            } else if wait.is_some() {
                 format!("after attempt {n} (build #{newest})")
             } else {
                 format!("attempt {n} (build #{newest})")

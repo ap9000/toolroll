@@ -1627,6 +1627,8 @@ export function taskBodyParts(data: {
   /** A plan that stopped on its checks (engine-reads.ts planStoppedFor): what stopped it, why the plan was refused and
    * what the agent said (cleaned), and what Plan again posts (null when it can't be asked as it stands). */
   planStopped?: StepCards["planStopped"];
+  /** A planner's own backoff (engine-reads.ts planBackoffFor): the last attempt's reason and its agent's words. */
+  planBackoff?: { line: string; agentSaid: string[] | null } | null;
   planDocument: string | null;
   planAuto?: boolean;
   /** Hash of the verified plan artifact currently shown. */
@@ -2589,6 +2591,9 @@ export function taskBodyParts(data: {
   const planStoppedHtml = data.planStopped == null ? "" : html`<div class="card" data-plan-stopped><p><strong>${data.planStopped.line}</strong></p>${
     data.planStopped.problems === null ? "" : html`<p class="meta">Why the plan was refused</p><ul>${joinHtml(data.planStopped.problems.map(one => html`<li>${one}</li>`), "")}</ul>`}${
     data.planStopped.agentSaid === null ? "" : html`<details><summary>What the agent said</summary><pre class="mono">${data.planStopped.agentSaid.join("\n")}</pre></details>`}</div>`;
+  // A planner's own backoff (no incident): the last attempt's reason, and what its agent said in a disclosure.
+  const planBackoffHtml = data.planBackoff == null ? "" : html`<div class="card" data-plan-backoff><p>${data.planBackoff.line}</p>${
+    data.planBackoff.agentSaid === null ? "" : html`<details><summary>What the agent said</summary><pre class="mono">${data.planBackoff.agentSaid.join("\n")}</pre></details>`}</div>`;
   const incidents =
     data.incidents.length === 0
       ? ""
@@ -2790,6 +2795,7 @@ export function taskBodyParts(data: {
   const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,
     attemptPanel,
+    planBackoffHtml,
     data.coordinatorProposals == null || data.coordinatorProposals.rows.length === 0
       ? ""
       : section(
@@ -3113,6 +3119,8 @@ export function taskBodyParts(data: {
       : statusCard.action !== null && rebuild === null && bareSelfLink(statusCard.action.href) ? { ...statusCard, action: null } : statusCard),
     statusHtml: data.archived != null ? "" : htmlString(statusHtml),
     failure: failedCard && data.failure != null ? { line: data.failure.line, evidence: data.failure.evidence, suggestion: data.failure.suggestion, link: data.failure.link } : null,
+    // A planner's own backoff: its last attempt's reason, and what its agent said (cleaned by the engine).
+    planning: data.planBackoff ?? null,
     retry,
     runChecks,
     progress: progress === null ? null : { ...progress, steps: (data.milestoneProgress ?? []).map(one => ({ title: one.description, state: one.state })) },

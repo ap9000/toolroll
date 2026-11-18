@@ -278,3 +278,54 @@ fn an_added_file_shown_whole_draws_no_more_lines_below() {
     // Not known (a changed file): the marker stays, as before.
     assert_eq!(gaps(&file(None)), 1);
 }
+
+#[test]
+fn a_plan_card_counts_planning_attempts_and_never_names_a_build() {
+    let mut s = steps("t-retry", "queued");
+    for card in s["cards"].as_array_mut().unwrap() {
+        if card["key"] == "plan" {
+            card["inChain"] = json!(true);
+            card["state"] = json!("current");
+            card["mark"] = json!("wait");
+            card["agent"] = json!({ "provider": "claude", "model": "claude-scripted" });
+            card["runs"] = json!([3]);
+        }
+    }
+    let mut app = on(s);
+    app.key(code(KeyCode::Tab));
+    let shown = screen(&mut app, 160, 40);
+    assert!(shown.contains("plan attempt 1"), "{shown}");
+    assert!(!shown.contains("(build #3)"), "{shown}");
+}
+
+#[test]
+fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
+    // Filed from the CLI: queued, nothing approved, nothing waiting to try again: nothing would start, so nothing to stop.
+    let mut s = steps("t-retry", "queued");
+    s["approval"] = json!(null);
+    s["waiting"] = json!(null);
+    let mut app = on(s);
+    let bar = screen(&mut app, 160, 34)
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(!bar.contains("stop retrying"), "{bar}");
+    assert_eq!(app.key(key('x')), vec![]);
+    assert!(
+        !matches!(app.mode, Mode::ConfirmHold { .. }),
+        "{:?}",
+        app.mode
+    );
+    // Approved and waiting for a builder: Stop retrying stays.
+    let mut s = steps("t-retry", "queued");
+    s["approval"] = json!({ "by": "alex", "you": true, "automatic": false });
+    s["waiting"] = json!(null);
+    let mut app = on(s);
+    let bar = screen(&mut app, 160, 34)
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(bar.contains("stop retrying"), "{bar}");
+}

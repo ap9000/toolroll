@@ -864,7 +864,9 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     return null;
   };
 
-  const malformedOutcome = (payload: Extract<PlannerPayload, { state: "malformed" }>): PlanOutcome => ({
+  // What the agent said on the turn whose output was malformed (the first turn, or its correction), kept with it.
+  const malformedOutcome = (payload: Extract<PlannerPayload, { state: "malformed" }>, said: { agentSaid?: string[] } = {}): PlanOutcome => ({
+    ...said,
     ok: false,
     kind: "malformed",
     reason: payload.kind === "decision" ? "malformed-decision" : "malformed-plan",
@@ -984,6 +986,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         kind: "failure",
         reason: "timeout",
         message: `the planner made no observable progress for ${Math.round(timeoutMs / 60_000)} minutes and was stopped`,
+        ...saidOf(result),
       };
     }
     if (result.initFailed) {
@@ -1026,7 +1029,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
       }
     }
     if (payload.state === "plan") return draftedOutcome(root, request.runId, payload.plan);
-    if (!plannerPayloadIsRepairable(payload)) return malformedOutcome(payload);
+    if (!plannerPayloadIsRepairable(payload)) return malformedOutcome(payload, saidOf(result));
 
     const initialAuthority = payload.authorityAnchor;
     let expectedKind = payload.expectedKind;
@@ -1034,7 +1037,9 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     let lastMalformed = payload;
     let sessionId = result.sessionId ?? store.getRun(request.runId)?.sessionId ?? null;
     let repairParentRun = request.runId;
-    if (auditOf(provider).resume !== "native" || sessionId === null) return malformedOutcome(lastMalformed);
+    // The words of the turn that wrote the last malformed output: the first turn's until a correction ran.
+    let lastSaid = saidOf(result);
+    if (auditOf(provider).resume !== "native" || sessionId === null) return malformedOutcome(lastMalformed, lastSaid);
     const parentRoute = store.runRoute(request.runId);
     const parentStamp = parentRoute === null ? null : { routeDigest: parentRoute.routeDigest, phase: parentRoute.phase, provider: parentRoute.provider, model: parentRoute.model, chosen: parentRoute.chosen };
 
@@ -1222,6 +1227,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
       }
 
       lastMalformed = corrected;
+      lastSaid = saidOf(turn);
       problems = corrected.problems;
       if (expectedKind === null) expectedKind = corrected.expectedKind ?? corrected.kind;
       store.finishRun(correctionRun, {
@@ -1229,11 +1235,11 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         reason: corrected.kind === "decision" ? "malformed-decision" : "malformed-plan",
         now: clock(),
       });
-      if (!plannerPayloadIsRepairable(corrected)) return malformedOutcome(corrected);
+      if (!plannerPayloadIsRepairable(corrected)) return malformedOutcome(corrected, lastSaid);
       sessionId = turn.sessionId;
       repairParentRun = correctionRun;
     }
-    return malformedOutcome(lastMalformed);
+    return malformedOutcome(lastMalformed, lastSaid);
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
     liveLog?.close();

@@ -106,9 +106,11 @@ export const ASKS: readonly Ask[] = ["decide", "review", "unblock"];
 export const ASK_LABEL: Readonly<Record<Ask, string>> = { decide: "Decide", review: "Review", unblock: "Unblock" };
 /** A waiting row's chip: the specific thing asked, never its group's own word (no "Decide" chip under Decide).
  * Null: the group heading and the row's sentence already say it, so the row wears no chip. */
-export type AskChip = "Plan" | "Ready" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Blocked" | "Stopped" | "Sign in";
+export type AskChip = "Plan" | "Plan didn't pass" | "Ready" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Blocked" | "Stopped" | "Sign in";
 /** `mismatch`: the saved report doesn't match its changes; `planChanged`: the plan changed after it was built. */
 export function askChipOf(read: { headline: string; need?: NeedKey | null; mismatch?: boolean; planChanged?: boolean; ask?: Ask | null }): AskChip | null {
+  // A plan that stopped on its checks: its own words, never "Problem" or "Failed".
+  if (read.need === "plan-again") return "Plan didn't pass";
   if (read.headline === "Failed") return "Failed";
   if (read.planChanged === true || read.need === "rebuild" || read.need === "replan") return "Plan changed";
   if (read.mismatch === true) return "Mismatch";

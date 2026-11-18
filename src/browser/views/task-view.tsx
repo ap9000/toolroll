@@ -510,6 +510,7 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
         </span>
         {view.activity != null && <ActivityLine activity={view.activity} />}
         {failed && failure != null && <FailureEvidence failure={failure} />}
+        {view.planning != null && <span data-plan-backoff="">{view.planning.line}</span>}
       </>}
       {...(lead ? { body: <>
         <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />
@@ -521,6 +522,7 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
         box itself is the work panel's (Watch the work). */}
     {unsent && <Unsent view={view} csrf={csrf} />}
     {!lead && <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />}
+    {view.planning?.agentSaid != null && <KDisclose summary="What the agent said"><pre className="k-mono" data-plan-agent-said="">{view.planning.agentSaid.join("\n")}</pre></KDisclose>}
     {why.length > 0 && <KDisclose summary="More">{why.map(one => <KNote key={one}>{one}</KNote>)}</KDisclose>}
   </div>;
 }

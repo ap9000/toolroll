@@ -376,11 +376,43 @@ describe("every answer is its contract's shape", () => {
     expect(row.status.label).toBe("Needs you");
     expect(row.detail).toBe("The plan didn't pass its checks. Plan again, or edit the task.");
     expect(row.need?.action?.label).toBe("Plan again");
+    // Its own word on the row, never "Problem" or "Failed".
+    expect(row.chip).toBe("Plan didn't pass");
     // A task with no plan asked for offers one; a task already approved does not.
     store.createTask({ id: "t-ask", title: "Ask t-ask" }, T0);
     store.placeTask(store.refFor("built-in", "t-ask", "ours").id, repoA);
     expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).plan).toEqual({ source: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).plan).toBeNull();
+  });
+
+  test("a planner's own backoff: the steps, the task page and the Plan card read the root attempt, never a correction child or a build", async () => {
+    store.createTask({ id: "t-pwait", title: "Plan t-pwait" }, T0);
+    const ref = store.refFor("built-in", "t-pwait", "ours").id;
+    store.placeTask(ref, repoA);
+    expect(store.requestPlan(ref, T0)).toEqual({ ok: true });
+    const planner = (parentRun?: number) => {
+      const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+      if (!taken.ok) throw new Error("claim");
+      const id = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", role: "planner", branch: "b-t-pwait", worktree, now: new Date(), ...(parentRun === undefined ? {} : { parentRun }), ...presented(store, ref, "planner") });
+      release(store, taken.claim.leaseId, new Date());
+      return id;
+    };
+    const root = planner();
+    const child = planner(root);
+    store.finishRun(child, { outcome: "failed", reason: "agent", now: new Date() } as never);
+    store.finishRun(root, { outcome: "failed", reason: "agent-error", now: new Date() } as never);
+    recordAgentSaid(store, root, ["\u001b[31mclaude: /Users/me/shop refused\u001b[0m"]);
+    store.holdOwned({ taskRef: ref, ownerKind: "backoff", ownerId: `plan:${ref}`, reason: "plan retry 1/3 — backing off 1m", until: new Date(Date.now() + 60_000) }, new Date());
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-pwait/steps")).body);
+    expect(steps.waiting).toMatchObject({ attempt: "plan", lastFailure: "The agent stopped with an error", agentSaid: ["claude: [path] refused"] });
+    // The Plan card counts planning attempts (the root), never their correction children.
+    expect(steps.cards!.find(card => card.key === "plan")!.runs).toEqual([root]);
+    // The browser's task page says it too, the agent's words in a disclosure.
+    const page = String((await fetch(`${base}/t/t-pwait`, { headers: { cookie: cookies["operator"]! } }).then(response => response.text())));
+    expect(page).toContain("data-plan-backoff");
+    expect(page).toContain("Last plan attempt failed · The agent stopped with an error.");
+    expect(page).toMatch(/<summary>What the agent said<\/summary><pre class="mono">claude: \[path\] refused<\/pre>/);
+    expect(page).not.toContain("/Users/me/shop");
   });
 
   test("failures in a row count from the last success or the last person's Retry, as the engine counts them", async () => {

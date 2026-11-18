@@ -79,7 +79,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
   const rows = stepRowsOf(facts);
   const builds = runs.filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair");
   const reviews = runs.filter(run => run.role === "reviewer");
-  const behind: Record<StepCard["key"], Run[]> = { plan: plannerRuns, approve: [], build: builds, checks: [], review: reviews, ready: [] };
+  // The Plan card's attempts are the planning attempts (root planner runs), never their correction children.
+  const behind: Record<StepCard["key"], Run[]> = { plan: plannerRuns.filter(run => run.parentRun === null), approve: [], build: builds, checks: [], review: reviews, ready: [] };
   // The waiting approval's terms: the one summary every surface shows (approval-summary.ts), its key what a yes pins.
   const terms = scope === null || approved ? null : (() => {
     const summary = approvalSummaryOf(scope, summaryContextOf(store, current.id, scope, now));
@@ -220,9 +221,9 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
   const rows = store.handle.prepare(`SELECT task.id AS task,
       EXISTS (SELECT 1 FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?)) AS held,
       (SELECT hold.until FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?) ORDER BY hold.held_at, hold.id LIMIT 1) AS until,
-      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
-      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason,
-      (SELECT run.role FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS role
+      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
+      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason,
+      (SELECT run.role FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair', 'planner') AND NOT (run.role = 'planner' AND run.parent_run IS NOT NULL) AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS role
     FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
     WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})
       -- A person's hold (Stop retrying, a pause, a question, an incident) means it isn't waiting to try again.
@@ -452,10 +453,11 @@ export const PLANNER_INCIDENTS: Readonly<Record<string, "plan" | "question" | "s
   "malformed-plan": "plan", "malformed-decision": "question", "plan-attempts-exhausted": "stalled",
 });
 
-/** The newest planning turn that ended (a finish time or an outcome), or null. */
+/** The newest planning attempt that ended (a finish time or an outcome), or null: a root planner run, never its
+ * correction child (claim.ts sealPlanFailure keeps the attempt's reason and what the agent said on the root). */
 function latestFinishedPlanner(planners: readonly Run[]): Run | null {
   let latest: Run | null = null;
-  for (const run of planners) if ((run.finishedAt !== null || (run.outcome ?? null) !== null) && (latest === null || run.id > latest.id)) latest = run;
+  for (const run of planners) if (run.parentRun === null && (run.finishedAt !== null || (run.outcome ?? null) !== null) && (latest === null || run.id > latest.id)) latest = run;
   return latest;
 }
 
@@ -522,4 +524,21 @@ export function patchLineCount(hunks: readonly { header: string }[]): number | n
   if (oldStart === 0 && oldCount === 0) return newStart === 1 || newCount === 0 ? newCount : null;
   if (newStart === 0 && newCount === 0) return 0;
   return null;
+}
+
+/**
+ * A planner's own backoff as a page reads it (server/task-views.ts): the latest root planning attempt's failure in one
+ * line and what its agent said (cleaned: agentSaidOf), while Toolroll waits to plan again. Null unless the task waits
+ * on a planning attempt. Words for the person's own page only: never sent outside Toolroll.
+ */
+export function planBackoffFor(store: Store, taskId: string, now: Date): { line: string; agentSaid: string[] | null } | null {
+  const waiting = waitingOf(store, taskId, now);
+  if (waiting === null || waiting.attempt !== "plan") return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const last = latestFinishedPlanner(store.runsFor(ref.id).filter(run => run.role === "planner"));
+  return {
+    line: waiting.lastFailure === null ? "Toolroll tries the plan again soon." : `Last plan attempt failed · ${waiting.lastFailure}. Toolroll tries the plan again soon.`,
+    agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null,
+  };
 }
