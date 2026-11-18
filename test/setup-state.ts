@@ -51,6 +51,17 @@ if (tools !== null && codexSandbox !== undefined && isAbsolute(codexSandbox) && 
   mkdirSync(codexDir);
   symlinkSync(realpathSync(codexSandbox), join(codexDir, "codex"));
 }
+// The real Claude Code, only when a person asks for it (TOOLROLL_TEST_REAL_CLAUDE names the installed binary; unset, the
+// default and CI, its evidence test is skipped with a note): never on the PATH, and run only inside a macOS sandbox
+// that denies its network but loopback, the keychain and the person's own Claude and config folders
+// (src/flexible-relay-client.slow.test.ts).
+const realClaude = outer["TOOLROLL_TEST_REAL_CLAUDE"];
+let realClaudeLink: string | null = null;
+if (tools !== null && realClaude !== undefined && isAbsolute(realClaude) && existsSync(realClaude)) {
+  mkdirSync(join(state, "real-claude"));
+  realClaudeLink = join(state, "real-claude", "claude");
+  symlinkSync(realpathSync(realClaude), realClaudeLink);
+}
 if (WINDOWS) {
   // As before: these names, set over the inherited environment.
   Object.assign(process.env, {
@@ -77,6 +88,7 @@ Object.assign(process.env, kept, {
   TOOLROLL_STORAGE_SWEEP: "off",
   // No test reads or writes the developer's own keychain: tool secrets stay in files unless a test picks a keychain of its own.
   TOOLROLL_SECRET_STORE: "files",
+  ...(realClaudeLink === null ? {} : { TOOLROLL_TEST_REAL_CLAUDE: realClaudeLink }),
 });
 }
 // Fail closed: a test file never runs with the person's own home as its HOME (os.homedir(), and so every default rooted

@@ -421,7 +421,7 @@ waits use screen, process, file or database facts, with bounded deadlines; no
 fixed delay counts as verification.
 
 Features may declare world preparation with `needs` in the feature map. Only
-`threads`, `jumps` and `unread` currently need `threads-on` (including when run
+`threads`, `threads-sign-in`, `jumps` and `unread` currently need `threads-on` (including when run
 as dependencies). Those runs start and stop the workbench to initialize the
 laptop install, discover its local owner from read-only console records, then
 use the same PTY host to type a fresh random password twice into
@@ -433,12 +433,18 @@ preparation; the driver never writes the switch directly. Captured text and
 reports redact the password; raw preparation logs stay in the throwaway world
 until redacted evidence is copied. Other selections keep their existing startup.
 The project is then opted in with `toolroll project flexible enable` (password,
-then the terms confirm). No product step yet gives Toolroll a Claude sign-in for
-threads (a later slice), so the world holds a stand-in one, as the slow tests
-do: a random setup-token-shaped value in the files store at
-`<state>/flexible/claude-relay.json`, redacted like the password. The stand-in
-agent never calls through the relay, and every session's report checks that the
-relay answered no call (`thread_relay_call` is empty); one call fails the run.
+then the terms confirm). Threads run on each person's own Claude sign-in, so the
+owner then saves one through the product: `toolroll config set flexible-sign-in
+--no-check --as <owner>`, the password and a stand-in token (a random value in a
+setup-token's shape, never a real one) typed at its hidden prompts; the console's
+records must then hold one active sign-in. `--no-check` reaches no model
+service, and the stand-in is redacted like the password. The `threads-sign-in`
+feature removes it at a terminal, presses `T` and waits for the refusal that
+names `claude setup-token` and offers its command, saves it again the same way,
+then starts a thread once its terms card says "powers only threads you start".
+The stand-in agent never calls through the relay, and every session's report
+checks that the relay answered no call (`thread_relay_call` is empty); one call
+fails the run.
 
 `accept` accepts a fresh task's result. A sent-back revision waits for its
 person's yes; `send-back` approves it in the workbench, and waits for its build,
@@ -474,3 +480,18 @@ release operator should run the tarball command against the exact packed
 candidate after the normal build and native machine checks, and retain its
 report with that candidate's release evidence. This slice does not change the
 release gate lists or make this new command an automatic release requirement.
+
+## The real Claude Code against the sign-in relay
+
+`src/flexible-relay-client.slow.test.ts` records, against the real Claude Code,
+how it shows the relay's answer to a refused Claude sign-in (Toolroll's 403
+permission_error: shown once, in Toolroll's words, no retry, no `/login`) and why
+a raw 401 is never passed through (the client retries it). It runs only when a
+person names the installed binary, `TOOLROLL_TEST_REAL_CLAUDE=/path/to/claude
+npx vitest run src/flexible-relay-client.slow.test.ts`, and only on macOS: the
+binary runs inside `sandbox-exec` with every network but loopback, the keychain's
+services and the person's own `~/.claude`, `~/.claude.json`, `~/.config`,
+Keychains and Claude application folders denied, a throwaway HOME and
+CLAUDE_CONFIG_DIR, an environment built from nothing, a made-up relay token and a
+stand-in relay on loopback. Unset (CI), it skips with that note. The owner runs
+it once before a release.

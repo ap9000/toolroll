@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createServer } from 'node:net';
 import { Screen } from './first-result-kit.mjs';
 import { FILING_ANSWER } from './tui-e2e.mjs';
-import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, assertAgentStandIns, checkedEnv, checkNoModelCalls, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
+import { MARKER, SCENARIOS, WORLD_NEEDS, prepareWorld, redactPasswords, saveStandInSignIn, assertAgentStandIns, checkedEnv, checkNoModelCalls, checkOutbound, createWorld, git, readConsole, run } from './verify-world.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const featureMap = JSON.parse(readFileSync(join(repo, 'docs/feature-map.json'), 'utf8'));
@@ -339,17 +339,28 @@ export async function retryAttempt(term, lastRun, taskId, waitFor = until) {
 }
 
 /** A thread starts only after its terms card was read to the end (thread.rs start_key): read on, then Enter. */
-export async function startThread(term, message) {
+/** A dialog's own words, as one line: on each screen line, only what sits between its first and last border (the list
+ * beside it is left out), wrapped lines joined. */
+export function dialogText(screen) {
+  return screen.split('\n').map(line => { const first = line.indexOf('│'), last = line.lastIndexOf('│'); return first >= 0 && last > first ? line.slice(first + 1, last) : ''; })
+    .join(' ').replace(/\s+/g, ' ');
+}
+export async function startThread(term, message, card = null) {
   await term.press('T', /New thread:/);
   term.send(message);
   await term.wait(new RegExp(`New thread:[^\\n]*${message.split(' ').slice(-2).join(' ').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-  let shown = await term.press('enter', /The thread started\.|already started\.|Starting this thread agrees to exactly this:|Refused: /);
+  // With a card to check, an earlier refusal may still be on the status line: only the card (or a start) answers.
+  let shown = await term.press('enter', card === null ? /The thread started\.|already started\.|Starting this thread agrees to exactly this:|Refused: / : /The thread started\.|already started\.|Starting this thread agrees to exactly this:/);
+  let read = shown;
   while (/Starting this thread agrees to exactly this:/.test(shown) && !/Enter\s+Start the thread/.test(shown)) {
     const remaining = /\d+ more lines: j or Space reads on/.exec(shown)?.[0];
     if (!remaining) throw new Error('The thread terms card shows neither more lines nor its Start control');
     term.send(' ');
     shown = await until(() => { const next = term.text(); return !next.includes(remaining) && next; }, 'the thread terms read on');
+    read += shown;
   }
+  // What the card must have said, somewhere in it, before the yes.
+  if (card !== null && /Starting this thread agrees to exactly this:/.test(read) && !card.test(dialogText(read))) throw new Error(`The thread terms card never said ${card}`);
   if (/Starting this thread agrees to exactly this:/.test(shown)) shown = await term.press('enter', /The thread started\.|already started\.|Refused: /);
   // The same message under the same terms is the same start: it answers that it already started, and starts nothing.
   if (!/The thread started\./.test(shown)) throw new Error(`No thread started: ${/Refused: [^\n]*|[^\n]*already started\./.exec(shown)?.[0]}`);
@@ -363,7 +374,7 @@ export function revisionApproval(source = readFileSync(join(repo, featureMap.key
 
 /** Back to the workbench's own screen between features: Esc out of any screen or dialog a feature left open (the
  * Agents screen, help, the palette, Settings, a composer), waiting on the screen fact each time, never a fixed sleep. */
-const OVERLAY = /Search: |Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels|Esc starts nothing\./;
+const OVERLAY = /Search: |Esc\s+back|New task:|New thread:|Before a thread can start| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels|Esc starts nothing\./;
 async function toBase(term, world = null) {
   if (FATAL.test(term.text())) throw new Error(`The workbench stopped with an error: ${fatalWords(term.text())}`);
   for (let tries = 0; tries < 4 && OVERLAY.test(term.text()); tries++) {
@@ -565,6 +576,26 @@ async function exercise(feature, context) {
     case 'retry': await failed(); await wait(/The agent stopped with an error\.[\s\S]*What the agent said/); shown = await retryAttempt(term, lastRun, context.task); break;
     case 'cancel': await failed(); shown = await press('X', /Cancel/); await press('enter', /[Cc]ancelled|[Cc]anceled/); break;
     case 'threads': shown = await startThread(term, 'Review the subtraction change.'); break;
+    case 'threads-sign-in': {
+      // Your own Claude sign-in for threads, end to end through the product: removed at a terminal; T then names the
+      // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying
+      // whose plan powers it, and the thread starts. The world keeps a saved sign-in afterwards. It is the map's last
+      // feature: the thread it starts would otherwise take one of the project's three live threads from a later one.
+      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], [{ prompt: /password:/, answer: world.password }]);
+      await term.press('T', /New thread:/);
+      const message = 'Check the sign-in, then review the subtraction change.';
+      term.send(message);
+      await term.wait(/New thread:[^\n]*subtraction change\./);
+      const refused = await term.press('enter', /Before a thread can start/);
+      if (!/claude setup-token/.test(refused.replace(/\s+/g, ' '))) throw new Error('The refusal did not name `claude setup-token`');
+      if (!/copies the command/.test(refused)) throw new Error('The refusal offered no command to copy');
+      term.send(esc);
+      await until(() => !/Before a thread can start/.test(term.text()) && term.text(), 'the next-step dialog closed');
+      await saveStandInSignIn(world, context.runCli);
+      shown = await startThread(term, message, /powers only threads you start/);
+      state = 'refused without a sign-in, saved through the CLI, then started on it';
+      break;
+    }
     case 'task-show': await ready(); shown = run(world, process.execPath, [context.cli, 'task', 'show', context.task]); if (!shown.includes(context.task)) throw new Error('task show did not identify the selected task'); break;
     case 'restore': {
       const before = JSON.stringify(stableView()); term.send('L');

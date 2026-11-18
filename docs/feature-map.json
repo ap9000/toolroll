@@ -507,6 +507,23 @@
       "dependsOn": [
         "result"
       ]
+    },
+    {
+      "id": "threads-sign-in",
+      "screen": "Work",
+      "reach": "With no sign-in, T names `claude setup-token` and its command; save it at a terminal (config set flexible-sign-in); T shows the card's 'powers only threads you start'; Enter starts it",
+      "expected": "The thread started\\.",
+      "scenario": "success",
+      "actions": [
+        "new-thread"
+      ],
+      "keys": [
+        "T"
+      ],
+      "state": "refused without a sign-in, saved through the CLI, then started on it",
+      "needs": [
+        "threads-on"
+      ]
     }
   ],
   "intentionallyUnmapped": [
