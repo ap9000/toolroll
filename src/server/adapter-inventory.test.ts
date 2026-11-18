@@ -29,8 +29,12 @@ test("every route row is marked for the local owner; an allow names one of its a
   expect(ROUTES.filter(row => row.stage === "console" && row.method === "POST" && row.local === "allow").map(row => `${row.id}=${row.localAct}`).sort()).toEqual([
     // A Flexible thread's owner answers its agent's request, as a task's question is answered (F3; refused while Flexible is off).
     "agents.live.thread.answer=answer-question",
+    // Ending one's own thread (final; it only narrows: engine-api.ts threadClose checks the act).
+    "agents.live.thread.end=end-thread",
     // Starting a thread: the laptop owner's yes to its terms card (engine-api.ts threadStart checks this exact act).
     "agents.live.thread.start=start-thread",
+    // Stopping one's own thread's agent (it only narrows: engine-api.ts threadClose checks the act).
+    "agents.live.thread.stop=stop-thread",
     // Reply: the owner's next message to their own thread (engine-api.ts threadTurn checks this exact act).
     "agents.live.thread.turn=reply-thread",
     "agents.seen=mark-seen", "agents.watch=watch-agent", "chat.file=file-task", "chat.mate-end=lead-send", "chat.mate-follow=lead-send", "chat.mate-mint=lead-send",

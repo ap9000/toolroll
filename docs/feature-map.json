@@ -334,6 +334,29 @@
       ]
     },
     {
+      "id": "thread-end",
+      "screen": "Work",
+      "reach": "Select the thread; X; y ends it; it moves to Recent as Ended and s says it ended",
+      "expected": "This thread has ended",
+      "scenario": "success",
+      "actions": [
+        "thread-end",
+        "thread-stop",
+        "cancel-task",
+        "stop"
+      ],
+      "keys": [
+        "X",
+        "x"
+      ],
+      "needs": [
+        "threads-on"
+      ],
+      "dependsOn": [
+        "thread-reply"
+      ]
+    },
+    {
       "id": "layout",
       "screen": "Work",
       "reach": "L",

@@ -172,6 +172,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "agents.live.thread.start": "start-thread",
   // Reply to one's own thread: a new turn under the terms the thread already runs on (its handler proves the act).
   "agents.live.thread.turn": "reply-thread",
+  // Stopping one's own thread's agent, and ending the thread: each only narrows (the handler checks the exact act).
+  "agents.live.thread.stop": "stop-thread",
+  "agents.live.thread.end": "end-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",
@@ -452,6 +455,8 @@ get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped
 post("pages", "agents.live.thread.answer", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/answer$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/answer` });
 post("pages", "agents.live.thread.start", "/agents/live/thread", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver starts threads.") });
 post("pages", "agents.live.thread.turn", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/turn$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver replies to their own threads."), sample: `/agents/live/thread/${"a".repeat(32)}/turn` });
+post("pages", "agents.live.thread.stop", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/stop$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/stop` });
+post("pages", "agents.live.thread.end", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/end$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/end` });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to

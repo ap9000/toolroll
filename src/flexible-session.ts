@@ -861,6 +861,94 @@ export async function continueFlexibleThread(store: Store, sessions: FlexibleSes
   return locked;
 }
 
+/** What a thread's own turn says when its owner stopped it, or ended the thread. */
+export const FLEXIBLE_STOPPED_WORDS = "You stopped this turn. The thread is still open: reply to go on.";
+export const FLEXIBLE_ENDED_WORDS = "You ended this thread.";
+
+/**
+ * Stop (x) or End (X), by the thread's owner (a person's surface; it only narrows, so it never checks the switch and
+ * takes no password). Under the thread's lock, so a reply or a Ship is wholly before or after it:
+ * - one transaction re-reads their account at the generation their session holds and that the thread is theirs; End
+ *   records the end (final: written once; the thread's repository stays, so its work can still be shipped), and both
+ *   withdraw every turn waiting to start and interrupt the running one in Toolroll's words, and require each live
+ *   launch of its agent to stop (flexible_stop_request);
+ * - then the agent is stopped here (when this host holds it) with its exit verified; a stop not verified yet is kept
+ *   as the upkeep's retry target and said so (`stopPending`).
+ * End again is the same end ("already").
+ */
+export async function closeFlexibleThread(store: Store, sessions: FlexibleSessions | null, input: { thread: string; by: { name: string; generation: number }; act: "stop" | "end"; clock?: FlexibleClock }):
+  Promise<{ ok: true; already: boolean; stopPending: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  if (typeof input.thread !== "string" || !ID.test(input.thread) || (input.act !== "stop" && input.act !== "end")) return refuse("invalid-request");
+  const clock = input.clock ?? systemClock;
+  const locked = await withFlexibleThreadLock(input.thread, async () => {
+    const at = clock().toISOString();
+    const recorded = store.transact((): { ok: true; already: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string } => {
+      const account = store.accountOf(input.by.name);
+      if (account === null || account.revokedAt !== null || account.generation !== input.by.generation) return { ok: false, reason: "stale-generation", message: "Your account changed since this started. Sign in again and retry. Nothing changed." };
+      if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+      const ended = flexibleThreadEnded(store, input.thread);
+      if (input.act === "end") {
+        if (ended) return { ok: true, already: true };
+        const title = recordedTitle(store, input.thread);
+        store.handle.prepare(`INSERT INTO flexible_thread_meta (thread, title, ended_at, ended_by, end_words) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (thread) DO UPDATE SET ended_at = excluded.ended_at, ended_by = excluded.ended_by, end_words = excluded.end_words`)
+          .run(input.thread, title, at, input.by.name, FLEXIBLE_ENDED_WORDS);
+        store.recordAction({ at, actor: input.by.name, repo: flexibleThread(store, input.thread)?.repo ?? null, taskId: null, runId: null, source: "work", action: "flexible thread ended", outcome: "ended",
+          detail: `thread ${input.thread}` });
+      }
+      const words = input.act === "end" ? FLEXIBLE_ENDED_WORDS : FLEXIBLE_STOPPED_WORDS;
+      for (const row of store.handle.prepare("SELECT id FROM thread_turn WHERE thread = ? AND status = 'running'").all(input.thread)) {
+        interruptTurnAndStop(store, { turn: String(row["id"]), words, reason: input.act === "end" ? "its owner ended the thread" : "its owner stopped it", at });
+      }
+      for (const row of store.handle.prepare("SELECT id FROM thread_turn WHERE thread = ? AND status = 'admitted'").all(input.thread)) {
+        withdrawFlexibleTurn(store, { turn: String(row["id"]), holder: String(store.handle.prepare("SELECT holder FROM thread_turn WHERE id = ?").get(String(row["id"]))?.["holder"]), detail: words, clock: () => new Date(at) });
+      }
+      for (const row of store.handle.prepare("SELECT id FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited'").all(input.thread)) {
+        requireFlexibleStop(store, { launch: String(row["id"]), thread: input.thread, reason: input.act === "end" ? "its owner ended the thread" : "its owner stopped it", at });
+      }
+      return { ok: true, already: ended && input.act === "end" };
+    });
+    if (!recorded.ok) return recorded;
+    // The agent stopped here when this console holds it (its exit verified); else every console's tick does it.
+    if (sessions !== null && unsettledHere(store, sessions, input.thread)) {
+      try { await stopFlexibleThreadSession(store, sessions, { thread: input.thread, reason: input.act === "end" ? "its owner ended the thread" : "its owner stopped it", clock }); } catch { /* the tick retries */ }
+    }
+    try { store.transact(() => { settleExitedStops(store, clock().toISOString()); }); } catch { /* the tick settles it */ }
+    return { ok: true as const, already: recorded.already, stopPending: flexibleStopPending(store, input.thread) };
+  });
+  return locked;
+}
+
+/** Whether a launch of `thread` not yet exited is held by this host. */
+function unsettledHere(store: Store, sessions: FlexibleSessions, thread: string): boolean {
+  return store.handle.prepare("SELECT 1 AS held FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited' AND holder = ?").get(thread, sessions.holder) !== undefined
+    || sessions.threads.get(thread)?.agent != null;
+}
+
+/** How long an ended thread's working copy is kept for a Ship (D4): then it is tidied, unless a Ship is open. */
+export const FLEXIBLE_ENDED_KEEP_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * The upkeep's tidy (D4): every thread ended more than a week ago whose copy is still here, with nothing of its agent
+ * still running and no Ship open (removeFlexibleThread refuses then), has its repository and keep-ref removed (F2a), and
+ * its end records the tidy. A copy that can't be removed yet stays for the next pass.
+ */
+export async function tidyEndedFlexibleThreads(store: Store, input: { now: Date }): Promise<{ tidied: number; left: number }> {
+  const before = new Date(input.now.getTime() - FLEXIBLE_ENDED_KEEP_MS).toISOString();
+  const due = store.handle.prepare(`SELECT m.thread AS thread, t.created_by AS owner FROM flexible_thread_meta m JOIN flexible_thread t ON t.id = m.thread
+    WHERE m.ended_at IS NOT NULL AND m.ended_at <= ? AND m.tidied_at IS NULL AND t.state IN ('ready', 'removing') ORDER BY m.ended_at LIMIT 20`).all(before)
+    .map(row => ({ thread: String(row["thread"]), owner: String(row["owner"]) }));
+  let tidied = 0, left = 0;
+  for (const one of due) {
+    let removed: Awaited<ReturnType<typeof removeFlexibleThread>>;
+    try { removed = await removeFlexibleThread(store, { id: one.thread, by: one.owner, now: input.now }); } catch { left++; continue; }
+    if (!removed.ok) { left++; continue; }
+    store.transact(() => { store.handle.prepare("UPDATE flexible_thread_meta SET tidied_at = ? WHERE thread = ? AND tidied_at IS NULL").run(input.now.toISOString(), one.thread); });
+    tidied++;
+  }
+  return { tidied, left };
+}
+
 // ---- answering ------------------------------------------------------------------------------------------------------------------
 
 /** What a person picked on a card: a permission's allow or deny, or one question's answer (the option's words as shown). */

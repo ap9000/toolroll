@@ -753,3 +753,22 @@ fn an_ended_thread_takes_no_reply() {
     assert!(matches!(app.mode, Mode::Normal));
     assert!(app.status.as_ref().is_some_and(|(_, w)| w.contains("This thread has ended")), "{:?}", app.status);
 }
+
+#[test]
+fn x_and_capital_x_on_a_thread_ask_first_then_post_stop_or_end_for_that_thread() {
+    for (k, verb, asked) in [('x', "stop", "Stop the agent's turn?"), ('X', "end", "End this thread?")] {
+        let mut app = thread_app(window());
+        assert_eq!(app.key(key(k)), vec![]);
+        assert!(matches!(&app.mode, Mode::ConfirmThreadAct(t, _) if t == fake::THREAD), "{:?}", app.mode);
+        let shown = screen(&mut app, 120, 30);
+        assert!(shown.contains(asked), "{shown}");
+        // Any other key cancels; nothing is posted.
+        assert_eq!(app.key(key('n')), vec![]);
+        assert!(matches!(app.mode, Mode::Normal));
+        app.key(key(k));
+        let fx = app.key(key('y'));
+        let [Effect::Act { path, fields, .. }] = fx.as_slice() else { panic!("{fx:?}") };
+        assert_eq!(path, &format!("/agents/live/thread/{}/{verb}", fake::THREAD));
+        assert!(fields.is_empty());
+    }
+}

@@ -231,6 +231,73 @@ pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app
     }]
 }
 
+/// What `x` and `X` do on a thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadAct {
+    /// Stop its agent's turn; the thread stays open.
+    Stop,
+    /// End the thread, for good (its work can still be shipped).
+    End,
+}
+
+/// `x` or `X` on a thread: asked first (an ended thread is said so, and its agent is stopped already).
+pub fn ask_act(app: &mut App, act: ThreadAct) -> Vec<crate::app::Effect> {
+    let Some(id) = app.thread_selected() else {
+        app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
+        return vec![];
+    };
+    if app.threads.rows.iter().any(|t| t.id == id && t.ended) {
+        app.status = Some((Tone::Refused, "This thread has ended.".into()));
+        return vec![];
+    }
+    app.status = None;
+    app.mode = Mode::ConfirmThreadAct(id, act);
+    vec![]
+}
+
+/// The question over the screen.
+pub fn confirm_act_lines(act: ThreadAct) -> (&'static str, Vec<Line<'static>>) {
+    let (title, question, more, yes) = match act {
+        ThreadAct::Stop => (" Stop ", "Stop the agent's turn?", "The thread stays open: reply to go on.", "Stop it"),
+        ThreadAct::End => (
+            " End thread ",
+            "End this thread?",
+            "Its agent stops and it can't be reopened. You can still ship its work.",
+            "End it",
+        ),
+    };
+    (
+        title,
+        vec![
+            Line::raw(""),
+            Line::from(Span::styled(question, ink())),
+            Line::from(Span::styled(more, dim())),
+            Line::raw(""),
+            Line::from(crate::sheet::act("y", yes, true)),
+            Line::from(Span::styled("Any other key cancels.", dim())),
+        ],
+    )
+}
+
+/// A key on that question: `y` posts it for the thread it was asked about (only while that thread is still selected).
+pub fn confirm_act_key(app: &mut App, thread: String, act: ThreadAct, key: KeyEvent) -> Vec<crate::app::Effect> {
+    app.mode = Mode::Normal;
+    if !matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+        app.status = Some((Tone::Said, match act { ThreadAct::Stop => "Not stopped.", ThreadAct::End => "Not ended." }.into()));
+        return vec![];
+    }
+    if app.thread_selected().as_deref() != Some(thread.as_str()) {
+        app.status = Some((Tone::Refused, "Another thread is selected now. Nothing changed.".into()));
+        return vec![];
+    }
+    let verb = match act { ThreadAct::Stop => "stop", ThreadAct::End => "end" };
+    vec![Effect::Act {
+        path: format!("/agents/live/thread/{}/{verb}", toolroll_api::client::encode(&thread)),
+        fields: vec![],
+        done: match act { ThreadAct::Stop => "Stopped.", ThreadAct::End => "Ended." }.into(),
+    }]
+}
+
 pub fn level_words(level: Option<&str>) -> &'static str {
     match level {
         Some("supervised") => "Supervised",

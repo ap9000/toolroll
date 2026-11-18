@@ -315,3 +315,25 @@ describe("the send compares the whole saved session (Codex round 2)", () => {
     expect(agent.sent.length).toBe(sentBefore);
   });
 });
+
+describe("End over HTTP (last: it ends the thread for good)", () => {
+  const post = async (persona: string, verb: string, fields: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/agents/live/thread/${T1}/${verb}`, { method: "POST", redirect: "manual",
+      headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      body: new URLSearchParams({ csrf: csrfOf[persona]!, ...fields }).toString() });
+    return { status: response.status, body: await response.json() as unknown };
+  };
+  test("someone else and a token are refused; the owner ends it with no password; then it takes no reply", async () => {
+    for (const persona of ["ines", "alex"]) expect(await post(persona, "end"), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/end`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${readToken}` } });
+    expect(byToken.status).toBe(403);
+    expect(world.store.handle.prepare("SELECT ended_at FROM flexible_thread_meta WHERE thread = ? AND ended_at IS NOT NULL").get(T1)).toBeUndefined();
+    const ended = await post("pat", "end");
+    expect(ended.status).toBe(200);
+    expect((ended.body as { words: string }).words).toMatch(/^Ended\./);
+    expect(world.store.handle.prepare("SELECT ended_by FROM flexible_thread_meta WHERE thread = ?").get(T1)?.["ended_by"]).toBe("pat");
+    expect(await post("pat", "end")).toEqual({ status: 200, body: { outcome: "done", words: "This thread had already ended." } });
+    expect(await post("pat", "turn", { message: "One more thing", key: "e".repeat(32), password: tokenOf["pat"]! }))
+      .toEqual({ status: 409, body: { outcome: "refused", words: "This thread has ended. Press T to start a new one." } });
+  });
+});

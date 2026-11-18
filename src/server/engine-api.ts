@@ -27,7 +27,7 @@ import { dirname } from "node:path";
 import { flexibleAvailable } from "../flexible-available.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, continueFlexibleThread, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
@@ -191,6 +191,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   let stopping = false;
   /** People's retired sign-ins are being tidied (one pass at a time). */
   let tidying = false;
+  /** Ended threads' copies are being tidied (one pass at a time). */
+  let tidyingEnded = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -376,6 +378,30 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       turn: sent.turn });
   }
 
+  /**
+   * POST /agents/live/thread/<id>/stop and /end: the thread's owner stops its agent's turn (the thread stays open) or
+   * ends the thread (final; its work can still be shipped). Each only narrows: their own session (re-read), no
+   * password, and a local owner's own act (`stop-thread`, `end-thread`). Answered while interactive agent threads are
+   * off too: turning them off never stops anyone stopping or ending a thread.
+   */
+  const threadClose = (act: "stop" | "end") => async (ctx: HandlerContext): Promise<void> => {
+    const { url, who, request, response } = ctx;
+    const flexible = threadsRead();
+    if (flexible === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const id = url.pathname.slice("/agents/live/thread/".length, -`/${act}`.length);
+    if (ownedThread(request, who, flexible, id) === null) return acted(response, 404, "refused", "There's no such thread.");
+    if (who.authority === "local-owner" && localActNow(store, act === "end" ? "end-thread" : "stop-thread") === null) return acted(response, 403, "refused", "Sign in with your password to do this.");
+    const held = sessionHeld(who, flexible, id);
+    if (held === null || !held()) return acted(response, 403, "refused", "Only a person signed in here can do that.");
+    const done = await closeFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, act });
+    if (!done.ok) return acted(response, 409, "refused", done.message);
+    const words = act === "end"
+      ? done.already ? "This thread had already ended." : done.stopPending ? "Ended. Stopping its agent…" : "Ended. You can still ship its work."
+      : done.stopPending ? "Stopping its agent…" : "Stopped. Reply to go on.";
+    return acted(response, 200, "done", words);
+  };
+
   /** The task an address names, in view as its page would be (the route admitted its project already). */
   function familyAt(url: URL, verb: string) {
     const task = matchTaskPath(url.pathname, `/${verb}$`);
@@ -512,6 +538,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       const host = flexible;
       if (host === null) return;
       try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }
+      // Ended threads' working copies, a week after they ended (unless a Ship is open): one pass at a time.
+      if (!tidyingEnded) {
+        tidyingEnded = true;
+        void tidyEndedFlexibleThreads(store, { now: new Date() }).catch(() => { /* the next tick tries again */ }).finally(() => { tidyingEnded = false; });
+      }
       if (stopping) return;
       stopping = true;
       void settleFlexibleStops(store, host).catch(() => { /* the next tick tries again */ }).finally(() => { stopping = false; });
@@ -525,7 +556,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
-        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn }),
+        "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end") }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],

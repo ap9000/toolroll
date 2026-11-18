@@ -77,6 +77,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Reply to one's own interactive agent thread (threads-everyday S4): a new turn under the terms it already runs on,
   // admitted exactly as a start's turn is (the terms, the limits, the person's own sign-in); the handler checks this act.
   "reply-thread",
+  // Stop one's own thread's agent (the thread stays open), or end the thread (final): each only narrows.
+  "stop-thread",
+  "end-thread",
   // The terminal workbench's Agents screen: look again for this computer's agents (the bounded, non-spending status
   // checks every sign-in check uses); never a model call and nothing written but the detection's own answer.
   "check-agents",

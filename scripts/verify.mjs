@@ -595,6 +595,17 @@ async function exercise(feature, context) {
       await seen(() => sql(`SELECT COUNT(*) AS n FROM thread_turn WHERE thread = '${context.thread}' AND request_key LIKE 'reply:%'`)[0]?.n === 1, 'one reply turn on the record');
       break;
     }
+    case 'thread-end': {
+      // X on the thread, asked first; y ends it for good: it moves to Recent as Ended and takes no reply.
+      await open('Review the subtraction change.', context.thread);
+      await press('X', /End this thread\?/);
+      shown = await press('y', /Ended\.|This thread had already ended\.|Refused: /);
+      if (!/Ended\./.test(shown)) throw new Error(`The thread did not end: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
+      await wait(/Review the subtraction[^\n]*\sEnded\b/);
+      await seen(() => sql(`SELECT ended_at FROM flexible_thread_meta WHERE thread = '${context.thread}'`)[0]?.ended_at, 'the end on the record');
+      shown = await press('s', /This thread has ended/);
+      break;
+    }
     case 'threads-sign-in': {
       // Your own Claude sign-in for threads, end to end through the product: removed at a terminal; T then names the
       // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying

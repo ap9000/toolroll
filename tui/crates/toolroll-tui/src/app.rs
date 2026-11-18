@@ -343,6 +343,8 @@ pub enum Mode {
     NewThread(String),
     /// Reply: the thread's next message (`s` on a thread), for the thread named.
     ThreadReply(String, String),
+    /// Stop a thread's agent (`x`) or end the thread (`X`), asked first.
+    ConfirmThreadAct(String, crate::thread::ThreadAct),
     /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
     StartThread(crate::thread::StartTerms),
     /// A new thread was refused with what this person still needs first (thread.rs NextStep): `w` opens its page in the
@@ -2365,6 +2367,7 @@ impl App {
                 | Mode::SendReview { .. }
                 | Mode::Steer(_)
                 | Mode::ThreadReply(..)
+                | Mode::ConfirmThreadAct(..)
         ) {
             self.mode = Mode::Normal;
         }
@@ -2498,6 +2501,7 @@ impl App {
                 }
                 _ => vec![],
             },
+            Mode::ConfirmThreadAct(thread, act) => crate::thread::confirm_act_key(self, thread, act, key),
             Mode::ConfirmStop(run) => {
                 self.mode = Mode::Normal;
                 match key.code {
@@ -3243,6 +3247,13 @@ impl App {
                 }
             },
             Action::Pause => self.pause(item.as_ref()),
+            // On a thread, `x` stops its agent's turn (the thread stays open) and `X` ends the thread (final).
+            Action::Stop | Action::ThreadStop if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::Stop),
+            Action::CancelTask | Action::ThreadEnd if self.thread_selected().is_some() => crate::thread::ask_act(self, crate::thread::ThreadAct::End),
+            Action::ThreadStop | Action::ThreadEnd => {
+                self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
+                vec![]
+            }
             Action::Stop => match self.live_run() {
                 Some(run) => {
                     self.mode = Mode::ConfirmStop(run);
