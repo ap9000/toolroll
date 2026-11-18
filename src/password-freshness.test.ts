@@ -548,7 +548,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#storageCommand@157>operator@1": 1,
     // `config set task-sizing`: an instance operator proved and the setting written in one transaction.
     "src/operate.ts#taskSizingConfig@257>saved:store.transact(_)@2": 1,
-    "src/operate.ts#threadCommand@264>proveNow@3": 1,
+    "src/operate.ts#threadCommand@265>proveNow@3": 1,
     // `config set flexible`: an instance operator proved as a person and the setting written in one transaction.
     "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
     // `config show|clear flexible-sign-in`: your own sign-in read, or removed, by you proved as a person in that transaction.

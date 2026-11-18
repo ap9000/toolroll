@@ -27816,19 +27816,6 @@ function flexibleSignInShapeProblem(db: Database): string | null {
   return null;
 }
 
-/** v174's tables, index and triggers, as a current or resumed file must hold them (flexible-everyday-schema.ts): each
- * there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
-function flexibleEverydayShapeProblem(db: Database): string | null {
-  const statements = V174_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
-  for (const [type, name] of V174_OBJECTS) {
-    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
-    if (row === undefined) return `the interactive agent threads ${type} ${name} is missing`;
-    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
-    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want.replace(/;$/, "")).trim()) return `the interactive agent threads ${type} ${name} has an unknown shape`;
-  }
-  return null;
-}
-
 /** v173's column, as a current or resumed file must hold it (plan-problems-schema.ts). Null when it does. */
 function planProblemsShapeProblem(db: Database): string | null {
   return hasColumn(db, "run", "plan_problems_json") ? null : "run.plan_problems_json is missing";
@@ -27911,4 +27898,17 @@ export function planAgain(store: Store, input: { taskId: string; incident: numbe
       detail: JSON.stringify({ v: 1, incident, ...input.detail }) });
     return { ok: true as const, replayed: false };
   });
+}
+
+/** v174's tables, index and triggers, as a current or resumed file must hold them (flexible-everyday-schema.ts): each
+ * there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
+function flexibleEverydayShapeProblem(db: Database): string | null {
+  const statements = V174_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of V174_OBJECTS) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    if (row === undefined) return `the interactive agent threads ${type} ${name} is missing`;
+    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want.replace(/;$/, "")).trim()) return `the interactive agent threads ${type} ${name} has an unknown shape`;
+  }
+  return null;
 }

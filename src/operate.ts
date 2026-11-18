@@ -15469,6 +15469,21 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
     () => [`${saved.replaced ? "Replaced" : "Saved"}. ${signInCheckWords(checked)} It powers only threads you start; a password reset ends it.`]);
 }
 
+// ---- The stranger test, round 10: a password-free install's CLI says where an act is. Kept last. ---------------------------
+
+/**
+ * On a password-free install (local mode on, its owner without a password) a command that asks for `--as <you> --token
+ * <t>` has nothing to take: what it does is the terminal UI's (and the browser's) own road. Null whenever credentials were
+ * named, a remote principal runs it, or the install has a password; the command then asks as it always did. No authority
+ * changes either way.
+ */
+function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, key: string, remote: boolean): string | null {
+  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return null;
+  const binding = localOwnerBinding(store);
+  if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
+  return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
+}
+
 // ---- threads for everyday use (threads-everyday S8): the CLI's own thread commands and config helpers -----------------
 
 /** A solo install's one instance operator (install-mode.ts), or null: whom a password-free narrowing act names. */
@@ -15618,19 +15633,4 @@ export function threadStateWord(one: { ended: boolean; turn: string | null; ship
 export function shipOutcomeWord(ship: string | null): string {
   const word = ship === "merged" ? "Merged" : ship === "sent-back" ? "sent back" : null;
   return word === null ? "" : ` · Ship: ${word}`;
-}
-
-// ---- The stranger test, round 10: a password-free install's CLI says where an act is. Kept last. ---------------------------
-
-/**
- * On a password-free install (local mode on, its owner without a password) a command that asks for `--as <you> --token
- * <t>` has nothing to take: what it does is the terminal UI's (and the browser's) own road. Null whenever credentials were
- * named, a remote principal runs it, or the install has a password; the command then asks as it always did. No authority
- * changes either way.
- */
-function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, key: string, remote: boolean): string | null {
-  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return null;
-  const binding = localOwnerBinding(store);
-  if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
-  return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
 }
