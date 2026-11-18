@@ -11,6 +11,7 @@ import { canonicalProject } from "./project.js";
 import { envelopeJson } from "./envelope.js";
 import type { CommandFlag } from "./contracts/cli.js";
 import type { Store } from "./store.js";
+import { plural } from "./design/kit.js";
 
 const jsonFlag: CommandFlag = { name: "json", takesValue: false, meaning: "answer with one machine envelope on stdout" };
 const repoFlag: CommandFlag = { name: "repo", takesValue: true, meaning: "which project" };
@@ -85,7 +86,7 @@ export async function runMapCommand(positional: readonly string[], options: Map<
     if (context.json) return ok({ map: answer, state: status.state }, []);
     const opened = openMap(store, wanted, answer.version);
     const rows = opened.ok ? areaRows(opened.map) : [];
-    return ok({}, [`Code map · main at ${answer.commit.slice(0, 7)} · ${status.words}`, answer.label, "", ...rows.slice(0, 60).map(one => printable(`${one.id} · ${one.files} files · ${one.languages.join(", ") || "no code"}${one.uses.length === 0 ? "" : ` · uses ${one.uses.slice(0, 3).map(use => use.id).join(", ")}`}`)), ...(rows.length > 60 ? [`${rows.length - 60} more: use --json with --cursor.`] : [])]);
+    return ok({}, [`Code map · main at ${answer.commit.slice(0, 7)} · ${status.words}`, answer.label, "", ...rows.slice(0, 60).map(one => printable(`${one.id} · ${plural(one.files, "file", "files")} · ${one.languages.join(", ") || "no code"}${one.uses.length === 0 ? "" : ` · uses ${one.uses.slice(0, 3).map(use => use.id).join(", ")}`}`)), ...(rows.length > 60 ? [`${rows.length - 60} more: use --json with --cursor.`] : [])]);
   }
   const view = action as MapView;
   const query = positional.slice(1).join(" ");

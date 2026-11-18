@@ -778,3 +778,15 @@ describe("Codex A0 r1 #2: LiveSession polls are passive reads, like the Live gri
     } finally { clock.mockRestore(); }
   });
 });
+
+describe("a file's length from its own patch (resultDiffFile.lineCount)", () => {
+  test("an added file is its one hunk; a deleted one is none; any other file is unknown", () => {
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1,2 @@" }])).toBe(2);
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1 @@" }])).toBe(1);
+    expect(reads.patchLineCount([{ header: "@@ -1,3 +0,0 @@" }])).toBe(0);
+    expect(reads.patchLineCount([{ header: "@@ -1,3 +1,3 @@" }])).toBeNull();
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1,2 @@" }, { header: "@@ -5,1 +7,1 @@" }])).toBeNull();
+    expect(reads.patchLineCount([])).toBeNull();
+    expect(reads.patchLineCount([{ header: "not a header" }])).toBeNull();
+  });
+});

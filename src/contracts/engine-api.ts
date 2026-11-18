@@ -341,7 +341,10 @@ export const resultDiffFileSchema = z.object({
   task: z.string(),
   run: z.number().int(),
   file: z.object({ file: z.number().int(), path: z.string(), oldPath: z.string().nullable(), meta: z.array(z.string()),
-    hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })) }),
+    hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })),
+    /** The file's length at the result, when the patch itself says it (an added file's one hunk is the whole file; a
+     * deleted file has none): a client draws no "more lines below" past its end. Null when only a context read knows. */
+    lineCount: z.number().int().nonnegative().nullable() }),
   linesTruncated: z.boolean(),
 });
 

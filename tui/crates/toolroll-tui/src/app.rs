@@ -4311,6 +4311,8 @@ impl App {
         let same = self.diff_file.as_ref() == Some(&file);
         if !same {
             self.drop_file();
+            // A length the patch itself says (an added file): no "more lines below" past its end.
+            self.line_count = file.file.line_count.map(|n| n.max(0));
             self.diff_file = Some(file);
             self.relayout();
         }

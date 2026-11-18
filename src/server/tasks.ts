@@ -125,6 +125,7 @@ import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow } from "./kit.js";
 import { localOwnerRefusal } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
+import { plural } from "../design/kit.js";
 
 /** How long the first task's filing waits for this computer's sign-in check when one is under way: two of the
  * console's check deadlines (status-probe.ts BACKGROUND_STATUS_TIMEOUT_MS: the check asks once more when it can't
@@ -1651,7 +1652,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         for (const row of fresh.rows) {
           parts.push(
             row.collapsed
-              ? html`<p class="row mono">+ ${shownName(row.label)} <span class="meta">collapsed names — ${row.count} files</span></p>`
+              ? html`<p class="row mono">+ ${shownName(row.label)} <span class="meta">collapsed names — ${plural(row.count, "file", "files")}</span></p>`
               : html`<p class="row mono">+ ${shownName(row.label)}</p>`,
           );
         }

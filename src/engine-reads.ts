@@ -310,7 +310,7 @@ export function resultDiffFileOf(store: Store, evidenceRoot: string, taskId: str
   const parsed = parseReviewDiff(text);
   const one = parsed.files[0];
   if (one === undefined) return null;
-  return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks }, linesTruncated: parsed.linesTruncated };
+  return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks, lineCount: patchLineCount(one.hunks) }, linesTruncated: parsed.linesTruncated };
 }
 
 /** What accepting a waiting result means for `viewer`, read the way the completion reads it (assignment.ts
@@ -510,4 +510,16 @@ function planAskOf(store: Store, taskId: string, state: string, ref: { id: numbe
 export function planStoppedFor(store: Store, taskId: string): StepCards["planStopped"] {
   const ref = store.lookupRef(taskId);
   return ref === null ? null : planStoppedOf(store, taskId, ref.id, store.runsFor(ref.id).filter(run => run.role === "planner"));
+}
+
+/** A file's length at the result when its own patch says it: an added file (one hunk from nothing, `-0,0 +1,N`) is N
+ * lines; a deleted one (`-1,N +0,0`) is none. Null for every other file (only a context read at the result knows). */
+export function patchLineCount(hunks: readonly { header: string }[]): number | null {
+  if (hunks.length !== 1) return null;
+  const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunks[0]!.header);
+  if (header === null) return null;
+  const [oldStart, oldCount, newStart, newCount] = [header[1], header[2] ?? "1", header[3], header[4] ?? "1"].map(Number) as [number, number, number, number];
+  if (oldStart === 0 && oldCount === 0) return newStart === 1 || newCount === 0 ? newCount : null;
+  if (newStart === 0 && newCount === 0) return 0;
+  return null;
 }

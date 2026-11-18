@@ -171,7 +171,6 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
     }
     const candidateTitle = `${prefix.trimEnd() || "Task"}${suffix}`;
     const title = validateTaskText({ title: candidateTitle }) === null ? candidateTitle : `Task${suffix}`;
-    const feedbackKind = comments.every(one => one.path !== null) ? "annotations" : "feedback";
     const terminal = store.artifactsFor(id).find(one => one.kind === "terminal-diff");
     if (terminal !== undefined) {
       const proven = readVerifiedArtifact(evidenceRoot, terminal);
@@ -233,7 +232,7 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
           brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored revision brief (exit 0)" },
           child: {
             title: `Revise ${sourceTaskId} from ${comments.length} annotation${comments.length === 1 ? "" : "s"} on build #${id}`,
-            repair: `apply the ${feedbackKind} recorded on build #${id}; the revision brief carries the exact batch`,
+            repair: `apply the ${comments.length === 1 ? "note" : `${comments.length} notes`} sent back on build #${id}`,
           },
           commentIds: comments.map(one => one.id),
           coverage,

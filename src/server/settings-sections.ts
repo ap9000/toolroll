@@ -243,6 +243,9 @@ export type GeneralDeps = {
   readonly passwordless: () => boolean;
   /** Local mode as saved: on, or not. */
   readonly localModeOn: () => boolean;
+  /** Where `toolroll up` saved this install's first password, as it reads on the computer running Toolroll (login-help.ts
+   * loginHelpOf): null when none is saved (a password-free install never writes one). */
+  readonly savedLogin?: () => string | null;
   /** The install's solo or team mode, as the server derives it now (install-mode.ts). */
   readonly installMode: () => InstallModeRead;
   /** Task sizing by a quick model call, as saved (task-sizing.ts taskSizingSetting). */
@@ -303,8 +306,13 @@ function yourPasswordSection(deps: GeneralDeps): SectionImpl<{ passwordless: boo
     render: ({ summary, attrs }) => settingsSection({
       id: "your-password", title: "Your password", attrs,
       body: joinHtml([
-        formRow("Where it is", "If you started Toolroll with toolroll up, your password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"),
-        codeLine("cat ~/.config/toolroll/.toolroll-secrets/up-login.txt"),
+        // Only where a first password was really saved, at its real path; else how to reset a forgotten one.
+        ...(() => {
+          const saved = deps.savedLogin?.() ?? null;
+          return saved === null
+            ? [formRow("Forgot it?", "On the computer running Toolroll, run this to choose a new one:", html``, "wide"), codeLine("toolroll password reset")]
+            : [formRow("Where it is", "Your first password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"), codeLine(`cat ${saved}`)];
+        })(),
         summary.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password.", btn(`${summary.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
       ]),
     }),

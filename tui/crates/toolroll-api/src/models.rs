@@ -698,6 +698,9 @@ pub struct FileHunks {
     pub old_path: Option<String>,
     pub meta: Vec<String>,
     pub hunks: Vec<Hunk>,
+    /// The file's length at the result when the patch itself says it (an added file; a deleted one is 0).
+    #[serde(default)]
+    pub line_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

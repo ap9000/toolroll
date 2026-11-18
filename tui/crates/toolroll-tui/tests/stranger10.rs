@@ -252,3 +252,29 @@ fn a_dialog_frozen_on_one_version_refuses_once_a_newer_one_is_shown() {
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(status(&app), RESULT_CHANGED);
 }
+
+#[test]
+fn an_added_file_shown_whole_draws_no_more_lines_below() {
+    use std::collections::BTreeMap;
+    use toolroll_tui::review::{layout, Item};
+    let file = |line_count: Option<i64>| -> toolroll_api::ResultDiffFile {
+        parse(
+            json!({ "version": 1, "task": "t-retry", "run": 9, "linesTruncated": false,
+            "file": { "file": 0, "path": "notes.md", "oldPath": null, "meta": ["new file mode 100644"], "lineCount": line_count,
+                "hunks": [{ "header": "@@ -0,0 +1,2 @@", "lines": [
+                    { "kind": "addition", "text": "one", "oldLine": null, "newLine": 1 },
+                    { "kind": "addition", "text": "two", "oldLine": null, "newLine": 2 }] }] } }),
+        )
+    };
+    let gaps = |f: &toolroll_api::ResultDiffFile| {
+        layout(f, &BTreeMap::new(), f.file.line_count)
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Gap { .. }))
+            .count()
+    };
+    // The patch says the whole file (2 lines): nothing hidden after it.
+    assert_eq!(gaps(&file(Some(2))), 0);
+    // Not known (a changed file): the marker stays, as before.
+    assert_eq!(gaps(&file(None)), 1);
+}

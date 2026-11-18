@@ -29,6 +29,7 @@ import { readSsoSettings } from "./sso-settings.js";
 import { readEmailSettings } from "./email-settings.js";
 import { SUBSCRIPTION_CAPABLE, readAuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
+import { plural } from "./design/kit.js";
 
 export const EXPORT_FORMAT = "standing-orders/export/v1";
 
@@ -298,5 +299,5 @@ export function exportZip(exported: FullExport): Buffer {
 
 /** One line for the ledger and the person who asked. */
 export function exportSummary(exported: FullExport): string {
-  return `${exported.files.length} files · ${exported.tables} tables · ${exported.packs} evidence packs`;
+  return `${plural(exported.files.length, "file", "files")} · ${plural(exported.tables, "table", "tables")} · ${plural(exported.packs, "evidence pack", "evidence packs")}`;
 }

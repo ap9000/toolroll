@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { whenUtc } from "./when-html.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 import { acts, btn, chip, disclose, facts, formRow, input, note, notice, select, settingsRecord, settingsSection, textarea } from "./server/kit.js";
+import { plural } from "./design/kit.js";
 import type {
   SavedSkill,
   SkillsSnapshot,
@@ -13,13 +14,13 @@ const fields = (data: Record<string, unknown>): Record<string, string> =>
   Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
 export const SKILLS_CSS = `.skills{max-width:780px;min-width:0;overflow-wrap:anywhere}.skills h2{font-size:1.1rem}.skills .card{padding:18px;margin:14px 0;min-width:0}.skills form,.skills label{display:grid;gap:10px}.skills input,.skills textarea,.skills select{box-sizing:border-box;width:100%;max-width:100%;min-width:0}.skills textarea{resize:vertical;min-height:130px}.skills button{justify-self:start;white-space:nowrap;min-height:44px}.skills summary{cursor:pointer;min-height:44px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.skills pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font-size:.9rem}.skills .skill-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.skills .skill-heading h2{margin:0}.skills .skill-state{font-size:.85rem;flex-shrink:0}.skills .skill-source{font-size:.85rem}.skills .skill-controls{display:flex;gap:12px;flex-wrap:wrap}.skills .skill-controls form{margin:0}.skills details details{margin-top:10px}.skills [hidden]{display:none!important}.skills .skill-files{max-height:200px;overflow:auto}.skills .problem{padding:12px}@media(max-width:600px){.skills input,.skills textarea,.skills select{font-size:16px}.skills .card{padding:14px}.skills .skill-heading{align-items:flex-start}}`;
 function source(skill: SavedSkill): Html {
-  return html`<p class="skill-source">${skill.source} · ${skill.sha.slice(0, 10)}</p><p>${skill.files.length} files · ${Math.ceil(skill.files.reduce((n, f) => n + Buffer.from(f.base64, "base64").length, 0) / 1024)} KB</p><pre>${Buffer.from(skill.files.find((f) => f.path === "SKILL.md")!.base64, "base64").toString("utf8")}</pre><details><summary>Package files</summary><ul class="skill-files">${skill.files.map((f) => html`<li>${f.path}</li>`)}</ul></details>`;
+  return html`<p class="skill-source">${skill.source} · ${skill.sha.slice(0, 10)}</p><p>${plural(skill.files.length, "file", "files")} · ${Math.ceil(skill.files.reduce((n, f) => n + Buffer.from(f.base64, "base64").length, 0) / 1024)} KB</p><pre>${Buffer.from(skill.files.find((f) => f.path === "SKILL.md")!.base64, "base64").toString("utf8")}</pre><details><summary>Package files</summary><ul class="skill-files">${skill.files.map((f) => html`<li>${f.path}</li>`)}</ul></details>`;
 }
 /** A skill's package as the settings page shows it: where it came from, its size, its SKILL.md, its files. */
 function sourceKit(skill: SavedSkill): Html {
   const kb = Math.ceil(skill.files.reduce((n, f) => n + Buffer.from(f.base64, "base64").length, 0) / 1024);
   return joinHtml([
-    facts([["Source", html`${skill.source} · <span class="k-mono">${skill.sha.slice(0, 10)}</span>`], ["Size", `${skill.files.length} files · ${kb} KB`]]),
+    facts([["Source", html`${skill.source} · <span class="k-mono">${skill.sha.slice(0, 10)}</span>`], ["Size", `${plural(skill.files.length, "file", "files")} · ${kb} KB`]]),
     html`<pre class="k-scode">${Buffer.from(skill.files.find((f) => f.path === "SKILL.md")!.base64, "base64").toString("utf8")}</pre>`,
     disclose("Package files", html`<ul class="k-note">${skill.files.map((f) => html`<li class="k-mono">${f.path}</li>`)}</ul>`),
   ]);

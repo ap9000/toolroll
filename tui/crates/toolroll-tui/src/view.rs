@@ -2283,7 +2283,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     // What accepting means: files and lines, checks, cost, notes kept.
     let mut spans = vec![];
     if let Some((files, add, del)) = facts.totals {
-        spans.push(Span::raw(format!("{files} files  ")));
+        spans.push(Span::raw(format!("{}  ", files_words(files))));
         spans.push(Span::styled(format!("+{add}"), passed()));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("−{del}"), failed()));
@@ -2357,7 +2357,10 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         }
         if n > shown_files {
             head.push(Line::from(Span::styled(
-                format!("  {} more files · {{ }} another file", n - shown_files),
+                format!(
+                    "  {} more · {{ }} another file",
+                    files_words((n - shown_files) as i64)
+                ),
                 dim(),
             )));
         }
@@ -3495,7 +3498,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             if let Some((files, add, del)) = pin.totals.or(facts.totals) {
                 lines.push(Line::from(vec![
                     label("Changes"),
-                    Span::raw(format!("{files} files, ")),
+                    Span::raw(format!("{}, ", files_words(files))),
                     Span::styled(format!("+{add}"), passed()),
                     Span::raw(" "),
                     Span::styled(format!("−{del}"), failed()),
@@ -4062,5 +4065,14 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         if let Some((x, y)) = pane.cursor() {
             f.set_cursor_position((x, y));
         }
+    }
+}
+
+/// A count of files in words: "1 file", "3 files".
+pub fn files_words(n: i64) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
     }
 }

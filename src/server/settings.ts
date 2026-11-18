@@ -180,6 +180,7 @@ import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
 import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { loginHelpOf } from "./login-help.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -3057,6 +3058,7 @@ ${postForm("/settings/chat-approval/save", html`\
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
     passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
+    savedLogin: () => { const help = loginHelpOf(store, { here: true }); return help.kind === "password" ? help.savedAt : null; },
     installMode: () => installModeNow(store),
     taskSizing: () => taskSizingSetting(store),
     flexible: () => flexibleSetting(store),

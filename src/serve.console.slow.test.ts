@@ -490,7 +490,7 @@ describe("the operations console", () => {
     // The new task's screen restates the batch beside its own approval —
     // and the scope is unapproved by construction.
     const child = store.getScope(revisionIdOf(target))!;
-    expect(Buffer.from(child.goal)).toEqual(Buffer.from(`${goal} — apply the ${mode === "annotated" ? "annotations" : "feedback"} recorded on build #${run}; the revision brief carries the exact batch`));
+    expect(Buffer.from(child.goal)).toEqual(Buffer.from(`${goal} — apply the ${count === 1 ? "note" : `${count} notes`} sent back on build #${run}`));
     expect(Buffer.from(child.outOfScope!)).toEqual(Buffer.from(not));
     expect(child).toMatchObject({ approvedAt: null, approvedDigest: null, approvedRouteJson: null });
     expect(store.revisionSourceOf(store.lookupRef(child.taskId)!.id)).toMatchObject({ sourceTask: "t-rev", sourceRun: run });
