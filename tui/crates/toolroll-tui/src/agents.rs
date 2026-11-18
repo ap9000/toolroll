@@ -176,8 +176,9 @@ pub fn close(app: &mut App) -> Vec<Effect> {
         .as_ref()
         .is_some_and(|p| p.task.starts_with("agent:"))
     {
-        if app.mode == Mode::TakeOver {
+        if matches!(app.mode, Mode::TakeOver | Mode::ShellOpening) {
             app.mode = Mode::Normal;
+            app.shell_typed.clear();
         }
         // The pane (its screen and all) goes; letting go of its one page ends it on the console too.
         if let Some(id) = app.term.take().and_then(|p| p.id) {

@@ -310,7 +310,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_frame(f, app);
     let dialog = !matches!(
         app.mode,
-        Mode::Normal | Mode::TakeOver | Mode::Steer(_) | Mode::NewTask(..) | Mode::Note(..)
+        Mode::Normal
+            | Mode::TakeOver
+            | Mode::ShellOpening
+            | Mode::Steer(_)
+            | Mode::NewTask(..)
+            | Mode::Note(..)
     );
     if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
         pane.drawn = false;
@@ -2931,6 +2936,16 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
 }
 
 fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
+    // The build shell is opening: no typing hint until it is live, one way back.
+    if app.mode == Mode::ShellOpening {
+        let line = Line::from(vec![
+            Span::styled("Opening the build shell…  ", dim()),
+            sheet::keycap("Esc"),
+            Span::styled(" back", dim()),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
     if app.mode == Mode::TakeOver {
         let line = Line::from(vec![
             sheet::keycap(TYPING_KEY.0),

@@ -441,6 +441,10 @@ pub enum Mode {
     /// Typing in the Terminal tab's terminal (T4, take over): every key, paste and mouse event in the pane goes to that
     /// one terminal, Ctrl-C included; only Ctrl-] comes back to the workbench.
     TakeOver,
+    /// The build shell is opening (its link attaching, the terminal's hello not yet here): typing starts only once it is
+    /// live. What is typed meanwhile is kept for it (bounded, as a paste is) and sent on hello, never to the workbench;
+    /// Esc or Ctrl-] goes back, and a shell that fails or never answers goes back with words, sending nothing.
+    ShellOpening,
     /// What taking over this build opens, said before anything starts (TAKE_OVER_SCOPE): t opens it, Esc doesn't.
     ConfirmTakeOver {
         task: String,
@@ -481,6 +485,17 @@ pub fn take_over_scope(attempt: &str) -> String {
 /// Said when typing starts in an agent's own sign-in or install (the Agents screen).
 pub const TYPING_AGENT: &str =
     "Typing in the agent's own sign-in. Ctrl-] comes back; Toolroll never reads what it saves.";
+/// Said while the build shell opens; typing starts once it is live.
+pub const SHELL_OPENING: &str =
+    "Opening the build shell… What you type goes to it once it's open. Esc goes back.";
+/// Said when the build shell didn't open in time, or closed before it was live: nothing typed was sent.
+pub const SHELL_NOT_OPEN: &str =
+    "The build shell didn't open. Nothing you typed was sent. Press t to try again.";
+/// Said when Esc leaves a build shell that is still opening: nothing typed was sent.
+pub const SHELL_LEFT: &str =
+    "Back to the workbench. Nothing you typed was sent; press t to type in the build shell.";
+/// How long a build shell may take to open before the workbench goes back with words.
+pub const SHELL_OPEN_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 pub const TYPING: &str =
     "Typing in a separate copy of the build. Your shell's own startup files run in it.";
 /// Two presses on the divider within this: the list back to its usual width.
@@ -1045,6 +1060,10 @@ pub struct App {
     /// `t` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as ever) once
     /// they are, while the person is still on that task's Terminal tab with nothing else open.
     take_over_wanted: Option<String>,
+    /// Typed while the build shell opened (Mode::ShellOpening): sent once it is live, never anywhere else.
+    pub shell_typed: Vec<u8>,
+    /// When the build shell started opening (Mode::ShellOpening): it goes back with words after SHELL_OPEN_LIMIT.
+    shell_opening_since: Option<std::time::Instant>,
     ticks: u64,
     counter: u64,
 }
@@ -1146,6 +1165,8 @@ impl App {
             term: None,
             confirmed: HashSet::new(),
             take_over_wanted: None,
+            shell_typed: Vec::new(),
+            shell_opening_since: None,
             ticks: 0,
             counter: 0,
         }
@@ -2255,6 +2276,16 @@ impl App {
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        // A build shell that never became live: back, with words, nothing typed sent.
+        if self.mode == Mode::ShellOpening
+            && self
+                .shell_opening_since
+                .is_some_and(|at| at.elapsed() >= SHELL_OPEN_LIMIT)
+        {
+            self.mode = Mode::Normal;
+            self.shell_gone();
+            self.say(Tone::Refused, SHELL_NOT_OPEN);
+        }
         // tui.toml looked at once a second: a change (its size, time or file) is read again, strictly, and said.
         if self.ticks.is_multiple_of(SETTINGS_EVERY) {
             self.watch_settings();
@@ -2468,6 +2499,9 @@ impl App {
         // Typing in the terminal: every key is the terminal's (Ctrl-C too), but Ctrl-].
         if self.mode == Mode::TakeOver {
             return self.take_over_key(key);
+        }
+        if self.mode == Mode::ShellOpening {
+            return self.shell_opening_key(key);
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.quit();
@@ -3036,7 +3070,7 @@ impl App {
             Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
             Mode::Search(s) => self.search_key(key, s),
-            Mode::TakeOver => vec![],
+            Mode::TakeOver | Mode::ShellOpening => vec![],
             Mode::ConfirmInstall { .. }
             | Mode::PickModel(_)
             | Mode::ConfirmModels(_)
@@ -3103,6 +3137,18 @@ impl App {
     /// Pasted text goes into the open text box (line breaks as spaces), or, while typing in the terminal, to it.
     pub fn paste(&mut self, pasted: &str) -> Vec<Effect> {
         self.key_since_said = true;
+        if self.mode == Mode::ShellOpening {
+            let bytes = match self.term.as_ref().map(|p| p.paste_bytes(pasted)) {
+                Some(Ok(bytes)) => bytes,
+                Some(Err(words)) => {
+                    self.say(Tone::Refused, words);
+                    return vec![];
+                }
+                None => return vec![],
+            };
+            self.keep_typed(bytes);
+            return vec![];
+        }
         if self.mode == Mode::TakeOver {
             let Some(pane) = self.term.as_ref().filter(|p| p.live()) else {
                 return vec![];
@@ -4088,7 +4134,8 @@ impl App {
             | Mode::ThreadNext(_)
             | Mode::Sending(_)
             | Mode::Fatal(..)
-            | Mode::TakeOver => None,
+            | Mode::TakeOver
+            | Mode::ShellOpening => None,
             Mode::Build {
                 title,
                 preview,
@@ -5718,7 +5765,10 @@ impl App {
                     self.say(Tone::Said, TYPING);
                     return vec![];
                 }
-                Link::Opening | Link::Attaching => return vec![],
+                Link::Opening | Link::Attaching => {
+                    self.shell_opening();
+                    return vec![];
+                }
                 Link::Ended { .. } | Link::Closed(_) => {}
             }
         }
@@ -5787,22 +5837,13 @@ impl App {
                     pane.attached(id);
                     pane.branch = clean(&branch);
                 }
-                // An agent's own sign-in or install: straight to typing while its screen is open.
-                if task.starts_with("agent:")
-                    && self.agents_screen.is_some()
-                    && matches!(self.mode, Mode::Normal)
+                // An agent's own sign-in or install, or a build shell the person is still looking at: typing starts once
+                // the terminal's hello makes it live (term_event), never while it attaches.
+                let agent = task.starts_with("agent:") && self.agents_screen.is_some();
+                if matches!(self.mode, Mode::Normal)
+                    && (agent || (self.tab == Tab::Terminal && self.pane_here().is_some()))
                 {
-                    self.mode = Mode::TakeOver;
-                    self.say(Tone::Said, TYPING_AGENT);
-                    return vec![];
-                }
-                // Straight to typing, when the person is still looking at it.
-                if self.tab == Tab::Terminal
-                    && self.pane_here().is_some()
-                    && matches!(self.mode, Mode::Normal)
-                {
-                    self.mode = Mode::TakeOver;
-                    self.say(Tone::Said, TYPING);
+                    self.shell_opening();
                 }
                 vec![]
             }
@@ -5815,9 +5856,10 @@ impl App {
                 if let Some(pane) = self.term.as_mut() {
                     pane.link = Link::Closed(clean(&words));
                 }
-                if self.mode == Mode::TakeOver {
+                if matches!(self.mode, Mode::TakeOver | Mode::ShellOpening) {
                     self.mode = Mode::Normal;
                 }
+                self.shell_gone();
                 if matches!(e, ApiError::SessionEnded) {
                     return self.failed(e);
                 }
@@ -5850,7 +5892,12 @@ impl App {
                     detach = Some(id.clone());
                 }
             }
-            TermEvent::Hello { cols, rows, ended } => pane.hello(cols, rows, ended),
+            TermEvent::Hello { cols, rows, ended } => {
+                pane.hello(cols, rows, ended);
+                if ended {
+                    back = true;
+                }
+            }
             TermEvent::Exit { code, signal } => {
                 pane.link = Link::Ended { code, signal };
                 back = true;
@@ -5893,10 +5940,32 @@ impl App {
         if back && self.mode == Mode::TakeOver {
             self.mode = Mode::Normal;
         }
+        let live = pane.live();
+        let agent = pane.task.starts_with("agent:");
+        let mut fx: Vec<Effect> = vec![];
+        if self.mode == Mode::ShellOpening {
+            if live {
+                // Live: typing starts now, and what was typed while it opened goes to it, in order.
+                self.mode = Mode::TakeOver;
+                self.shell_opening_since = None;
+                self.say(Tone::Said, if agent { TYPING_AGENT } else { TYPING });
+                let typed = std::mem::take(&mut self.shell_typed);
+                if !typed.is_empty() {
+                    fx.extend(self.term_input(typed));
+                }
+            } else if back {
+                // Gone before it was live: back, and nothing typed is sent anywhere.
+                self.mode = Mode::Normal;
+                self.shell_gone();
+                if said.is_none() {
+                    said = Some((Tone::Refused, SHELL_NOT_OPEN.into()));
+                }
+            }
+        }
         if let Some((tone, words)) = said {
             self.say(tone, words);
         }
-        let mut fx: Vec<Effect> = detach.map(Effect::TermDetach).into_iter().collect();
+        fx.extend(detach.map(Effect::TermDetach));
         if let Some((code, signal)) = agent_ended {
             self.term = None;
             fx.extend(crate::agents::check_again(self));
@@ -5922,6 +5991,49 @@ impl App {
             id,
             send: TermSend::Input(text),
         }]
+    }
+
+    /// Typing waits for the build shell: what is typed meanwhile is kept for it.
+    fn shell_opening(&mut self) {
+        if self.mode != Mode::ShellOpening {
+            self.shell_typed.clear();
+            self.shell_opening_since = Some(std::time::Instant::now());
+        }
+        self.mode = Mode::ShellOpening;
+        self.say(Tone::Said, SHELL_OPENING);
+    }
+
+    /// The build shell opening was left or lost: what was typed for it goes, sent nowhere.
+    fn shell_gone(&mut self) {
+        self.shell_typed.clear();
+        self.shell_opening_since = None;
+    }
+
+    /// Keep what was typed for the opening shell, bounded as a paste is; past the bound, nothing more is kept, said.
+    fn keep_typed(&mut self, bytes: Vec<u8>) {
+        if self.shell_typed.len() + bytes.len() > crate::term::PASTE_MAX_BYTES {
+            self.say(
+                Tone::Refused,
+                "That's more than the build shell takes while it opens; the rest wasn't kept.",
+            );
+            return;
+        }
+        self.shell_typed.extend(bytes);
+    }
+
+    /// A key while the build shell opens: Esc or Ctrl-] goes back (nothing sent); every other key is kept for the shell,
+    /// never a workbench key.
+    fn shell_opening_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if key.code == KeyCode::Esc || crate::term::is_back_key(&key) {
+            self.mode = Mode::Normal;
+            self.shell_gone();
+            self.say(Tone::Said, SHELL_LEFT);
+            return vec![];
+        }
+        if let Some(bytes) = self.term.as_ref().and_then(|p| p.key_bytes(key)) {
+            self.keep_typed(bytes);
+        }
+        vec![]
     }
 
     /// A key while typing in the terminal: Ctrl-] goes back; every other key is the terminal's.
