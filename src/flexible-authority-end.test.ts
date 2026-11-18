@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
-import { attachFlexibleAgent, FLEXIBLE_AUTHORITY_MOVED_WORDS, openFlexibleSessions, settleFlexibleStops, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
+import { attachFlexibleAgent, FLEXIBLE_AUTHORITY_MOVED_WORDS, FLEXIBLE_REFUSED_LINE_WORDS, flexibleThreadLiveOf, openFlexibleSessions, settleFlexibleStops, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { THREAD_AUTHORITY_WORDS } from "./flexible-authority-end.js";
 import { stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { onRelayCancel, type RelayCancel } from "./flexible-relay-cancel.js";
@@ -192,10 +192,18 @@ describe("the console acts on the record, whichever process wrote it", () => {
     expect(attachFlexibleAgent(world.store, sessions, { thread: T1, turn, launch: L1, stdout, stdin: new PassThrough(), exited: listener => { exit.once("exit", listener); }, clock: () => NOW })).toEqual({ ok: true });
     const other = openStore(world.databaseFile);
     try { removeFlexibleSignIn(other, { person: "pat", by: "pat", now: NOW }); } finally { other.close(); }
-    // The agent prints its error and ends its turn: the record already says interrupted, so it stays so.
+    // The agent prints its error and ends its turn: the record already says interrupted, so it stays so, and the view
+    // shows Toolroll's own words, never the raw API error.
+    stdout.write(`${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: 'API Error: 403 {"type":"error","error":{"type":"permission_error"}}' }] } })}\n`);
     stdout.write(`${JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: 403" })}\n`);
     await new Promise(resolve => setImmediate(resolve));
     expect(flexibleTurn(world.store, turn)!.status).toBe("interrupted");
+    const read = flexibleThreadLiveOf(world.store, sessions, { thread: T1, viewer: { name: "pat" }, file: "main", cursor: null });
+    if (!read.ok) throw new Error(read.message);
+    expect(read.facts.turn).toMatchObject({ status: "interrupted", endWords: THREAD_AUTHORITY_WORDS.removed, billing: "subscription" });
+    const said = read.window.ok ? read.window.records.flatMap(one => one.k === "say" ? one.t : []) : [];
+    expect(said).toContain(FLEXIBLE_REFUSED_LINE_WORDS);
+    expect(said.join("\n")).not.toContain("API Error");
     expect(sessions.threads.get(T1)?.agent?.turn ?? null).toBeNull();
     // A fresh sign-in saved since revives nothing: the requirement stands until the exit is verified.
     standInSignIn(world.store, world.state, "pat");

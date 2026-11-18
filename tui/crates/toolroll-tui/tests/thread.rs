@@ -684,3 +684,18 @@ fn an_answer_while_a_thread_is_open_follows_no_task() {
         Some("The thread started.")
     );
 }
+
+#[test]
+fn a_stopped_turn_says_so_in_plain_words_with_toolrolls_own_note() {
+    let mut w = window();
+    w["thread"]["version"] = json!("2222222222222222");
+    w["thread"]["questions"] = json!([]);
+    w["thread"]["turn"]["status"] = json!("interrupted");
+    w["thread"]["turn"]["endWords"] = json!("Your Claude sign-in for threads was removed, so Toolroll stopped this turn. Add one again, then reply to continue.");
+    let mut app = thread_app(w);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("turn 2 stopped"), "{shown}");
+    assert!(screen(&mut app, 160, 30).contains("turn 2 stopped · on your plan"));
+    assert!(!shown.contains("total unknown"), "{shown}");
+    assert!(shown.contains("Toolroll: Your Claude sign-in for threads was removed, so Toolroll"), "{shown}");
+}

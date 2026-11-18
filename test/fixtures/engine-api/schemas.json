@@ -1,5 +1,5 @@
 {
-  "digest": "8f8877cf49d4cc6cc348a544c6c9bf65c3cb0c21cad66f4aa25c72403961e8a2",
+  "digest": "2958dc1a817b605ab379d277ae02a7fd1b8be9fc754ba2fb1ec565763a84fc38",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -514,6 +514,16 @@
                         {
                           "type": "null"
                         }
+                      ]
+                    },
+                    "endWords": {
+                      "type": "string"
+                    },
+                    "billing": {
+                      "type": "string",
+                      "enum": [
+                        "subscription",
+                        "api-key"
                       ]
                     }
                   },

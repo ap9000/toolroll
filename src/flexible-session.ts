@@ -540,7 +540,11 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
     connection: { id: input.launch, frame: (ref, answer) => frameFor(session, ref, answer), send },
     recorder: createLiveRecorder({ base: thread.folder === "" ? null : `${thread.folder}/repo`, commands: false, clock }) };
   session.agent = link;
-  const keep = (records: LiveRecord[]) => {
+  // The turn the agent's output belongs to: kept after the turn's link is cleared, so its last lines are judged by it.
+  let outputTurn: string | null = input.turn;
+  const keep = (given: LiveRecord[]) => {
+    if (link.turn !== null) outputTurn = link.turn;
+    const records = withoutRefusedLines(store, outputTurn, given);
     if (records.length === 0) return;
     session.records.push(...records);
     if (session.records.length > FLEXIBLE_RECORDS_KEPT) {
@@ -855,7 +859,11 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
 export type FlexibleQuestionView = { request: string; kind: FlexibleRequestKind; title: string; detail: string | null; tool: string | null; complete: boolean; digest: string;
   state: FlexibleAnswerState; answerable: boolean; parts: { id: string; question: string; options: string[] }[] };
 export type FlexibleThreadFacts = { version: string; title: string; project: string | null; level: FlexibleLevel | null; agent: { provider: string; model: string } | null;
-  turn: { seq: number; status: string; costUsd: number | null; costBasis: "measured" | "estimated" | "unknown" | null } | null; questions: FlexibleQuestionView[] };
+  turn: { seq: number; status: string; costUsd: number | null; costBasis: "measured" | "estimated" | "unknown" | null;
+    /** Toolroll's own words for how the turn ended, when it didn't simply finish (interrupted, unknown, withdrawn). */
+    endWords?: string;
+    /** How it is billed: on the person's plan (a setup-token) or a key. */
+    billing?: "subscription" | "api-key" } | null; questions: FlexibleQuestionView[] };
 export type FlexibleWindow = { ok: true; records: LiveRecord[]; cursor: string; restarted: boolean; earlier: boolean; quarantined: number; skipped: number; more: boolean }
   | { ok: false; reason: "missing" };
 
@@ -882,7 +890,8 @@ function factsOf(store: Store, sessions: FlexibleSessions, thread: { id: string;
     project: typeof project === "string" ? project : null,
     level: levelOf(store, thread.id),
     agent: turn === null ? null : { provider: turn.provider, model: turn.model },
-    turn: turn === null ? null : { seq: turn.seq, status: turn.status, costUsd: turn.costBasis === null ? null : turn.costMicrousd / 1_000_000, costBasis: turn.costBasis },
+    turn: turn === null ? null : { seq: turn.seq, status: turn.status, costUsd: turn.costBasis === null ? null : turn.costMicrousd / 1_000_000, costBasis: turn.costBasis,
+      ...endWordsOf(store, turn.id, turn.status), billing: turn.billing },
     questions,
   };
   // What the facts are, as one short digest: a client holding it is told "unchanged" instead of being sent them again.
@@ -995,4 +1004,27 @@ export function flexibleThreadTitleOf(store: Store, thread: string): string {
     if (typeof title === "string" && title !== "") return title;
   } catch { /* the short id below */ }
   return `Thread ${thread.slice(0, 8)}`;
+}
+
+/** A turn's end detail as its thread shows it, when it didn't simply finish: always Toolroll's own words (every writer
+ * of end_detail is Toolroll's), cleaned again before it is shown. None for a running or finished turn. */
+function endWordsOf(store: Store, turn: string, status: string): { endWords?: string } {
+  if (status !== "interrupted" && status !== "unknown" && status !== "withdrawn") return {};
+  const detail = store.handle.prepare("SELECT end_detail FROM thread_turn WHERE id = ?").get(turn)?.["end_detail"];
+  if (typeof detail !== "string" || detail.trim() === "") return {};
+  const words = cleanLiveText(detail).trim().slice(0, 500);
+  return words === "" ? {} : { endWords: words };
+}
+
+/** What the agent prints when a model call it made was refused (Claude Code's own error lines): replaced in the thread's
+ * transcript by a pointer to Toolroll's own words, once the turn's record says it was interrupted. */
+const AGENT_REFUSED_LINE = /^\s*(?:API Error: [45]\d\d\b|Invalid API key\b|Please run \/login\b)/;
+export const FLEXIBLE_REFUSED_LINE_WORDS = "(The agent's error message is left out: Toolroll's note on this turn says what happened.)";
+
+/** `records` with the agent's own refused-call lines replaced (AGENT_REFUSED_LINE), when `turn`'s record says it was
+ * interrupted. Decided from the record, never from the agent's text alone. */
+function withoutRefusedLines(store: Store, turn: string | null, records: LiveRecord[]): LiveRecord[] {
+  if (turn === null || !records.some(one => one.k === "say" && one.t.some(line => AGENT_REFUSED_LINE.test(line)))) return records;
+  if (flexibleTurn(store, turn)?.status !== "interrupted") return records;
+  return records.map(one => one.k !== "say" ? one : { ...one, t: one.t.map(line => AGENT_REFUSED_LINE.test(line) ? FLEXIBLE_REFUSED_LINE_WORDS : line) });
 }

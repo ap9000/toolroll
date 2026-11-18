@@ -209,6 +209,12 @@ pub struct ThreadTurn {
     pub status: String,
     pub cost_usd: Option<f64>,
     pub cost_basis: Option<String>,
+    /// Toolroll's own words for how the turn ended when it didn't simply finish (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_words: Option<String>,
+    /// `subscription` (the person's plan) or `api-key` (an older engine leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

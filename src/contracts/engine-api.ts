@@ -99,7 +99,11 @@ export const threadFactsSchema = z.object({
   project: z.string().nullable(),
   level: flexibleLevelSchema.nullable(),
   agent: z.object({ provider: z.string(), model: z.string() }).nullable(),
-  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable() }).nullable(),
+  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable(),
+    /** Toolroll's own words for how the turn ended when it didn't simply finish (interrupted, unknown, withdrawn). */
+    endWords: z.string().optional(),
+    /** How the turn is billed: the person's plan (`subscription`) or a key. */
+    billing: z.enum(["subscription", "api-key"]).optional() }).nullable(),
   questions: z.array(threadQuestionSchema),
 });
 

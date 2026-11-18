@@ -294,15 +294,40 @@ fn facts_line(facts: &ThreadFacts) -> String {
     }
     parts.push(level_words(facts.level.as_deref()).to_string());
     if let Some(turn) = &facts.turn {
-        let cost = match (turn.cost_usd, turn.cost_basis.as_deref()) {
-            (Some(c), Some("estimated")) => format!(" · about ${c:.2}"),
-            (Some(c), Some("unknown")) => format!(" · ${c:.2} so far, total unknown"),
-            (Some(c), _) => format!(" · ${c:.2}"),
-            (None, _) => " · no cost yet".into(),
+        // A plan's turn costs nothing extra: it says so, never "$0.00 so far, total unknown".
+        let cost = match (turn.billing.as_deref(), turn.cost_usd, turn.cost_basis.as_deref()) {
+            (Some("subscription"), _, _) => " · on your plan".into(),
+            (_, Some(c), Some("estimated")) => format!(" · about ${c:.2}"),
+            (_, Some(c), Some("unknown")) => format!(" · ${c:.2} so far, total unknown"),
+            (_, Some(c), _) => format!(" · ${c:.2}"),
+            (_, None, _) => " · no cost yet".into(),
         };
-        parts.push(format!("turn {} {}{cost}", turn.seq, clean(&turn.status)));
+        parts.push(format!("turn {} {}{cost}", turn.seq, turn_status_words(&turn.status)));
     }
     parts.join(" · ")
+}
+
+/// A turn's state in plain words (the record's own status otherwise, cleaned).
+pub fn turn_status_words(status: &str) -> String {
+    match status {
+        "admitted" => "starting".into(),
+        "running" => "working".into(),
+        "finished" => "done".into(),
+        "interrupted" => "stopped".into(),
+        "unknown" => "ended".into(),
+        "withdrawn" => "didn't start".into(),
+        other => clean(other),
+    }
+}
+
+/// Toolroll's own note on how the turn ended, when it didn't simply finish: at most three lines at `w`.
+pub fn end_note(facts: Option<&ThreadFacts>, w: usize) -> Vec<String> {
+    let Some(words) = facts.and_then(|f| f.turn.as_ref()).and_then(|t| t.end_words.as_deref()) else {
+        return vec![];
+    };
+    let mut lines = wrap(&format!("Toolroll: {}", clean(words)), w);
+    lines.truncate(3);
+    lines
 }
 
 /// The thread's panel (everything under the tabs): head, transcript, questions and the answer flow.
@@ -357,9 +382,11 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         Mode::NewTask(..) => 2,
         _ => 0,
     };
-    let [head, content, qa, input_row] = Layout::vertical([
+    let note = end_note(facts.as_ref(), w);
+    let [head, content, note_row, qa, input_row] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
+        Constraint::Length(note.len() as u16),
         Constraint::Length(q_lines),
         Constraint::Length(input_h),
     ])
@@ -406,6 +433,13 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             .collect(),
     };
     f.render_widget(Paragraph::new(lines), content);
+    // Toolroll's own note on the turn's end, in Toolroll's voice (never the agent's): under its transcript.
+    if !note.is_empty() {
+        f.render_widget(
+            Paragraph::new(note.into_iter().map(|l| Line::from(Span::styled(l, ink()))).collect::<Vec<_>>()),
+            note_row,
+        );
+    }
     // Questions (inside the card when there is one).
     let w = if card { w.saturating_sub(4) } else { w };
     let mut lines = vec![];
