@@ -22,12 +22,15 @@ import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow, type LiveThreads } from "../contracts/engine-api.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { flexibleAvailable } from "../flexible-available.js";
+import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
-import { flexibleStartCard } from "../flexible-start.js";
+import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
 import { summaryLines, type ApprovalSummary } from "../approval-summary.js";
 import { termsOfLines } from "../fast-terms.js";
 import { localActNow } from "../local-owner.js";
@@ -115,7 +118,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     // The inventory policy /welcome shares (welcome.ts agentInventoryOf): each agent for an instance operator, who the
     // first task goes to for anyone else's session.
     const view = agentInventoryOf(who, store);
-    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null));
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null, threadsStatusNote(store, who.name)));
   }
 
   /** POST /engine/agents/check (the Agents screen's Check again): this computer's agent CLIs asked again through the same
@@ -131,7 +134,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       await Promise.race([runtime.checkLocalAgents(true), new Promise<void>(done => { timer = setTimeout(done, 8_000); timer.unref?.(); })]).finally(() => clearTimeout(timer));
     }
     const view = agentInventoryOf(who, store);
-    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null));
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null, threadsStatusNote(store, who.name)));
   }
 
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */
@@ -186,6 +189,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   const threadsRead = (): FlexibleSessions | null => flexible ?? (flexibleAvailable(store) || flexibleThreadsExist(store) ? openHost() : null);
   /** Threads turned off are being stopped (one pass at a time). */
   let stopping = false;
+  /** People's retired sign-ins are being tidied (one pass at a time). */
+  let tidying = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -193,7 +198,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return admitted.ok ? admitted.repo : null;
   };
   /** An act's answer as data (`{ outcome, words }`): a thread's acts are a terminal's or an API client's, never a page's. */
-  const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string): void => json(response, status, { outcome, words });
+  const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string, next?: string): void => json(response, status, next === undefined ? { outcome, words } : { outcome, words, next });
 
   /** GET /agents/live/thread/<id>[?file=&cursor=&known=]: a Flexible thread's LiveSession window and its facts, its
    * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. A read: answered while
@@ -298,7 +303,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   async function threadStart(ctx: HandlerContext): Promise<void> {
     const { who, request, response, posted } = ctx;
     const flexible = threadsOn();
-    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
+    if (flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE, store.isInstanceOperator(who.name) ? "turn-on" : "ask-operator");
     if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can start a thread.");
     if (launcher === null) return acted(response, 409, "refused", "This console can't give a thread its network, so no thread was started.");
     const body = readForm(posted, CONSOLE_FORMS.threadStart);
@@ -307,6 +312,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const repo = body.get("repo") ?? "", message = body.get("message") ?? "";
     if (!store.accountCanAccess(who.name, repo)) return acted(response, 403, "refused", "That project is outside your access.");
     const by = { name: who.name, generation: who.session.generation };
+    // What's still missing, in order (on → your own sign-in → the project's terms), named so the terminal can open it.
+    const next = flexibleReadiness(store, by, repo);
+    if (next !== null) return acted(response, 409, "refused", FLEXIBLE_NEXT_WORDS[next], next);
     const made = flexibleStartCard(store, { repo, by, model: body.get("model"), message });
     if (!made.ok) return acted(response, 409, "refused", made.message);
     const card = made.card;
@@ -449,6 +457,16 @@ export function createEngineHandlers(runtime: ServerRuntime) {
      * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
      * now), every thread and launch of this host's. Nothing without a host. */
     upkeep: (): void => {
+      // People's Claude sign-ins for threads: retired generations' secrets deleted, expired saves and sign-ins whose
+      // account changed retired (flexible-sign-in.ts). Whatever the switch says, and with or without a host.
+      if (!tidying) {
+        tidying = true;
+        void (async () => {
+          const file = store.databaseFile();
+          if (file === null || file === "" || file === ":memory:") return;
+          await tidyFlexibleSignIns(store, dirname(realpathSync(file)), { now: new Date() });
+        })().catch(() => { /* the next tick tries again */ }).finally(() => { tidying = false; });
+      }
       const host = flexible;
       if (host === null) return;
       try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }

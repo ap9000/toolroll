@@ -385,14 +385,15 @@ describe("a stopped launch's network ends at once, whichever process stops it", 
     const made = await startFlexibleRelay(world.store, { thread: id });
     if ("ok" in made) throw new Error(made.message);
     const endpoint = made.issue({ thread: id, turn, launch });
-    // A call the token authorizes (it reaches the credential step: no Claude sign-in is kept here, so nothing is sent).
+    // A call the token authorizes (it reaches the sign-in step: the thread's starter saved no Claude sign-in here, so
+    // nothing is sent).
     const call = () => fetch(`${made.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 1, messages: [] }) });
     let proxyClosed = 0;
     onLaunchStopped(launch, () => { proxyClosed++; });
     const stopWatching = watchLaunch(world.store, launch, paths.folder, io, 100);
     try {
-      expect((await call()).status).toBe(503);
+      expect((await call()).status).toBe(403);
       const stopped = await new Promise<string>((resolve, reject) => {
         execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", SECOND_HOLDER], { cwd: fileURLToPath(new URL("..", import.meta.url)), timeout: 60_000,
           env: { ...process.env, FLEXIBLE_SECOND: JSON.stringify({ file: world.databaseFile, thread: id,

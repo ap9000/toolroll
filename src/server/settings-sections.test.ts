@@ -115,11 +115,14 @@ const READS: Record<string, readonly string[]> = {
   "task-sizing": ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"],
   // Interactive agent threads: installation data (never a project-limited person's); only its change document is an operator's.
   flexible: ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"],
+  // Your own Claude sign-in for threads: every approver's own (a project-limited one too); never a viewer's.
+  "flexible-sign-in": ["operator", "installation approver", "project-limited approver", "API token", "read-only token", "local owner"],
   advanced: Object.keys(PERSONAS),
   "local-mode": ["operator", "installation approver", "project-limited approver", "viewer", "local owner"],
 };
 const DEPS: GeneralDeps = { updatesVersion: () => "9.9.9", packageVersion: "9.9.9", firstResult: () => null, passwordless: () => true, localModeOn: () => true,
-  installMode: () => ({ mode: "team", facts: ["existing-install"], declared: null }), taskSizing: () => ({ on: false, byEnv: false }), flexible: () => ({ on: false }) };
+  installMode: () => ({ mode: "team", facts: ["existing-install"], declared: null }), taskSizing: () => ({ on: false, byEnv: false }), flexible: () => ({ on: false }),
+  flexibleSignIn: () => ({ state: "none" }), passwordFree: () => false };
 
 /** Every loader of every section a spy around the real one. */
 function spied(impls: SectionImpls) {

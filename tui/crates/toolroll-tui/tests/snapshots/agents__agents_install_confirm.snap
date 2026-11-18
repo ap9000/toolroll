@@ -17,7 +17,7 @@ expression: shown
 " │ ● OpenCode │                                                                                          │finish in   │ "
 " │            │   npm install -g @google/gemini-cli                                                      │            │ "
 " │ Not install│                                                                                          │            │ "
-" │ ○ Gemini CL│ It runs with your own npm settings (~/.npmrc: registry, proxy, sign-in). The package's   │er reads a  │ "
+" │ ○ Gemini CL│ It runs with your own npm settings (~/.npmrc: registry, proxy, sign-in). The package's   │er reads an │ "
 " │ ○ OpenRoute│ install scripts run.                                                                     │            │ "
 " │ ○ Cursor   │                                                                                          │            │ "
 " │ ○ Cline    │ It downloads software from its publisher and runs it as you, in a pane here. Toolroll    │            │ "

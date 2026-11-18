@@ -66,7 +66,23 @@ pub enum ActOutcome {
         key: String,
         lines: Vec<String>,
     },
+    /// A new thread refused with what the person still needs first, as the console names it (one of NEXT_STEPS): the
+    /// console's words, and the step.
+    NextStep {
+        words: String,
+        next: String,
+    },
 }
+
+/// The steps a thread start may name as still missing (flexible-start.ts FlexibleNextStep). Anything else is an
+/// ordinary refusal.
+pub const NEXT_STEPS: [&str; 5] = [
+    "turn-on",
+    "ask-operator",
+    "sign-in",
+    "sign-in-refused",
+    "project-terms",
+];
 
 struct Creds {
     cookie: Zeroizing<String>,
@@ -611,6 +627,14 @@ impl Client {
                         digest,
                         terms,
                     });
+                }
+                if v["outcome"] == "refused" && path == "/agents/live/thread" {
+                    if let Some(next) = v["next"].as_str().filter(|n| NEXT_STEPS.contains(n)) {
+                        return Ok(ActOutcome::NextStep {
+                            words: non_empty(words, status),
+                            next: next.to_string(),
+                        });
+                    }
                 }
                 return Ok(match v["outcome"].as_str() {
                     Some("refused") => ActOutcome::Refused(non_empty(words, status)),

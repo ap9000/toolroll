@@ -19,9 +19,9 @@ import { flexibleAvailable, setFlexibleSetting } from "./flexible-available.js";
 import { flexibleDigestOf, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
-import { FLEXIBLE_RELAY_CREDENTIAL, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { answerFlexibleRequest, attachFlexibleAgent, openFlexibleSessions, startFlexibleThreadSession, settleFlexibleStops, type FlexibleSessions } from "./flexible-session.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { standInSignIn } from "../test/flexible-sign-in-kit.js";
 import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -52,10 +52,8 @@ vi.mock("./flexible-relay-upstreams.js", async importOriginal => {
 
 const OFF = "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`.";
 const NOW = new Date();
-/** The relay's own Claude credential (built here, never a real one). */
-function signIn(state: string): void {
-  writeHeldSecret(state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: ["sk", "ant", "oat01", randomBytes(24).toString("hex")].join("-") }));
-}
+/** alex's own Claude sign-in for threads (a stand-in, never a real one). */
+function signIn(world: ThreadWorld): void { standInSignIn(world.store, world.state, "alex"); }
 /** Signed Flexible terms for the project (as a person's yes would have left them). */
 function plantTerms(world: ThreadWorld, signer: string): string {
   const terms: FlexibleTerms = { version: 1, repo: world.project, signer, signerGeneration: world.store.accountOf(signer)!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full", max: "full",
@@ -75,7 +73,7 @@ describe("Settings → General, and a thread through the console", () => {
     if (!alex.ok) throw new Error("alex");
     password = alex.token;
     plantTerms(world, "alex");
-    signIn(world.state);
+    signIn(world);
     const minted = mintApiToken();
     world.store.createApiToken({ id: minted.id, account: "alex", name: "act", secretHash: minted.hash, access: "act", expiresAt: new Date(NOW.getTime() + 86_400_000).toISOString(), by: "alex" }, NOW);
     actToken = minted.token;
@@ -117,7 +115,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(FLEXIBLE_SETTING_WORDS).toBe("Claude Code only for now. Runs inside Toolroll's sandbox with your Claude sign-in relayed; Toolroll never gives the agent your key.");
     expect(page).toContain('href="/settings/change/flexible"');
     expect(await (await fetch(`${base}/settings/change/flexible`, { headers: { cookie } })).text()).toContain('action="/settings/flexible"');
-    expect(await start({})).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
+    expect(await start({})).toEqual({ status: 404, body: { outcome: "refused", words: OFF, next: "turn-on" } });
     // A read: it answers, says threads are off, and lists none (none was ever made).
     expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ version: 1, on: false, threads: [] });
     expect(FLEXIBLE_UNAVAILABLE).toBe(OFF);
@@ -136,7 +134,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(token.status).toBeGreaterThanOrEqual(400);
     expect(flexibleAvailable(world.store)).toBe(false);
     expect(ledger(world)).toEqual([]);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect(flexibleAvailable(world.store)).toBe(true);
     expect(said(await post("/settings/flexible", { enabled: "off", password }))).toContain("Interactive agent threads are off");
     expect(flexibleAvailable(world.store)).toBe(false);
@@ -153,12 +151,12 @@ describe("Settings → General, and a thread through the console", () => {
     expect(said(await post("/settings/flexible", { enabled: "on", password: "" }))).toContain("needs your Toolroll password, typed now");
     expect(flexibleAvailable(world.store)).toBe(false);
     expect(ledger(world)).toHaveLength(before);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect(flexibleAvailable(world.store)).toBe(true);
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
     expect(said(await post("/settings/flexible", { enabled: "off", password: "" }))).toContain("Interactive agent threads are off");
     expect(flexibleAvailable(world.store)).toBe(false);
-    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("Interactive agent threads are on");
+    expect(said(await post("/settings/flexible", { enabled: "on", password }))).toContain("section=flexible-sign-in&said=Threads are on. Next, add your Claude sign-in.");
     expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
     expect((await (await fetch(`${base}/settings/general`, { headers: { cookie } })).text())).toContain(`On. ${FLEXIBLE_SETTING_WORDS.replaceAll("'", "&#39;")}`);
   });
@@ -178,7 +176,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(held.starts[0]).toMatchObject({ repo: world.project, model: expect.stringMatching(/^claude-/), startKey: card.key });
     // Turned off again: the very next start refuses, before anything is looked up.
     setFlexibleSetting(world.store, false, "alex", new Date());
-    expect(await start({ terms: card.key })).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
+    expect(await start({ terms: card.key })).toEqual({ status: 404, body: { outcome: "refused", words: OFF, next: "turn-on" } });
     expect(held.starts).toHaveLength(1);
   });
 
@@ -251,7 +249,7 @@ describe("turned off while a thread runs: stopped safely", () => {
     world = threadWorld();
     world.store.saveApprover("alex", "hash-a", NOW);
     const digest = plantTerms(world, "alex");
-    signIn(world.state);
+    signIn(world);
     upstreamCalls = 0;
     upstream = createServer((request, response) => {
       request.resume();

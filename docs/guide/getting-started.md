@@ -325,21 +325,48 @@ Each thread works in its own copy of the project. Your repository changes
 only when you **Ship**, and only when the project's required check passes
 on that exact commit.
 
-Threads are **off by default**, including after an upgrade. To turn them
-on, open **Settings → General → Interactive agent threads (beta)** in the
-browser, or run `toolroll config set flexible on`. An instance operator
-makes this change and types their password, on every install: turning
-threads on relays your Claude sign-in. Turning them off needs only your
-signed-in session on a solo install. API tokens, the lead and chat apps
-cannot change it. `toolroll config show flexible` shows the current state.
-Each project also needs its own Flexible terms before threads can start
-there.
+Three steps, in this order, before a thread can start:
+
+1. **Turn threads on.** They are **off by default**, including after an
+   upgrade. An instance operator opens **Settings → General → Interactive
+   agent threads (beta)** in the browser, or runs
+   `toolroll config set flexible on`, and types their password (on every
+   install). Turning them off needs only your signed-in session on a solo
+   install. API tokens, the lead and chat apps cannot change it.
+2. **Add your own Claude sign-in.** Each person brings their own: threads
+   you start run on your Claude plan, never on someone else's sign-in or a
+   shared one. In a terminal, run `claude setup-token`, finish signing in,
+   then either run `toolroll config set flexible-sign-in` and paste the token
+   at the hidden prompt, or paste it in **Settings → General → Your Claude
+   sign-in for threads**. Saving asks for your Toolroll password, typed now.
+   Toolroll then asks Claude to count the tokens of one word with it and
+   tells you what it found ("Token-count check accepted", or why it couldn't
+   tell); `--no-check` skips that. Toolroll never takes the token as an
+   argument, never shows it again, and never gives it to the agent.
+3. **Set up the project's terms.** Each project needs its own Flexible terms
+   (Settings → Project, or `toolroll project flexible enable`).
+
+If you press `T` before a step is done, the workbench says which one: `w`
+opens its page in the browser and `c` puts its command in your terminal's
+scrollback. `toolroll config show flexible` and
+`toolroll config show flexible-sign-in` show where you are;
+`toolroll config show flexible-sign-in --check` checks your sign-in again.
+
+Your sign-in ends when you remove it (Settings, or
+`toolroll config clear flexible-sign-in`), when your Toolroll password is
+reset, when you are removed from Toolroll, and when a backup is restored. If
+Claude refuses it during a thread, the turn ends with Toolroll's own words
+and your new threads wait until you save a new one. Removing it in Toolroll
+doesn't revoke it at Claude: do that in your Claude account. An instance
+operator can remove someone's sign-in from People, but can never see or set
+it.
 
 Limits for now:
 
 - **Claude Code only.** Codex threads come later.
-- Your Claude sign-in is relayed: the agent's model calls go through
-  Toolroll, and Toolroll never gives the agent your key.
+- **Plan sign-ins only** (`claude setup-token`), not API keys.
+- The agent's model calls go through Toolroll's relay with your sign-in;
+  Toolroll never gives the agent your sign-in.
 - Turn limits and the project's network still apply.
 
 Turning threads off takes effect at once. No new thread or turn starts, and a

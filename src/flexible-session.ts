@@ -46,7 +46,8 @@ import {
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO, flexibleTurnLaunched } from "./flexible-launch.js";
-import { flexibleRelayBilling, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { flexibleSignInBilling } from "./flexible-sign-in.js";
 import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
@@ -644,8 +645,8 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
  *   is written to disk: a start the limits refuse makes no repository, keep-ref or thread record at all.
  * - The same start again (the same person and card key, its thread still being made or ready) gets that thread back,
  *   never a second one.
- * - The billing the card showed is the billing of the relay's credential now (flexibleRelayBilling), re-read in that
- *   transaction.
+ * - The billing the card showed is the billing of the person's own sign-in now (flexibleSignInBilling: their active
+ *   one, at the generation their session holds, not refused), re-read in that transaction.
  * - Then the thread's isolated repository is made (F2a) and the turn begins with their message. Making the repository
  *   failing gives the turn back; a turn the launch refuses (nothing ran) takes the thread with it: its relay stopped,
  *   its repository and keep-ref removed.
@@ -690,9 +691,11 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
       // Interactive agent threads still on, read again here, in the transaction that records the thread and admits its
       // first turn (admitFlexibleTurn reads it once more).
       if (!flexibleAvailable(store)) return refuse("not-available");
-      const billing = flexibleRelayBilling(store);
-      if (!billing.ok) return billing;
-      if (billing.billing !== input.billing) return { ok: false as const, reason: "billing-changed", message: "Toolroll's Claude sign-in for Flexible threads changed since the terms were shown. Look at them again before starting. Nothing was started." };
+      const billing = flexibleSignInBilling(store, input.by);
+      if (!billing.ok) return { ok: false as const, reason: billing.reason, message: billing.reason === "no-sign-in"
+        ? "Threads use your own Claude sign-in, and you haven't saved one (or it was removed). Nothing was started."
+        : "Claude didn't accept your sign-in for threads. Save a new one, then start again. Nothing was started." };
+      if (billing.billing !== input.billing) return { ok: false as const, reason: "billing-changed", message: "Your Claude sign-in for threads changed since the terms were shown. Look at them again before starting. Nothing was started." };
       const admitted = admitFlexibleTurn(store, { thread: id, starter: input.by, digest: input.digest, level: "full", freshProof: input.freshProof === true, provider: "claude", model: input.model,
         billing: input.billing, requestKey, holder: sessions.holder, clock, opening: true });
       if (!admitted.ok) return admitted;

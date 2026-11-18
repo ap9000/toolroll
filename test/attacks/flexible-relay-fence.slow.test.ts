@@ -20,9 +20,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../src/flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "../../src/flexible-turns.js";
 import { flexibleThreadSpawn, prepareFlexibleThread, stopFlexibleThreadAgent } from "../../src/flexible-thread.js";
-import { FLEXIBLE_RELAY_CREDENTIAL, relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "../../src/flexible-relay.js";
+import { relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "../../src/flexible-relay.js";
 import { proxyEnv, startEgressProxy, type EgressProxy } from "../../src/egress.js";
-import { writeHeldSecret } from "../../src/tool-secret-store.js";
+import { standInSignIn } from "../flexible-sign-in-kit.js";
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence } from "./harness.js";
 
@@ -117,7 +117,7 @@ describe("attack: reaching the sign-in relay from inside the thread fence", () =
     }));
     scripted.origin = `http://127.0.0.1:${upstream}`;
     const other = await listen(createServer((_request, response) => response.end("other")));
-    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: SETUP_TOKEN }));
+    standInSignIn(world.store, world.state, "alex", SETUP_TOKEN);
     const started = await startFlexibleRelay(world.store, { thread: id });
     if ("ok" in started) throw new Error(started.message);
     relay = started;

@@ -34,6 +34,7 @@ import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirS
 import { dirname, join } from "node:path";
 import { envValue } from "./names.js";
 import { sleep } from "./sleep.js";
+import { signInSlot } from "./flexible-sign-in-slot.js";
 
 export type SecretStoreKind = "macos-keychain" | "secret-service" | "files";
 /** One item's address: what the store lists, never a secret (a folder's or project's hash, a tool's name). */
@@ -660,4 +661,109 @@ export function writeHeldSecret(state: string, name: string, file: readonly stri
     if (value === null) removeValue(backend, item);
     else writeSealed(backend, folder, item, value);
   });
+}
+
+// ---- a person's own Claude sign-in for interactive agent threads (flexible-sign-in.ts) ------------------------------
+
+/** What a sign-in secret holds: whose it is and which generation, beside the value. */
+export type SignInSecret = { person: string; generation: string; kind: "setup-token"; value: string };
+const SIGN_IN_SLOT = /^[0-9a-f]{16}$/;
+const SIGN_IN_GENERATION = /^[0-9a-f]{32}$/;
+const SIGN_IN_VALUE = /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,400}$/;
+const WRONG_PERSON = "A saved Claude sign-in isn't the one its record names, so it isn't used.";
+
+/**
+ * Where one person's sign-in of one generation rests: never another's, never overwritten. The address is the
+ * installation's own keychain service (serviceOf) with the account `flexible-sign-in.<slot>.<generation>`, or, with no
+ * keychain, the file `<slot>.<generation>.json` in `flexible-sign-in` inside Toolroll's always-denied secrets folder.
+ * `slot` (flexible-sign-in-slot.ts) is a hash of the person's name: an address, not a secret, and not unique proof of
+ * whose it is, so what rests there names its person and generation and every read checks both. The lock is the person's
+ * (one save, retirement or clean-up at a time).
+ */
+function signInAddress(folder: SecretFolder, person: string, generation: string, make = false): { item: SecretItem; file: string; lock: string } {
+  if (typeof person !== "string" || person.length < 1 || person.length > 200 || typeof generation !== "string" || !SIGN_IN_GENERATION.test(generation)) throw new SecretStoreError("A secret's address can't be used.");
+  const slot = signInSlot(person);
+  if (!SIGN_IN_SLOT.test(slot)) throw new SecretStoreError("A secret's address can't be used.");
+  return { item: { service: serviceOf(folder), account: `flexible-sign-in.${slot}.${generation}` },
+    file: pathIn(folder.dir, ["flexible-sign-in", `${slot}.${generation}.json`], { make }), lock: `flexible-sign-in.${slot}` };
+}
+
+/** The secret text read at an address, checked to be exactly `person`'s of `generation`: its fields, nothing else, and a
+ * value of the setup-token shape. Anything else (another person's, a copied or swapped file, damage) refuses. */
+function signInOf(text: string, person: string, generation: string): SignInSecret {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text) as unknown; } catch { throw new SecretStoreError(WRONG_PERSON); }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new SecretStoreError(WRONG_PERSON);
+  const one = parsed as Record<string, unknown>;
+  if (Object.keys(one).sort().join(",") !== "generation,kind,person,value" || one["person"] !== person || one["generation"] !== generation || one["kind"] !== "setup-token"
+    || typeof one["value"] !== "string" || !SIGN_IN_VALUE.test(one["value"])) throw new SecretStoreError(WRONG_PERSON);
+  return { person, generation, kind: "setup-token", value: one["value"] };
+}
+
+/**
+ * Keep a person's sign-in of a new generation at its own address, only when nothing is there yet ("exists" when
+ * something is: never overwritten, whoever's it is). A file is written whole beside its name, then linked in (a link
+ * that fails because the name exists changes nothing).
+ */
+export function createSignInSecret(state: string, secret: SignInSecret): "ok" | "exists" {
+  if (secret.kind !== "setup-token" || typeof secret.value !== "string" || !SIGN_IN_VALUE.test(secret.value)) throw new SecretStoreError("A sign-in's form can't be used.");
+  const folder = secretFolder(state);
+  const address = signInAddress(folder, secret.person, secret.generation, true);
+  const text = JSON.stringify({ person: secret.person, generation: secret.generation, kind: secret.kind, value: secret.value });
+  const backend = secretBackend();
+  if (backend !== null) return writeSealed(backend, folder, address.item, text, { create: true });
+  const staged = `${address.file}.${process.pid}.${randomBytes(4).toString("hex")}.new`;
+  const fd = openSync(staged, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  try { linkSync(staged, address.file); } catch (error) {
+    rmSync(staged, { force: true });
+    if (codeOf(error) === "EEXIST") return "exists";
+    throw new SecretStoreError("A sign-in couldn't be saved in Toolroll's folder for secrets.");
+  }
+  rmSync(staged, { force: true });
+  return "ok";
+}
+
+/** A person's sign-in of `generation`, or null when nothing rests at its address. What rests there must be exactly
+ * theirs, of that generation (signInOf): anything else refuses, so another person's is never returned. */
+export function readSignInSecret(state: string, person: string, generation: string): SignInSecret | null {
+  const folder = secretFolder(state);
+  const address = signInAddress(folder, person, generation);
+  const backend = secretBackend();
+  const text = backend === null ? readOwnFile(address.file) : readSealed(backend, folder, address.item);
+  return text === null ? null : signInOf(text, person, generation);
+}
+
+/**
+ * Remove a person's sign-in of `generation`: "removed" (or nothing was there: "absent"); "not-theirs" leaves what rests
+ * there untouched when it names someone else (an address shared by two names: never another person's to delete). One
+ * that can't be opened at all is unusable to anyone, and removed.
+ */
+export function removeSignInSecret(state: string, person: string, generation: string): "removed" | "absent" | "not-theirs" {
+  const folder = secretFolder(state);
+  const address = signInAddress(folder, person, generation);
+  const backend = secretBackend();
+  let text: string | null;
+  try { text = backend === null ? readOwnFile(address.file) : readSealed(backend, folder, address.item); } catch (error) {
+    if (backend !== null && error instanceof SecretStoreError && /refused|couldn't be reached/.test(error.message)) throw error;
+    text = "";
+  }
+  if (text === null) return "absent";
+  if (text !== "") {
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(text) as unknown; } catch { parsed = null; }
+    const named = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    if (named !== null && (named["person"] !== person || named["generation"] !== generation)) return "not-theirs";
+  }
+  if (backend === null) destroyOwnFile(address.file);
+  else removeValue(backend, address.item);
+  return "removed";
+}
+
+/** One save, retirement or clean-up of a person's sign-ins at a time, across Toolroll's processes, for work that waits
+ * (a live check reaches the network): never the synchronous lock, which would hold this process's other work still. */
+export function withSignInLockAsync<T>(state: string, person: string, work: () => Promise<T>, options: { waitMs?: number } = {}): Promise<T> {
+  const folder = secretFolder(state);
+  const address = signInAddress(folder, person, "0".repeat(32));
+  return withSecretLockAsync(folder, address.lock, work, { staleMs: 120_000, waitMs: options.waitMs ?? 30_000 });
 }

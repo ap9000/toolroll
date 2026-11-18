@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
-import { flexibleRelayBilling } from "./flexible-relay.js";
+import { flexibleSignInBilling, flexibleSignInStatus } from "./flexible-sign-in.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { CLAUDE_EXACT } from "./model-catalog.js";
@@ -31,14 +31,15 @@ export const FLEXIBLE_DEFAULT_MODEL: string = CLAUDE_EXACT.find(one => one.value
 /** A model the sign-in relay forwards for Claude (flexible-relay-upstreams.ts): anything else is refused here. */
 const RELAY_MODEL = /^claude-(?:opus|sonnet|haiku|fable)-\d{1,2}(?:-\d{1,2})?(?:-\d{8})?$/;
 
-export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter" | "no-sign-in"; message: string };
+export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter" | "no-sign-in" | "sign-in-refused"; message: string };
 const WORDS = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That isn't a thread Toolroll can start: name a project and a Claude model. Nothing was started.",
   "not-flexible": "This project isn't Flexible, so threads can't start in it. Nothing was started.",
   "terms-unreadable": "This project's Flexible terms can't be read, so they allow nothing. Nothing was started.",
   "not-a-starter": "These terms don't let you start threads in this project. Nothing was started.",
-  "no-sign-in": "Toolroll holds no Claude sign-in for Flexible threads yet, so no thread can start. Nothing was started.",
+  "no-sign-in": "Threads use your own Claude sign-in, and you haven't saved one. Run `claude setup-token`, then `toolroll config set flexible-sign-in`. Nothing was started.",
+  "sign-in-refused": "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`. Nothing was started.",
 } as const);
 const refuse = (reason: Exclude<FlexibleStartRefusal["reason"], "terms-lapsed">): FlexibleStartRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
@@ -73,10 +74,13 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   if (terms.starters === "signer" && input.by.name !== terms.signer) return refuse("not-a-starter");
   const network = flexibleThreadNetwork(store, input.repo);
   if ("ok" in network) return refuse("not-available");
-  // How its turns are billed: the kind of the relay's own credential, as the relay reads it (never a request's word).
-  const credential = flexibleRelayBilling(store);
-  if (!credential.ok) return refuse("no-sign-in");
+  // How its turns are billed: the kind of the person's own sign-in, from its record (never a request's word, never
+  // anyone else's sign-in, and the value is never read here).
+  const credential = flexibleSignInBilling(store, input.by);
+  if (!credential.ok) return refuse(credential.reason);
   const billing = credential.billing;
+  const signedIn = flexibleSignInStatus(store, input.by.name);
+  const savedOn = signedIn.state === "none" ? null : signedIn.savedAt.slice(0, 10);
   const open = network.mode === "open";
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(input.repo)?.["name"];
   const caps = terms.caps;
@@ -84,8 +88,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const decisions: SummaryRow[] = [
     { label: "Project", words: typeof project === "string" ? project : input.repo, lines: typeof project === "string" ? [input.repo] : [], fields: ["flexible.repo"] },
     { label: "Level", words: `${FLEXIBLE_LEVEL_WORDS.full}: no permission prompts inside the sandbox`, lines: [FULL_ACCESS_WORDS], fields: ["flexible.level"], risky: true },
-    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted.",
-      billing === "subscription" ? "Billed to your Claude plan (Toolroll's setup-token sign-in)." : "Billed per call to Toolroll's Claude API key."], fields: ["flexible.agent", "flexible.billing"] },
+    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude sign-in stays with Toolroll and never enters the agent; each call is checked and counted.",
+      billing === "subscription" ? `Your Claude plan (the sign-in you saved${savedOn === null ? "" : ` on ${savedOn}`}). It powers only threads you start.` : "Billed per call to your own Claude API key. It powers only threads you start."], fields: ["flexible.agent", "flexible.billing"] },
     { label: "Works in", words: "its own copy of this repository, on its own branch", lines: ["Your repository changes only when you Ship."], fields: ["flexible.repository"] },
     { label: "Network", words: open ? "open: any website, through the thread's own proxy" : lowerFirst(networkWords(network, "claude").replace(/^Network: /, "")),
       lines: ["Nothing on this computer is reachable (no local services, keychain, SSH agent or saved sign-ins)."], fields: ["flexible.network"], ...(open ? { risky: true } : {}) },
@@ -111,4 +115,24 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
     network: networkDigest, message: digestOfMessage, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
   const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", usualSummary: "", key };
   return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", billing, terms } };
+}
+
+/** The first thing a person still needs before a thread can start in a project, in this order: threads on (an
+ * instance operator's switch: `turn-on` for one, `ask-operator` for anyone else), their own Claude sign-in (`sign-in`,
+ * or `sign-in-refused` once Claude didn't accept it), then the project's Flexible terms (`project-terms`). Null when
+ * nothing is missing. From the records only (the sign-in's value is never read). */
+export type FlexibleNextStep = "turn-on" | "ask-operator" | "sign-in" | "sign-in-refused" | "project-terms";
+export const FLEXIBLE_NEXT_WORDS: Readonly<Record<FlexibleNextStep, string>> = Object.freeze({
+  "turn-on": "Threads are off. Turn them on in Settings → General, or with `toolroll config set flexible on`. Nothing was started.",
+  "ask-operator": "Threads are off. Ask an instance operator to turn them on. Nothing was started.",
+  "sign-in": "Threads use your own Claude sign-in. Run `claude setup-token`, then `toolroll config set flexible-sign-in`, or add it in Settings → General. Nothing was started.",
+  "sign-in-refused": "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`. Nothing was started.",
+  "project-terms": "This project isn't set up for threads yet: turn on its Flexible terms in the project's settings, or with `toolroll project flexible enable`. Nothing was started.",
+});
+export function flexibleReadiness(store: Store, by: { name: string; generation: number }, repo: string): FlexibleNextStep | null {
+  if (!flexibleAvailable(store)) return store.isInstanceOperator(by.name) ? "turn-on" : "ask-operator";
+  const signIn = flexibleSignInBilling(store, by);
+  if (!signIn.ok) return signIn.reason === "no-sign-in" ? "sign-in" : "sign-in-refused";
+  const standing = flexibleStanding(store, repo);
+  return standing.state === "secure" ? "project-terms" : null;
 }

@@ -59,7 +59,7 @@ describe("General, per persona", () => {
   test("each reads what it reads today, and an API token reads without the controls", async () => {
     const read = async (headers: Record<string, string>) => { const answer = await get("/settings/general", headers); expect(answer.status).toBe(200); return answer.text(); };
     const operator = await read({ cookie: sessions.operator.cookie });
-    expect(sectionsOf(operator)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "flexible", "advanced"]);
+    expect(sectionsOf(operator)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "flexible", "flexible-sign-in", "advanced"]);
     const viewer = await read({ cookie: sessions.viewer.cookie });
     expect(sectionsOf(viewer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "flexible", "advanced"]);
     expect(viewer).toContain("Forget now");
@@ -71,7 +71,7 @@ describe("General, per persona", () => {
     expect(operator).toContain('href="/settings/change/flexible"');
     expect(viewer).not.toContain('href="/settings/change/flexible"');
     const limited = await read({ cookie: sessions.limited.cookie });
-    expect(sectionsOf(limited)).toEqual(["appearance", "this-browser", "your-password", "install-mode", "advanced"]);
+    expect(sectionsOf(limited)).toEqual(["appearance", "this-browser", "your-password", "install-mode", "flexible-sign-in", "advanced"]);
     expect(limited).not.toContain("/settings/passwordless");
     const bearer = await read({ authorization: `Bearer ${token}` });
     expect(sectionsOf(bearer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "flexible", "advanced"]);

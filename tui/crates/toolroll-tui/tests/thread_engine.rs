@@ -176,3 +176,54 @@ async fn a_new_thread_starts_only_under_the_key_of_the_terms_card_the_screen_dre
     );
     assert_eq!(app.status, Some((Tone::Said, "The thread started.".into())));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_refused_for_your_sign_in_offers_its_page_and_its_command() {
+    let mut state = scenario_with_threads();
+    state.thread_next = Some("sign-in".into());
+    let engine = FakeEngine::start(state, 0).await;
+    let client = redeem(&engine.link()).await.unwrap();
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    settle(&mut app, &client, vec![Effect::FetchWork]).await;
+    let start = |app: &mut App| {
+        app.key(key('T'));
+        for c in "Fix the README".chars() {
+            app.key(key(c));
+        }
+        app.key(code(KeyCode::Enter))
+    };
+    let fx = start(&mut app);
+    settle(&mut app, &client, fx).await;
+    // The console's words, naming `claude setup-token`; nothing started; the next step's doors one key away.
+    assert!(
+        matches!(&app.status, Some((Tone::Refused, w)) if w.contains("claude setup-token")),
+        "{:?}",
+        app.status
+    );
+    assert!(matches!(&app.mode, toolroll_tui::app::Mode::ThreadNext(n) if n == "sign-in"));
+    let shown = screen(&mut app);
+    assert!(shown.contains("Before a thread can start"), "{shown}");
+    assert!(shown.contains("copies the command"), "{shown}");
+    // w opens the sign-in page in the browser (by its fixed name, nothing else).
+    assert_eq!(
+        app.key(key('w')),
+        vec![Effect::OpenPage("flexible-sign-in")]
+    );
+    // Again: c puts exactly the command in the terminal's scrollback (never the clipboard, never a token).
+    let fx = start(&mut app);
+    settle(&mut app, &client, fx).await;
+    assert_eq!(
+        app.key(key('c')),
+        vec![Effect::Scrollback(vec![
+            "toolroll config set flexible-sign-in".into()
+        ])]
+    );
+    // An unknown step is an ordinary refusal (no doors).
+    assert!(toolroll_tui::thread::next_step("anything-else").is_none());
+    assert_eq!(
+        toolroll_tui::thread::next_step("project-terms")
+            .unwrap()
+            .command(Some("/home/me/shop")),
+        "toolroll project flexible enable --repo /home/me/shop"
+    );
+}

@@ -5,7 +5,10 @@
  * `relayCancel` right after their write; every running relay in this process cuts the matching calls before forwarding
  * another byte. Over-cancelling (a write that then rolls back) only ever ends a call early. Nothing here grants anything.
  */
-export type RelayCancel = { turn?: string; launch?: string; digest?: string };
+export type RelayCancel = { turn?: string; launch?: string; digest?: string;
+  /** A person's Claude sign-in for threads ended (removed, their password reset, their account removed): every call sent
+   * with any sign-in of theirs is cut (flexible-sign-in.ts). */
+  person?: string };
 type Listener = { hear: (cancel: RelayCancel) => void; failed: () => void };
 const listeners = new Set<Listener>();
 

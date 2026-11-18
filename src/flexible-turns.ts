@@ -643,3 +643,21 @@ export function withdrawFlexibleTurnsAbove(store: Store, input: { thread: string
     return { ok: true as const, withdrawn };
   });
 }
+
+/**
+ * Claude refused the turn's owner's sign-in on one of its calls (flexible-relay.ts, inside the transaction that records
+ * that call): the running turn ends, interrupted, with Toolroll's own words as its end detail (what the thread panel
+ * shows, whatever the agent prints), and every call still running in it is cut. Never anything but a running turn.
+ */
+export function interruptFlexibleTurnSignIn(store: Store, input: { turn: string; detail: string; clock?: FlexibleClock }): { ok: true; interrupted: boolean } | FlexibleTurnRefusal {
+  if (typeof input.turn !== "string" || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
+  return store.transact((): { ok: true; interrupted: boolean } => {
+    const turn = flexibleTurn(store, input.turn);
+    if (turn === null || turn.status !== "running") return { ok: true as const, interrupted: false };
+    const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
+    const done = Number(store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ? AND status = 'running'")
+      .run(timeOf(input.clock).toISOString(), input.detail.slice(0, 2000), basis, turn.id).changes) === 1;
+    if (done) relayCancel({ turn: turn.id });
+    return { ok: true as const, interrupted: done };
+  });
+}

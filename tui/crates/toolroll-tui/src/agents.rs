@@ -1059,7 +1059,7 @@ fn draw_agent(f: &mut Frame, app: &mut App, a: &AgentRow, area: Rect) {
     }
     lines.push(Line::raw(""));
     for piece in wrap(
-        "y copies every command to your terminal's scrollback. Toolroll never reads a sign-in.",
+        "y copies every command to your terminal's scrollback. Toolroll never reads an agent's own sign-in.",
         w,
     ) {
         lines.push(Line::from(Span::styled(piece, dim())));

@@ -3123,6 +3123,27 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(keys));
             (" Open build shell ", lines)
         }
+        Mode::ThreadNext(next) => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![Line::raw("")];
+            let step = crate::thread::next_step(next);
+            for l in wrap(step.map_or("A thread can't start yet.", |s| s.words), w) {
+                lines.push(Line::from(Span::styled(l, ink())));
+            }
+            lines.push(Line::raw(""));
+            let mut keys = vec![];
+            if step.is_some_and(|s| s.page.is_some()) {
+                keys.extend(sheet::act("w", "opens it in the browser,", true));
+                keys.push(Span::raw("  "));
+            }
+            if step.is_some_and(|s| s.command.is_some()) {
+                keys.extend(sheet::act("c", "copies the command,", false));
+                keys.push(Span::raw("  "));
+            }
+            keys.extend(sheet::act("Esc", "to close", false));
+            lines.push(Line::from(keys));
+            (" Before a thread can start ", lines)
+        }
         Mode::ConfirmHold { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
             let mut lines = vec![

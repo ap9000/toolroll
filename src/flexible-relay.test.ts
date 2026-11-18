@@ -22,9 +22,9 @@ import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn, flexibleTurn 
 import { prepareFlexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "./flexible-thread.js";
 import { holdLaunch } from "./flexible-launch.js";
 import { realCustodyIO, startIdentityOf } from "./flexible-custody.js";
-import { FLEXIBLE_RELAY_CREDENTIAL, relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { relayCancel, type RelayCancel } from "./flexible-relay-cancel.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { removeStandInSignIn, standInSignIn } from "../test/flexible-sign-in-kit.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -55,9 +55,6 @@ async function listen(server: Server): Promise<number> {
   await new Promise<void>(done => server.listen(0, "127.0.0.1", () => done()));
   const address = server.address();
   return typeof address === "object" && address !== null ? address.port : 0;
-}
-function credential(kind: "setup-token" | "api-key", value: string): void {
-  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
 }
 function admitAndBegin(over: Partial<Parameters<typeof admitFlexibleTurn>[1]> = {}): string {
   const made = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: world.store.accountOf("alex")!.generation }, digest, level: "full", freshProof: false,
@@ -102,7 +99,7 @@ beforeEach(async () => {
   const started = await startFlexibleRelay(world.store, { thread: id, log: line => lines.push(line) });
   if ("ok" in started) throw new Error(started.message);
   relay = started;
-  credential("setup-token", SETUP_TOKEN);
+  standInSignIn(world.store, world.state, "alex", SETUP_TOKEN);
   turn = admitAndBegin();
   launch = liveLaunch(id);
   token = relay.issue({ thread: id, turn, launch }).token;
@@ -366,14 +363,22 @@ describe("refusals: nothing is forwarded", () => {
       const foreign = other.issue({ thread: made.thread.id, turn, launch: otherLaunch }).token;
       expect((await call({ bearer: foreign })).status).toBe(401);
     } finally { await other.close(); }
-    credential("api-key", API_KEY);
-    expect((await call()).status).toBe(403); // a plan turn never spends on a key
-    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: API_KEY })); // the wrong shape for its kind
-    expect((await call()).status).toBe(503);
-    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, null);
-    expect((await call()).status).toBe(503);
+    // A keyed turn never spends on a plan's setup-token.
+    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    const keyed = admitAndBegin({ billing: "api-key" });
+    expect((await call()).status).toBe(403);
+    expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    admitAndBegin();
+    // An active record whose generation has nothing at its own address (another generation's secret is never read for
+    // it), or no sign-in at all: nothing is sent.
+    removeStandInSignIn(world.store, "alex");
+    world.store.handle.prepare(`INSERT INTO flexible_sign_in (person, account_generation, generation, kind, state, proof, staged_at, activated_at) VALUES ('alex', ?, ?, 'setup-token', 'active', 'password-now', 't', 't')`)
+      .run(world.store.accountOf("alex")!.generation, randomBytes(16).toString("hex"));
+    expect((await call()).status).toBe(403);
+    removeStandInSignIn(world.store, "alex");
+    expect((await call()).status).toBe(403);
     expect(seen).toHaveLength(0);
-    expect(calls().map(row => row["reason"])).toEqual(["billing-mismatch", "no-credential", "no-credential"]);
+    expect(calls().map(row => row["reason"])).toEqual(["billing-mismatch", "no-sign-in", "no-sign-in"]);
   });
 });
 
@@ -459,11 +464,8 @@ describe("in-flight authority, settlement and usage", () => {
     expect(calls()[0]).toMatchObject({ status: "aborted", detail: "Toolroll couldn't check its authority", cost_basis: "unknown" });
   });
 
-  test("a settlement that can't be written keeps its reservation: the thread takes no new call, the ended keyed turn holds the dollar limits, and the retry records it", async () => {
-    // A keyed turn on an API key.
-    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
-    credential("api-key", API_KEY);
-    const keyed = admitAndBegin({ billing: "api-key" });
+  test("a settlement that can't be written keeps its reservation: the thread takes no new call, and the retry records it", async () => {
+    const keyed = turn;
     const db = world.store.handle;
     const prepare = db.prepare.bind(db);
     let failing = true;
@@ -476,17 +478,12 @@ describe("in-flight authority, settlement and usage", () => {
       expect(pending()).toBe(1);
       // The next call in that turn is refused while the reservation stands; nothing reaches the service.
       const held = await call();
-      expect(held.status).toBe(503);
-      expect(((await held.json()) as { error: { message: string } }).error.message).toBe("An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is.");
+      expect(held.status).toBe(403);
+      expect(((await held.json()) as { error: { message: string } }).error.message).toBe("Toolroll couldn't record an earlier model call in this turn yet, so it sent nothing more. Send your message again in a moment.");
       expect(pending()).toBe(1);
       expect(seen).toHaveLength(1);
-      // The turn ends with a measured cost of its own; its unrecorded call still leaves its cost unknown: an installation
-      // dollar limit can't be checked, so a new keyed turn waits.
-      expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: { tokensIn: 1, tokensOut: 1, costUsd: 0.01 }, clock: () => NOW })).toMatchObject({ ok: true, turn: { costBasis: "measured" } });
-      prepare("INSERT INTO flexible_installation_caps (id, live_threads, turns_per_day, measured_microusd_per_day, updated_by, updated_at) VALUES (1, NULL, NULL, 1000000000, 'alex', ?)").run(NOW.toISOString());
-      const next = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: world.store.accountOf("alex")!.generation }, digest, level: "full", freshProof: false,
-        provider: "claude", model: "claude-sonnet-4-5", billing: "api-key", requestKey: "m-held", holder: "h1", clock: () => NOW });
-      expect(next).toMatchObject({ ok: false, reason: "spend-unknown", cap: "installation-dollars" });
+      // (Threads run only on a person's plan sign-in, so a keyed turn's dollar hold has no relay call to wait on.)
+      expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
       // Writable again: the call is recorded and its reservation cleared, by the relay's retry (with its real usage) or,
       // since its turn has ended, by the reconciliation that runs right after the turn's end (as unknown cost).
       failing = false;
@@ -530,9 +527,6 @@ describe("in-flight authority, settlement and usage", () => {
   });
 
   test("a stranded reservation is also reconciled on the next tick, and a token count's at no cost: no hold follows it", async () => {
-    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
-    credential("api-key", API_KEY);
-    const keyed = admitAndBegin({ billing: "api-key" });
     script = (_request, response) => { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ input_tokens: 40 })); };
     const failing = failRecords();
     try {
@@ -540,8 +534,10 @@ describe("in-flight authority, settlement and usage", () => {
       await counted.text();
       expect(failing.pending()).toBe(1);
     } finally { failing.restore(); }
-    // A relay gone with the reservation: planted as another relay's (the in-memory retry is gone with it).
+    // A relay gone with the reservation: planted as another relay's (the in-memory retry is gone with it), on a keyed turn.
     world.store.handle.prepare("DELETE FROM thread_relay_pending").run();
+    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    const keyed = admitAndBegin({ billing: "api-key" });
     world.store.handle.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, relay, route, reserved_at) VALUES (?, ?, ?, 'h1', ?, 'count-tokens', ?)").run(id, keyed, launch, "d".repeat(32), NOW.toISOString());
     await until(() => failing.pending() === 0);
     expect(calls().at(-1)).toMatchObject({ turn: keyed, route: "count-tokens", status: "incomplete", cost_microusd: 0, cost_basis: "measured" });
@@ -563,10 +559,8 @@ describe("in-flight authority, settlement and usage", () => {
     expect(calls()).toEqual([expect.objectContaining({ turn, status: "incomplete", cost_basis: "unknown" })]);
   });
 
-  test("counters too large to add up are never dropped: the call is charged as unknown and the hold stays", async () => {
-    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
-    credential("api-key", API_KEY);
-    const keyed = admitAndBegin({ billing: "api-key" });
+  test("counters too large to add up are never dropped: the call is charged as unknown", async () => {
+    const keyed = turn;
     const big = 2 ** 52;
     script = (_request, response) => { response.writeHead(200, { "content-type": "application/json" }).end(MESSAGE({ input_tokens: big, output_tokens: 1, cache_creation_input_tokens: big })); };
     const answer = await call();
@@ -574,9 +568,6 @@ describe("in-flight authority, settlement and usage", () => {
     expect(calls()).toEqual([expect.objectContaining({ turn: keyed, status: "completed", cost_basis: "unknown", detail: expect.stringContaining("its usage couldn't be charged (invalid-request)") })]);
     expect(Number(world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_relay_pending").get()!["n"])).toBe(0);
     expect(flexibleTurn(world.store, keyed)!.costBasis).toBe("unknown");
-    expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
-    dollarLimit();
-    expect(admitKeyed("m-held")).toMatchObject({ ok: false, reason: "spend-unknown" });
   });
 
   test("a successful answer carrying the key, escaped or in pieces, never reaches the agent: streamed events and whole answers alike", async () => {
@@ -690,15 +681,15 @@ describe("the body: one reading, inline content only", () => {
 describe("the credential is never echoed", () => {
   test("an upstream error, a streamed answer and response headers that carry the key are redacted for the agent, the record and the log", async () => {
     script = (_request, response) => {
-      response.writeHead(401, { "content-type": "application/json", "x-echo": SETUP_TOKEN, "request-id": "req_9" })
-        .end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: `invalid bearer ${SETUP_TOKEN}; also ${API_KEY}` } }));
+      response.writeHead(403, { "content-type": "application/json", "x-echo": SETUP_TOKEN, "request-id": "req_9" })
+        .end(JSON.stringify({ type: "error", error: { type: "permission_error", message: `invalid bearer ${SETUP_TOKEN}; also ${API_KEY}` } }));
     };
     const failed = await call();
-    expect(failed.status).toBe(401);
+    expect(failed.status).toBe(403);
     const text = await failed.text();
     expect(text).not.toContain(SETUP_TOKEN);
     expect(text).not.toContain(API_KEY);
-    expect(JSON.parse(text)).toEqual({ type: "error", error: { type: "authentication_error", message: "invalid bearer [redacted]; also [redacted]" } });
+    expect(JSON.parse(text)).toEqual({ type: "error", error: { type: "permission_error", message: "invalid bearer [redacted]; also [redacted]" } });
     expect(failed.headers.get("x-echo")).toBeNull();
     expect(failed.headers.get("request-id")).toBe("req_9");
     // A streamed answer that echoes it, split across chunks.
@@ -724,6 +715,6 @@ describe("the credential is never echoed", () => {
     expect(everything).not.toContain(SETUP_TOKEN);
     expect(everything).not.toContain(API_KEY);
     expect(everything).not.toContain(token);
-    expect(calls()[0]).toMatchObject({ status: "upstream-error", http_status: 401, detail: "the model service said authentication_error", cost_microusd: 0 });
+    expect(calls()[0]).toMatchObject({ status: "upstream-error", http_status: 403, detail: "the model service said permission_error", cost_microusd: 0 });
   });
 });

@@ -118,6 +118,12 @@ export const SETTINGS_SECTIONS: readonly SectionDeclaration[] = Object.freeze([
   { id: "flexible", area: "general", title: "Interactive agent threads (beta)", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
     read: ["installation"], scope: {}, act: { switch: ["cookie-session", "operator"] }, changes: [{ id: "flexible", act: "switch", proof: "flexible-switch" }],
     opens: false, scripts: [], oldIds: [] },
+  // Your own Claude sign-in for threads (flexible-sign-in.ts): an approver's own, on its own change documents (save, a
+  // credential act; check again; remove). A project-limited approver has one too (their threads run on it).
+  { id: "flexible-sign-in", area: "general", title: "Your Claude sign-in for threads", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
+    read: ["approver"], scope: {}, act: { save: ["cookie-session", "approver"], check: ["cookie-session", "approver"], remove: ["cookie-session"] },
+    changes: [{ id: "flexible-sign-in", act: "save", proof: "flexible-sign-in" }, { id: "flexible-sign-in-check", act: "check", proof: "flexible-sign-in-check" }, { id: "flexible-sign-in-clear", act: "remove", proof: "flexible-sign-in-clear" }],
+    opens: false, scripts: [], oldIds: [] },
   // Settings → Advanced retired to here (F0): the person's own switch, and every advanced page on request.
   { id: "advanced", area: "general", title: "Show advanced features", pinnedFrom: "settings.group-advanced", policy: GROUP_PAGE,
     read: [], scope: { "operator-pages": ["operator"] }, act: { switch: ["cookie-session"] }, changes: [], opens: true, scripts: [], oldIds: ["show-advanced"] },

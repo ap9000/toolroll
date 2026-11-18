@@ -1,3 +1,4 @@
+import { flexibleSignInStatus } from "../flexible-sign-in.js";
 import { handlersOf } from './handler-registry.js';
 import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
@@ -44,6 +45,14 @@ import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 const AUTH_TIME_SKEW_MS = 60_000;
 /** When the provider checked the person, in ms, if its auth_time is a check made for this visit: present, no earlier
  * than the second the visit began, and not in the future beyond the skew. Null otherwise. */
+/** The pages a one-time sign-in link may land on, by the name the terminal sends (tui-contract.ts TUI_PAGES): each a
+ * fixed address of the console's own, never one taken from a request. */
+const LINK_LANDINGS = Object.freeze({
+  flexible: "/settings/general?section=flexible",
+  "flexible-sign-in": "/settings/change/flexible-sign-in",
+  project: "/settings/project",
+} as const satisfies Record<import("../tui-contract.js").TuiPage, string>);
+
 export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
   if (authTime === null || !Number.isFinite(authTime)) return null;
   const at = authTime * 1000;
@@ -108,6 +117,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         seen: seen === null ? `Joined ${one.addedAt.slice(0, 10)}` : now.getTime() - seen < 5 * 60_000 ? "Signed in now" : `Active ${new Date(seen).toISOString().slice(11, 16)} UTC`,
         joined: one.addedAt.slice(0, 10), activity: personHref(one.name),
         acts: store.recentActsOf(one.name).map(act => `${act.kind} ${act.subject} ${act.at.slice(0, 16).replace("T", " ")}`),
+        threadSignIn: approverView && flexibleSignInStatus(store, one.name).state !== "none",
       };
     });
     const invites = approverView ? store.openInvites(now) : [];
@@ -288,7 +298,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         ? html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`
         : html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
     }
-    return signedInTo(response, keyed.key, "/chat", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
+    // Where it lands: the console's start, or one of the fixed pages the terminal may name (its `w` on a thread's next
+    // step); a name not in the table lands on the start.
+    const then = url.searchParams.getAll("then");
+    const landing = then.length === 1 && Object.hasOwn(LINK_LANDINGS, then[0]!) ? LINK_LANDINGS[then[0]! as keyof typeof LINK_LANDINGS] : "/chat";
+    return signedInTo(response, keyed.key, landing, [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 
   // v100: sign-in with the identity provider. ?reauth=1 asks it to check the person again (a step-up);

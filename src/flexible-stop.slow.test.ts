@@ -22,9 +22,8 @@ import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-t
 import { prepareFlexibleThread } from "./flexible-thread.js";
 import { defaultCustodyIO, holdLaunch } from "./flexible-launch.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
-import { FLEXIBLE_RELAY_CREDENTIAL } from "./flexible-relay.js";
 import { attachFlexibleAgent, openFlexibleSessions, settleFlexibleStops, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { standInSignIn } from "../test/flexible-sign-in-kit.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate, EXIT } from "./operate.js";
@@ -46,7 +45,7 @@ beforeEach(async () => {
   digest = flexibleDigestOf(terms);
   world.store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
     VALUES (?, ?, ?, ?, ?, 'alex', ?, 'password-now', 'alex', ?)`).run(world.project, flexibleTermsJson(terms), digest, flexibleTermsJson(terms), digest, NOW.toISOString(), NOW.toISOString());
-  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: ["sk", "ant", "oat01", randomBytes(24).toString("hex")].join("-") }));
+  standInSignIn(world.store, world.state, "alex");
   setFlexibleSetting(world.store, true, "alex", NOW);
   const made = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW });
   if (!made.ok) throw new Error(made.message);

@@ -600,6 +600,8 @@ export function modeCeremonyHtml(view: { name: string; project: string; words: s
 export type PersonView = {
   name: string; you: boolean; approver: boolean; projects: readonly string[] | null; projectNames: string;
   revoked: string | null; seen: string; joined: string; activity: string; acts: string[];
+  /** They have a Claude sign-in for threads saved (its record only; never the value). */
+  threadSignIn: boolean;
 };
 export type PeopleView = {
   operator: boolean; you: string; said: string | null; problem: string | null;
@@ -631,6 +633,10 @@ export function peopleHtml(view: PeopleView): Html {
           confirm: `Change ${one.name}’s projects`, body: joinHtml([accessFields(`${slug}-access`, view.projects, one.projects), note("Changing access signs this person out and ends their sessions and modes. Work they approved stays recorded.")]) }),
         one.you ? "" : kitSectionForm({ proof: "people-close", action: "/people/revoke", id: `${slug}-remove`, hidden: { name: one.name }, save: { label: `Remove ${one.name}`, variant: "danger" },
           confirm: `Remove ${one.name}’s sign-in`, body: note("Ends their access and everything it signed. History stays.") }),
+        // Their own Claude sign-in for threads: an operator may remove it (never read or set it).
+        !one.threadSignIn ? "" : kitSectionForm({ proof: "flexible-sign-in-clear", action: "/settings/flexible-sign-in-clear", id: `${slug}-thread-sign-in`, hidden: { person: one.name },
+          save: { label: "Remove their Claude sign-in for threads", variant: "outline" }, confirm: `Remove ${one.name}’s Claude sign-in for threads`,
+          body: note("Their threads can't reach Claude until they add one again. Toolroll never shows or sets anyone's sign-in.") }),
       ]);
       const recent = one.acts.length === 0 ? note("No recorded acts yet.") : note(`Recent: ${one.acts.slice(0, 3).join(" · ")}`);
       return settingsRecord({

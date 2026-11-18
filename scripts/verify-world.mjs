@@ -174,23 +174,28 @@ export async function prepareWorld(world, cli, needs, runCli) {
   if (project.flexible?.state !== 'on') {
     throw new Error(`Cannot prepare threads-on: the project did not become Flexible (${JSON.stringify(project).slice(0, 200)}).`);
   }
-  // No product step yet gives Toolroll a Claude sign-in for threads (flexible-relay.ts FLEXIBLE_RELAY_CREDENTIAL: "written
-  // only by a person's step (a later slice)"). The world holds a stand-in one, as the slow tests do.
-  standInRelayCredential(world);
+  // Threads run on the owner's own Claude sign-in: saved through the product's own door, as a person would.
+  await saveStandInSignIn(world, runCli);
 }
 
-/** A stand-in Claude sign-in for the threads' relay: a random value in a setup-token's shape, never a real credential, in
- * the files store where Toolroll reads it (TOOLROLL_SECRET_STORE=files: <state>/flexible/claude-relay.json, owner-only,
- * tool-secret-store.ts readHeldSecret). Its value is redacted like the password. The relay would send it only to the
- * model service on a call through it: the stand-in agent makes none, and checkNoModelCalls proves that afterwards. */
-export function standInRelayCredential(world) {
+/** The owner's own Claude sign-in for threads, saved through the product: `toolroll config set flexible-sign-in
+ * --no-check`, the password and then a stand-in token typed at its hidden prompts in a real terminal (never argv, env or
+ * a file). The token is a random value in a setup-token's shape, never a real credential, redacted like the password.
+ * --no-check reaches no model service; the relay would send it only on a call through it, which the stand-in agent never
+ * makes (checkNoModelCalls). Fails unless the console's records then hold exactly one active sign-in for the owner. */
+export async function saveStandInSignIn(world, runCli) {
   checkedEnv(world);
-  if (world.env.TOOLROLL_SECRET_STORE !== 'files') throw new Error('Stand-in sign-in needs the files secret store');
-  const state = dirname(world.env.TOOLROLL_DB);
-  mkdirSync(join(state, 'flexible'), { recursive: true, mode: 0o700 });
+  if (world.env.TOOLROLL_SECRET_STORE !== 'files') throw new Error('The stand-in sign-in needs the files secret store');
+  if (!world.owner || !world.password) throw new Error('Save the sign-in after the owner has a password');
   const value = ['sk', 'ant', 'oat01', randomBytes(24).toString('hex')].join('-');
   world.secrets.push(value);
-  writeFileSync(join(state, 'flexible', 'claude-relay.json'), JSON.stringify({ kind: 'setup-token', value }), { mode: 0o600, flag: 'wx' });
+  await runCli(['config', 'set', 'flexible-sign-in', '--no-check', '--as', world.owner], [
+    { prompt: /password:/, answer: world.password },
+    { prompt: /Paste the token from `claude setup-token`:/, answer: value },
+  ]);
+  const active = readConsole(world, `SELECT count(*) AS n FROM flexible_sign_in WHERE person='${world.owner.replaceAll("'", "''")}' AND state='active'`);
+  if (active[0]?.n !== 1) throw new Error('Cannot prepare threads-on: the owner\'s Claude sign-in for threads was not saved.');
+  return value;
 }
 
 /** No call went to a model: the threads' sign-in relay records every call it answers, refused or forwarded (thread_relay_call). */

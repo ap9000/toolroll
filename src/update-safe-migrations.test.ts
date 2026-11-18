@@ -83,7 +83,7 @@ describe("update-safe migrations", () => {
     // v166 only adds the calls Flexible threads' sign-in relay handled and reserved (tables): no saved row changes.
     // v167 only adds the decisions on Flexible threads' agents' requests (a table): no saved row changes.
     // v168 only adds Flexible threads' Send for checks and the refs snapshot each import compares with (tables): no saved row changes.
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171]);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -229,6 +229,6 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     // The release before it no longer reads the migrated file as its own: v116 is newer than it speaks.
     rmSync(file);
     execFileSync("cp", [backup, file]);
-    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v171, written by a newer build/) });
+    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringContaining(`schema v${SCHEMA_VERSION}, written by a newer build`) });
   }, 120_000);
 });

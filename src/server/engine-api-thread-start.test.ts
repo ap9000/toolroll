@@ -17,9 +17,8 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../flex
 import { linkRedemptionSchema } from "../contracts/engine-api.js";
 import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
-import { randomBytes } from "node:crypto";
-import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
-import { writeHeldSecret } from "../tool-secret-store.js";
+import { removeStandInSignIn, standInSignIn } from "../../test/flexible-sign-in-kit.js";
+import type { Store } from "../store.js";
 
 vi.mock("../flexible-available.js", async original => ({ ...await original<typeof import("../flexible-available.js")>(), flexibleAvailable: () => true }));
 const held = vi.hoisted(() => ({ starts: [] as Record<string, unknown>[] }));
@@ -31,11 +30,8 @@ vi.mock("../flexible-session.js", async importOriginal => {
   } };
 });
 
-/** The relay's own Claude credential, of one kind (built here, never a real one). */
-function signIn(state: string, kind: "setup-token" | "api-key"): void {
-  const value = ["sk", "ant", kind === "setup-token" ? "oat01" : "api03", randomBytes(24).toString("hex")].join("-");
-  writeHeldSecret(state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
-}
+/** `person`'s own Claude sign-in for threads (a stand-in, never a real one). */
+function signIn(store: Store, state: string, person: string): void { standInSignIn(store, state, person); }
 
 type Card = { outcome: string; key: string; terms: { label: string; words: string; lines: string[] }[]; notes: string[]; lines: string[] };
 
@@ -59,7 +55,7 @@ describe("a team install: the card, a stale key, and a password typed now", () =
     patToken = pat.token;
     expect(world.store.setAccountProjects("pat", [world.project], "alex", new Date())).toEqual({ ok: true });
     digest = plant(world.store, world.project, "alex");
-    signIn(world.state, "setup-token");
+    signIn(world.store, world.state, "pat");
     server = createDecisionServer({ store: world.store, evidenceRoot: join(world.dir, "evidence"), repos: [world.project], clock: () => new Date() });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -126,11 +122,34 @@ describe("a team install: the card, a stale key, and a password typed now", () =
     // A model the relay doesn't forward builds no card.
     expect((await start({ model: "gpt-5" })).status).toBe(409);
   });
+
+  test("what's still missing is named, in order (your own sign-in before the project's terms), so the terminal can open it; the card says whose plan it is", async () => {
+    held.starts.length = 0;
+    const card = (await start({})).body as unknown as Card;
+    expect(card.terms.find(row => row.label === "Agent")?.lines.join(" ")).toMatch(/Your Claude plan \(the sign-in you saved on \d{4}-\d{2}-\d{2}\)\. It powers only threads you start\./);
+    // No sign-in, and no terms either: the sign-in is named first.
+    removeStandInSignIn(world.store, "pat");
+    world.store.handle.prepare("UPDATE flexible_terms SET ended_at = ?, ended_by = 'alex', end_reason = 'replaced' WHERE ended_at IS NULL").run(new Date().toISOString());
+    const noSignIn = await start({});
+    expect(noSignIn).toMatchObject({ status: 409, body: { outcome: "refused", next: "sign-in" } });
+    expect(String(noSignIn.body["words"])).toContain("claude setup-token");
+    // Signed in again: the project's terms are next.
+    const again = standInSignIn(world.store, world.state, "pat");
+    expect(await start({})).toMatchObject({ status: 409, body: { outcome: "refused", next: "project-terms" } });
+    digest = plant(world.store, world.project, "alex");
+    // Claude refused that sign-in on a call: named as such, before anything else.
+    world.store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, streamed, status, http_status, cost_basis, sign_in_person, sign_in_generation, sign_in_refused)
+      VALUES (?, ?, ?, 'claude', 't', 't', 'messages', 0, 'upstream-error', 401, 'estimated', 'pat', ?, 1)`).run("a".repeat(32), "b".repeat(32), "c".repeat(32), again.generation);
+    expect(await start({})).toMatchObject({ status: 409, body: { outcome: "refused", next: "sign-in-refused" } });
+    standInSignIn(world.store, world.state, "pat");
+    expect((await start({})).body["outcome"]).toBe("thread-terms");
+    expect(held.starts).toEqual([]);
+  });
 });
 
 describe("a laptop install: the local owner's own act at this computer", () => {
   let world: LocalWorld;
-  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); world.store.upsertProject(world.repo, "shop", new Date()); plant(world.store, world.repo, "alex"); signIn(world.configDir, "api-key"); }, LOCAL_WORLD_SETUP_MS);
+  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); world.store.upsertProject(world.repo, "shop", new Date()); plant(world.store, world.repo, "alex"); signIn(world.store, world.configDir, "alex"); }, LOCAL_WORLD_SETUP_MS);
   afterAll(async () => { await world.close(); });
 
   test("the terminal's session reads the card and starts the thread with no password, as the owner's act", async () => {
@@ -149,7 +168,7 @@ describe("a laptop install: the local owner's own act at this computer", () => {
     const started = await post({ terms: card.key });
     expect(JSON.parse(started.body)).toEqual({ outcome: "done", words: "The thread started." });
     expect(held.starts).toHaveLength(1);
-    expect(held.starts[0]).toMatchObject({ repo: world.repo, freshProof: true, by: { name: "alex" }, billing: "api-key" });
+    expect(held.starts[0]).toMatchObject({ repo: world.repo, freshProof: true, by: { name: "alex" }, billing: "subscription" });
     // A stale key is refused for the owner too.
     expect(JSON.parse((await post({ terms: "0".repeat(32) })).body)).toMatchObject({ outcome: "refused" });
     expect(held.starts).toHaveLength(1);

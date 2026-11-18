@@ -387,14 +387,18 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flexible-ship.ts": 1, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 67, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1,
+      // config show|clear flexible-sign-in: your own sign-in's status, and its removal, each a person proved now.
+      "src/operate.ts": 69, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2,
+      // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
+      "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -546,6 +550,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#taskSizingConfig@257>saved:store.transact(_)@2": 1,
     // `config set flexible`: an instance operator proved as a person and the setting written in one transaction.
     "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
+    // `config show|clear flexible-sign-in`: your own sign-in read, or removed, by you proved as a person in that transaction.
+    "src/operate.ts#flexibleSignInConfig@259>removed:store.transact(_)@8": 1,
+    "src/operate.ts#flexibleSignInConfig@259>shown:store.transact(_)@5": 1,
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
@@ -616,6 +623,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Settings → General: task sizing, an instance operator's step-up proved and written in one transaction.
     "src/server/settings.ts#createSettingsHandlers@1>taskSizingAct@116>saved:store.transact(_)@2": 1,
     // Settings → General: interactive agent threads, an instance operator's step-up proved and written in one transaction.
+    // Your own Claude sign-in for threads: checked again, or removed (yours, or an operator removing someone else's), each
+    // proved in its own transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>flexibleSignInCheckAct@151>proved:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>flexibleSignInClearAct@152>removed:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>flexibleSwitchAct@117>saved:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,
@@ -821,6 +832,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-carry.ts#preflightCarry@21": 3,
   },
   "freshFacts": {
+    // B of a sign-in save proved by a one-use re-check: that same request's session still live as this person; A binds the
+    // save's capability to that very request's facts.
+    "src/flexible-sign-in.ts#<module>": 2,
+    "src/flexible-sign-in.ts#activateFlexibleSignIn@13>store.transact(_)@1": 1,
+    "src/flexible-sign-in.ts#stageFlexibleSignIn@11>store.transact(_)@1": 1,
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
     "src/scope.ts#proveAccountNow@38": 1,
@@ -1071,6 +1087,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Solo or team (Codex round 2): a credential-class shared action's secure screen takes a credential proof.
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@26": 1,
+    // Your own Claude sign-in for threads (flexible-sign-in.ts): a credential proof in transaction A, and again in B.
+    "src/flexible-sign-in.ts#<module>": 2,
+    "src/flexible-sign-in.ts#activateFlexibleSignIn@13>store.transact(_)@1": 1,
+    "src/flexible-sign-in.ts#stageFlexibleSignIn@11>store.transact(_)@1": 1,
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,
     "src/scope.ts#proveCredential@41": 1,
     // Passwordless review round 1: reviewed new sites.

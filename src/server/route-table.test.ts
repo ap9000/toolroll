@@ -40,6 +40,9 @@ const LIMITED_ACCESS = {
   'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped', 'settings.group-advanced': 'unscoped', 'settings.group-computers': 'unscoped',
   // Settings change documents (settings plan v2 §2.2) carry their section's own policy; the handler admits the section again.
   'settings.change.local-mode': 'unscoped', 'settings.change.register-computer': 'unscoped', 'settings.change.just-me': 'unscoped', 'settings.change.task-sizing': 'unscoped', 'settings.change.flexible': 'unscoped',
+  'settings.change.flexible-sign-in': 'unscoped', 'settings.change.flexible-sign-in-check': 'unscoped', 'settings.change.flexible-sign-in-clear': 'unscoped',
+  // Your own Claude sign-in for threads: a project-limited approver keeps their own.
+  'settings.flexible-sign-in': 'self', 'settings.flexible-sign-in-check': 'self', 'settings.flexible-sign-in-clear': 'self',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
