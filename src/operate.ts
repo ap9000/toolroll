@@ -383,6 +383,7 @@ import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
 import { flexibleAvailable, flexibleSetting, setFlexibleSetting } from "./flexible-available.js";
+import { flexibleSignInStatus, looksLikeClaudeCredential, removeFlexibleSignIn, saveFlexibleSignIn, setupTokenFromPaste, tidyFlexibleSignIns } from "./flexible-sign-in.js";
 import { enableFlexible, FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, flexibleTermsWords, isFlexibleLevel, lowerFlexible, proposedFlexibleTerms, turnFlexibleOff, type FlexibleChoice, type FlexibleLevel, type FlexibleStanding, type FlexibleTerms } from "./flexible.js";
 import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
@@ -789,6 +790,10 @@ Agents — which provider and model each phase runs on
       interactive agent threads (beta), off by default: T in the workbench
       starts a Claude Code thread inside Toolroll's sandbox, with your Claude
       sign-in relayed (config show flexible says which)
+  toolroll config set|clear|show flexible-sign-in [--as <you>]
+      your own Claude sign-in for threads: run \`claude setup-token\`, then
+      paste its token at the hidden prompt (never as an argument). Each
+      person brings their own; a password reset ends it
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
@@ -1036,6 +1041,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "now",
   // task tidy: look first (--preview), then put away exactly what was shown (--apply --digest).
   "preview", "apply",
+  // config set flexible-sign-in: save without the live check.
+  "no-check",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -5579,6 +5586,8 @@ async function configCommand(
   if (phase === "task-sizing") return taskSizingConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
   // Settings → General's interactive agent threads (beta), the same switch and the same step-up.
   if (phase === "flexible") return flexibleConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
+  // Your own Claude sign-in for interactive agent threads (flexible-sign-in.ts): yours alone, from a hidden prompt.
+  if (phase === "flexible-sign-in") return flexibleSignInConfig(action ?? "show", positional.slice(2), repoGiven !== undefined, flags, context);
 
   if (action === undefined || action === "show") {
     const installation = store.listPhaseConfig(INSTALLATION_SCOPE);
@@ -15308,4 +15317,72 @@ async function flexibleConfig(action: string, value: string | undefined, repoGiv
     ...report.survivors.map(one => `Thread ${short(one.thread)} couldn't be stopped yet${one.pids.length === 0 ? "" : `: process${one.pids.length === 1 ? "" : "es"} ${one.pids.join(", ")} still running`} (${one.why}). A running console keeps trying every few seconds; run this command again to try now.`),
   ];
   return succeed(write, json, command, { ...shown.payload, stopped: report.stopped, survivors: report.survivors }, () => lines);
+}
+
+/**
+ * `toolroll config set|clear|show flexible-sign-in`: your own Claude sign-in for interactive agent threads
+ * (flexible-sign-in.ts). Each person's own, never shared and never anyone else's: there is no `--for`, and the sign-in
+ * is always the account that proved itself.
+ * - set: the token comes only from a hidden prompt at your own terminal, never an argument, the environment or a file;
+ *   a value given on the command line is refused before anything else (and, shaped like a token, you're told it now
+ *   sits in your shell history). A person's act only (never a lead's or remote token, the lead, a chat app or a
+ *   machine), a credential act: your password typed for this command, proved in transaction A before anything is
+ *   kept and again in transaction B (saveFlexibleSignIn).
+ * - clear: removes yours at once (one transaction; never blocked by a keychain or the network), with your password.
+ * - show: whether yours is saved, from its record only (the value is never read).
+ */
+async function flexibleSignInConfig(action: string, extra: readonly string[], repoGiven: boolean, flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = `config ${action} flexible-sign-in`;
+  // A value on the command line (an argument, or a token pasted into a flag) is refused before anything else happens.
+  const given = [...extra, ...[...flags.values()].filter((value): value is string => typeof value === "string")];
+  if (given.some(value => looksLikeClaudeCredential(value))) return fail(write, json, command, "argument", "Toolroll never takes your Claude sign-in as an argument: it is now in your shell history. Run `claude setup-token` again, then `toolroll config set flexible-sign-in` and paste the new token when asked. Nothing was saved.", EXIT.usage);
+  if (extra.length > 0) return fail(write, json, command, "usage", "`toolroll config set flexible-sign-in` takes no value: it asks for the token at a hidden prompt.", EXIT.usage);
+  if (repoGiven) return fail(write, json, command, "usage", "your Claude sign-in is yours, not a project's: no --repo", EXIT.usage);
+  if (flags.has("no-check") && action !== "set") return fail(write, json, command, "usage", "--no-check is only for `config set flexible-sign-in`", EXIT.usage);
+  const personOnly = "Only you, as a person with your Toolroll password, change your own Claude sign-in for threads; never a token, the lead, a chat app or a machine.";
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
+  if (passwordFreeOwner(store)) return fail(write, json, command, "local-owner", "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again.", EXIT.refused);
+  if (action !== "show" && action !== "set" && action !== "clear") return fail(write, json, command, "usage", "`toolroll config set|clear|show flexible-sign-in`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "This needs your name and password: run it in your own terminal to be asked.", EXIT.usage);
+  const statusWords = (status: ReturnType<typeof flexibleSignInStatus>): string => status.state === "none"
+    ? "Your Claude sign-in for threads: none. Run `claude setup-token`, then `toolroll config set flexible-sign-in`."
+    : status.state === "refused"
+      ? "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`."
+      : `Your Claude sign-in for threads: saved ${status.savedAt.slice(0, 10)}, not checked. It powers only threads you start.`;
+  const statusData = (status: ReturnType<typeof flexibleSignInStatus>) => status.state === "none" ? { state: "none" } : { state: status.state, savedAt: status.savedAt, check: status.checkOutcome };
+
+  if (action === "show") {
+    const shown = store.transact(() => {
+      const proved = authenticateApprover(store, acting.name, acting.token);
+      return proved.ok && personProof(proved.method) ? flexibleSignInStatus(store, acting.name) : null;
+    });
+    if (shown === null) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
+    return succeed(write, json, command, { signIn: statusData(shown) }, () => [statusWords(shown)]);
+  }
+  if (action === "clear") {
+    const removed = store.transact(() => {
+      const proved = authenticateApprover(store, acting.name, acting.token);
+      if (!proved.ok || !personProof(proved.method)) return null;
+      return removeFlexibleSignIn(store, { person: acting.name, by: acting.name, now: clock() });
+    });
+    if (removed === null) return fail(write, json, command, "unauthenticated", personOnly, EXIT.refused);
+    try { await tidyFlexibleSignIns(store, dirname(realpathSync(context.databaseFile)), { now: clock(), person: acting.name }); } catch { /* the console's upkeep deletes it */ }
+    return succeed(write, json, command, { removed: removed.removed }, () => [removed.removed
+      ? "Removed. Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account."
+      : "You had no Claude sign-in for threads saved. Nothing changed."]);
+  }
+  // set: the token from a hidden prompt at your own terminal only.
+  const typeHidden = context.easySeams?.askHidden ?? (interactive() && !json ? askHidden : null);
+  if (typeHidden === null) return fail(write, json, command, "usage", "Run this in your own terminal: it asks for the token from `claude setup-token` at a hidden prompt.", EXIT.usage);
+  const pasted = await typeHidden("Paste the token from `claude setup-token`: ");
+  const shaped = setupTokenFromPaste(pasted);
+  if (!shaped.ok) return fail(write, json, command, shaped.reason, shaped.message, EXIT.refused);
+  let state: string;
+  try { state = dirname(realpathSync(context.databaseFile)); } catch { return fail(write, json, command, "not-saved", "Toolroll's state folder can't be found. Nothing was saved.", EXIT.refused); }
+  const saved = await saveFlexibleSignIn(store, { state, person: acting.name, password: acting.token, token: shaped.token, clock });
+  if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
+  return succeed(write, json, command, { saved: true, replaced: saved.replaced, check: "not-checked", signIn: statusData(flexibleSignInStatus(store, acting.name)) },
+    () => [`${saved.replaced ? "Replaced" : "Saved"}. Not checked. It powers only threads you start; a password reset ends it.`]);
 }

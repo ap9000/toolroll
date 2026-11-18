@@ -387,7 +387,9 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flexible-ship.ts": 1, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 67, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1,
+      // config show|clear flexible-sign-in: your own sign-in's status, and its removal, each a person proved now.
+      "src/operate.ts": 69, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -546,6 +548,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#taskSizingConfig@257>saved:store.transact(_)@2": 1,
     // `config set flexible`: an instance operator proved as a person and the setting written in one transaction.
     "src/operate.ts#flexibleConfig@258>saved:store.transact(_)@2": 1,
+    // `config show|clear flexible-sign-in`: your own sign-in read, or removed, by you proved as a person in that transaction.
+    "src/operate.ts#flexibleSignInConfig@259>removed:store.transact(_)@7": 1,
+    "src/operate.ts#flexibleSignInConfig@259>shown:store.transact(_)@5": 1,
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
