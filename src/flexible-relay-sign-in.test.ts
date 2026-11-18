@@ -228,11 +228,12 @@ describe("first use: Claude refusing the sign-in", () => {
   test("an old 401 for the generation before a replacement marks only that one; the new one stays usable", async () => {
     const old = standInSignIn(world.store, world.state, "alex");
     const one = await thread("alex");
-    let release: () => void = () => {};
+    let release: () => void = () => {}, arrived: () => void = () => {};
     const gate = new Promise<void>(done => { release = done; });
-    script = (_request, response) => { void gate.then(() => response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "no" } }))); };
+    const reached = new Promise<void>(done => { arrived = done; });
+    script = (_request, response) => { arrived(); void gate.then(() => response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "no" } }))); };
     const pending = call(one);
-    for (let i = 0; i < 100 && seen.length === 0; i++) await new Promise(done => setTimeout(done, 20));
+    await reached; // the call is at Claude, sent with the old generation
     expect(seen).toHaveLength(1);
     const fresh = standInSignIn(world.store, world.state, "alex");
     release();
@@ -257,9 +258,8 @@ describe("first use: Claude refusing the sign-in", () => {
       expect(flexibleSignInStatus(world.store, "alex")).toMatchObject({ state: "active" });
       expect(flexibleTurn(world.store, one.turn)!.status).toBe("running");
     } finally { db.prepare = prepare as typeof db.prepare; }
-    // Writable again: its record is written by the relay's retry (marking it then) or reconciled; either way the next
-    // call is refused and nothing more is sent with that generation.
-    for (let i = 0; i < 100 && Number(prepare("SELECT COUNT(*) AS n FROM thread_relay_pending").get()!["n"]) > 0; i++) await new Promise(done => setTimeout(done, 20));
+    // Writable again: whether the relay's retry has recorded the first refusal yet or not, the next call (another
+    // thread's, so the first one's reservation doesn't hold it) is refused, and the refusal is on the record.
     const next = await thread("alex");
     expect((await call(next)).status).toBe(403);
     expect(flexibleSignInStatus(world.store, "alex")).toMatchObject({ state: "refused" });
