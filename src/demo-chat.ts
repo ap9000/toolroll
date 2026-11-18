@@ -63,7 +63,7 @@ function resultCard(exchange: DemoExchange, result: DemoResultView | null): Html
   // The shared headline (task-status.ts): the same words as every real task.
   const headline = headlineOf({ stage: exchange.state === "complete" ? "complete" : exchange.state === "sent-back" ? "building" : "finished",
     checks: { status: passed ? "passed" : "failed", exitCode: null, head: null } });
-  const status = html`<span class="badge${headline === "Complete" ? " demo-complete" : headline === "Ready for review" ? " demo-ready" : ""}" data-headline="${headline}">${headline}</span>`;
+  const status = html`<span class="badge${headline === "Complete" ? " demo-complete" : headline === "Ready" ? " demo-ready" : ""}" data-headline="${headline}">${headline}</span>`;
   const summary = html`${result.files} file${result.files === 1 ? "" : "s"} changed · +${result.additions} −${result.deletions} · <span class="${passed ? "demo-pass" : "demo-fail"}">${result.checks.detail}</span>`;
   const actions = exchange.state === "ready"
     ? html`<div class="demo-actions">${postForm(`/chat/demo/${exchange.id}/complete`, html`<button type="submit" class="demo-primary">Complete</button>`)}<details class="demo-more"><summary>Request changes</summary>${

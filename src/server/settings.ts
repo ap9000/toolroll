@@ -165,7 +165,7 @@ import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup,parseIdle } from "../storage.js";
 import { setTaskSizing, taskSizingSetting } from "../task-sizing.js";
 import { localActNow } from "../local-owner.js";
-import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
+import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots,type Store } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
@@ -180,6 +180,7 @@ import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
 import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { loginHelpOf } from "./login-help.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -3058,6 +3059,7 @@ ${postForm("/settings/chat-approval/save", html`\
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
     passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
+    savedLogin: savedLoginOf.bind(null, store),
     installMode: () => installModeNow(store),
     taskSizing: () => taskSizingSetting(store),
     flexible: () => flexibleSetting(store),
@@ -3239,4 +3241,12 @@ ${postForm("/settings/chat-approval/save", html`\
         : `Removed ${person}'s Claude sign-in for threads.${stopWords} Their threads can't reach Claude until they add one again.`);
   }
   return { registrations, modelsView };
+}
+
+/** Where `toolroll up` saved this install's first password, as it reads on the computer running Toolroll (login-help.ts
+ * loginHelpOf); null when none is saved. Kept last, outside createSettingsHandlers: password-freshness.test.ts pins the
+ * functions inside it by position. */
+function savedLoginOf(store: Store): string | null {
+  const help = loginHelpOf(store, { here: true });
+  return help.kind === "password" ? help.savedAt : null;
 }

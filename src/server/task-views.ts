@@ -27,6 +27,7 @@ import { knowledgeContextHtml } from "../knowledge-ui.js";
 import { failedAttemptSentence,failingCheckSuggestion,GENERAL_SUGGESTION,isInternalErrorReason,latestFinishedAttempt,missedRequirementLine,missedRequirementSuggestion,NO_REASON_RECORDED,stopSuggestionOf,type FailureExplanation } from '../needs-you.js';
 import { planAutoPending } from "../plan-auto.js";
 import { planSourceOf, retryPinsOf } from "../local-owner-acts.js";
+import { planBackoffFor, planStoppedFor } from "../engine-reads.js";
 import { readKnowledgeSnapshot } from "../project-knowledge.js";
 import { learningView } from "../project-learning.js";
 import { readSkillsSnapshot,skillTestResult } from "../project-skills.js";
@@ -437,6 +438,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         planAuto: planAutoPending(runtime.store, taskId, now),
         planSource: planSourceOf(runtime.store, taskId),
         retryPins: retryPinsOf(runtime.store, taskId),
+        // A plan that stopped on its checks (engine-reads.ts planStoppedFor): its words and what Plan again binds to.
+        planStopped: planStoppedFor(runtime.store, taskId),
+        // A planner's own backoff: the last attempt's reason and what its agent said, while it waits to plan again.
+        planBackoff: planBackoffFor(runtime.store, taskId, now),
         planDocument: planView?.document ?? null,
         planSha: planView?.sha256 ?? null,
         planContract: ref === null || planView === null ? null : planContractViewOf(ref.id, scope),

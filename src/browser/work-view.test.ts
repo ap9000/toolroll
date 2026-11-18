@@ -15,7 +15,7 @@ import { DESTINATIONS, LEGACY, searchResults } from "./search.js";
 
 const row = (id: string, extra: Partial<BrowserHomeRow> = {}): BrowserHomeRow => ({
   id, title: `Task ${id}`, href: `/t/${id}`, project: "shop", age: "4h ago", state: "needs", ask: "approve", group: "decide", reason: null, line: "Review the plan and approve it to start.",
-  action: { label: "Approve plan", href: `/t/${id}#approve` }, question: null, ...extra });
+  action: { label: "Review plan", href: `/t/${id}#approve` }, question: null, ...extra });
 const taskRow = (id: string, rank: number, word: string, tone: BrowserTaskRow["word"]["tone"]): BrowserTaskRow => ({
   id, title: `Task ${id}`, href: `/t/${id}`, project: "shop", age: "1h ago", status: { label: word, tone: "neutral", token: word }, word: { word, tone }, ask: null, chip: null,
   group: rank === 1 ? "building" : "rest", rank, action: null, detail: null, problem: null, notes: [] });
@@ -56,21 +56,22 @@ beforeEach(() => {
 });
 afterEach(async () => { if (root) await act(async () => root?.unmount()); root = null; vi.unstubAllGlobals(); });
 
-test("All leads with what needs you, Decide / Review / Unblock with exact counts, then Running, Queued and Done; a waiting row is listed once", async () => {
+test("All leads with what needs you, Decide / Review / Unblock with exact counts, then Running, Queued and Complete; a waiting row is listed once", async () => {
   await mount(view());
   expect([...document.querySelectorAll("[data-group]")].map(one => [one.getAttribute("data-group"), one.querySelector(".k-grp")?.textContent]))
-    .toEqual([["decide", "Decide2"], ["review", "Review16"], ["unblock", "Unblock2"], ["running", "Running1"], ["queued", "Queued1"], ["done", "Done1"]]);
+    .toEqual([["decide", "Decide2"], ["review", "Review16"], ["unblock", "Unblock2"], ["running", "Running1"], ["queued", "Queued1"], ["done", "Complete1"]]);
   expect([...document.querySelectorAll("[data-row]")].map(one => one.getAttribute("data-row"))).toEqual(["a", "q", "r", "f", "setup:builder", "w", "k", "d"]);
   // A group says its exact count past the rows this page lists; the list's own pages hold the rest.
   expect(document.querySelector('[data-group="review"] .k-grp')?.textContent).toBe("Review16");
   expect(document.querySelector(".so-tri-more")).toBeNull();
   // Each row: its chip, its title linking its own page, and its one act.
   expect(document.querySelector('[data-row="a"] .k-chip')?.textContent).toBe("Plan");
-  expect(document.querySelector('[data-row="r"] .k-chip')?.textContent).toBe("Result");
+  expect(document.querySelector('[data-row="r"] .k-chip')?.textContent).toBe("Ready");
   expect(document.querySelector('[data-row="w"] .k-chip.live')?.textContent).toBe("Building");
   expect(document.querySelector('[data-row="a"] .k-row-t')?.getAttribute("href")).toBe("/t/a");
   expect(document.querySelector('[data-row="setup:builder"] .k-row-t')?.getAttribute("href")).toBe("/start-builder");
-  expect([...document.querySelectorAll("[data-row] .k-row-a .k-btn")].map(one => one.textContent)).toEqual(["Approve", "Answer", "Review", "Open", "Open", "Watch", "Open", "Open"]);
+  expect([...document.querySelectorAll("[data-row] .k-row-a .k-btn")].map(one => one.textContent)).toEqual(["Review plan", "Answer", "Open result", "Review and retry", "Start a builder", "Watch", "Open", "Open"]);
+  // Each waiting row keeps its source's own act: a link says where it goes, never an act that hasn't happened.
   // The segments are addresses, Needs you first with the tasks' count: the same number as the rail's Work.
   expect([...document.querySelectorAll(".so-work-h .k-seg a")].map(one => [one.textContent, one.getAttribute("href"), one.getAttribute("aria-current")]))
     .toEqual([["Needs you19", "/?view=needs-you", null], ["All23", "/", "page"], ["Running1", "/?view=running", null], ["Queued1", "/?view=queued", null], ["Done2", "/?view=completed", null]]);

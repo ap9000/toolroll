@@ -81,7 +81,7 @@ export const READY_ACTIONS = { merge: "Merge", complete: "Accept", look: "Look f
 
 /** Whether this line asks for the result's next step, so it carries [Merge] or [Accept and finish] and [Look first]. */
 export function asksToFinish(fact: FinishedFact): boolean {
-  return fact.update == null && fact.headline === "Ready for review" && !fact.report;
+  return fact.update == null && fact.headline === "Ready" && !fact.report;
 }
 
 /** One update, said plainly: what happened, then what happens next. The lead says "I" for what it did. */
@@ -92,7 +92,7 @@ export function finishedLine(fact: FinishedFact): string {
   // What waited on the person and the lead has taken on (Needs you reads Waiting then).
   if (fact.leadOnIt === true && (fact.headline === "Needs you" || fact.headline === "Waiting" || fact.headline === "Stopped")) return `${name}: ${leadOnIt(fact.leadName)}`;
   switch (fact.headline) {
-    case "Ready for review":
+    case "Ready":
       if (fact.report) return fact.lead === true ? `I wrote up ${lower}. The report is ready to read.` : `${name}: the report is ready to read.`;
       if (fact.checks === "passed") return `${ready}. Your tests passed. ${fact.pullRequest === true ? "Merge it?" : "Accept it?"}`;
       if (fact.checks === "off") return `${ready}. Its checks run at release, so look it over first.`;
@@ -121,7 +121,7 @@ function phraseOf(fact: FinishedFact): string {
   const name = inSentence(fact.summary);
   if (fact.update != null) return `${name} ${fact.update.phrase}`;
   switch (fact.headline) {
-    case "Ready for review": return `${name} is ready`;
+    case "Ready": return `${name} is ready`;
     case "Failed": return `${name} failed`;
     case "Complete": return `${name} is done`;
     case "Needs you": return `${name} needs you`;

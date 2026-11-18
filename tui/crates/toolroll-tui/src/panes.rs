@@ -480,7 +480,7 @@ pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
                 "Waiting to retry · next try in {}",
                 crate::view::duration(at - app.now)
             ),
-            Some(_) => "Waiting to retry · trying again now".to_string(),
+            Some(_) => "Retry due; waiting to start".to_string(),
             None => "Waiting · for a builder".to_string(),
         }
     } else {

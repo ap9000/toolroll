@@ -599,7 +599,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     storeEvidence(store, dir, run, "check-log", "checks.txt", Buffer.from("1 test passed"), "npm test", now, { captureStatus: "ok" });
     sealVerificationReceipt(store, dir, run, "a".repeat(40), store.liveVerifyCommand(ALPHA)!, { configured: true, ran: true, exitCode: 0 }, now);
     const view = () => telegramProgressCard(store, store.getRun(run)!, "ready-1", ALPHA, now, dir);
-    expect(view().text).toContain("✅ Ready for review\nChecks passed on aaaaaaa. Review the change, then accept it.\n\n✓ Project checks · Passed on aaaaaaa");
+    expect(view().text).toContain("✅ Ready\nChecks passed on aaaaaaa. Review the change, then accept it.\n\n✓ Project checks · Passed on aaaaaaa");
     expect(view().link).toEqual({ label: "Open result", path: `/t/ready-1?tab=result&run=${run}` });
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [ALPHA]);
     if (!who.ok) throw new Error("approver fixture");

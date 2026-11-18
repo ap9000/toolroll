@@ -248,8 +248,8 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(looked.status).toBe(303);
     expect(store.stopQuiescenceFact(runs["unreadable"]!)).toBeNull();
     expect(store.raw().prepare("SELECT actor FROM action_ledger WHERE run_id = ? AND action = 'run stop proven automatically'").get(runs["unreadable"]!)).toMatchObject({ actor: "system" });
-    expect(assignmentPresentationOf(assignment("unreadable")).taskStatus.headline).toBe("Ready for review");
-    expect(listed().items.find(one => one.rootId === "unreadable")?.status.label).toBe("Ready for review");
+    expect(assignmentPresentationOf(assignment("unreadable")).taskStatus.headline).toBe("Ready");
+    expect(listed().items.find(one => one.rootId === "unreadable")?.status.label).toBe("Ready");
     // A sandbox object it never finished recording can't be looked into: still held, and still nothing to vouch for.
     store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 60_000).toISOString(), runs["half-contained"]!);
     html = await page("/t/half-contained");
@@ -335,9 +335,9 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     // The process exited without a recorded exit: the store reads it stopped, so the list reads it Ready, as the task page does.
     expect(store.stopQuiescenceFact(runs["exited-quietly"]!)).toBeNull();
     const quiet = all.items.find(one => one.rootId === "exited-quietly")!;
-    expect(quiet.status.label).toBe("Ready for review");
+    expect(quiet.status.label).toBe("Ready");
     expect(quiet.primaryAction?.code).not.toBe("recheck-stopped");
-    expect(assignmentPresentationOf(assignment("exited-quietly")).taskStatus.headline).toBe("Ready for review");
+    expect(assignmentPresentationOf(assignment("exited-quietly")).taskStatus.headline).toBe("Ready");
   });
 
   /** Built and not accepted (its check failed), then its plan rewritten and not approved yet: the yes comes first and
@@ -350,11 +350,11 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     return run;
   };
 
-  test("a plan rewritten after its build leads with Approve plan, shown open, and the one yes builds again", async () => {
+  test("a plan rewritten after its build leads with Review plan, shown open, and the one yes builds again", async () => {
     const id = "replanned", run = replanned(id);
     const read = assignment(id);
     expect(read.need).toEqual({ key: "replan", build: run });
-    expect(read.primaryAction).toMatchObject({ code: "approve-scope", label: "Approve plan" });
+    expect(read.primaryAction).toMatchObject({ code: "approve-scope", label: "Review plan" });
     expect(assignmentPresentationOf(read).taskStatus).toMatchObject({ headline: "Needs you",
       sentence: `The plan changed after build #${run}. Approve the new plan, then retry it.` });
     // The Tasks list says the same, under Decide with the Plan changed chip.
@@ -532,7 +532,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     for (const id of ["spawn-gap", "no-record"]) {
       expect(results.find(one => one.run === runs[id]), id).toMatchObject({ outcome: "settled" });
       expect(store.stopQuiescenceProblem(runs[id]!), id).toBeNull();
-      expect(assignmentPresentationOf(assignment(id)).taskStatus.headline, id).toBe("Ready for review");
+      expect(assignmentPresentationOf(assignment(id)).taskStatus.headline, id).toBe("Ready");
       const ledger = store.raw().prepare("SELECT actor, detail FROM action_ledger WHERE run_id = ? AND action = 'run stop proven automatically'").get(runs[id]!);
       expect(ledger, id).toMatchObject({ actor: "system" });
     }

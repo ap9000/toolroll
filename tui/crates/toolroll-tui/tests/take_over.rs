@@ -13,7 +13,8 @@ use serde_json::Value;
 use toolroll_api::*;
 use toolroll_fake_engine as fake;
 use toolroll_tui::app::{
-    App, Effect, Mode, Msg, Tab, TermLink, BACK, OFF_SCREEN, STILL_BUILDING, TYPING,
+    App, Effect, Mode, Msg, Tab, TermLink, BACK, OFF_SCREEN, SHELL_LEFT, SHELL_NOT_OPEN,
+    STILL_BUILDING, TYPING,
 };
 use toolroll_tui::term::{Link, Pane};
 
@@ -81,8 +82,8 @@ fn taken_over() -> App {
             result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link()))
         })
         .is_empty());
-    assert_eq!(app.mode, Mode::TakeOver);
-    assert_eq!(app.status.as_ref().unwrap().1, TYPING);
+    // Typing starts only once the terminal's hello makes it live (the stranger test round 10's take-over race).
+    assert_eq!(app.mode, Mode::ShellOpening);
     // The screen as it was (before hello), then live output.
     app.update(Msg::Term(
         ID.into(),
@@ -100,6 +101,8 @@ fn taken_over() -> App {
             ended: false,
         },
     ));
+    assert_eq!(app.mode, Mode::TakeOver);
+    assert_eq!(app.status.as_ref().unwrap().1, TYPING);
     app.update(Msg::Term(
         ID.into(),
         TermEvent::Output(
@@ -779,4 +782,111 @@ fn the_drawn_pane_input_gate_holds_for_a_live_shell_not_being_typed_in() {
     // t types in it again; moving and help still work.
     assert_eq!(app.key(key('t')), vec![]);
     assert_eq!(app.mode, Mode::TakeOver);
+}
+
+// ---- the stranger test round 10: the take-over race -------------------------------------------------------------------
+
+/// `t`, `t`, and the console's terminal attached but not yet live (its hello still to come).
+fn opening() -> App {
+    let mut app = app_on("t-done");
+    app.key(key('t'));
+    screen(&mut app, 120, 30);
+    app.key(key('t'));
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: fake::RESULT_RUN,
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
+    });
+    app
+}
+fn hello(app: &mut App) -> Vec<Effect> {
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Hello {
+            cols: 100,
+            rows: 30,
+            ended: false,
+        },
+    ))
+}
+fn sent(fx: &[Effect]) -> Vec<String> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::TermSend {
+                send: TermSend::Input(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn keys_typed_while_the_shell_opens_wait_for_it_and_never_reach_the_workbench() {
+    let mut app = opening();
+    assert_eq!(app.mode, Mode::ShellOpening);
+    // No typing hint before it is live: the opening words and one way back.
+    let shown = screen(&mut app, 120, 30);
+    assert!(!shown.contains("back to the workbench"), "{shown}");
+    assert!(shown.contains("Opening the build shell"), "{shown}");
+    // Workbench keys among them (p pauses or plans, n files a task, x stops, q quits): none acts, none is sent yet.
+    for c in "printf ok; nxq".chars() {
+        assert_eq!(app.key(key(c)), vec![], "{c}");
+        assert_eq!(app.mode, Mode::ShellOpening, "{c}");
+    }
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        vec![]
+    );
+    assert_eq!(app.mode, Mode::ShellOpening);
+    // Live: typing starts, the hint shows, and what was typed arrives in the shell, in order, once.
+    let fx = hello(&mut app);
+    assert_eq!(app.mode, Mode::TakeOver);
+    assert_eq!(sent(&fx), vec!["printf ok; nxq\r".to_string()]);
+    assert!(screen(&mut app, 120, 30).contains("back to the workbench"));
+    assert!(app.shell_typed.is_empty());
+}
+
+#[test]
+fn leaving_or_losing_an_opening_shell_sends_nothing_anywhere() {
+    // Esc while it opens: back, nothing typed is kept; the hello afterwards starts no typing and sends nothing.
+    let mut app = opening();
+    screen(&mut app, 120, 30);
+    for c in "rm -rf".chars() {
+        app.key(key(c));
+    }
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        vec![]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, SHELL_LEFT);
+    let fx = hello(&mut app);
+    assert!(sent(&fx).is_empty(), "{fx:?}");
+    assert_eq!(app.mode, Mode::Normal);
+    // Closed before it was ever live: back with words, what was typed sent nowhere.
+    let mut app = opening();
+    screen(&mut app, 120, 30);
+    for c in "ls".chars() {
+        app.key(key(c));
+    }
+    let fx = app.update(Msg::Term(ID.into(), TermEvent::Closed { code: None }));
+    assert!(sent(&fx).is_empty(), "{fx:?}");
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.shell_typed.is_empty());
+    // A shell that ended at its hello: back, nothing sent.
+    let mut app = opening();
+    screen(&mut app, 120, 30);
+    app.key(key('l'));
+    let fx = app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Hello {
+            cols: 100,
+            rows: 30,
+            ended: true,
+        },
+    ));
+    assert!(sent(&fx).is_empty(), "{fx:?}");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, SHELL_NOT_OPEN);
 }

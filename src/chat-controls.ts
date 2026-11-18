@@ -6,7 +6,8 @@ import { taskLinkOf } from "./task-link.js";
 export const CHAT_CONTROLS = {
   task: { label: "Open task", target: "task" },
   approval: { label: "Review & start", target: "task" },
-  planning: { label: "Approve plan", target: "task" },
+  // A link to the plan: it says where it goes, never the approval itself.
+  planning: { label: "Review plan", target: "task" },
   recovery: { label: "Review recovery options", target: "task" },
   cancel: { label: "Cancel task", target: "task" },
   result: { label: "Open result", target: "task" },

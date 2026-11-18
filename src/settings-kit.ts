@@ -101,10 +101,11 @@ ${field.error ? fieldError(field.id, field.error) : ""}</div>`;
  * value, kept out of password managers. The field name is the handler's own wire name. */
 export function secretInput(field: { id: string; name: string; label: string; hint?: string; required?: boolean; error?: string | null }): Html {
   const described = [field.hint === undefined ? null : `${field.id}-hint`, field.error ? errorId(field.id) : null].filter(Boolean).join(" ");
-  return html`<div class="kit-field"><label for="${field.id}">${field.label}</label>\
-${field.hint === undefined ? "" : html`<p class="kit-hint" id="${field.id}-hint">${field.hint}</p>`}\
-<input${attributes({ id: field.id, name: field.name, type: "password", autocomplete: "off", spellcheck: "false", autocapitalize: "none", "data-so-secret": true, ...SECRET_OPT_OUTS,
+  // The kit's own field (server/kit.ts outField): label, input, then the hint, so it reads like every other field.
+  return html`<div class="k-field"><label class="k-label" for="${field.id}">${field.label}</label>\
+<input${attributes({ class: "k-input", id: field.id, name: field.name, type: "password", autocomplete: "off", spellcheck: "false", autocapitalize: "none", "data-so-secret": true, ...SECRET_OPT_OUTS,
     required: field.required === true, "aria-invalid": field.error ? "true" : null, "aria-describedby": described === "" ? null : described, autofocus: field.error ? true : null })}>\
+${field.hint === undefined ? "" : html`<p class="k-hint" id="${field.id}-hint">${field.hint}</p>`}\
 ${field.error ? fieldError(field.id, field.error) : ""}</div>`;
 }
 

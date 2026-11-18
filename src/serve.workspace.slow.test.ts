@@ -445,7 +445,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
         expect(exactTask.action, path).toBe(act !== undefined && path.startsWith("/chat/task-status") ? action ?? task.action : task.action);
       }
     };
-    await agree(id, "needs-approval", "Approve plan", "Approve");
+    await agree(id, "needs-approval", "Review plan", "Approve");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
     // Connect a builder leads to Settings → Computers' Connect a builder and its command, never back to the task's own page.
@@ -515,7 +515,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const signed = store.getScope('t-scope-status')!;
     propose(store, { taskId: 't-scope-status', goal: 'Changed request', touches: signed.touches, acceptance: signed.acceptance, now });
     store.unhold(heldRef);
-    await agree('t-scope-status', 'needs-approval', 'Approve plan', 'Approve');
+    await agree('t-scope-status', 'needs-approval', 'Review plan', 'Approve');
     expect(store.getScope('t-scope-status')!.approvedDigest).toBe(signed.approvedDigest);
     store.setTaskState('t-scope-status', 'failed', now);
     await agree('t-scope-status', 'failed', 'Review and retry');
@@ -526,7 +526,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const oldResultScope = store.getScope('t-status-check')!;
     propose(store, { taskId: 't-status-check', goal: 'A new scope after the failed check', touches: oldResultScope.touches, acceptance: oldResultScope.acceptance, now });
     store.setTaskState('t-status-check', 'queued', now);
-    await agree('t-status-check', 'needs-approval', 'Approve plan', 'Approve');
+    await agree('t-status-check', 'needs-approval', 'Review plan', 'Approve');
   });
 
   test("pilot 2: a pending status refresh preserves focused controls, open details and dirty inputs; the composer keeps its draft and selection", async () => {
@@ -619,7 +619,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const empty = await page(cookie, "/?view=all");
     expect(empty).toContain('data-work-empty="all"');
     expect(empty).toContain("Nothing is in progress.");
-    expect(countsOf(empty)).toEqual({ All: 0, "Needs you": 0, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(empty)).toEqual({ All: 0, "Needs you": 0, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
 
     // Approved and waiting for a builder; chained behind it; on hold;
     // failed; cancelled; running under a live claim; and finished builds.
@@ -685,7 +685,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     }
     expect(paged).toEqual(tasks.rows.map(row => row.id));
     // Finished results are not Complete until the lead or user marks the exact result complete.
-    expect(countsOf(all)).toEqual({ All: 14, "Needs you": 10, Ready: 8, Running: 1, Queued: 2, Finished: 0, Archived: 0 });
+    expect(countsOf(all)).toEqual({ All: 14, "Needs you": 10, Ready: 8, Running: 1, Queued: 2, Complete: 0, Archived: 0 });
     // Each view lists exactly its members, and marks itself active.
     for (const [view, expected] of [
       ["needs-you", ["t-held", "t-failed", "t-checks", "t-mismatch", "t-missing", "t-attested", "t-accepted", "t-verified", "t-pr", "t-merged"]],
@@ -896,7 +896,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(scopedRows).not.toContain("alpha-000");
     expect(scopedRows).toContain("alpha-200");
     expect(scopedRows).not.toContain("beta-newest");
-    expect(countsOf(scoped)).toEqual({ All: 201, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(scoped)).toEqual({ All: 201, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
     expect(scoped).not.toContain("200+");
     expect(scoped).not.toContain("data-work-bound");
     expect(scoped).not.toContain('data-work-empty="all"');
@@ -908,7 +908,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       const html = await page(cookie, next);
       const rows = rowsOf(html).map(row => row.id);
       expect(rows.length).toBeLessThanOrEqual(40);
-      expect(countsOf(html)).toEqual({ All: 201, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+      expect(countsOf(html)).toEqual({ All: 201, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
       seen.push(...rows);
       expect(seen.length).toBeLessThanOrEqual(201);
       next = nextOf(html);
@@ -939,7 +939,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const small = await page(cookie, `/?${B}`);
     expect(rowsOf(small).map(row => row.id)).toEqual(["beta-newest"]);
     expect(nextOf(small)).toBeNull();
-    expect(countsOf(small)).toEqual({ All: 1, "Needs you": 1, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(small)).toEqual({ All: 1, "Needs you": 1, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
     expect(await page(cookie, `/?${B}&view=completed`)).toContain("Nothing has finished in this view yet.");
 
     // 501 newer tasks in a repository outside the ceiling: the roll-up's
@@ -963,7 +963,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(rollupRows).toContain("alpha-200");
     expect(rollupRows).not.toContain("alpha-001");
     expect(rollup).not.toContain('data-work-empty="all"');
-    expect(countsOf(rollup)).toEqual({ All: 202, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(rollup)).toEqual({ All: 202, "Needs you": 201, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
     expect(nextOf(rollup)).not.toBeNull();
     // The chrome badge uses the same exact admitted count, not only this page.
     const waitingBadge = /<a href="\/"[^>]*data-waiting="([0-9]+)"/.exec(rollup);
@@ -993,7 +993,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const memberWorkRows = rowsOf(memberHtml).map(row => row.id);
     expect(memberWorkRows).toHaveLength(40);
     expect(memberWorkRows.every(id => id.startsWith("alpha-"))).toBe(true);
-    expect(countsOf(memberHtml)).toEqual({ All: 201, "Needs you": 200, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(memberHtml)).toEqual({ All: 201, "Needs you": 200, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
     expect(nextOf(memberHtml)).not.toBeNull();
     expect((await fetch(url(`/r/${run}?record=1`), { headers: { cookie: member2 }, redirect: "manual" })).status).toBe(200);
     expect(rowsOf(await page(member2, `/?${B}`)).map(row => row.id).sort()).toEqual(["beta-newest", "t-visible"]);
@@ -1010,7 +1010,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const memberAlpha = await page(member2, `/?${A}`);
     expect(rowsOf(memberAlpha).map(row => row.id)).toHaveLength(40);
     expect(rowsOf(memberAlpha).some(row => row.id.startsWith("unplaced-"))).toBe(false);
-    expect(countsOf(memberAlpha)).toEqual({ All: 201, "Needs you": 200, Ready: 0, Running: 0, Queued: 0, Finished: 0, Archived: 0 });
+    expect(countsOf(memberAlpha)).toEqual({ All: 201, "Needs you": 200, Ready: 0, Running: 0, Queued: 0, Complete: 0, Archived: 0 });
     expect(nextOf(memberAlpha)).not.toBeNull();
     // The unrestricted viewer still sees unplaced rows, newest first among
     // the admitted projects, with the honest bound.
@@ -1031,7 +1031,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(hidden).not.toContain("unproven");
     expect(hidden).not.toContain("500-record");
     expect(hidden).not.toContain('data-work-empty="all"');
-    expect(countsOf(hidden)).toMatchObject({ Running: 0, Finished: 0 });
+    expect(countsOf(hidden)).toMatchObject({ Running: 0, Complete: 0 });
     expect(hidden).toContain('<span class="count">2</span>');
     // Work across every admitted project (no project named): the member's two projects, exact counts and a cursor,
     // without admitting any unplaced rows.
@@ -1039,7 +1039,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const memberFirstRows = rowsOf(memberFirst).map(row => row.id);
     expect(memberFirstRows).toHaveLength(40);
     expect(memberFirstRows.every(id => id.startsWith("alpha-") || id === "beta-newest" || id === "t-visible")).toBe(true);
-    expect(countsOf(memberFirst)).toMatchObject({ All: 203, Running: 0, Finished: 0 });
+    expect(countsOf(memberFirst)).toMatchObject({ All: 203, Running: 0, Complete: 0 });
     expect(nextOf(memberFirst)).not.toBeNull();
     // The unrestricted viewer still sees the unplaced rows, newest first.
     const unrestricted = rowsOf(await page(all, "/")).map(row => row.id);

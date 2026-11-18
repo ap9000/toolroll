@@ -157,7 +157,7 @@ describe("the status beside the request", () => {
     expect(await pass()).toMatchObject({ filed: 1 });
     finishBuild(commitResult({ "src/button.tsx": "export const Button = 1;\n" }));
     await pass(later(1));
-    expect(statusFile()).toMatchObject({ status: "ready", detail: "Ready for review" });
+    expect(statusFile()).toMatchObject({ status: "ready", detail: "Ready" });
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [repo]);
     if (!who.ok) throw new Error("approver");
     const root = join(base, "evidence");
@@ -190,7 +190,7 @@ describe("to the hub", () => {
     expect(git("rev-parse", "main")).toBe(git("rev-list", "--max-parents=0", "main"));
   });
 
-  test("a finished build that isn't Ready for review sends nothing", async () => {
+  test("a finished build that isn't Ready sends nothing", async () => {
     await filed();
     finishBuild(commitResult({ [FILE]: JSON.stringify(proposal()) }));
     // Its terms changed after the build: it needs a person again, and its options wait.

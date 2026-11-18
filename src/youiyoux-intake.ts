@@ -31,7 +31,7 @@
  * nothing Toolroll decides reads the file back.
  *
  * Status words (task-status.ts headline → youiyoux): Queued → queued; Planning, Building and Waiting (work going on
- * by itself) → building; Needs you → needs-you; Ready for review → ready; Complete → done; Failed → failed;
+ * by itself) → building; Needs you → needs-you; Ready → ready; Complete → done; Failed → failed;
  * Stopped → stopped.
  *
  * An options request (`kind: "options"`) asks an agent for two to four options for one component, which youiyoux shows
@@ -40,7 +40,7 @@
  * one file (anything else is counted as a file that couldn't be read, and never filed). The proposal it names is kept
  * when filed; the request is never read for it again. Then (runYouiyoux, the worker's pass):
  *
- * - When the task is Ready for review (or Complete), its result is read: the file at the result's commit, the commit
+ * - When the task is Ready (or Complete), its result is read: the file at the result's commit, the commit
  *   Toolroll recorded for the build (never the checkout the agent had, which it controls and the pool hands on), read
  *   with the hardened git (teardown-git.ts). It must be a plain file in that commit (never a link), at most 64 KB, a
  *   `youi.proposal/v1` file whose id is the proposal, which answers this request, still open (an agent proposes; only a
@@ -56,7 +56,7 @@
  *   a person, at a time, the task is marked complete by Toolroll, as landed work is (result-completion.ts LANDED_ACTOR), without
  *   merging or publishing its branch: its deliverable was the options, and youiyoux has used them. Only the exact
  *   result whose file was copied, and only through every guard a person's completion passes (landed-cleanup.ts
- *   completionProblem): otherwise it stays Ready for review and the ledger says why. The ledger keeps who decided
+ *   completionProblem): otherwise it stays Ready and the ledger says why. The ledger keeps who decided
  *   what, as youiyoux wrote it (outside text, cleaned). A decision never approves, publishes or merges anything.
  */
 
@@ -98,7 +98,7 @@ const REQUEST_FILE = /^(r-[0-9a-f]{10})\.json$/;
 
 export const STATUS_OF_HEADLINE: Readonly<Record<Headline, YouiyouxTaskStatus>> = {
   Queued: "queued", Planning: "building", "Needs you": "needs-you", Waiting: "building", Building: "building",
-  "Ready for review": "ready", Complete: "done", Failed: "failed", Stopped: "stopped",
+  "Ready": "ready", Complete: "done", Failed: "failed", Stopped: "stopped",
 };
 
 const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? "" : "s"}`;
@@ -688,7 +688,7 @@ function decisionOf(repo: string, proposal: string, request: string, copied: str
 
 /**
  * A person decided in the hub: mark the task complete as landed work is, bound to the exact result whose options were
- * copied, through every guard a person's completion passes, or leave it Ready for review and say why. Once per request,
+ * copied, through every guard a person's completion passes, or leave it Ready and say why. Once per request,
  * in one transaction with the read. Waits (false) while the task isn't Ready, Complete or cancelled.
  */
 export function actOnDecision(store: Store, repo: string, row: OptionsRow, decision: Decision, now: Date, root: string): boolean {

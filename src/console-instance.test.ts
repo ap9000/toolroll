@@ -284,9 +284,11 @@ test("a database too deep for a socket: the console says why nothing can find it
   const deep = join(dir, "d".repeat(60), "e".repeat(60));
   mkdirSync(deep, { recursive: true, mode: 0o700 });
   const file = join(deep, "orders.db");
-  const words = /too deep for Toolroll's socket .* move it to a shorter folder \(at most \d+ bytes long\), or point TOOLROLL_DB at an orders\.db in one/;
+  const words = /too deep for Toolroll's socket \(\d+ of at most \d+ bytes\)\. Put it in a short folder only you can write \(at most \d+ bytes long\), for example: .*TOOLROLL_DB=\S*orders\.db toolroll`$/;
   expect(instanceSocketTooLong(file)).toMatch(words);
   expect(instanceSocketTooLong(databaseFile)).toBeNull();
+  // Never a shared folder another user could make or own first.
+  expect(instanceSocketTooLong(file)).not.toMatch(/\/Users\/Shared|\/tmp\//);
   // The console's start: no socket, and the reason is the fix, not a bare path.
   const opened = await openInstanceSocket(file, { pid: process.pid, build: BUILD, database: file, port: 1 }, () => null);
   expect(opened).toEqual({ ok: false, problem: expect.stringMatching(words) });

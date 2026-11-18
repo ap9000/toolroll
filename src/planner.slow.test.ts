@@ -19,7 +19,8 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import { runOperate, EXIT } from "./operate.js";
 import { run as exec } from "./exec.js";
-import { openStore } from "./store.js";
+import { agentSaidOf, openStore, planProblemsOf } from "./store.js";
+import { planBackoffFor, waitingOf } from "./engine-reads.js";
 import { register } from "./runner.js";
 import { approve, propose, type AcceptanceCriterion } from "./scope.js";
 import type { Runner } from "./builder.js";
@@ -714,6 +715,68 @@ describe("planning mode, against real git", () => {
     expect(runs).toHaveLength(2);
     expect(runs[1]).toMatchObject({ outcome: "failed", reason: "malformed-plan" });
     store.close();
+  });
+
+  test("a malformed plan keeps what the agent said on its root attempt, beside its problems (stranger test round 10)", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    let calls = 0;
+    const malformedTwice: Runner = async (_file, args, options) => {
+      calls += 1;
+      const cwd = options?.cwd ?? "";
+      const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+      const name = PLAN_FILE.exec(prompt)?.[0];
+      if (calls === 1 && name !== undefined && cwd !== "") await writeFile(join(cwd, name), JSON.stringify({ ...validPlanPayload(), plan: "not a sectioned plan" }));
+      return { ...OK, stderr: calls === 1 ? "AGENT-WORDS: wrote the plan" : "AGENT-WORDS: corrected nothing", stdout: saidInSession("words-session") };
+    };
+    expect(await tick(runnerToken, malformedTwice)).toBe(EXIT.failed);
+    const store = openStore(db);
+    try {
+      const root = store.runsFor(store.refFor("built-in", "limiter").id).filter(one => one.role === "planner" && one.parentRun === null)[0]!;
+      expect(root).toMatchObject({ outcome: "failed", reason: "malformed-plan" });
+      expect(agentSaidOf(store, root.id)).toEqual(["AGENT-WORDS: corrected nothing"]);
+      expect(planProblemsOf(store, root.id)?.length).toBeGreaterThan(0);
+    } finally { store.close(); }
+  });
+
+  test("a planning turn that timed out keeps what the agent said (stranger test round 10)", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const stalled: Runner = async () => ({ ...OK, code: 1, timedOut: true, stderr: "AGENT-WORDS: still reading the payout handler" });
+    expect(await tick(runnerToken, stalled)).toBe(EXIT.failed);
+    const store = openStore(db);
+    try {
+      const root = store.runsFor(store.refFor("built-in", "limiter").id).filter(one => one.role === "planner" && one.parentRun === null)[0]!;
+      expect(root).toMatchObject({ outcome: "failed", reason: "timeout" });
+      expect(agentSaidOf(store, root.id)).toEqual(["AGENT-WORDS: still reading the payout handler"]);
+    } finally { store.close(); }
+  });
+
+  test("a failed correction child: the backoff reads the root attempt's reason and saved words, never the child's nothing (stranger test round 10)", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    let calls = 0;
+    const correctionFails: Runner = async (_file, args, options) => {
+      calls += 1;
+      const cwd = options?.cwd ?? "";
+      const prompt = String(args[args.indexOf("-p") + 1] ?? "");
+      const name = PLAN_FILE.exec(prompt)?.[0];
+      if (calls === 1 && name !== undefined && cwd !== "") await writeFile(join(cwd, name), JSON.stringify({ ...validPlanPayload(), plan: "not a sectioned plan" }));
+      return calls === 1 ? { ...OK, stdout: saidInSession("fail-session") } : { ...OK, code: 1, stderr: "AGENT-WORDS: the correction crashed", stdout: saidInSession("fail-session") };
+    };
+    expect(await tick(runnerToken, correctionFails)).toBe(EXIT.failed);
+    const store = openStore(db);
+    try {
+      const planners = store.runsFor(store.refFor("built-in", "limiter").id).filter(one => one.role === "planner");
+      const root = planners.find(one => one.parentRun === null)!, child = planners.find(one => one.parentRun !== null)!;
+      // The child is the newest planner run, with its own reason and no words; the root carries the attempt's.
+      expect(child.id).toBeGreaterThan(root.id);
+      expect(agentSaidOf(store, child.id)).toBeNull();
+      expect(root).toMatchObject({ outcome: "failed", reason: "agent-error" });
+      expect(agentSaidOf(store, root.id)).toEqual(["AGENT-WORDS: the correction crashed"]);
+      expect(waitingOf(store, "limiter", T0)).toMatchObject({ attempt: "plan", lastFailure: "The agent stopped with an error" });
+      expect(planBackoffFor(store, "limiter", T0)).toEqual({ line: "Last plan attempt failed · The agent stopped with an error. Toolroll tries the plan again soon.", agentSaid: ["AGENT-WORDS: the correction crashed"] });
+    } finally { store.close(); }
   });
 
   test("repair cannot rewrite a parseable plan's authority fields", async () => {

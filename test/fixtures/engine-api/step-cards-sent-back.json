@@ -178,5 +178,8 @@
   "held": null,
   "retry": null,
   "approval": null,
-  "room": "task:task-52bec3dd05101c00"
+  "room": "task:task-52bec3dd05101c00",
+  "planStopped": null,
+  "plan": null,
+  "planQueued": false
 }

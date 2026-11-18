@@ -19,7 +19,7 @@ import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js"
 import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
 import { settleDeployment, takeReleaseRun, type RunLockSeams, type SettleWorld } from "./release-next.js";
 import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, releaseProgressFor, revokeRelease, type Database } from "./store.js";
-import { dur } from "./design/kit.js";
+import { dur, plural } from "./design/kit.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
 import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
@@ -442,7 +442,7 @@ async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-comm
     if (flags.to === undefined || !/^[0-9a-f]{40}$/.test(flags.to)) return answer(false, { reason: "usage", message: "carry takes --to <full commit id>." }, "carry takes --to <full commit id>.", 2);
     const result = await proveCarry(store, { authority: id, to: flags.to, ...(flags.request === undefined ? {} : { requestId: flags.request }), now });
     if (result.ok) return answer(true, { release: id, task: result.taskId, retried: result.retried, carry: { files: result.carry.files, lines: result.carry.changedLines } },
-      `Carried release ${id} to ${flags.to.slice(0, 7)}: task ${result.taskId} (${result.carry.files} files, ${result.carry.changedLines} lines).`, 0);
+      `Carried release ${id} to ${flags.to.slice(0, 7)}: task ${result.taskId} (${plural(result.carry.files, "file", "files")}, ${plural(result.carry.changedLines, "line", "lines")}).`, 0);
     return answer(false, { reason: result.reason, message: result.message, ...(result.path === undefined ? {} : { path: result.path }) }, carryRefusalWords(result, flags.to), 1);
   } finally { store.close(); }
 }

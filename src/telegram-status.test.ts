@@ -162,7 +162,7 @@ describe("read-only phone status", () => {
     expect(everywhere.all).toBeGreaterThan(totals.all);
     // Its groups are dispatch diagnoses, not Home's: they keep their headings.
     expect(lines).toContain("Recent work");
-    expect(lines.some(line => /^(Needs attention|Working|Waiting \/ next up|Finished) · \d+$/.test(line))).toBe(true);
+    expect(lines.some(line => /^(Needs attention|Working|Waiting \/ next up|Complete) · \d+$/.test(line))).toBe(true);
     expect(lines.some(line => line.startsWith("Waiting on you ·") || line.startsWith("Done ·"))).toBe(false);
     // Focused on a task, the figures still open the reply.
     expect(phoneStatus(store, [REPO], NOW, "Polish").split("\n")[0]).toBe(lines[0]);
@@ -182,7 +182,7 @@ describe("read-only phone status", () => {
     result("needs-proof", verdict);
     const overview = phoneStatus(store, [REPO], NOW);
     expect(overview).toContain("Needs attention · 1");
-    expect(overview).not.toContain("Finished ·");
+    expect(overview).not.toContain("Complete ·");
     const detail = phoneTask(store, [REPO], "needs-proof", NOW);
     // The shared headline (task-status.ts): a result missing its record waits on a person.
     expect(detail.split("\n")[4]).toBe("Needs you");
@@ -198,7 +198,7 @@ describe("read-only phone status", () => {
     store.markPublicationPushed(publication, NOW);
     store.markPublicationOpened(publication, 7, "https://github.com/owner/repo/pull/7", NOW);
     const detail = phoneTask(store, [REPO], "accepted", NOW);
-    expect(detail.split("\n")[4]).toBe("Ready for review");
+    expect(detail.split("\n")[4]).toBe("Ready");
     expect(detail).not.toContain("Checks passed");
     expect(detail).toContain("Required saved material is missing");
     expect(detail).toContain("does not change its recorded checks");
@@ -213,7 +213,7 @@ describe("read-only phone status", () => {
     const status = phoneStatus(store, [REPO], NOW);
     const detail = phoneTask(store, [REPO], "review-me", NOW);
     const runs = store.runsFor(ref);
-    expect(status).toContain("Finished · 1");
+    expect(status).toContain("Complete · 1");
     store.raw().prepare("INSERT INTO review_request (run, requested_by, basis, requested_at) VALUES (?, 'operator', 'human', ?)").run(run, NOW.toISOString());
     expect(phoneStatus(store, [REPO], NOW)).toBe(status);
     expect(phoneTask(store, [REPO], "review-me", NOW)).toBe(detail);

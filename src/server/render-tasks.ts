@@ -26,6 +26,7 @@ import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskF
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
+import type { StepCards } from "../contracts/engine-api.js";
 import { NO_AGENT_TITLE, type DispatchDiagnosis } from "../dispatch.js";
 import { type ReportView } from "../evidence.js";
 import { taskRoad, type RoadChecks } from "../first-run.js";
@@ -1623,6 +1624,11 @@ export function taskBodyParts(data: {
   /** Local-owner slice 3: the build and approved plan this page read (local-owner-acts.ts retryPinsOf), which Retry posts
    * so a local owner's retry binds to exactly them. */
   retryPins?: { run: number; digest: string } | null;
+  /** A plan that stopped on its checks (engine-reads.ts planStoppedFor): what stopped it, why the plan was refused and
+   * what the agent said (cleaned), and what Plan again posts (null when it can't be asked as it stands). */
+  planStopped?: StepCards["planStopped"];
+  /** A planner's own backoff (engine-reads.ts planBackoffFor): the last attempt's reason and its agent's words. */
+  planBackoff?: { line: string; agentSaid: string[] | null } | null;
   planDocument: string | null;
   planAuto?: boolean;
   /** Hash of the verified plan artifact currently shown. */
@@ -2580,11 +2586,22 @@ export function taskBodyParts(data: {
           decision => html`<p class="row"><a href="/d/${decision.id}">${decision.question}</a> <span class="meta">${decision.supersededReason !== null ? closedQuestionWords(decision.supersededReason) : decision.state}${isOverdue(decision, data.now) ? " · overdue" : ""}</span></p>`,
         ), "\n")}`;
 
+  // Why the plan stopped, in the planner's validator's own words and the agent's last lines (cleaned by the engine):
+  // shown here only, never sent outside Toolroll.
+  const planStoppedHtml = data.planStopped == null ? "" : html`<div class="card" data-plan-stopped><p><strong>${data.planStopped.line}</strong></p>${
+    data.planStopped.problems === null ? "" : html`<p class="meta">Why the plan was refused</p><ul>${joinHtml(data.planStopped.problems.map(one => html`<li>${one}</li>`), "")}</ul>`}${
+    data.planStopped.agentSaid === null ? "" : html`<details><summary>What the agent said</summary><pre class="mono">${data.planStopped.agentSaid.join("\n")}</pre></details>`}</div>`;
+  // A planner's own backoff (no incident): the last attempt's reason, and what its agent said in a disclosure.
+  const planBackoffHtml = data.planBackoff == null ? "" : html`<div class="card" data-plan-backoff><p>${data.planBackoff.line}</p>${
+    data.planBackoff.agentSaid === null ? "" : html`<details><summary>What the agent said</summary><pre class="mono">${data.planBackoff.agentSaid.join("\n")}</pre></details>`}</div>`;
   const incidents =
     data.incidents.length === 0
       ? ""
-      : html`<h2>Incidents</h2>${joinHtml(data.incidents.map(one =>
-          one.resolvedAt === null
+      : html`<h2>Incidents</h2>${planStoppedHtml}${joinHtml(data.incidents.map(one =>
+          one.resolvedAt === null && data.planStopped?.incident === one.id
+            // A planning incident: Plan again is the way on (the planner tries again; nothing builds until a person approves).
+            ? html`<p class="row">${incidentWords(one.kind)} ${data.planStopped.again === null || data.csrf === "" ? "" : act("plan", "Plan again", { incident: String(one.id), source: data.planStopped.again.source })}</p>`
+            : one.resolvedAt === null
             ? html`<p class="row">${incidentWords(one.kind)} ${postForm(`/i/${one.id}/resolve`, html`<button type="submit">Resolve</button>`, { attrs: { class: "inline" } })}</p>`
             : html`<p class="row meta">${incidentWords(one.kind)} — resolved by ${one.resolvedBy ?? "?"}</p>`,
         ), "\n")}`;
@@ -2627,8 +2644,11 @@ export function taskBodyParts(data: {
   const canPlan = data.plan === null && !approval.approved && !data.claimed && task.state === "queued" && (data.coordinator === null || data.coordinator === undefined);
   // A failed task's status card carries Retry itself (the same requeue); here it would be a second ink act.
   const cardRetries = task.state === "failed" && data.assignment != null && data.csrf !== "";
+  const planAgainPins = data.planStopped?.again ?? null;
   const primaryAct =
-    stopControlsActive || cardRetries ? null : stalled && !data.claimed
+    stopControlsActive || cardRetries ? null : planAgainPins !== null && data.planStopped != null && !data.claimed && data.csrf !== ""
+      ? { html: act("plan", "Plan again", { incident: String(data.planStopped.incident), source: planAgainPins.source }), why: "The planner tries again. Nothing builds until you approve the plan.", whyClass: "plan" }
+      : stalled && !data.claimed && data.planStopped == null
       ? { html: act("requeue", "Retry, keeping the branch and workspace", data.retryPins == null ? {} : { run: String(data.retryPins.run), digest: data.retryPins.digest }), why: "Clears the repeated failures and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
       : canPlan
         ? { html: act("plan", "plan first", data.planSource == null ? {} : { source: data.planSource }), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
@@ -2775,6 +2795,7 @@ export function taskBodyParts(data: {
   const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,
     attemptPanel,
+    planBackoffHtml,
     data.coordinatorProposals == null || data.coordinatorProposals.rows.length === 0
       ? ""
       : section(
@@ -3098,6 +3119,8 @@ export function taskBodyParts(data: {
       : statusCard.action !== null && rebuild === null && bareSelfLink(statusCard.action.href) ? { ...statusCard, action: null } : statusCard),
     statusHtml: data.archived != null ? "" : htmlString(statusHtml),
     failure: failedCard && data.failure != null ? { line: data.failure.line, evidence: data.failure.evidence, suggestion: data.failure.suggestion, link: data.failure.link } : null,
+    // A planner's own backoff: its last attempt's reason, and what its agent said (cleaned by the engine).
+    planning: data.planBackoff ?? null,
     retry,
     runChecks,
     progress: progress === null ? null : { ...progress, steps: (data.milestoneProgress ?? []).map(one => ({ title: one.description, state: one.state })) },

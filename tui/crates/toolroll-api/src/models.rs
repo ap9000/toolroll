@@ -572,6 +572,15 @@ pub struct StepCards {
     pub held: Option<TaskHold>,
     /// What Retry posts to `/t/<task>/requeue` (null unless a failed task can be retried as it stands).
     pub retry: Option<RetryPins>,
+    /// A plan that stopped on this version and waits for Plan again (null when none did).
+    #[serde(default)]
+    pub plan_stopped: Option<PlanStopped>,
+    /// What asking for a plan posts to `/t/<task>/plan` (null when a plan can't be asked for).
+    #[serde(default)]
+    pub plan: Option<PlanAsk>,
+    /// A plan asked for that waits to start (its planner starts on its own): Stop retrying applies to it.
+    #[serde(default)]
+    pub plan_queued: bool,
     /// Who approved the task's scope (null while no approval stands).
     pub approval: Option<Approval>,
     pub room: String,
@@ -596,12 +605,15 @@ pub struct Failure {
     pub agent_said: Option<Vec<String>>,
 }
 
-/// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last build.
+/// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last attempt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StepWaiting {
     pub retry_at: Option<String>,
     pub last_failure: Option<String>,
+    /// "build" or "plan": what failed, and what is tried again.
+    #[serde(default = "build_attempt")]
+    pub attempt: String,
     pub agent_said: Option<Vec<String>>,
 }
 
@@ -611,8 +623,34 @@ impl StepWaiting {
         Waiting {
             retry_at: self.retry_at.clone(),
             last_failure: self.last_failure.clone(),
+            attempt: self.attempt.clone(),
         }
     }
+}
+
+fn build_attempt() -> String {
+    "build".into()
+}
+
+/// A plan that stopped and waits for Plan again: its planning incident, what stopped it, why the plan was refused and
+/// what the agent said (cleaned by the engine), and what Plan again binds to (None: it can't be asked as it stands).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlanStopped {
+    pub incident: i64,
+    /// "plan", "question" or "stalled".
+    pub kind: String,
+    pub line: String,
+    pub problems: Option<Vec<String>>,
+    pub agent_said: Option<Vec<String>>,
+    pub again: Option<PlanAsk>,
+}
+
+/// The planning source a plan request (or Plan again) binds to: `/t/<task>/plan` `source`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlanAsk {
+    pub source: String,
 }
 
 /// A person's hold on a task (the operator's own): its id (what Resume names), reason and the last failure.
@@ -630,6 +668,9 @@ pub struct TaskHold {
 pub struct Waiting {
     pub retry_at: Option<String>,
     pub last_failure: Option<String>,
+    /// "build" or "plan": what failed, and what is tried again.
+    #[serde(default = "build_attempt")]
+    pub attempt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -707,6 +748,9 @@ pub struct FileHunks {
     pub old_path: Option<String>,
     pub meta: Vec<String>,
     pub hunks: Vec<Hunk>,
+    /// The file's length at the result when the patch itself says it (an added file; a deleted one is 0).
+    #[serde(default)]
+    pub line_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

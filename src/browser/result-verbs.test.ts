@@ -11,7 +11,7 @@ import { ResultStatusAct } from "./views/task-view.js";
 type Selected = NonNullable<BrowserResultView["selected"]>;
 const base = (extra: Partial<Selected>): Selected => ({
   taskId: "t-1", title: "Fix the footer", project: null, build: 7, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
-  status: { label: "Ready for review", tone: "success", token: "ready-to-review" }, problem: null, next: null, complete: null, decision: null, checks: null,
+  status: { label: "Ready", tone: "success", token: "ready-to-review" }, problem: null, next: null, complete: null, decision: null, checks: null,
   mismatch: null, acts: { primary: null, secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null, ...extra,
 } as Selected);
 

@@ -15,7 +15,7 @@ import { stepRowsOf } from "../workspace-ui.js";
 type Selected = NonNullable<BrowserTaskView["result"]>["selected"];
 const selectedOf = (build: number, extra: Partial<Selected> = {}): Selected => ({
   taskId: "t-1", title: "Release check", project: null, build, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
-  status: { label: "Ready for review", tone: "success", token: "assignment-ready" }, problem: null, next: null, complete: null, decision: null, checks: null,
+  status: { label: "Ready", tone: "success", token: "assignment-ready" }, problem: null, next: null, complete: null, decision: null, checks: null,
   mismatch: null, acts: { primary: null, secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null, ...extra,
 } as Selected);
 const viewOf = (extra: Partial<BrowserTaskView> = {}): BrowserTaskView => ({
@@ -179,8 +179,8 @@ test("How it ran stays whenever it has a number or a reason: only a run that kep
 });
 
 test("the whole task page: the Ready status box holds the one completion, moved there only when nothing more is owed, and follows your check", () => {
-  const card = { token: "assignment-ready", tone: "attention", label: "Ready for review", reasons: [], diagnostics: [], notices: null, attempts: [], lead: null,
-    status: { headline: "Ready for review", tone: "attention", sentence: "Check the result, then accept it or send it back.", details: [], primaryAction: null, why: [] },
+  const card = { token: "assignment-ready", tone: "attention", label: "Ready", reasons: [], diagnostics: [], notices: null, attempts: [], lead: null,
+    status: { headline: "Ready", tone: "attention", sentence: "Check the result, then accept it or send it back.", details: [], primaryAction: null, why: [] },
     action: { label: "Open result", href: "/t/t-1?tab=result", openResult: true } } as unknown as AssignmentCard;
   const inTask = (selected: Selected, csrf: string, current: boolean) => createElement(SelectedResult, { selected, csrf, inTask: { current } });
   const page = (selected: Selected, key: string) => act(() => root!.render(createElement(TaskView, { key, view: withRows("review", { status: card, result: { selected, current: true, attempts: [], revision: "r1" } }),

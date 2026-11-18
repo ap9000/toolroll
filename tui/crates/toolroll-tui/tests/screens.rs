@@ -972,6 +972,7 @@ fn accept_never_approves_a_diff_other_than_the_one_shown() {
     app.diff = Some(shown);
     app.mode = Mode::ConfirmAccept(ReviewPin {
         task: "t-done".into(),
+        version: "t-done".into(),
         run: 2,
         receipt: "a".repeat(64),
         source: "b".repeat(64),

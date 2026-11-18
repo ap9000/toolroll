@@ -20,7 +20,7 @@ import { YOUIYOUX_CARD_KIND } from "./contracts/youiyoux-request.js";
 export type QuietView = { text: string; entities: ProgressEntity[]; link: PhoneTaskLink; also?: PhoneTaskLink[]; target?: DecideTarget };
 
 /** What always makes a new message, even in quiet mode: a question or approval waiting, a failure or other
- * attention fact, a result Ready for review, a security alert or release, and anything addressed to one person
+ * attention fact, a result Ready, a security alert or release, and anything addressed to one person
  * (a sign-in or plan-limit pause, an evening digest). */
 const NEEDED_KINDS = new Set([
   "acceptance-ready", "acceptance-evidence", "flow-decision", "flow-card", "plan-ready", "report-ready",
@@ -220,12 +220,12 @@ export function eveningDigestText(store: Store, account: string, now: Date, root
       const assignment = assignmentOf(store, taskId, now, { principal: "operator", repos: [project] }, root);
       headline = assignment === null ? null : taskStatusOf(assignmentStatusFacts(assignment)).headline;
     } catch { headline = null; }
-    if (headline === "Ready for review" || headline === "Needs you") waits.set(taskId, `${title(taskId)} · ${headline}`);
+    if (headline === "Ready" || headline === "Needs you") waits.set(taskId, `${title(taskId)} · ${headline}`);
     else if (headline === "Failed") failed.set(taskId, title(taskId));
   }
   if (finished.size + failed.size + waits.size === 0) return null;
   const section = (name: string, items: Map<string, string>) => items.size === 0 ? [] : ["", `${name} (${items.size})`, ...[...items.values()].slice(0, 12).map(one => `• ${one}`), ...(items.size > 12 ? [`• and ${items.size - 12} more`] : [])];
-  return [...section("Finished", finished), ...section("Waiting for you", waits), ...section("Failed", failed)].slice(1).join("\n");
+  return [...section("Ready", finished), ...section("Waiting for you", waits), ...section("Failed", failed)].slice(1).join("\n");
 }
 
 /** Record each due evening digest once per person per local day, as one notification addressed to that person:

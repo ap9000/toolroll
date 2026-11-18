@@ -319,7 +319,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "provider", takesValue: true, meaning: "pin which provider plans THIS task (plan phase only)" },
       { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" },
       // Local-owner slice 2: the terminal UI's plan request, for the laptop's local owner only (no password, no pins).
-      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" }],
+      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" },
+      // Plan again (the stranger test, round 10): the same act, after a planning incident, bound to the incident read.
+      { name: "incident", takesValue: true, meaning: "the terminal's local owner: plan again after this planning incident (the plan failed its checks)" }],
     notableReasons: ["unknown-task"] },
   { invocation: "task hold", synopsis: "park a task with a reason", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
