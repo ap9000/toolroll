@@ -11,11 +11,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
-import { flexibleSignInBilling, flexibleSignInStatus, removeFlexibleSignIn, signInStandsAt } from "./flexible-sign-in.js";
+import { flexibleSignInBilling, flexibleSignInStatus, removeFlexibleSignIn, signInEpochOf, signInStandsAt } from "./flexible-sign-in.js";
 import { hashPassword } from "./scope.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -337,5 +338,62 @@ describe("a call already on its way when the sign-in ends", () => {
       expect(records().at(-1), end).toMatchObject({ status: "aborted" });
       expect(lastDetail(), end).toBe("its Claude sign-in for threads was removed or ended");
     }
+  });
+
+  /** What another Toolroll process's removal leaves on the record (no cancellation reaches this process): the person's
+   * rows retired and their removal epoch raised, written through a connection of its own. */
+  const removedElsewhere = (person: string) => {
+    const other = new DatabaseSync(world.databaseFile);
+    try {
+      other.exec("PRAGMA busy_timeout = 5000");
+      other.prepare("UPDATE flexible_sign_in SET state = 'retiring', save_op = NULL, retire_after = NULL, retired_at = ? WHERE person = ? AND state IN ('staged', 'active')").run(NOW.toISOString(), person);
+      other.prepare("INSERT INTO flexible_sign_in_epoch (person, epoch) VALUES (?, 1) ON CONFLICT (person) DO UPDATE SET epoch = epoch + 1").run(person);
+    } finally { other.close(); }
+  };
+
+  test("removed and saved again by another process between two checks, during a whole answer: the old call is cut, nothing of it forwarded", async () => {
+    standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    const held = twoHalves(false);
+    const pending = call(one).then(answer => answer.text()).catch(() => "");
+    await held.reached;
+    removedElsewhere("alex");
+    const fresh = standInSignIn(world.store, world.state, "alex");
+    held.release();
+    expect(await pending).not.toContain("hello");
+    expect(records().at(-1)).toMatchObject({ status: "aborted" });
+    expect(flexibleSignInStatus(world.store, "alex")).toMatchObject({ state: "active", generation: fresh.generation });
+  });
+
+  test("removed and saved again by another process between two checks, during a stream: the old stream stops, nothing more forwarded", async () => {
+    standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    const held = twoHalves(true);
+    const answer = await fetch(`${one.relay.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: `Bearer ${one.token}` },
+      body: JSON.stringify({ ...BODY, stream: true }) });
+    const first = await readUntil(answer, "FIRST-HALF");
+    removedElsewhere("alex");
+    standInSignIn(world.store, world.state, "alex");
+    // The relay's own watch sees the epoch moved and cuts it, before upstream sends anything more.
+    expect(await first.rest()).not.toContain("SECOND-HALF");
+    held.release();
+    expect(records().at(-1)).toMatchObject({ status: "aborted" });
+    expect(lastDetail()).toBe("its Claude sign-in for threads ended");
+  });
+
+  test("a plain replacement (a save over the active sign-in, no removal) keeps a call on its way going to its end", async () => {
+    const old = standInSignIn(world.store, world.state, "alex");
+    const one = await thread("alex");
+    const held = twoHalves(true);
+    const answer = await fetch(`${one.relay.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: `Bearer ${one.token}` },
+      body: JSON.stringify({ ...BODY, stream: true }) });
+    const first = await readUntil(answer, "FIRST-HALF");
+    standInSignIn(world.store, world.state, "alex");
+    held.release();
+    expect(await first.rest()).toContain("SECOND-HALF");
+    expect(records().at(-1)).toMatchObject({ status: "completed", sign_in_generation: old.generation });
+    // It was dispatched under the person's removal epoch, which a replacement never moves.
+    expect(world.store.handle.prepare("SELECT sign_in_epoch FROM thread_relay_call ORDER BY id DESC LIMIT 1").get()!["sign_in_epoch"]).toBe(0);
+    expect(signInEpochOf(world.store, "alex")).toBe(0);
   });
 });

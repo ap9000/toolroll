@@ -54,7 +54,7 @@ import { issueRelayGrant, revokeRelayGrant } from "./flexible-launch.js";
 import { onRelayCancel } from "./flexible-relay-cancel.js";
 import { FLEXIBLE_RELAY_UPSTREAMS, type RelayUpstream } from "./flexible-relay-upstreams.js";
 import { chargeFlexibleTurn, flexibleTurn, interruptFlexibleTurnSignIn, type FlexibleCostBasis, type FlexibleTurnRow } from "./flexible-turns.js";
-import { signInForTurn, signInHoldsFor, signInRefusedBy, signInRefusedWords, signInStandsAt, type DispatchSignIn } from "./flexible-sign-in.js";
+import { signInEpochOf, signInForTurn, signInHoldsFor, signInRefusedBy, signInRefusedWords, signInStandsAt, type DispatchSignIn } from "./flexible-sign-in.js";
 import type { Store } from "./store.js";
 
 // ---- what the thread start uses ----------------------------------------------------------------------------------------
@@ -204,11 +204,11 @@ const grantStillLive = (store: Store, digest: string): boolean => store.handle.p
 /** Whether a call may still spend, from the record: its token unrevoked, its launch live, its turn this thread's and
  * running, and the sign-in it was sent with still standing (signInHoldsFor: its person still has an active sign-in at the
  * turn's account generation, an active approver; removed, reset or revoked ends it). A read that fails is no. */
-function authorizedNow(store: Store, digest: string, turn: string, person: string): boolean {
+function authorizedNow(store: Store, digest: string, turn: string, person: string, epoch: number): boolean {
   try {
     return store.handle.prepare(`SELECT 1 AS ok FROM flexible_relay_grant g JOIN flexible_thread_launch l ON l.id = g.launch AND l.thread = g.thread
       JOIN thread_turn t ON t.id = ? AND t.thread = g.thread AND t.status = 'running' WHERE g.token_digest = ? AND g.revoked_at IS NULL AND l.state = 'live'`).get(turn, digest) !== undefined
-      && signInHoldsFor(store, { turn, person });
+      && signInHoldsFor(store, { turn, person, epoch });
   } catch { return false; }
 }
 const SSE_EVENT_LIMIT = 1024 * 1024;
@@ -411,7 +411,7 @@ type CallRecord = { turn: string | null; at: string; route: "messages" | "count-
   usage: Usage; charge: { costUsd: number | null; incomplete: boolean } | null; detail: string | null;
   /** Whose sign-in, which generation, the call was sent with (null: nothing was sent with one); and whether Claude
    * refused that sign-in on it. */
-  signIn?: { person: string; generation: string } | null; signInRefused?: boolean };
+  signIn?: { person: string; generation: string; epoch?: number } | null; signInRefused?: boolean };
 
 /**
  * Start the sign-in relay for one ready thread: loopback, outside the fence, one per thread. Its port is what the
@@ -431,7 +431,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
 
   /** A call being forwarded: whose token, launch and turn it spends for. `cut` is set the moment its authority ends (a
    * writer's cancellation, synchronously): no byte of its answer is forwarded after that. */
-  type Live = { digest: string; launch: string; turn: string; person: string; cut: boolean; abort: (why: string) => void };
+  type Live = { digest: string; launch: string; turn: string; person: string; epoch: number; cut: boolean; abort: (why: string) => void };
   const calls = new Set<Live>();
   let pending = 0;
   let closing = false;
@@ -471,11 +471,11 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
         const refused = record.status === "refused";
         const signIn = record.signIn ?? null, signInRefused = signIn !== null && record.signInRefused === true && record.status === "upstream-error";
         store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, model, streamed, status, reason, http_status, tokens_in, tokens_out, cache_read, cache_write, cost_microusd, cost_basis, detail,
-          sign_in_person, sign_in_generation, sign_in_refused)
-          VALUES (?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(thread, record.turn, grant.launch, record.at, new Date().toISOString(), record.route,
+          sign_in_person, sign_in_generation, sign_in_refused, sign_in_epoch)
+          VALUES (?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(thread, record.turn, grant.launch, record.at, new Date().toISOString(), record.route,
           record.model !== null && record.model.length <= 200 ? record.model : null, record.streamed ? 1 : 0, record.status, record.reason, record.httpStatus,
           refused ? 0 : record.usage.input, refused ? 0 : record.usage.output, refused ? 0 : record.usage.cacheRead, refused ? 0 : record.usage.cacheWrite, cost, basis,
-          detail === null ? null : redact(detail, secrets).slice(0, 500), signIn?.person ?? null, signIn?.generation ?? null, signInRefused ? 1 : null);
+          detail === null ? null : redact(detail, secrets).slice(0, 500), signIn?.person ?? null, signIn?.generation ?? null, signInRefused ? 1 : null, signIn?.epoch ?? null);
         // Claude refused the sign-in: that generation is refused from this row on (derived), and the turn ends with
         // Toolroll's own words, in the same transaction (a row that can't be written marks nothing and ends nothing).
         if (signInRefused && record.turn !== null && record.httpStatus !== null) interruptFlexibleTurnSignIn(store, { turn: record.turn, detail: signInRefusedWords(record.httpStatus) });
@@ -501,9 +501,9 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
     const charged = chargeFlexibleTurn(store, { turn: turnId, usage: { tokensIn: 0, tokensOut: 0, costUsd: free ? 0 : null }, incomplete: !free });
     if (!charged.ok) throw new Error(`its reservation couldn't be reconciled: ${charged.reason}`);
     const now = new Date().toISOString();
-    store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, model, streamed, status, reason, http_status, cost_microusd, cost_basis, detail, sign_in_person, sign_in_generation)
-      VALUES (?, ?, ?, 'claude', ?, ?, ?, NULL, 0, 'incomplete', NULL, NULL, 0, ?, ?, ?, ?)`).run(thread, turnId, String(row["launch"]), String(row["reserved_at"]), now, free ? "count-tokens" : "messages",
-      charged.basis, free ? "a token count whose record was lost; it costs nothing" : "its charge was never recorded, so it counts as unknown", row["sign_in_person"] ?? null, row["sign_in_generation"] ?? null);
+    store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, model, streamed, status, reason, http_status, cost_microusd, cost_basis, detail, sign_in_person, sign_in_generation, sign_in_epoch)
+      VALUES (?, ?, ?, 'claude', ?, ?, ?, NULL, 0, 'incomplete', NULL, NULL, 0, ?, ?, ?, ?, ?)`).run(thread, turnId, String(row["launch"]), String(row["reserved_at"]), now, free ? "count-tokens" : "messages",
+      charged.basis, free ? "a token count whose record was lost; it costs nothing" : "its charge was never recorded, so it counts as unknown", row["sign_in_person"] ?? null, row["sign_in_generation"] ?? null, row["sign_in_epoch"] ?? null);
     unsettled.delete(id);
   };
 
@@ -515,7 +515,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
    */
   const sweep = (): void => {
     let rows: Record<string, unknown>[];
-    try { rows = store.handle.prepare("SELECT id, turn, launch, relay, route, reserved_at, sign_in_person, sign_in_generation FROM thread_relay_pending WHERE thread = ? ORDER BY id").all(thread) as Record<string, unknown>[]; }
+    try { rows = store.handle.prepare("SELECT id, turn, launch, relay, route, reserved_at, sign_in_person, sign_in_generation, sign_in_epoch FROM thread_relay_pending WHERE thread = ? ORDER BY id").all(thread) as Record<string, unknown>[]; }
     catch { return; }
     for (const row of rows) {
       if (ours.has(Number(row["id"]))) continue;
@@ -650,6 +650,9 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       // earlier call of this thread left uncharged (one whose turn has ended is reconciled as unknown cost; one in the
       // running turn holds it), and this call's reservation written before anything is sent.
       let reservation: number | null = null;
+      // The person's removal epoch the call is dispatched under (read in the reservation below): any removal after it
+      // stops the call, whatever is saved next.
+      let epoch = -1;
       let blocked: "unauthorized" | "no-turn" | "unsettled" | "threads-off" | "no-sign-in" | "sign-in-refused" | null = null;
       try {
         store.transact(() => {
@@ -663,14 +666,15 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           // refused by Claude.
           const stands = signInStandsAt(store, { thread, turn: now.id, person: signIn.person, generation: signIn.generation });
           if (stands !== null) { blocked = stands; return; }
-          for (const row of store.handle.prepare("SELECT id, turn, launch, relay, route, reserved_at, sign_in_person, sign_in_generation FROM thread_relay_pending WHERE thread = ? ORDER BY id").all(thread)) {
+          epoch = signInEpochOf(store, signIn.person);
+          for (const row of store.handle.prepare("SELECT id, turn, launch, relay, route, reserved_at, sign_in_person, sign_in_generation, sign_in_epoch FROM thread_relay_pending WHERE thread = ? ORDER BY id").all(thread)) {
             if (ours.has(Number(row["id"]))) continue;
             // This relay's own unsettled call in the running turn holds it (it is retried with its real usage).
             if (row["relay"] === instance && flexibleTurn(store, String(row["turn"]))?.status === "running") { blocked = "unsettled"; return; }
             reconcile(row);
           }
-          reservation = Number(store.handle.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, relay, route, reserved_at, sign_in_person, sign_in_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .run(thread, turn!.id, authed.launch, authed.holder, instance, route!.kind, new Date().toISOString(), signIn.person, signIn.generation).lastInsertRowid);
+          reservation = Number(store.handle.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, relay, route, reserved_at, sign_in_person, sign_in_generation, sign_in_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(thread, turn!.id, authed.launch, authed.holder, instance, route!.kind, new Date().toISOString(), signIn.person, signIn.generation, epoch).lastInsertRowid);
         });
       } catch { refused("check-failed"); return; }
       if (blocked === "unauthorized") { release(); request.resume(); reply(401, "authentication_error", UNAUTHORIZED); return; }
@@ -691,10 +695,10 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const routeKind = route.kind;
       const turnId = turn.id;
       // The call is recorded and charged before the agent sees its answer end: its next call finds this one on the record.
-      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed, turnId, signIn.person,
+      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed, turnId, signIn.person, epoch,
         result => {
           const record: CallRecord = { turn: turnId, at, route: routeKind, model, streamed: result.streamed, status: result.status, reason: null, httpStatus: result.httpStatus,
-            usage: result.usage, charge: result.charge, detail: result.detail, signIn, signInRefused: result.signInRefused };
+            usage: result.usage, charge: result.charge, detail: result.detail, signIn: { ...signIn, epoch }, signInRefused: result.signInRefused };
           // A settlement that can't be written keeps its reservation (the thread is held) and is tried again.
           if (!settle(authed, record, secrets, reserved)) unsettled.set(reserved, () => settle(authed, record, secrets, reserved));
           ours.delete(reserved);
@@ -707,7 +711,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
   /** One call to the service, and its answer back to the agent (redacted, metered). Never follows a redirect. `ended`
    * records the call; it runs before the agent's answer is finished. */
   const forward = (target: URL, headers: OutgoingHttpHeaders, body: Buffer, response: ServerResponse, route: "messages" | "count-tokens", streamedAsked: boolean,
-    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, grant: Grant, turn: string, person: string, ended: (result: Forwarded) => void) =>
+    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, grant: Grant, turn: string, person: string, epoch: number, ended: (result: Forwarded) => void) =>
     new Promise<Live>(resolve => {
       const free = route === "count-tokens";
       let sent = false, settled = false, streamed = streamedAsked;
@@ -728,7 +732,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           resolve(live);
         }
       };
-      const live: Live = { digest: grant.digest, launch: grant.launch, turn, person, cut: false, abort: why => {
+      const live: Live = { digest: grant.digest, launch: grant.launch, turn, person, epoch, cut: false, abort: why => {
         live.cut = true;
         outgoing.destroy();
         finish("aborted", null, why, false, () => {
@@ -824,7 +828,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           const out = takeEvents(false);
           if (out === null) { lapsed("an event of its answer was too large to check"); return; }
           if (out === "") return;
-          if (!authorizedNow(store, grant.digest, turn, person)) { lapsed(); return; }
+          if (!authorizedNow(store, grant.digest, turn, person, epoch)) { lapsed(); return; }
           response.write(out);
         });
         answer.on("end", () => {
@@ -836,7 +840,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           const read = meter!.finish();
           // Before the answer completes: its token and its turn are re-read from the record; one that lapsed, or can't be
           // read, ends the answer cut off.
-          if (!authorizedNow(store, grant.digest, turn, person)) { lapsed(); return; }
+          if (!authorizedNow(store, grant.digest, turn, person, epoch)) { lapsed(); return; }
           if (out === null) { finish("aborted", status, "its answer was withheld: it carried a credential", read.complete, () => response.destroy()); return; }
           finish(read.complete ? "completed" : "incomplete", status, read.complete ? null : "the answer's usage couldn't be read whole", read.complete, () => response.end(out));
         });
@@ -874,7 +878,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       try {
         if (!grantStillLive(store, call.digest)) why = "this thread's agent was stopped";
         else if (flexibleTurn(store, call.turn)?.status !== "running") why = "the turn ended";
-        else if (!signInHoldsFor(store, { turn: call.turn, person: call.person })) why = "its Claude sign-in for threads ended";
+        else if (!signInHoldsFor(store, { turn: call.turn, person: call.person, epoch: call.epoch })) why = "its Claude sign-in for threads ended";
       } catch { why = "Toolroll couldn't check its authority"; }
       if (why !== null) cut(call, why);
     }

@@ -10,8 +10,11 @@
  *   the row). A row counts only while its account is active at the same generation. `check_outcome` and
  *   `check_status` are the last live token-count check of that generation (informational: a check never clears or
  *   widens anything).
- * - `thread_relay_call` and `thread_relay_pending` gain `sign_in_person` and `sign_in_generation`: whose sign-in, and
- *   which generation of it, a call was reserved and sent with. `thread_relay_call.sign_in_refused` marks a call Claude
+ * - `flexible_sign_in_epoch`: a per-person removal epoch (no row reads 0), raised in the transaction that removes a
+ *   person's sign-in (and by a restore's reset). A call records the epoch it was dispatched under and stops the moment
+ *   it moves, so a removal followed by a fresh save never keeps an older call going; an ordinary replacement leaves it.
+ * - `thread_relay_call` and `thread_relay_pending` gain `sign_in_person`, `sign_in_generation` and `sign_in_epoch`:
+ *   whose sign-in, which generation of it, and under which removal epoch a call was reserved and sent. `thread_relay_call.sign_in_refused` marks a call Claude
  *   answered with an authentication refusal (HTTP 401, or 403 authentication_error): that generation of that person's
  *   sign-in is refused from then on (derived, never written anywhere else). Saved calls read NULL.
  *
@@ -41,6 +44,10 @@ CREATE TABLE IF NOT EXISTS flexible_sign_in (
   CHECK (state <> 'retiring' OR retired_at IS NOT NULL)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS flexible_sign_in_one_active ON flexible_sign_in (person) WHERE state = 'active';
+CREATE TABLE IF NOT EXISTS flexible_sign_in_epoch (
+  person TEXT PRIMARY KEY CHECK (length(person) BETWEEN 1 AND 200),
+  epoch  INTEGER NOT NULL CHECK (epoch >= 1)
+);
 CREATE INDEX IF NOT EXISTS thread_relay_call_sign_in_refused ON thread_relay_call (sign_in_person, sign_in_generation) WHERE sign_in_refused = 1;
 `;
 
@@ -50,17 +57,19 @@ export const V172_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     sign_in_person: { definition: "TEXT CHECK (sign_in_person IS NULL OR length(sign_in_person) BETWEEN 1 AND 200)", saved: "NULL" },
     sign_in_generation: { definition: "TEXT CHECK (sign_in_generation IS NULL OR (length(sign_in_generation) = 32 AND sign_in_generation NOT GLOB '*[^0-9a-f]*'))", saved: "NULL" },
     sign_in_refused: { definition: "INTEGER CHECK (sign_in_refused IS NULL OR (sign_in_refused = 1 AND sign_in_person IS NOT NULL AND sign_in_generation IS NOT NULL AND status = 'upstream-error'))", saved: "NULL" },
+    sign_in_epoch: { definition: "INTEGER CHECK (sign_in_epoch IS NULL OR sign_in_epoch >= 0)", saved: "NULL" },
   },
   thread_relay_pending: {
     sign_in_person: { definition: "TEXT CHECK (sign_in_person IS NULL OR length(sign_in_person) BETWEEN 1 AND 200)", saved: "NULL" },
     sign_in_generation: { definition: "TEXT CHECK (sign_in_generation IS NULL OR (length(sign_in_generation) = 32 AND sign_in_generation NOT GLOB '*[^0-9a-f]*'))", saved: "NULL" },
+    sign_in_epoch: { definition: "INTEGER CHECK (sign_in_epoch IS NULL OR sign_in_epoch >= 0)", saved: "NULL" },
   },
 });
 
-export const V172_TABLES = Object.freeze(["flexible_sign_in"] as const);
+export const V172_TABLES = Object.freeze(["flexible_sign_in", "flexible_sign_in_epoch"] as const);
 /** The v172 migration's steps, in order (a test seam may stop after each). */
 export const V172_STEPS = Object.freeze(["flexible-sign-in-columns", "flexible-sign-in"] as const);
 /** v172's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
 export const V172_OBJECTS = Object.freeze([
-  ["table", "flexible_sign_in"], ["index", "flexible_sign_in_one_active"], ["index", "thread_relay_call_sign_in_refused"],
+  ["table", "flexible_sign_in"], ["index", "flexible_sign_in_one_active"], ["table", "flexible_sign_in_epoch"], ["index", "thread_relay_call_sign_in_refused"],
 ] as const);

@@ -239,7 +239,9 @@ export function removeFlexibleSignIn(store: Store, input: { person: string; by: 
       .run(at, input.person).changes) > 0;
     store.recordAction({ at, actor: input.by, repo: null, taskId: null, runId: null, action: SIGN_IN_ACTION, outcome: removed ? "removed" : "none to remove", source: "policy",
       detail: input.by === input.person ? null : `${input.person}'s` });
-    // Every call still running on a sign-in of theirs is cut at once (the relay's own watcher is the second line).
+    // The removal epoch moves in this transaction: every call dispatched before it stops at its next check, whatever is
+    // saved after (another process's relay too); in this process, it is cut at once.
+    raiseSignInEpoch(store, input.person);
     if (removed) relayCancel({ person: input.person });
     return { removed };
   });
@@ -253,6 +255,9 @@ export function removeFlexibleSignIn(store: Store, input: { person: string; by: 
 export function resetFlexibleSignInsForRestore(store: Store, input: { now: Date; carried: readonly { person: string; generation: string; accountGeneration: number }[] }): { reset: number } {
   const at = input.now.toISOString();
   const reset = Number(store.handle.prepare("UPDATE flexible_sign_in SET state = 'retiring', save_op = NULL, retire_after = NULL, retired_at = ? WHERE state IN ('staged', 'active')").run(at).changes);
+  // Every person's removal epoch moves too (no call of the restored database's era may ever count as current).
+  for (const row of store.handle.prepare("SELECT DISTINCT person FROM flexible_sign_in UNION SELECT person FROM flexible_sign_in_epoch").all()) raiseSignInEpoch(store, String(row["person"]));
+  for (const one of input.carried) if (PERSON(one.person)) raiseSignInEpoch(store, one.person);
   for (const one of input.carried) {
     if (!PERSON(one.person) || !GENERATION.test(one.generation) || !Number.isSafeInteger(one.accountGeneration) || one.accountGeneration < 0) continue;
     store.handle.prepare(`INSERT INTO flexible_sign_in (person, account_generation, generation, kind, state, save_op, proof, staged_at, retired_at)
@@ -512,10 +517,24 @@ export function threadsStatusNote(store: Store, person: string): string {
 /** Whether a call already sent may go on (the relay, before each piece of its answer and on its watch): the turn's owner
  * is `person`, who still has an active sign-in (a replacement keeps a call going; a removal ends it) at the turn's
  * account generation (a password reset ends it), as an active approver (an account removed or demoted ends it). */
-export function signInHoldsFor(store: Store, input: { turn: string; person: string }): boolean {
+export function signInHoldsFor(store: Store, input: { turn: string; person: string; epoch: number }): boolean {
   const turn = store.handle.prepare("SELECT owner, owner_generation FROM thread_turn WHERE id = ?").get(input.turn);
   if (turn === undefined || turn["owner"] !== input.person) return false;
+  // No removal since the call was dispatched (a removal and a fresh save between two checks still moved the epoch).
+  if (signInEpochOf(store, input.person) !== input.epoch) return false;
   const generation = Number(turn["owner_generation"]);
   const row = activeRowOf(store, input.person);
   return row !== null && row.accountGeneration === generation && standingAccount(store, input.person, generation);
+}
+
+/** A person's removal epoch (flexible_sign_in_epoch; 0 when it never moved): raised only by a removal of their sign-in
+ * and a restore's reset, never by a save or an ordinary replacement. A call dispatched under one epoch stops when it
+ * moves. */
+export function signInEpochOf(store: Store, person: string): number {
+  const row = store.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(person);
+  return row === undefined ? 0 : Number(row["epoch"]);
+}
+/** Raise a person's removal epoch, in the caller's transaction. */
+function raiseSignInEpoch(store: Store, person: string): void {
+  store.handle.prepare("INSERT INTO flexible_sign_in_epoch (person, epoch) VALUES (?, 1) ON CONFLICT (person) DO UPDATE SET epoch = epoch + 1").run(person);
 }

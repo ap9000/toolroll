@@ -21,7 +21,7 @@ import { onlineCopy, restoreDatabase } from "./backup.js";
 import { V172_ADDED_COLUMNS, V172_TABLES } from "./flexible-sign-in-schema.js";
 import { standInToken } from "../test/flexible-sign-in-kit.js";
 import { flexibleReadiness } from "./flexible-start.js";
-import { threadsStatusNote } from "./flexible-sign-in.js";
+import { signInEpochOf, threadsStatusNote } from "./flexible-sign-in.js";
 import { PASSWORDLESS_ACTION } from "./passwordless.js";
 
 // Two names forced into one address slot (tool-secret-store.ts signInAddress), only where a test asks. The setup file
@@ -204,6 +204,7 @@ describe("R2: removal cancels pending saves", () => {
     chooseSecretStore(keychain);
     expect(removeFlexibleSignIn(store, { person: "alex", by: "alex", now: NOW })).toEqual({ removed: true });
     expect(rows().map(row => row["state"])).toEqual(["retiring", "retiring"]);
+    expect(signInEpochOf(store, "alex")).toBe(1);
     expect(rows().every(row => row["save_op"] === null)).toBe(true);
     expect(flexibleSignInBilling(store, { name: "alex", generation: accountGeneration() })).toEqual({ ok: false, reason: "no-sign-in" });
     expect(ledger().at(-1)).toEqual({ actor: "alex", outcome: "removed" });
@@ -439,6 +440,8 @@ describe("R5: a restore resets every sign-in before the restored database is put
     expect(report).toMatchObject({ ok: true, schemaVersion: 171 });
     store = openStore(file);
     expect(rows()).toEqual([{ generation: g1, state: "retiring", save_op: null, proof: "restored" }]);
+    // The restore's reset moved alex's removal epoch: no call of the replaced database's era counts.
+    expect(signInEpochOf(store, "alex")).toBeGreaterThanOrEqual(1);
     expect(ledger()).toContainEqual({ actor: "command line", outcome: "reset by restore" });
     await tidyFlexibleSignIns(store, state, { now: NOW });
     expect(rows()).toEqual([]);

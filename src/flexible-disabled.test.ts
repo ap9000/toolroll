@@ -296,7 +296,7 @@ describe("the switch can't become an override", () => {
     // Saving your own sign-in starts something new (its transaction A checks the switch first, and again inside);
     // removing, retiring, tidying, a restore's reset and every read never do, so off can always clean up.
     decided("src/flexible-sign-in.ts", ["stageFlexibleSignIn"], ["setupTokenFromPaste", "placeFlexibleSignIn", "activateFlexibleSignIn", "saveFlexibleSignIn", "removeFlexibleSignIn", "resetFlexibleSignInsForRestore",
-      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn", "threadsStatusNote", "signInHoldsFor"]);
+      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn", "threadsStatusNote", "signInHoldsFor", "signInEpochOf"]);
     // Any answer reaching an agent continues its turn, so none goes while off (a decline included: the switch's stop
     // withdraws every open request instead).
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
