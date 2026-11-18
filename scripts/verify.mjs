@@ -599,6 +599,8 @@ async function exercise(feature, context) {
       // a on the thread asks for its Ship terms. This world's project has no check command, so Toolroll says it can't
       // ship yet, in its own words (the whole press, laptop road and password road, is flexible-ship*.slow.test.ts).
       await open('Review the subtraction change.', context.thread);
+      // Its reply's turn first ends (the row reads Ready again): Ship never starts while a turn works.
+      await wait(/Review the subtraction[^\n]*\sReady\b/);
       shown = await press('a', /Ship approves exactly this:|no check command|Refused: /);
       if (!/Ship approves exactly this:|no check command/.test(shown)) throw new Error(`Ship said neither its terms nor why: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
       if (/Ship approves exactly this:/.test(shown)) term.send(esc);
@@ -652,12 +654,12 @@ async function exercise(feature, context) {
     }
     case 'jumps': {
       await ready();
-      // A thread's start keeps the selection where it was (no thread id comes back): open it, as a person would.
+      // A thread's start selects the new thread (threads-everyday S3); once its turn is over it waits on you too (Ready).
       const message = 'Review the subtraction change, then jump.';
       await startThread(term, message);
       const origin = newestThread(); await open(message, origin);
+      await wait(/Review the subtraction change, …\s+Ready\b|Review the subtraction change, then[^\n]*\sReady\b/);
       term.send('!'); await seen(() => projectView()?.task === context.task, 'next needs-you selects result');
-      term.send('@'); await wait(/waiting on you/);
       term.send("'"); await seen(() => projectView()?.task === origin, 'jump returns to thread');
       shown = term.text(); state = 'jump returned to original thread'; break;
     }
