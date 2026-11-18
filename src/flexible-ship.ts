@@ -411,9 +411,31 @@ async function fileAndSeal(store: Store, input: { terms: FlexibleShipTerms; dige
     });
   } catch (error) {
     await flexibleTaskBranch(store, { thread: terms.thread, branch, at: terms.base, make: false, ...runner });
+    // The laptop road gone at the seal: nothing on this install can carry this press on, so the Ship ends here, for good
+    // and with its reason shown (never an import left Shipping that the workbench can neither go on with nor cancel).
+    if (error instanceof ShipStop && error.refusal.reason === "laptop") return endedAtSeal(store, { terms, digest, by: input.by, now: input.now, refusal: error.refusal, ...runner });
     if (error instanceof ShipStop) return kept(error.refusal);
     return kept(refuse("handoff-failed", error instanceof Error ? error.message.slice(0, 300) : undefined));
   }
+}
+
+/** A Ship refused at the seal, ended for good: its quarantined import taken back (the thread's branch put back to what
+ * the import found) and the Ship removed with its reason and words (shown as refused: flexible-session.ts shipFactsOf).
+ * Should the refs not come back, the import stays (shown, removable) as any other refusal at the seal leaves it. */
+async function endedAtSeal(store: Store, input: { terms: FlexibleShipTerms; digest: string; by: string; now: Date; refusal: FlexibleShipRefusal; runner?: Runner }): Promise<FlexibleShipRefusal> {
+  const { terms, digest, refusal } = input;
+  const at = input.now.toISOString();
+  const row = store.handle.prepare("SELECT branch_before FROM flexible_ship WHERE id = ? AND state = 'imported' AND task_id IS NULL").get(digest);
+  const putBack = row === undefined ? null : await removeFlexibleImportRefs(store, { thread: terms.thread, seq: terms.seq, candidate: terms.candidate,
+    branchBefore: row["branch_before"] === null ? null : String(row["branch_before"]), ...(input.runner === undefined ? {} : { runner: input.runner }) });
+  store.transact(() => {
+    if (putBack?.ok === true) store.handle.prepare("UPDATE flexible_ship SET state = 'removed', reason = ?, detail = ?, state_at = ? WHERE id = ? AND state = 'imported' AND task_id IS NULL")
+      .run(refusal.reason, refusal.message.slice(0, 2000), at, digest);
+    else store.handle.prepare("UPDATE flexible_ship SET detail = ?, state_at = ? WHERE id = ? AND state = 'imported'").run(refusal.message.slice(0, 2000), at, digest);
+    store.recordAction({ at, actor: input.by, repo: terms.repo, taskId: null, runId: null, source: "work", action: "flexible ship refused", outcome: refusal.reason,
+      detail: `thread ${terms.thread} · ship ${terms.seq} · at the seal · ${putBack?.ok === true ? "import taken back" : "import kept"} · ${refusal.message}`.slice(0, 2000) });
+  });
+  return refusal;
 }
 
 // ---- reading a Ship ---------------------------------------------------------------------------------------------------

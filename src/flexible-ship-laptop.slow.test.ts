@@ -20,6 +20,7 @@ import { register } from "./runner.js";
 import { savePublishing } from "./pull-request-flow.js";
 import { initLocalMode, localModeOf, type Store } from "./store.js";
 import { laptopShipProblem } from "./flexible-laptop.js";
+import { flexibleThreadRecords } from "./flexible-session.js";
 import { tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
 const switched = vi.hoisted(() => ({ on: true }));
@@ -118,13 +119,29 @@ describe("the laptop road: one key, the whole contract", () => {
   });
 
   test.each([
-    ["the install gets a password", anotherWithPassword],
-    ["an identity provider is linked", linkSso],
-  ])("changed during the import (%s): nothing is sealed, nothing is armed", async (_name, change) => {
+    ["the install gets a password", anotherWithPassword, () => { store.revokeAccount("bob", "alex", NOW); }, false],
+    ["an identity provider is linked", linkSso, () => { store.handle.prepare("DELETE FROM sso_identity").run(); }, true],
+  ] as const)("changed during the import (%s): nothing is sealed or armed, the Ship ends refused with its words, and a new one can be made", async (_name, change, undo, standsAgain) => {
     commit({ "a.txt": "one\n" });
+    const refsBefore = tgit(world.project, "for-each-ref", "--format=%(refname) %(objectname)");
     during.import = change;
-    expect(await press(laptop)).toMatchObject({ ok: false, reason: "laptop" });
-    expect(ships()).toEqual([expect.objectContaining({ seq: 1, state: "imported", proof: "local-owner", task_id: null })]);
+    const refused = await press(laptop);
+    expect(refused).toMatchObject({ ok: false, reason: "laptop" });
+    // Ended for good, the reason kept, its import taken back; nothing filed, nothing armed, nothing to merge.
+    expect(ships()).toEqual([expect.objectContaining({ seq: 1, state: "removed", proof: "local-owner", task_id: null, detail: refused.ok ? null : refused.message })]);
+    expect(store.handle.prepare("SELECT reason FROM flexible_ship").get()?.["reason"]).toBe("laptop");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_ref").get()?.["n"]).toBe(0);
+    expect(tgit(world.project, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(refsBefore);
+    // Shown as the refusal it was, with its words (never Shipping), so the workbench offers Ship again.
+    expect(flexibleThreadRecords(store, { owner: "alex" }).find(one => one.id === thread.id)).toMatchObject({ ship: "refused", shipWords: expect.stringMatching(/^Ship refused: .+/) });
+    // A new Ship can be made: its terms read (the next number); with the laptop road back, it arms.
+    const again = await flexibleShipTerms(store, { thread: thread.id, by: "alex" });
+    expect(again).toMatchObject({ ok: true, terms: { seq: 2 } });
+    undo();
+    if (standsAgain) {
+      expect(await press(laptop)).toMatchObject({ ok: true, seq: 2 });
+      expect(ships().map(one => one.state)).toEqual(["removed", "armed"]);
+    }
   });
 
   test.each([

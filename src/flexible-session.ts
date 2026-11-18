@@ -1025,10 +1025,12 @@ async function stopFlexibleThreadsEverywhereFor(store: Store, input: { thread: s
 }
 
 /** The thread's latest Ship, as its owner reads it (null before its first). */
-export function latestFlexibleShip(store: Store, thread: string): { id: string; seq: number; state: string; taskId: string | null; candidate: string; base: string; detail: string | null } | null {
+export function latestFlexibleShip(store: Store, thread: string): { id: string; seq: number; state: string; taskId: string | null; candidate: string; base: string; detail: string | null;
+  reason: string | null } | null {
   const read = flexibleShipsOf(store, thread);
   const one = read.ok ? read.ships[0] : undefined;
-  return one === undefined ? null : { id: one.id, seq: one.seq, state: one.state, taskId: one.taskId, candidate: one.candidate, base: one.terms.github.base, detail: one.detail };
+  return one === undefined ? null : { id: one.id, seq: one.seq, state: one.state, taskId: one.taskId, candidate: one.candidate, base: one.terms.github.base, detail: one.detail,
+    reason: one.reason };
 }
 
 /** Cancel the thread's armed Ship (flexible-ship.ts cancelFlexibleShip: its owner, it only narrows). */
@@ -1330,7 +1332,10 @@ function shipWords(ship: NonNullable<ReturnType<typeof latestFlexibleShip>>): st
 function shipFactsOf(store: Store, thread: string): { ship?: { seq: number; state: string; words: string } } {
   let ship: ReturnType<typeof latestFlexibleShip>;
   try { ship = latestFlexibleShip(store, thread); } catch { return {}; }
-  if (ship === null || ship.state === "removed") return {};
+  if (ship === null) return {};
+  // Removed with a reason: refused at the seal and its import taken back (flexible-ship.ts endedAtSeal), shown as the
+  // refusal it was; removed by its person, nothing is left to show.
+  if (ship.state === "removed") return ship.reason === null ? {} : { ship: { seq: ship.seq, state: "refused", words: shipWords({ ...ship, state: "refused" }) } };
   return { ship: { seq: ship.seq, state: ship.state, words: shipWords(ship) } };
 }
 
