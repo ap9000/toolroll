@@ -484,6 +484,8 @@ html:not(.k-js) .k-composer:focus-within, html.k-kbd .k-composer:focus-within { 
 .k-crow-i .k-wd { width: 9px; height: 9px; border-radius: 50%; background: var(--so-needs); }
 .k-crow-i svg { width: 14px; height: 14px; }
 .k-crow.ok .k-crow-i { color: var(--so-success); }
+.k-crow.history .k-crow-w { overflow-wrap: anywhere; }
+.k-crow.history .k-crow-i { color: var(--so-muted); }
 .k-crow.bad .k-crow-i { color: var(--so-danger); }
 .k-crow-n { min-width: 0; white-space: normal; line-height: 1.3; }
 .k-crow-n .k-crow-sub { display: block; font-size: 11.5px; color: var(--so-muted); font-weight: 400; }
@@ -496,6 +498,7 @@ html:not(.k-js) .k-composer:focus-within, html.k-kbd .k-composer:focus-within { 
 .k-crow-bar { position: absolute; top: 4px; height: 6px; border-radius: 3px; background: var(--so-info); min-width: 3px; transition: width var(--m-base) linear, background-color var(--m-slow) var(--m-ease); }
 .k-crow.ok .k-crow-bar { background: var(--so-success); }
 .k-crow.bad .k-crow-bar { background: var(--so-danger); }
+.k-crow.waiting .k-crow-bar, .k-crow.history .k-crow-bar { background: var(--so-muted); }
 .k-crow.wait .k-crow-bar { background: var(--so-needs); }
 .k-crow-s { text-align: right; color: var(--so-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 

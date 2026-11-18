@@ -252,10 +252,10 @@ ${items.map(item => html`<div class="k-needs-item"><div><b>${item.title}</b>${it
 /** A run's steps on one elapsed-time axis (Release, a flow's run, a pull request's checks). */
 export function timing(options: { label?: string; chip?: Html; rows: readonly TimingRow[]; scale?: number; foot?: HtmlValue; head?: string }): Html {
   const bars = timingBars(options.rows, options.scale);
-  const mark = (st: TimingRow["st"]): Html => st === "wait" ? html`<span class="k-wd"></span>` : st === "q" ? html`<span class="k-qd"></span>` : st === "run" ? html`<span class="k-rund"></span>` : icon(st === "ok" ? "check" : "x", true);
+  const mark = (st: TimingRow["st"]): Html => st === "wait" ? html`<span class="k-wd"></span>` : (st === "q" || st === "waiting") ? html`<span class="k-qd"></span>` : st === "run" ? html`<span class="k-rund"></span>` : icon(st === "ok" ? "check" : "x", true);
   const rows = options.rows.map((row, index) => {
     const bar = bars[index];
-    const now = row.st === "run" || row.st === "bad" || row.st === "wait";
+    const now = row.st === "run" || row.st === "bad" || row.st === "wait" || row.st === "waiting";
     return html`<div class="${cls("k-crow", row.st, now && "now")}"><span class="k-crow-i">${mark(row.st)}</span>\
 <span class="k-crow-n">${row.name}<span class="k-crow-sub">${row.sub ?? (row.st === "q" ? "not reached" : "")}</span></span>\
 <span class="k-crow-lane">${bar ? html`<i class="k-crow-bar" style="left:${bar.left.toFixed(2)}%;width:${bar.width.toFixed(2)}%"></i>` : ""}</span>\

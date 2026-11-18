@@ -1356,12 +1356,15 @@ export function releaseStepsViewOf(progress: ReturnType<typeof releaseProgressFo
       : { name: RELEASE_STEP_WORDS[step] ?? step, st: "q" as const, start: 0, dur: 0 };
     const start = Date.parse(one.startedAt), end = one.endedAt === null ? now.getTime() : Date.parse(one.endedAt);
     // A failure the release has gone on from (resumed past it, or a build since) is history, not where it stands.
-    const passed = one.state === "failed" && progress.stopped === null;
-    const st: TimingRow["st"] = one.state === "done" || passed ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? "wait" : "run";
-    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(passed ? { sub: "Stopped here, then went on" } : one.detail === null || one.state === "done" ? {} : { sub: one.detail.slice(0, 160) }), st,
+    const passed = one.state === "failed" && progress.stopped?.step !== step;
+    const st: TimingRow["st"] = passed ? "history" : one.state === "done" ? "ok" : one.state === "failed" ? "bad" : one.state === "waiting" ? step === "approval" ? "wait" : "waiting" : "run";
+    const waitingReason = st !== "waiting" ? null : step === "ci" ? "Waiting for PR checks"
+      : step === "quiet" ? "Waiting for active work to finish" : `Waiting for ${(RELEASE_STEP_WORDS[step] ?? step).toLowerCase()}`;
+    const detail = one.state === "done" ? null : one.detail ?? waitingReason;
+    return { name: RELEASE_STEP_WORDS[step] ?? step, ...(detail === null ? {} : { sub: detail.slice(0, 160) }), st,
       start: Number.isFinite(start) && Number.isFinite(origin) ? Math.max(0, (start - origin) / 1000) : 0, dur: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, (end - start) / 1000) : 0 };
   });
-  const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "bad");
+  const current = rows.findIndex(row => row.st === "run" || row.st === "wait" || row.st === "waiting" || row.st === "bad");
   // Released only on its own evidence: the last step (Homebrew, after publication) recorded done. A merge (authority
   // `merged`) is not a release: verifying the tree, the tag and publication still follow it.
   const done = progress.stopped === null && recorded.get("homebrew")?.state === "done";

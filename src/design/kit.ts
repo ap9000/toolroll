@@ -125,8 +125,8 @@ export const plural = (n: number, one: string, many: string): string => `${n} ${
 // ---- timing rows ------------------------------------------------------------------------------------------------
 
 /** A step's state on the timing axis. */
-export type TimingState = "ok" | "run" | "q" | "bad" | "wait";
-export const TIMING_WORDS: Readonly<Record<TimingState, string>> = { ok: "Done", run: "Now", q: "Queued", bad: "Failed", wait: "Needs you" };
+export type TimingState = "ok" | "run" | "q" | "bad" | "wait" | "waiting" | "history";
+export const TIMING_WORDS: Readonly<Record<TimingState, string>> = { ok: "Done", run: "Now", q: "Queued", bad: "Failed", wait: "Needs you", waiting: "Waiting", history: "Failed earlier; continued" };
 export type TimingRow = { name: string; sub?: string; st: TimingState; start: number; dur: number };
 /** Each row's bar as percentages of one shared axis; a queued row has no bar until it starts. */
 export function timingBars(rows: readonly TimingRow[], scale?: number): Array<{ left: number; width: number } | null> {

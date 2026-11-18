@@ -24,7 +24,7 @@ describe("release coverage requires validated non-check evidence", () => {
 
   test("valid screenshot waits only for checks, including stored direct-assessment outcomes", () => {
     const row = mixedCheckScreenshot({ path: "", ok: true, bytes: 5000, dims: { width: 390, height: 844 } });
-    expect(requirementWordOf(row, null, "pending")).toBe("Checked at release");
+    expect(requirementWordOf(row, null, "pending")).toBe("Checks deferred to release");
     expect(requirementWordOf(row, null, "covered")).toBe("Met");
     expect(requirementWordOf({ ...row, assessment: { evidenceState: "missing", detail: row.detail } }, null, "covered")).toBe("Met");
     expect(requirementWordOf({ ...row, assessment: { evidenceState: "failed", detail: ["Screenshot could not be verified"] } }, null, "covered")).toBe("Not shown yet");

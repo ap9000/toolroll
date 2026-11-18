@@ -96,7 +96,7 @@ const CASES: Case[] = [
 const PASSED_CLAIM = /\b(?:check|checks) passed\b|\bpassed against\b|\bPassed on\b|verified the result/i;
 /** The Project checks row's words for each answer. */
 const ROW: Record<ApprovedCheckState, RegExp> = {
-  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checked at release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
+  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checks deferred to release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
 };
 /** The road's Checks step for each answer. */
 const ROAD: Record<ApprovedCheckState, string> = {
