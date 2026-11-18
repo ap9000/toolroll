@@ -10,7 +10,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value};
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Mode, Msg, RESULT_CHANGED, TASK_CHANGED};
+use toolroll_tui::app::{App, Effect, Mode, Msg, PAUSE_REASON, RESULT_CHANGED, TASK_CHANGED};
 
 /// 2026-11-14T12:04:12Z.
 const NOW: i64 = 1_794_657_852;
@@ -319,7 +319,8 @@ fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
         "{:?}",
         app.mode
     );
-    // A plan asked for that waits for its planner (no run, no approval, no backoff): it starts on its own, so x stops it.
+    // A plan asked for that waits for its planner (no run, no approval, no backoff): it starts on its own, so x pauses
+    // it (Pause task: no retry is happening), placing the hold.
     let mut s = steps("t-retry", "queued");
     s["approval"] = json!(null);
     s["waiting"] = json!(null);
@@ -330,20 +331,23 @@ fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
         .last()
         .unwrap()
         .to_string();
-    assert!(bar.contains("stop retrying"), "{bar}");
+    assert!(
+        bar.contains("pause task") && !bar.contains("stop retrying"),
+        "{bar}"
+    );
     app.key(key('x'));
     assert!(
-        matches!(&app.mode, Mode::ConfirmHold { version, .. } if version == "t-retry"),
+        matches!(&app.mode, Mode::ConfirmHold { version, retrying: false, .. } if version == "t-retry"),
         "{:?}",
         app.mode
     );
-    screen(&mut app, 120, 30);
+    assert!(screen(&mut app, 120, 30).contains("Pause this task?"));
     let fx = app.key(code(KeyCode::Enter));
     assert!(
-        matches!(&fx[..], [Effect::Act { path, .. }] if path == "/t/t-retry/hold"),
+        matches!(&fx[..], [Effect::Act { path, fields, .. }] if path == "/t/t-retry/hold" && fields.contains(&("reason".to_string(), PAUSE_REASON.to_string()))),
         "{fx:?}"
     );
-    // Approved and waiting for a builder: Stop retrying stays.
+    // Approved work that never had an attempt, waiting for a builder: Pause task too, never Stop retrying.
     let mut s = steps("t-retry", "queued");
     s["approval"] = json!({ "by": "alex", "you": true, "automatic": false });
     s["waiting"] = json!(null);
@@ -353,5 +357,32 @@ fn a_task_filed_with_no_plan_and_no_approval_offers_no_stop_retrying() {
         .last()
         .unwrap()
         .to_string();
-    assert!(bar.contains("stop retrying"), "{bar}");
+    assert!(
+        bar.contains("pause task") && !bar.contains("stop retrying"),
+        "{bar}"
+    );
+    // A real retry (a try due after a failed attempt): Stop retrying; when it is overdue, "retry due; waiting to start".
+    let mut s = steps("t-retry", "queued");
+    s["waiting"] = json!({ "retryAt": "2026-11-14T12:00:00.000Z", "lastFailure": "The agent stopped with an error", "attempt": "build", "agentSaid": null });
+    let mut app = on(s);
+    let shown = screen(&mut app, 160, 34);
+    assert!(
+        shown.lines().last().unwrap().contains("stop retrying"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("retry due; waiting to start") && !shown.contains("trying again now"),
+        "{shown}"
+    );
+    // A paused task's hold reads as a pause, and x resumes the task.
+    let mut s = steps("t-retry", "queued");
+    s["held"] = json!({ "id": 5, "reason": PAUSE_REASON, "lastFailure": null });
+    let mut app = on(s);
+    let shown = screen(&mut app, 160, 34);
+    assert!(
+        shown.contains("On hold · you paused it") && shown.contains("Resume task"),
+        "{shown}"
+    );
+    app.key(key('x'));
+    assert!(screen(&mut app, 120, 30).contains("Resume this task?"));
 }

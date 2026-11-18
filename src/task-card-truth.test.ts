@@ -222,7 +222,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
       if (one.held !== true) expect(status.sentence, one.id).toMatch(/couldn't be read|check command changed since this check/);
     }
     if (one.expect === "failed") expect(status.headline, one.id).toBe("Failed");
-    if (one.expect === "passed") expect(["Ready for review", "Needs you"], one.id).toContain(status.headline);
+    if (one.expect === "passed") expect(["Ready", "Needs you"], one.id).toContain(status.headline);
     const road = task.journey!.map(step => `${step.key}:${step.state}:${step.say ?? step.label}`);
     expect(road[3], `${one.id}: the road's Checks step`).toBe(`checks:${ROAD[one.expect]}`);
     // Fail closed: a failed or unreadable check never lets the road reach Ready.

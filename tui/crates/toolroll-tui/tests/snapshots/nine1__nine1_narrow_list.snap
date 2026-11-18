@@ -27,4 +27,4 @@ expression: list
 "│                                                          │"
 "╰──────────────────────────────────────────────────────────╯"
 " The list: ⏎ opens the selected task.                       "
-" j/k move  ⏎ open  x stop retrying  n new  : all actions    "
+" j/k move  ⏎ open  x pause task  n new  : all actions       "

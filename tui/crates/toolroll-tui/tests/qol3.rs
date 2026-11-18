@@ -725,6 +725,7 @@ fn an_undrawn_dialog_takes_no_keys() {
                 a.mode = Mode::ConfirmHold {
                     task: "t-live".into(),
                     version: "t-live".into(),
+                    retrying: true,
                 };
             }),
             code(KeyCode::Enter),

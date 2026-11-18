@@ -435,11 +435,12 @@ function headingOf(card: AssignmentCard): string {
     case "Needs you":
       return need === "approval" ? "Plan ready" : need === "answer" || need === "questions" ? "A question for you" : need === "hold" ? "On hold"
         : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? (card.status.sentence.startsWith("No coding agent") ? "Sign in" : "Sign in again")
-        : need === "start-builder" || need === "connect-builder" ? "No builder is running" : need === "rebuild" || need === "replan" ? "The plan changed"
-        : need === "review-result" ? "Ready for your review" : "Waiting on you";
-    case "Ready for review": return "Ready for your review";
+        : need === "connect-builder" ? "No builder" : need === "start-builder" ? "Builder offline" : need === "rebuild" || need === "replan" ? "The plan changed"
+        : need === "plan-again" ? "Plan didn't pass" : need === "planning-stopped" ? "Planning stopped"
+        : need === "review-result" ? "Ready" : "Waiting on you";
+    case "Ready": return "Ready";
     case "Failed": return "A requirement was missed";
-    case "Complete": return "Finished";
+    case "Complete": return "Complete";
     // The chip already says Queued: the heading says why it waits, never Queued again. A task that has run already
     // waits to try again; one that hasn't, to start.
     case "Queued": return card.attempts.some(one => one.runId !== null) ? "Retry scheduled" : "Waiting to start";
@@ -482,7 +483,7 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
   const [steering, setSteering] = useState(false);
   const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
-  const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
+  const waits = card.status.headline === "Needs you" || card.status.headline === "Ready";
   const acts: ReactNode = confirm != null && csrf !== "" ? <RecheckStopped form={confirm} label={card.action?.label ?? "Check again"} />
     : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><RetryPinFields pins={rebuild.pins} /><KButton type="submit" variant="primary" label={card.action?.label ?? "Retry"} data-primary-action="" /></PostForm>
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} pins={retry.pins} />
@@ -973,7 +974,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono so-task-id">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
   const record = view.audit ?? null;
-  const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
+  const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
     && !(rows !== null && hasResult && (view.status.action.openResult || /[?&]tab=result\b/.test(view.status.action.href)))
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;

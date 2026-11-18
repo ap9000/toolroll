@@ -23,7 +23,7 @@ describe("lead status commands", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  const create = (store: Store, id: string, state: "queued" | "running" | "done" | "failed" = "queued"): number => {
+  const create = (store: Store, id: string, state: "queued" | "running" | "done" | "failed" | "cancelled" = "queued"): number => {
     store.createTask({ id, title: id }, NOW);
     if (state !== "queued") expect(store.setTaskState(id, state, NOW)).toEqual({ ok: true });
     return store.refFor(BUILT_IN, id).id;
@@ -90,7 +90,7 @@ describe("lead status commands", () => {
     const said = lines.join("\n").split("\n");
     expect(said[0]).toBe(`Waiting on you ${body.figures.waitingOnYou} · Running ${body.figures.running} · Queued ${body.figures.queued} · Done ${body.figures.done}`);
     // Everything that was there before is still below it.
-    for (const start of ["Tasks:", "Building:", "Queued:", "Ready for review:", "Release check:", "Plan windows:"]) expect(said.some(line => line.startsWith(start)), start).toBe(true);
+    for (const start of ["Tasks:", "Building:", "Queued:", "Ready:", "Release check:", "Plan windows:"]) expect(said.some(line => line.startsWith(start)), start).toBe(true);
     expect(renderInstallationStatus({ ...body, figures: { waitingOnYou: 2, running: 1, queued: 0, done: 14 } } as never)[0]).toBe("Waiting on you 2 · Running 1 · Queued 0 · Done 14");
   });
 
@@ -182,6 +182,14 @@ describe("lead status commands", () => {
     const needsPerson: string[] = [];
     expect(await runOperate("task", ["wait", "needs-scope"], line => needsPerson.push(line), { databaseFile: db, now: NOW })).toBe(1);
     expect(needsPerson).toEqual(["Needs a person | no run | checks unknown | next: Add scope"]);
+
+    // Cancelled reads Cancelled, never Failed; its exit code stays 1.
+    const again = openStore(db);
+    create(again, "cancelled-task", "cancelled");
+    again.close();
+    const cancelled: string[] = [];
+    expect(await runOperate("task", ["wait", "cancelled-task"], line => cancelled.push(line), { databaseFile: db, now: NOW })).toBe(1);
+    expect(cancelled).toEqual(["Cancelled | no run | checks unknown | next: Open the task"]);
   });
 
   test("task wait keeps a failed check visible while a ready result still exits 0", async () => {
@@ -330,7 +338,7 @@ describe("lead status commands", () => {
       { reason: "needs a scope", count: 1 },
       { reason: "on hold", count: 1 },
     ]));
-    // A result with no approved scope or commit is not Ready for review: the
+    // A result with no approved scope or commit is not Ready: the
     // count reads the same projection as the Tasks list, which says Needs you.
     expect(body.waitingForReview).toEqual({ count: 0, results: [] });
     expect(body.tasks.find((one: { task: string }) => one.task === "ready-result")?.headline).toBe("Needs you");

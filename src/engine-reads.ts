@@ -467,7 +467,7 @@ export function planStoppedLine(kind: "plan" | "question" | "stalled", strikes: 
   if (kind === "plan") return "The plan didn't pass its checks.";
   if (kind === "question") return "The planner's question didn't pass its checks.";
   const why = failedAttemptSentence(reason).replace(/[.\s]+$/, "").replace(/^./, first => first.toLowerCase());
-  return `Planning failed ${Math.max(strikes, 1)} times in a row: ${why}.`;
+  return `Planning stopped after ${Math.max(strikes, 1)} failed attempts in a row: ${why}.`;
 }
 
 /**

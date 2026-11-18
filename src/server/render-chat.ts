@@ -195,7 +195,7 @@ export function taskChatLiveRegion(focus: TaskChatFocus, csrf: string, fragment 
   const approvalContent = (inert && focus.approval !== null && focus.plan !== "requested"
       ? html`<section class="card chat-action-card"><span class="eyebrow">approval ready</span><h2>Finish the current chat response first</h2><p class="meta">The secure approval step appears here as soon as this response lands.</p></section>`
       : fragment && focus.approval !== null && focus.plan !== "requested"
-        ? html`<section class="card chat-action-card chat-refresh-action"><a class="button-link" href="${approvalHref}" data-primary-action>Approve plan</a></section>`
+        ? html`<section class="card chat-action-card chat-refresh-action"><a class="button-link" href="${approvalHref}" data-primary-action>Review plan</a></section>`
         : taskChatApproval(focus, csrf));
   // The approval leads when dispatch waits on it or the plan was rewritten after a build (the assignment's one action).
   const approvalLeads = focus.dispatch?.action === "approve-scope" ||

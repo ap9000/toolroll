@@ -77,6 +77,8 @@ export type DispatchDiagnosisCode =
   /** A planning incident (the plan or the planner's question failed its checks, or planning failed again and again):
    * Plan again is the way on, never Retry. */
   | "plan-stopped"
+  /** Planning failed again and again with no valid plan (plan-attempts-exhausted): Plan again too. */
+  | "planning-stopped"
   | "held"
   | "storage-blocked"
   /** v52: an operator stopped one exact attempt; only resuming it lifts the pause. */
@@ -412,9 +414,9 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       return answer("retry-scheduled", "retrying", "Retry scheduled", local.until === null ? "The failed attempt is backing off before retrying." : `It tries again ${retryWhenWords(local.until, now)}.`, { nextAt: local.until });
     }
     if (local.ownerKind === "decision") return answer("waiting-decision", "waiting", "Waiting on your answer", "An agent parked a question; answering it resumes the task.", { action: "answer-decision" });
-    if (local.ownerKind === "incident" && plannerIncident(store, local.ownerId)) {
-      return answer("plan-stopped", "waiting", "Plan didn't pass", "The plan didn't pass its checks. Plan again, or edit the task.");
-    }
+    const planning = local.ownerKind === "incident" ? plannerIncident(store, local.ownerId) : null;
+    if (planning === "stalled") return answer("planning-stopped", "waiting", "Planning stopped", "Planning stopped after repeated failures. Plan again, or edit the task.");
+    if (planning === "invalid") return answer("plan-stopped", "waiting", "Plan didn't pass", "The plan didn't pass its checks. Plan again, or edit the task.");
     if (local.ownerKind === "incident") return answer("waiting-incident", "waiting", "Needs a retry", "The last attempts failed the same way. Retry, or change the plan.", { action: "retry-task" });
     if (local.ownerKind === "stop") return answer("stopped", "waiting", "Paused", `${local.message.replace(/^held:\s*/, "")}. The attempt's work is preserved; resuming that exact attempt lifts this pause.`, { action: "resume-run" });
     return answer("held", "waiting", "On hold", local.message.replace(/^held:\s*/, ""), { action: local.ownerKind === "operator" ? "unhold" : "inspect-hold" });
@@ -610,9 +612,11 @@ export function resetWhenWords(at: string, now: Date, zone: string = viewerZone(
   return `on ${words}`;
 }
 
-/** Whether an incident hold's incident is a planning one (its run a planning turn, its kind a planning kind). */
-function plannerIncident(store: Store, ownerId: string | undefined): boolean {
-  if (ownerId === undefined || !/^[1-9][0-9]*$/.test(ownerId)) return false;
+/** An incident hold's planning incident, by kind: "stalled" (planning failed again and again), "invalid" (the plan or
+ * the planner's question failed its checks), or null (no planning incident). */
+function plannerIncident(store: Store, ownerId: string | undefined): "stalled" | "invalid" | null {
+  if (ownerId === undefined || !/^[1-9][0-9]*$/.test(ownerId)) return null;
   const row = store.handle.prepare("SELECT incident.kind, run.role FROM incident JOIN run ON run.id = incident.run WHERE incident.id = ?").get(Number(ownerId));
-  return row !== undefined && row["role"] === "planner" && PLANNER_INCIDENT_KINDS.has(String(row["kind"]));
+  if (row === undefined || row["role"] !== "planner" || !PLANNER_INCIDENT_KINDS.has(String(row["kind"]))) return null;
+  return row["kind"] === "plan-attempts-exhausted" ? "stalled" : "invalid";
 }

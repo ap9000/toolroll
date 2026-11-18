@@ -222,7 +222,7 @@ describe("c1: results waiting together are checked once on a temporary batch com
       expect(latest(one.run, at(21))).toMatchObject({ state: "passed", head: one.head, tested,
         batch: { mode: "together", tested, base: BASE, members: [{ task: a.task, run: a.run, head: a.head }, { task: b.task, run: b.run, head: b.head }] } });
       const status = statusOf(one.task, at(21));
-      expect(status.headline).toBe("Ready for review");
+      expect(status.headline).toBe("Ready");
       expect(status.details.find(row => row.key === "checks")).toMatchObject({ text: `Checked together with ${peer.task} on ${tested.slice(0, 7)}`, mark: "ok" });
       expect(fullCheckGate(store, one.run, at(21))).toEqual({ state: "clear" });
     }

@@ -93,9 +93,10 @@ function Question({ row }: { row: BrowserHomeRow }) {
 
 /** A release, a flow card or a setup step is never acted on in Work: its line and the one link to its own page. */
 const OWN_PAGE: ReadonlySet<BrowserHomeAsk> = new Set(["release", "flow", "setup"]);
-/** Each ask's chip under Needs you, and the word its row's act says. */
-const ASK_CHIP: Readonly<Record<BrowserHomeAsk, string>> = { release: "Release", approve: "Plan", answer: "Question", flow: "Flow", wrong: "Failed", review: "Result", setup: "Setup", other: "Needs you" };
-const ASK_ACT: Readonly<Record<BrowserHomeAsk, string>> = { release: "Review", approve: "Approve", answer: "Answer", flow: "Open", wrong: "Open", review: "Review", setup: "Open", other: "Open" };
+/** Each ask's chip under Needs you, and the word its row's act says, when its source names none of its own. A link that
+ * only opens a page says where it goes (Review plan, Open result), never an act that hasn't happened. */
+const ASK_CHIP: Readonly<Record<BrowserHomeAsk, string>> = { release: "Release", approve: "Plan", answer: "Question", flow: "Flow", wrong: "Failed", review: "Ready", setup: "Setup", other: "Needs you" };
+const ASK_ACT: Readonly<Record<BrowserHomeAsk, string>> = { release: "Review", approve: "Review plan", answer: "Answer", flow: "Open", wrong: "Open", review: "Open result", setup: "Open", other: "Open" };
 
 /** One row of the list: a waiting ask (Home's row) or a task (the Tasks list's row). */
 type Item = { id: string; title: string; href: string; meta: string; reason: string | null; chip: { word: string; tone: "" | "needs" | "ask" | "live" | "done" | "failed" }; act: string;
@@ -103,15 +104,17 @@ type Item = { id: string; title: string; href: string; meta: string; reason: str
 type Section = { key: string; label: string; count: number; items: Item[] };
 
 const metaOf = (project: string | null, age: string): string => [project, age].filter(Boolean).join(" · ");
-const homeItem = (row: BrowserHomeRow): Item => ({ id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: row.reason,
-  chip: { word: ASK_CHIP[row.ask ?? "other"], tone: "needs" }, act: ASK_ACT[row.ask ?? "other"], home: row, task: null });
+/** A waiting row keeps its source's own chip and act (No builder → Connect a builder, Plan didn't pass → Plan again);
+ * only a row whose source names none falls back to its ask's words. */
+const homeItem = (row: BrowserHomeRow, chip: string | null = null): Item => ({ id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: row.reason,
+  chip: { word: chip ?? ASK_CHIP[row.ask ?? "other"], tone: "needs" }, act: row.action?.label ?? ASK_ACT[row.ask ?? "other"], home: row, task: null });
 const taskItem = (row: BrowserTaskRow, act: string): Item => ({ id: row.id, title: row.title, href: row.href, meta: metaOf(row.project, row.age), reason: null,
   chip: row.word, act, home: null, task: row });
 
 /** Below the Needs-you groups: running, queued, done or stopped (by the row's status rank, as the Tasks list placed them). */
 const REST: readonly { key: string; label: string; ranks: readonly number[]; act: string }[] = [
   { key: "running", label: "Running", ranks: [0, 1], act: "Watch" }, { key: "queued", label: "Queued", ranks: [2], act: "Open" },
-  { key: "done", label: "Done", ranks: [3], act: "Open" }, { key: "stopped", label: "Stopped", ranks: [4], act: "Open" },
+  { key: "done", label: "Complete", ranks: [3], act: "Open" }, { key: "stopped", label: "Stopped", ranks: [4], act: "Open" },
 ];
 
 /** The sections this view shows: All leads with Needs you, then the rest; Needs you is its groups; any other view is
@@ -120,17 +123,19 @@ export function sectionsOf(view: BrowserWorkView, gone: ReadonlySet<string>): Se
   const current = view.list.tabs.find(tab => tab.active)?.key ?? "all";
   // A group's rows: the list's own waiting rows (each carrying what it asks), then the asks that are no task's row.
   const waitingRows = view.list.rows.flatMap(row => row.need === undefined ? [] : [row.need]);
+  // The specific chip each task row's source gave it (Plan didn't pass, No builder, Builder offline…).
+  const chipOf = new Map(view.list.rows.map(row => [row.id, row.chip ?? null] as const));
   const groupOfRow = (row: BrowserHomeRow): string => row.group ?? (row.ask === "review" ? "review" : row.ask === "wrong" || row.ask === "setup" || row.ask === "other" ? "unblock" : "decide");
   const needs: Section[] = view.needs.map(group => {
     const all = [...waitingRows.filter(row => groupOfRow(row) === group.key), ...group.rows];
-    const items = all.filter(row => !gone.has(row.id)).map(homeItem);
+    const items = all.filter(row => !gone.has(row.id)).map(row => homeItem(row, chipOf.get(row.id) ?? null));
     return { key: group.key, label: group.label, count: Math.max(0, group.count - (all.length - items.length)), items };
   }).filter(section => section.items.length > 0 || section.count > 0);
   if (current === "needs-you") return needs;
   if (current !== "all") {
     const rows = view.list.rows.filter(row => !gone.has(row.id));
     return rows.length === 0 ? [] : [{ key: current, label: view.list.tabs.find(tab => tab.active)?.label ?? "", count: rows.length,
-      items: rows.map(row => taskItem(row, row.ask === "decide" ? "Approve" : row.ask === "review" ? "Review" : REST.find(one => one.ranks.includes(row.rank))?.act ?? "Open")) }];
+      items: rows.map(row => taskItem(row, row.action?.label ?? (row.ask === "decide" ? "Review plan" : row.ask === "review" ? "Open result" : REST.find(one => one.ranks.includes(row.rank))?.act ?? "Open"))) }];
   }
   // A row that waits on you is listed once, under its Needs-you group.
   const grouped = new Set(view.needs.flatMap(group => group.rows.map(row => row.id)));

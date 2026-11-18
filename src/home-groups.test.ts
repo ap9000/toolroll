@@ -25,7 +25,7 @@ describe("homeGroupOf", () => {
     expect(homeGroupOf(item(["all", "needs-you"]))).toBe("you");
     // A row that both needs you and is running waits on you.
     expect(homeGroupOf(item(["all", "needs-you", "running"]))).toBe("you");
-    expect(homeGroupOf(item(["all", "needs-you", "ready"], "Ready for review"))).toBe("you");
+    expect(homeGroupOf(item(["all", "needs-you", "ready"], "Ready"))).toBe("you");
     expect(homeGroupOf(item(["all", "running"], "Building"))).toBe("working");
     expect(homeGroupOf(item(["all", "queued"], "Waiting"))).toBe("working");
     // Queued under any headline is working: Working is what the Running and Queued figures count.
@@ -40,7 +40,7 @@ describe("homeGroupOf", () => {
   });
 
   test("the headings and the opening line say the plain words", () => {
-    expect(Object.values(HOME_GROUP_LABEL)).toEqual(["Waiting on you", "Working", "Done"]);
+    expect(Object.values(HOME_GROUP_LABEL)).toEqual(["Waiting on you", "Working", "Complete"]);
     const figures = homeFiguresOf({ all: 9, "needs-you": 2, ready: 1, running: 1, queued: 0, completed: 14, archived: 3 });
     expect(figures).toEqual({ waitingOnYou: 2, running: 1, queued: 0, done: 14 });
     expect(homeFiguresLine(figures)).toBe("Waiting on you 2 · Running 1 · Queued 0 · Done 14");

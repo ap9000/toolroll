@@ -150,7 +150,7 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     { key: "needs", label: "Needs you", value: totals["needs-you"], href: `/tasks?${scopeQuery}view=needs-you` },
     { key: "running", label: "Running", value: totals.running, href: `/tasks?${scopeQuery}view=running` },
     { key: "queued", label: "Queued", value: totals.queued, href: `/tasks?${scopeQuery}view=queued` },
-    { key: "finished", label: "Finished", value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
+    { key: "finished", label: "Complete", value: totals.completed, href: `/tasks?${scopeQuery}view=completed` },
   ];
   // One row per family, in the first list that claims it.
   const seen = new Set<string>();

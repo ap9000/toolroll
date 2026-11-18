@@ -101,8 +101,9 @@ fn x_on_a_waiting_task_stops_retrying_after_a_confirm() {
             done: "Stopped retrying: it stays, and nothing more runs until you resume it.".into(),
         }]
     );
-    // Any other key keeps it retrying.
+    // Any other key keeps it as it is (the dialog drawn first, as every dialog must be before a key acts on it).
     app.key(key('x'));
+    screen(&mut app, 120, 30);
     assert_eq!(app.key(key('q')), vec![]);
     assert_eq!(status(&app), "Nothing changed.");
 }
@@ -180,7 +181,8 @@ fn a_waiting_task_says_why_and_when_in_the_list_live_and_steps() {
     assert!(wide.contains(line), "{wide}");
     // Due: it says so, never a negative wait.
     app.now = NOW + 200;
-    assert!(screen(&mut app, 200, 40).contains("trying again now"));
+    // Due and not started yet: said as that, never "trying again now".
+    assert!(screen(&mut app, 200, 40).contains("retry due; waiting to start"));
 }
 
 #[test]

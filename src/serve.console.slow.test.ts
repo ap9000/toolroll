@@ -753,7 +753,7 @@ describe("the operations console", () => {
     let pages = await surfaces();
     expect(nonceOf(pages.task)).not.toBeNull();
     expect(nonceOf(pages.chat)).not.toBeNull();
-    expect(await homeRow()).toContain("Approve plan");
+    expect(await homeRow()).toContain("Review plan");
 
     // Unreadable route bytes: closed everywhere, in words, with the road —
     // the Home row names the attention it needs and offers no approve act.
@@ -790,7 +790,7 @@ describe("the operations console", () => {
       expect(html).toContain("made before agents were chosen per task");
     }
     row = await homeRow();
-    expect(row).not.toContain("Approve plan");
+    expect(row).not.toContain("Review plan");
     expect(row).toContain("This plan was made before agents were chosen per task");
     expect(store.sealScopeApproval("t-c", "alex", T0)).toBe(false);
 
@@ -799,7 +799,7 @@ describe("the operations console", () => {
     pages = await surfaces();
     expect(nonceOf(pages.task)).not.toBeNull();
     expect(pages.task).toContain('type="password"');
-    expect(await homeRow()).toContain("Approve plan");
+    expect(await homeRow()).toContain("Review plan");
   });
 
   test("consent-closed (v48 integrity): the ONE strict stored-scope projection gates every surface — an extra key, a timer-unsafe clock, an unsafe integer, a malformed chain auth mode, a route/profile parity break, or a digest mismatch mints no nonce, shows no password, offers no act, and the seal refuses the same row", async () => {
@@ -1024,7 +1024,7 @@ describe("the operations console", () => {
     const home = await (await fetch(url("/"), { headers: { cookie } })).text();
     // The approval row links to the step-up screen; Home never carries a
     // password field or a nonce of its own.
-    expect(homeRowOf(home, "t-approve")).toMatchObject({ title: "awaiting yes", action: { label: "Approve plan", href: "/t/t-approve?version=t-approve#approve" } });
+    expect(homeRowOf(home, "t-approve")).toMatchObject({ title: "awaiting yes", action: { label: "Review plan", href: "/t/t-approve?version=t-approve#approve" } });
     expect(home).not.toContain('name="nonce"');
     expect(home).not.toContain('type="password"');
 
@@ -1792,7 +1792,7 @@ describe("the board — the pipeline as lanes, live in place", () => {
     store.finishRun(run, { outcome: "built", reason: "plan-drafted", now: new Date() });
 
     const review = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
-    expect(boardColumnOf(review, "needs").rows.find(one => one.id === "t-plan")?.action?.label).toBe("Approve plan");
+    expect(boardColumnOf(review, "needs").rows.find(one => one.id === "t-plan")?.action?.label).toBe("Review plan");
     const drafted = await (await fetch(url("/t/t-plan"), { headers: { cookie } })).text();
     expect(drafted).toContain("Do the thing carefully.");
     expect(drafted).toContain('class="approve-form approval-sheet"');
@@ -2362,7 +2362,7 @@ describe("Home — what waits on you, answered in place", () => {
     expect((await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/" }), redirect: "manual" })).status).toBe(303);
 
     const home = await (await fetch(url("/"), { headers: { cookie } })).text();
-    expect(homeRowOf(home, "t-a")?.action?.label).toBe("Approve plan");
+    expect(homeRowOf(home, "t-a")?.action?.label).toBe("Review plan");
     expect(home).not.toContain('name="nonce"');
     expect(home).not.toContain('type="password"');
 

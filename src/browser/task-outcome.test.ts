@@ -14,7 +14,7 @@ import { FormToken } from "./ui/post-form.js";
 import { taskRoad } from "../first-run.js";
 import { stepRowsOf } from "../workspace-ui.js";
 
-type Headline = "Ready for review" | "Complete" | "Building";
+type Headline = "Ready" | "Complete" | "Building";
 const cardOf = (headline: Headline, details: AssignmentCard["status"]["details"] = []): AssignmentCard => ({
   token: "assignment", tone: headline === "Building" ? "info" : "attention", label: headline,
   status: { headline, tone: headline === "Building" ? "live" : "attention", sentence: headline === "Building" ? "Step 2 of 4." : "Checks failed on 9e07b41. Look at the failure before accepting.",
@@ -43,12 +43,12 @@ const show = (view: BrowserTaskView, key = "page") => act(() => root!.render(cre
 const before = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
 test("a result waiting on review: status, sentence and the act first, then the steps folded under Plan and steps", () => {
-  show(viewOf(cardOf("Ready for review"), { stage: "needs-you", need: "review-result" }, true));
+  show(viewOf(cardOf("Ready"), { stage: "needs-you", need: "review-result" }, true));
   const outcome = host.querySelector("[data-task-outcome]")!;
   const steps = host.querySelector("[data-task-steps]")!;
   expect(outcome).not.toBeNull();
   expect(before(outcome, steps)).toBe(true);
-  expect(outcome.querySelector("[data-task-status] h2")?.textContent).toBe("Ready for your review");
+  expect(outcome.querySelector("[data-task-status] h2")?.textContent).toBe("Ready");
   expect(outcome.textContent).toContain("Look at the failure before accepting.");
   expect(outcome.querySelector("[data-primary-action]")?.textContent).toBe("Review and accept");
   // The steps are there, folded: the plan is one tap away, never ahead of the outcome.
@@ -62,7 +62,7 @@ test("a result waiting on review: status, sentence and the act first, then the s
 });
 
 test("a failed check reads in the leading status, before its act: never only in the folded Checks row (approval criterion 5)", () => {
-  show(viewOf(cardOf("Ready for review", failedCheck), { stage: "needs-you", need: "review-result" }, true));
+  show(viewOf(cardOf("Ready", failedCheck), { stage: "needs-you", need: "review-result" }, true));
   const outcome = host.querySelector("[data-task-outcome]")!;
   const failure = outcome.querySelector('[data-status-detail="checks"]');
   expect(failure?.textContent).toBe("Failed on 9e07b41");
@@ -76,12 +76,12 @@ test("a failed check reads in the leading status, before its act: never only in 
 
 test("the result's own caveats and its mismatch read above Mark complete, never under it (review finding 2)", () => {
   const selected = { taskId: "t-1", title: "Fix the payout rounding drift", project: null, build: 6, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
-    status: { label: "Ready for review", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
+    status: { label: "Ready", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
     complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 6, returnTo: "/t/t-1" },
     decision: { label: "Accept", ready: true, why: null, effect: "Finishes the task." }, checks: null, mismatch: null,
     acts: { primary: "accept", secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null,
   } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
-  const view = viewOf(cardOf("Ready for review"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
+  const view = viewOf(cardOf("Ready"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
   act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
     result: (one, token, current) => createElement(SelectedResult, { selected: one, csrf: token, inTask: { current } }) }))));
   const markComplete = [...host.querySelectorAll<HTMLElement>("[data-task-outcome] [data-task-status] button")].find(one => one.textContent?.trim() === "Mark complete");
@@ -96,14 +96,14 @@ test("the result's own caveats and its mismatch read above Mark complete, never 
 
 /** A Ready result with the agent's report and a person's words (one-workspace S5). */
 const reported = (agentReport: unknown, youSaid: unknown[] = []) => ({ taskId: "t-1", title: "Fix the payout rounding drift", project: null, build: 6, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
-  status: { label: "Ready for review", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
+  status: { label: "Ready", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
   complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 6, returnTo: "/t/t-1" },
   decision: { label: "Accept", ready: true, why: null, effect: "Finishes the task." }, checks: null, mismatch: null,
   acts: { primary: "accept", secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null,
   agentReport, youSaid,
 } as unknown as NonNullable<BrowserTaskView["result"]>["selected"]);
 const showResult = (selected: NonNullable<BrowserTaskView["result"]>["selected"]) => {
-  const view = viewOf(cardOf("Ready for review"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
+  const view = viewOf(cardOf("Ready"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
   act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
     result: (one, token, current) => createElement(SelectedResult, { selected: one, csrf: token, inTask: { current } }) }))));
 };

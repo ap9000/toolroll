@@ -345,6 +345,9 @@ pub enum Mode {
     ConfirmHold {
         task: String,
         version: String,
+        /// A real retry (a try is due after a failed attempt): Stop retrying. Otherwise work that would start on its
+        /// own for the first time (approved, or a plan asked for): Pause task.
+        retrying: bool,
     },
     /// Resume a task this person stopped retrying: the hold shown (its id), released only while it still stands
     /// (POST /t/<task>/unhold `hold`, proved where it is released).
@@ -504,6 +507,8 @@ pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(4
 pub const NOTHING_CHANGED: &str = "Nothing changed.";
 /// The reason the workbench's Stop retrying gives its hold (and how it knows a hold is that one).
 pub const HOLD_REASON: &str = "stopped retrying from the terminal";
+/// The reason the workbench's Pause task gives its hold (work that never had an attempt; Resume task releases it).
+pub const PAUSE_REASON: &str = "paused from the terminal";
 
 /// The build Open build shell would open on: the result waiting, else the newest build attempt.
 pub fn shell_run_of(steps: &StepCards) -> Option<i64> {
@@ -1209,6 +1214,17 @@ impl App {
                 // CLI, say) has nothing to stop.
                 && (s.waiting.is_some() || s.approval.is_some() || s.plan_queued)
         }) && !self.approval_waiting()
+    }
+
+    /// Whether what x stops on the selected task is a real retry (a try due after a failed attempt), not work that would
+    /// start for the first time.
+    pub fn retrying_here(&self) -> bool {
+        self.steps_here().is_some_and(|s| s.waiting.is_some())
+    }
+
+    /// Whether the person's hold on the selected task is a pause (Pause task), not a stopped retry.
+    pub fn paused_here(&self) -> bool {
+        self.held_here().is_some_and(|h| h.reason == PAUSE_REASON)
     }
 
     /// The task version the selected row's steps read (a sent-back task's revision has its own id; the row keeps the
@@ -2603,10 +2619,14 @@ impl App {
                     _ => vec![],
                 }
             }
-            Mode::ConfirmHold { task, version } => {
+            Mode::ConfirmHold {
+                task,
+                version,
+                retrying,
+            } => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.hold(task, version),
+                    KeyCode::Enter => self.hold(task, version, retrying),
                     _ => {
                         self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
@@ -3382,8 +3402,13 @@ impl App {
                 None if self.queued_here() => {
                     let task = item.as_ref().map(|i| i.id.clone()).unwrap_or_default();
                     let version = self.version_here().unwrap_or_else(|| task.clone());
+                    let retrying = self.retrying_here();
                     self.status = None;
-                    self.mode = Mode::ConfirmHold { task, version };
+                    self.mode = Mode::ConfirmHold {
+                        task,
+                        version,
+                        retrying,
+                    };
                     vec![]
                 }
                 None => {
@@ -4540,7 +4565,7 @@ impl App {
     }
 
     /// Stop retrying (POST /t/<task>/hold): an operator's hold, as the task page's "Hold the next attempt".
-    fn hold(&mut self, task: String, version: String) -> Vec<Effect> {
+    fn hold(&mut self, task: String, version: String, retrying: bool) -> Vec<Effect> {
         if self.selected_id().as_deref() != Some(task.as_str()) {
             self.say(
                 Tone::Refused,
@@ -4565,8 +4590,16 @@ impl App {
         }
         self.act(
             path,
-            vec![("reason", HOLD_REASON.into())],
-            "Stopped retrying: it stays, and nothing more runs until you resume it.".into(),
+            vec![(
+                "reason",
+                if retrying { HOLD_REASON } else { PAUSE_REASON }.into(),
+            )],
+            if retrying {
+                "Stopped retrying: it stays, and nothing more runs until you resume it."
+            } else {
+                "Paused: it stays, and nothing starts until you resume it."
+            }
+            .into(),
         )
     }
 
@@ -4730,7 +4763,7 @@ impl App {
                 .then_some(QUESTION_CHANGED),
             Mode::Approve { task, key, .. } => self.approval_changed(task, key),
             // Every other dialog froze the version it opened on: a newer one (a revision filed since) closes it.
-            Mode::ConfirmHold { task, version }
+            Mode::ConfirmHold { task, version, .. }
             | Mode::ConfirmResume { task, version, .. }
             | Mode::ConfirmCancel { task, version, .. }
             | Mode::ConfirmRetry { task, version, .. }

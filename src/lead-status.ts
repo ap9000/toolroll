@@ -17,7 +17,7 @@ export type CheckSummary = {
 
 export type TaskWaitSnapshot = {
   task: string;
-  outcome: "Running" | "Queued" | "Ready" | "Complete" | "Failed" | "Needs a person";
+  outcome: "Running" | "Queued" | "Ready" | "Complete" | "Failed" | "Cancelled" | "Needs a person";
   run: number | null;
   /** The attempt `wait` started watching, when a later retry replaced it. */
   replacedRun: number | null;
@@ -146,7 +146,9 @@ export function taskWaitSnapshot(store: Store, taskId: string, now: Date, watche
   const completed = state === "done" && familyCompleted(store, taskId);
   if (completed) return answer("Complete", "No action needed", true, 0, "complete");
   if (state === "done") return answer("Ready", "Open result", true, 0, "ready");
-  if (state === "failed" || state === "cancelled") return answer("Failed", state === "cancelled" ? "Review cancellation" : "Inspect failure", true, 1, "failed");
+  // A cancelled task reads Cancelled, never Failed; its machine answer (exit code, reason) stays as it was.
+  if (state === "cancelled") return answer("Cancelled", "Open the task", true, 1, "failed");
+  if (state === "failed") return answer("Failed", "Inspect failure", true, 1, "failed");
 
   const decision = store.handle.prepare(`SELECT decision.id FROM run INDEXED BY lead_status_task_run
     JOIN decision INDEXED BY work_open_decision ON decision.run = run.id
@@ -328,7 +330,7 @@ export function renderInstallationStatus(status: InstallationStatus, limited = f
   }
   lines.push(status.running.count === 0 ? "Building: none" : `Building: ${status.running.count} — ${status.running.tasks.map(one => `${one.task} (#${one.run}, ${one.phase})`).join(", ")}${status.running.count > status.running.tasks.length ? ", …" : ""}`);
   lines.push(status.queued.count === 0 ? "Queued: none" : `Queued: ${status.queued.count} — ${status.queued.tasks.map(one => `${one.task} (${queueReasonWords(one.reason)})`).join(", ")}${status.queued.count > status.queued.tasks.length ? ", …" : ""}`);
-  lines.push(status.waitingForReview.count === 0 ? "Ready for review: none" : `Ready for review: ${status.waitingForReview.count} — ${status.waitingForReview.results.map(one => one.run === null ? one.task : `${one.task} (#${one.run})`).join(", ")}${status.waitingForReview.count > status.waitingForReview.results.length ? ", …" : ""}`);
+  lines.push(status.waitingForReview.count === 0 ? "Ready: none" : `Ready: ${status.waitingForReview.count} — ${status.waitingForReview.results.map(one => one.run === null ? one.task : `${one.task} (#${one.run})`).join(", ")}${status.waitingForReview.count > status.waitingForReview.results.length ? ", …" : ""}`);
   // Neither the release check nor plan windows belong to a person's projects: a limited report leaves both out.
   if (limited) return lines;
   if (status.releaseCheck === null) {

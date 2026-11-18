@@ -54,7 +54,7 @@ describe("status words", () => {
     const of = Object.fromEntries(HEADLINES.map(headline => [headline, statusOfHeadline(headline)]));
     expect(of).toEqual({
       Queued: "queued", Planning: "running", "Needs you": "needs", Waiting: "queued", Building: "running",
-      "Ready for review": "needs", Complete: "finished", Failed: "failed", Stopped: "queued",
+      "Ready": "needs", Complete: "finished", Failed: "failed", Stopped: "queued",
     });
   });
 });

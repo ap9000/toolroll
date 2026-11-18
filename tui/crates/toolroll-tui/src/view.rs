@@ -59,7 +59,8 @@ pub fn duration(secs: i64) -> String {
 pub fn waiting_words(w: &toolroll_api::Waiting, now: i64) -> String {
     let next = match w.retry_at.as_deref().and_then(epoch) {
         Some(at) if at > now => format!("next try in {}", duration(at - now)),
-        Some(_) => "trying again now".to_string(),
+        // Due, and not started yet (a builder must take it): never "trying again now".
+        Some(_) => "retry due; waiting to start".to_string(),
         None => "next try when a builder is free".to_string(),
     };
     // A planner's own backoff tries the plan again, not a build.
@@ -1995,10 +1996,13 @@ fn plan_stopped_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     let Some(stopped) = app.steps_here().and_then(|s| s.plan_stopped.as_ref()) else {
         return vec![];
     };
-    let mut lines = vec![Line::from(Span::styled(
-        "Plan didn't pass",
-        crate::theme::failed(),
-    ))];
+    // Two planning-stopped states: the plan failed its checks, or planning failed again and again.
+    let head = if stopped.kind == "stalled" {
+        "Planning stopped"
+    } else {
+        "Plan didn't pass"
+    };
+    let mut lines = vec![Line::from(Span::styled(head, crate::theme::failed()))];
     for l in wrap(&clean(&stopped.line), w) {
         lines.push(Line::from(Span::styled(l, ink())));
     }
@@ -2053,8 +2057,11 @@ fn waiting_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     };
     let (head, said, acts): WaitingWords =
         if let Some(held) = steps.held.as_ref().filter(|_| steps.live_run.is_none()) {
+            let paused = held.reason == crate::app::PAUSE_REASON;
             let who = if held.reason == crate::app::HOLD_REASON {
                 "On hold · you stopped retrying".to_string()
+            } else if paused {
+                "On hold · you paused it".to_string()
             } else {
                 format!("On hold · {}", clean(&held.reason))
             };
@@ -2067,7 +2074,14 @@ fn waiting_lines(app: &App, room: Room) -> Vec<Line<'static>> {
                 head,
                 None,
                 [
-                    (Action::Stop, "Resume retrying"),
+                    (
+                        Action::Stop,
+                        if paused {
+                            "Resume task"
+                        } else {
+                            "Resume retrying"
+                        },
+                    ),
                     (Action::CancelTask, "Cancel task"),
                 ],
             )
@@ -2862,8 +2876,11 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[SendBack], "retry"));
         } else if held {
             v.push((&[Stop], "resume"));
-        } else if waiting {
+        } else if waiting && app.retrying_here() {
             v.push((&[Stop], "stop retrying"));
+        } else if waiting {
+            // Work that would start for the first time (approved, or a plan asked for): a pause, not a retry.
+            v.push((&[Stop], "pause task"));
         }
         if plan {
             v.push((&[Pause], "plan"));
@@ -3234,11 +3251,21 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(keys));
             (" Before a thread can start ", lines)
         }
-        Mode::ConfirmHold { .. } => {
+        Mode::ConfirmHold { retrying, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            // A real retry stops retrying; work that would start for the first time is paused.
+            let (ask, act, title) = if *retrying {
+                (
+                    "Stop retrying this task?",
+                    "Stop retrying",
+                    " Stop retrying ",
+                )
+            } else {
+                ("Pause this task?", "Pause task", " Pause task ")
+            };
             let mut lines = vec![
                 Line::raw(""),
-                Line::from(Span::styled("Stop retrying this task?", ink())),
+                Line::from(Span::styled(ask, ink())),
                 Line::raw(""),
             ];
             if let Some(wait) = app.steps_here().and_then(|s| s.waiting.as_ref()) {
@@ -3248,24 +3275,36 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::raw(""));
             }
             for l in wrap(
-                "It stays in your list with its branch and workspace; nothing more runs until you resume it.",
+                if *retrying {
+                    "It stays in your list with its branch and workspace; nothing more runs until you resume it."
+                } else {
+                    "It stays in your list; nothing starts until you resume it."
+                },
                 w,
             ) {
                 lines.push(Line::raw(l));
             }
             lines.push(Line::raw(""));
-            lines.push(Line::from(sheet::act("Enter", "Stop retrying", true)));
+            lines.push(Line::from(sheet::act("Enter", act, true)));
             lines.push(Line::from(Span::styled(
                 "Any other key changes nothing.",
                 dim(),
             )));
-            (" Stop retrying ", lines)
+            (title, lines)
         }
         Mode::ConfirmResume { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let paused = app.paused_here();
             let mut lines = vec![
                 Line::raw(""),
-                Line::from(Span::styled("Resume retrying this task?", ink())),
+                Line::from(Span::styled(
+                    if paused {
+                        "Resume this task?"
+                    } else {
+                        "Resume retrying this task?"
+                    },
+                    ink(),
+                )),
                 Line::raw(""),
             ];
             if let Some(why) = app.held_here().and_then(|h| h.last_failure.as_deref()) {
@@ -3281,7 +3320,15 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::raw(l));
             }
             lines.push(Line::raw(""));
-            lines.push(Line::from(sheet::act("Enter", "Resume retrying", true)));
+            lines.push(Line::from(sheet::act(
+                "Enter",
+                if paused {
+                    "Resume task"
+                } else {
+                    "Resume retrying"
+                },
+                true,
+            )));
             lines.push(Line::from(Span::styled(
                 "Any other key changes nothing.",
                 dim(),
