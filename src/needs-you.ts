@@ -10,10 +10,10 @@
 export type NeedKey =
   | "approval" | "card" | "answer" | "questions" | "sign-in" | "stop-unproven" | "hold" | "storage"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
-  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "finding" | "other";
+  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "history" | "finding" | "plan-again" | "planning-stopped" | "other";
 /** What the work waits for when no person can act. */
 export type WaitKey = "build-stopping" | "build-finishing" | "build-checking" | "other-computer" | "card-reply" | "card-time" | "card-ci"
-  | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "app-update" | "other-task";
+  | "plan-next" | "research-next" | "builders-busy" | "retry-later" | "plan-retry-later" | "app-update" | "other-task";
 
 /** The action's code: the WorkAction that owns the act, or one of the acts a surface renders itself. */
 /** The reason a storage hold carries before the check's own words (dispose.ts holdForStorage; dispatch.ts and
@@ -53,7 +53,8 @@ const build = (context: NeedContext): string => context.build == null ? "the las
 const Build = (context: NeedContext): string => context.build == null ? "The last build" : `Build #${context.build}`;
 
 export const NEEDS: Readonly<Record<NeedKey, Need>> = {
-  approval: { sentence: () => "Review the plan and approve it to start.", action: { code: "approve-scope", label: "Approve plan" } },
+  // A link to the plan, never the approval itself: it says where it goes.
+  approval: { sentence: () => "Review the plan and approve it to start.", action: { code: "approve-scope", label: "Review plan" } },
   card: { sentence: () => "This card is waiting for your approval.", action: { code: "approve-card", label: "Approve card" } },
   answer: { sentence: () => "Answer the question so the work can continue.", action: { code: "answer-decision", label: "Answer the question" }, useReason: always },
   questions: { sentence: () => "Too many questions are open. Answer one so this task can start.", action: { code: "inspect-decisions", label: "Answer questions" } },
@@ -86,13 +87,17 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   // Accepting it would not help: it was built to terms that are no longer the plan.
   rebuild: { sentence: context => `${Build(context)} was made to an earlier plan. Retry it on the current plan.`, action: { code: "retry-task", label: "Retry" } },
   // The plan was rewritten after the build and not yet approved: the yes comes first, then Build again.
-  replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then retry it.`, action: { code: "approve-scope", label: "Approve plan" } },
+  replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then retry it.`, action: { code: "approve-scope", label: "Review plan" } },
   "earlier-version": { sentence: context => context.task == null ? "An earlier version of this task still needs you. Finish it first." : `An earlier version, ${context.task}, still needs you. Finish it first.`,
     action: { code: "inspect-task", label: "Open earlier version" } },
   // An actionable need, never a quiet Waiting: a person opens it to retry or archive it.
   history: { sentence: () => "Toolroll can't read this task's history. Open it to retry or archive it.", action: { code: "inspect-task", label: "Open the task" } },
   // A finding the reviewer and the agent couldn't settle (findings.ts): only a person closes it.
   finding: { sentence: () => "A finding has used its rounds. Read both sides and decide.", action: { code: "inspect-findings", label: "Open finding" } },
+  // A plan that stopped on its checks (a planning incident): the task's own page offers Plan again first.
+  "plan-again": { sentence: () => "The plan didn't pass its checks. Plan again, or edit the task.", action: { code: "inspect-task", label: "Plan again" } },
+  // Planning failed again and again with no valid plan (plan-attempts-exhausted): the same way on, its own words.
+  "planning-stopped": { sentence: () => "Planning stopped after repeated failures. Plan again, or edit the task.", action: { code: "inspect-task", label: "Plan again" } },
   other: { sentence: () => "Open the task to see what it needs from you.", action: { code: "inspect-task", label: "Open the task" }, useReason: always },
 };
 
@@ -104,15 +109,20 @@ export const ASKS: readonly Ask[] = ["decide", "review", "unblock"];
 export const ASK_LABEL: Readonly<Record<Ask, string>> = { decide: "Decide", review: "Review", unblock: "Unblock" };
 /** A waiting row's chip: the specific thing asked, never its group's own word (no "Decide" chip under Decide).
  * Null: the group heading and the row's sentence already say it, so the row wears no chip. */
-export type AskChip = "Plan" | "Result" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Blocked" | "Stopped" | "Sign in";
+export type AskChip = "Plan" | "Plan didn't pass" | "Planning stopped" | "No builder" | "Ready" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Blocked" | "Stopped" | "Sign in";
 /** `mismatch`: the saved report doesn't match its changes; `planChanged`: the plan changed after it was built. */
 export function askChipOf(read: { headline: string; need?: NeedKey | null; mismatch?: boolean; planChanged?: boolean; ask?: Ask | null }): AskChip | null {
+  // A plan that stopped on its checks: its own words, never "Problem" or "Failed".
+  if (read.need === "plan-again") return "Plan didn't pass";
+  if (read.need === "planning-stopped") return "Planning stopped";
   if (read.headline === "Failed") return "Failed";
   if (read.planChanged === true || read.need === "rebuild" || read.need === "replan") return "Plan changed";
   if (read.mismatch === true) return "Mismatch";
-  if (read.headline === "Ready for review" || read.need === "review-result" || read.ask === "review") return "Result";
+  if (read.headline === "Ready" || read.need === "review-result" || read.ask === "review") return "Ready";
   if (read.need === "approval") return "Plan";
-  if (read.need === "start-builder" || read.need === "connect-builder") return "Builder offline";
+  // Two builder states, two words: none connected yet, or the one connected is offline.
+  if (read.need === "connect-builder") return "No builder";
+  if (read.need === "start-builder") return "Builder offline";
   if (read.need === "answer" || read.need === "questions") return "Question";
   if (read.need === "hold") return "On hold";
   if (read.need === "fix-dependency") return "Blocked";
@@ -143,7 +153,7 @@ export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
   "fix-request": "decide", "choose-agent": "decide",
   "review-result": "review", rebuild: "review", replan: "decide",
   "sign-in": "unblock", "stop-unproven": "unblock", hold: "unblock", storage: "unblock", "fix-dependency": "unblock",
-  "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", history: "unblock", other: "unblock",
+  "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", history: "unblock", "plan-again": "unblock", "planning-stopped": "unblock", other: "unblock",
 };
 
 export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> = {
@@ -161,6 +171,8 @@ export const WAITS: Readonly<Record<WaitKey, (context: NeedContext) => string>> 
   "retry-later": context => context.attempt != null && context.build != null
     ? `Waiting: Toolroll tries attempt ${context.attempt + 1} ${context.retry ?? "soon"}, after attempt ${context.attempt} (build #${context.build}).`
     : `Waiting: Toolroll retries ${build(context)} ${context.retry ?? "soon"}.`,
+  // A planner's own backoff: the plan is tried again, never "the last build".
+  "plan-retry-later": context => `Waiting: Toolroll tries the plan again ${context.retry ?? "soon"}.`,
   "app-update": () => "Waiting: Toolroll is updating. New work starts after it.",
   "other-task": context => context.task == null ? "Waiting for another task to finish first." : `Waiting for ${context.task} to finish first.`,
 };
@@ -221,11 +233,16 @@ export const CODE_READING: Readonly<Record<string, CodeReading>> = {
   failed: { stage: "failed", act: "retry-task" }, "checks-failed": { stage: "failed" },
   // The same failure again and again: a need over Retry, its own act, said plainly.
   "waiting-incident": { stage: "failed", act: "retry-task" },
+  // A plan that stopped on its checks: Plan again (on the task's page), never Retry.
+  "plan-stopped": { stage: "needs-you", need: "plan-again", act: "inspect-task" },
+  // Planning failed again and again with no valid plan: Planning stopped, Plan again.
+  "planning-stopped": { stage: "needs-you", need: "planning-stopped", act: "inspect-task" },
   // Waits: Toolroll or another task moves these on; no person is asked.
   stopping: { stage: "waiting", wait: "build-stopping" },
   "build-stopping": { stage: "waiting", wait: "build-stopping" }, "other-computer": { stage: "waiting", wait: "other-computer" },
   "planning-ready": { stage: "waiting", wait: "plan-next" }, "scouting-ready": { stage: "waiting", wait: "research-next" },
   "worker-at-capacity": { stage: "waiting", wait: "builders-busy" }, "retry-scheduled": { stage: "waiting", wait: "retry-later" },
+  "plan-retry": { stage: "waiting", wait: "plan-retry-later" },
   updating: { stage: "waiting", wait: "app-update" }, "waiting-dependency": { stage: "waiting", wait: "other-task" },
   // Needs, each over the act it has always had.
   "history-problem": { stage: "needs-you", need: "history", act: "inspect-task" },

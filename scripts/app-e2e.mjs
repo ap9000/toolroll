@@ -2689,7 +2689,7 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
         await Promise.all([visitor.waitForNavigation(), turn.getByRole("button", { name: "Approve" }).click()]);
         // The build moves on its own, live, with no reload: planning, building, checks, Ready.
         await turn.locator(".demo-build").waitFor({ timeout: 5_000 });
-        await turn.locator(".demo-result").getByText("Ready for review", { exact: true }).waitFor({ timeout: 30_000 });
+        await turn.locator(".demo-result").getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
         const result = await turn.locator(".demo-result").innerText();
         if (!/Checks passed\./.test(result) || !/\+\d+ −\d+/.test(result)) throw new Error(`the Ready result: ${result.slice(0, 400)}`);
         if (await turn.locator(".demo-diff-add").count() === 0) throw new Error("the Ready result shows no diff");

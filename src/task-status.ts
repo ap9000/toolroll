@@ -21,12 +21,12 @@ export type { NeedKey, WaitKey } from "./needs-you.js";
 export const replacedWords = (successor: string): string => `Replaced by ${successor}`;
 const REPLACED = /^Replaced by \S+/;
 /** Waiting: a reason no person can act on, worded as what it waits for (needs-you.ts). */
-export const HEADLINES = ["Queued", "Planning", "Needs you", "Waiting", "Building", "Ready for review", "Complete", "Failed", "Stopped"] as const;
+export const HEADLINES = ["Queued", "Planning", "Needs you", "Waiting", "Building", "Ready", "Complete", "Failed", "Stopped"] as const;
 export type Headline = (typeof HEADLINES)[number];
 export type HeadlineTone = "neutral" | "live" | "attention" | "ready" | "success" | "danger";
 export const HEADLINE_TONE: Readonly<Record<Headline, HeadlineTone>> = {
   Queued: "neutral", Planning: "live", "Needs you": "attention", Waiting: "neutral", Building: "live",
-  "Ready for review": "ready", Complete: "success", Failed: "danger", Stopped: "neutral",
+  "Ready": "ready", Complete: "success", Failed: "danger", Stopped: "neutral",
 };
 
 /** The project's own checks and the pull request's CI are two different things, never one word (Checks beside CI). */
@@ -221,12 +221,12 @@ export function headlineOf(facts: Pick<TaskStatusFacts, "stage" | "checks" | "re
     case "waiting": return "Waiting";
     case "building": case "checking": case "reviewing": return "Building";
     case "finished":
-      if (facts.report) return "Ready for review";
+      if (facts.report) return "Ready";
       if (facts.checks?.status === "failed") return "Failed";
       // A requirement a person checks, a missing screenshot, an unmet requirement or a HIGH finding: Needs you, with the ask.
       if (resultAsk(facts) !== null) return "Needs you";
       // Off: ready like any build; the sentence and the Checks row say it is checked at release.
-      return "Ready for review";
+      return "Ready";
     case "complete": return "Complete";
     case "failed": return "Failed";
     case "stopped": return "Stopped";
@@ -245,7 +245,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
     case "Building": return facts.stage === "checking" ? "Checks are running on the change."
       : facts.stage === "reviewing" ? "Reviewing the change before it reaches you."
       : facts.machine === true ? MACHINE_CHECK_RUNNING : reason ?? "An agent is working on it.";
-    case "Ready for review":
+    case "Ready":
       if (facts.report) return "The report is ready to read. Read it, then accept it.";
       if (releaseStateOf(facts.checks) === "covered") return `Checked at release on ${short(facts.checks!.release!.head) ?? "its release"}. Review the change, then accept it.`;
       if (facts.checks?.level === "off" && facts.checks.status !== "passed") return "Checked at release. Review the change, then accept it.";
@@ -353,7 +353,7 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
 export const leadOnIt = (name: string = DEFAULT_LEAD_NAME): string => `${name} is on it.`;
 export const leadLapsed = (name: string = DEFAULT_LEAD_NAME): string => `${name} hasn't acted on this for 2 hours, so it's back with you.`;
 /** The headlines a lead's claim speaks for: the ones that would otherwise wait on a person. */
-const LEAD_HEADLINES: ReadonlySet<Headline> = new Set(["Needs you", "Failed", "Ready for review", "Stopped"]);
+const LEAD_HEADLINES: ReadonlySet<Headline> = new Set(["Needs you", "Failed", "Ready", "Stopped"]);
 
 function leadSentence(headline: Headline, facts: TaskStatusFacts): string {
   const sha = short(facts.checks?.head ?? null);
@@ -389,7 +389,7 @@ const ALWAYS_NEEDS: ReadonlySet<string> = new Set(["planner-source", "signed-out
 
 /** Queue reasons worth a sentence of their own; any other queued or
  * building reason is scheduler wording, and the default sentence is plainer. */
-const QUEUED_REASONS = new Set(["worker-at-capacity", "waiting-dependency", "retry-scheduled", "updating", "planning-ready", "scouting-ready", "provider-quota"]);
+const QUEUED_REASONS = new Set(["worker-at-capacity", "waiting-dependency", "retry-scheduled", "plan-retry", "updating", "planning-ready", "scouting-ready", "provider-quota"]);
 export function plainReasonOf(stage: TaskStage, code: string, detail: string | null | undefined): string | null {
   if (stage === "building" || stage === "checking" || stage === "reviewing" || stage === "planning") return null;
   if (stage === "queued") return QUEUED_REASONS.has(code) ? detail ?? null : null;
@@ -635,7 +635,7 @@ export function workToneOf(headline: Headline): "attention" | "problem" | "live"
     case "Needs you": return "attention";
     case "Failed": return "problem";
     case "Building": case "Planning": return "live";
-    case "Ready for review": return "ready";
+    case "Ready": return "ready";
     case "Complete": return "done";
     default: return "muted";
   }
@@ -649,7 +649,7 @@ export function statusDetailLines(status: TaskStatus): string[] {
 
 /** The headline's emoji for chat cards (colour is never the only signal: the words follow). */
 export function headlineEmoji(headline: Headline): string {
-  return ({ Queued: "🕓", Planning: "📝", "Needs you": "👋", Waiting: "⏸", Building: "⏳", "Ready for review": "✅", Complete: "✅", Failed: "❌", Stopped: "⏹" } as const)[headline];
+  return ({ Queued: "🕓", Planning: "📝", "Needs you": "👋", Waiting: "⏸", Building: "⏳", "Ready": "✅", Complete: "✅", Failed: "❌", Stopped: "⏹" } as const)[headline];
 }
 
 const ICON_PATHS: Record<DetailMark, Html> = {

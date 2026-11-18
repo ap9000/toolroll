@@ -126,7 +126,7 @@ describe("one state per task, the same words on every surface (c1)", () => {
     const workspace = await tasksView();
     const rows = (workspace.view as TasksView).rows;
     const expected: Record<string, string> = {
-      "search-typo-tolerance": "Ready for review", "gift-card-hold": "Needs you", "coupon-plan-changed": "Needs you",
+      "search-typo-tolerance": "Ready", "gift-card-hold": "Needs you", "coupon-plan-changed": "Needs you",
       // A refuted report verifies none of its requirements: Complete is refused until they are resolved, so it needs you.
       "order-export-refuted": "Needs you", "agent-gave-up": "Failed",
     };

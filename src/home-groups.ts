@@ -10,7 +10,7 @@ export type HomeGroup = "you" | "working" | "done";
 export const HOME_GROUPS: readonly HomeGroup[] = ["you", "working", "done"];
 
 /** Each group's heading. */
-export const HOME_GROUP_LABEL: Readonly<Record<HomeGroup, string>> = { you: "Waiting on you", working: "Working", done: "Done" };
+export const HOME_GROUP_LABEL: Readonly<Record<HomeGroup, string>> = { you: "Waiting on you", working: "Working", done: "Complete" };
 
 /** What the rule reads of a work index item (work-index.ts WorkIndexItem): the Tasks views that list it. */
 export type HomeGroupFacts = { readonly status: { readonly views: readonly string[] } };

@@ -156,7 +156,7 @@ afterAll(async () => {
 });
 
 const EXPECTED: Record<string, string> = {
-  "fix-checkout-tax": "Complete", "search-typo-tolerance": "Ready for review", "coupon-stacking": "Failed", "faster-product-images": "Complete",
+  "fix-checkout-tax": "Complete", "search-typo-tolerance": "Ready", "coupon-stacking": "Failed", "faster-product-images": "Complete",
   "order-history-export": "Building", "gift-card-balance": "Needs you", "wishlist-share-link": "Queued", "review-once": "Complete",
 };
 
@@ -166,7 +166,7 @@ describe("one headline on every surface", () => {
     const view = (workspace.view as Extract<BrowserWorkspace["view"], { kind: "work" }>).list;
     expect(Object.fromEntries(view.rows.map(row => [row.id, row.status.label]))).toEqual(EXPECTED);
     for (const row of view.rows) expect(row.status.tone === "problem", row.id).toBe(row.status.label === "Failed");
-    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Ready", "Running", "Queued", "Finished"]);
+    expect(view.tabs.map(tab => tab.label)).toEqual(["All", "Needs you", "Ready", "Running", "Queued", "Complete"]);
     for (const item of workspace.crew) {
       expect(HEADLINES, item.id).toContain(item.label);
       expect(item.label).toBe(EXPECTED[item.id]);
@@ -222,7 +222,7 @@ describe("one headline on every surface", () => {
     expect(failing.text.split("\n")[1]).toBe("❌ Failed");
     expect(failing.text).toContain("✕ Project checks · Failed (exit 1)");
     const ready = telegramProgressCard(store, store.getRun(runs["search-typo-tolerance"]!)!, "search-typo-tolerance", REPO, NOW, root);
-    expect(ready.text.split("\n")[1]).toBe("✅ Ready for review");
+    expect(ready.text.split("\n")[1]).toBe("✅ Ready");
   });
 
   test("toolroll status", () => {
@@ -230,7 +230,7 @@ describe("one headline on every surface", () => {
     expect(Object.fromEntries(status.tasks.map(one => [one.task, one.headline]))).toEqual(EXPECTED);
   });
 
-  test("a completed task and its revisions count 0 in Ready for review: status, the console and chat", async () => {
+  test("a completed task and its revisions count 0 in Ready: status, the console and chat", async () => {
     const status = installationStatus(store, NOW);
     expect(status.waitingForReview.count).toBe(1);
     expect(status.waitingForReview.results.map(one => one.task)).toEqual(["search-typo-tolerance"]);
@@ -242,12 +242,12 @@ describe("one headline on every surface", () => {
     expect(home.counts.find(one => one.key === "ready")!.value).toBe(1);
     expect(home.catchUp.filter(one => one.id.startsWith("review-once")).map(one => [one.tab, one.label])).toEqual([["finished", "Complete"]]);
     const tasks = (workspaceOf(await page("/")).view as Extract<BrowserWorkspace["view"], { kind: "work" }>).list;
-    expect(tasks.rows.filter(row => row.status.label === "Ready for review").map(row => row.id)).toEqual(["search-typo-tolerance"]);
+    expect(tasks.rows.filter(row => row.status.label === "Ready").map(row => row.id)).toEqual(["search-typo-tolerance"]);
     // Chat: the status reply, the task picker and the result card.
     const reply = phoneStatus(store, [REPO], NOW);
     // Four finished families; the task and its two revisions are one of them.
-    expect(reply).toContain("Finished · 4");
-    expect(reply.match(/— Ready for review$/gm)).toHaveLength(1);
+    expect(reply).toContain("Complete · 4");
+    expect(reply.match(/— Ready$/gm)).toHaveLength(1);
     expect(phoneTaskChoices(store, [REPO], NOW, "review").map(one => [one.id, one.label])).toEqual([["review-once", "Complete"]]);
     // The task view of the root and of each revision, superseded or current.
     for (const id of ["review-once", "review-once-2", "review-once-3"]) expect(phoneTask(store, [REPO], id, NOW).split("\n")[4], id).toBe("Complete");
@@ -266,16 +266,16 @@ describe("one headline on every surface", () => {
     });
     const headlines = (headline: string) => shown.filter(one => one.headline === headline).length;
     expect(headlines("Complete")).toBe(3);
-    expect(headlines("Ready for review")).toBe(1);
+    expect(headlines("Ready")).toBe(1);
     expect(Object.fromEntries(work.items.map(one => [one.rootId, [one.assignmentState, one.status.label]])))
       .toEqual(Object.fromEntries(shown.map(one => [one.id, [one.state, one.headline]])));
     const status = installationStatus(store, NOW);
-    expect(status.waitingForReview.count).toBe(headlines("Ready for review"));
+    expect(status.waitingForReview.count).toBe(headlines("Ready"));
     expect(Object.fromEntries(status.tasks.map(one => [one.task, one.headline]))).toEqual(Object.fromEntries(shown.map(one => [one.id, one.headline])));
     expect(work.totals.completed).toBe(headlines("Complete"));
     expect(work.totals["needs-you"]).toBe(shown.filter(one => one.state === "needs-decision" || one.state === "ready-to-check").length);
     const home = workspaceOf(await page("/chat")).home!;
-    expect(home.counts.find(one => one.key === "ready")!.value).toBe(headlines("Ready for review"));
+    expect(home.counts.find(one => one.key === "ready")!.value).toBe(headlines("Ready"));
     expect(home.counts.find(one => one.key === "waiting")!.value).toBe(headlines("Needs you") + headlines("Failed"));
   });
 });

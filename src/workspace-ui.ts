@@ -40,7 +40,7 @@ export const WORK_VIEWS: readonly { key: WorkView; label: string; hint: string; 
   { key: "ready", label: "Ready", hint: "Results waiting for you to accept or send back.", empty: "Nothing is ready for review." },
   { key: "running", label: "Running", hint: "Attempts a builder owns right now.", empty: "Nothing is running right now. Approved tasks start when a builder with capacity is connected." },
   { key: "queued", label: "Queued", hint: "Tasks that start on their own: waiting for a builder, a dependency or a retry.", empty: "Nothing is queued." },
-  { key: "completed", label: "Finished", hint: "Tasks the lead or you accepted. Recorded check results stay available.", empty: "Nothing has finished in this view yet." },
+  { key: "completed", label: "Complete", hint: "Tasks the lead or you accepted. Recorded check results stay available.", empty: "Nothing has finished in this view yet." },
   { key: "archived", label: "Archived", hint: "Tasks archived by you or automatically. Their history and results are kept.", empty: "Nothing is archived." },
 ];
 
@@ -62,7 +62,7 @@ export type ResultFacts = {
    * undefined when the caller did not read them. */
   recordComplete?: boolean;
   /** The check level this result now stands at (check-levels.ts): Off reads
-   * Ready for review, saying no check ran, until a follow-up check passes. */
+   * Ready, saying no check ran, until a follow-up check passes. */
   checkLevel?: "quick" | "full" | "off" | null;
   /** This exact run's independent review (v50 retry projection), read
    * per run so an older selected result keeps its own words; undefined
@@ -462,7 +462,8 @@ const DISPATCH_ACTION_LABELS: Record<DispatchAction, string> = {
   "place-task": "Choose a project",
   "write-scope": "Define the task",
   "select-agent": "Choose an agent",
-  "approve-scope": "Approve plan",
+  // A link to the plan: it says where it goes, never the approval itself.
+  "approve-scope": "Review plan",
   "answer-decision": "Answer the question",
   unhold: "Review hold",
   "inspect-hold": "Review hold",
@@ -487,7 +488,7 @@ const VERIFIED_RESULT = new Set(["ready-to-review", "pr-opened", "merge-observed
 
 /** A finished result's display status in the shared headline's words: a
  * failed project check is Failed, a result missing its record needs a
- * person, every other saved result is Ready for review. Token and action stay. */
+ * person, every other saved result is Ready. Token and action stay. */
 /** The result's headline while its report disagrees with its saved changes. */
 export const MISMATCH_HEADLINE = "The report doesn't match the changes";
 
@@ -895,7 +896,7 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
         return { sentence: "The project's checks run on the result", at: null };
       }
       case "ready":
-        if (step.state === "done") return { sentence: headline === "Complete" ? "Finished" : view.scout ? "Report ready" : "Ready", at: lastResult };
+        if (step.state === "done") return { sentence: headline === "Complete" ? "Complete" : view.scout ? "Report ready" : "Ready", at: lastResult };
         if (here) return { sentence: step.needsYou ? "" : step.state === "stuck" ? stoppedWord : "Waiting", at: null };
         if (hasResult) return { sentence: checksStuck ? "Not ready: the checks didn't pass. The result is here." : "Not ready yet. The result so far is here.", at: null };
         return { sentence: view.scout ? "A report for you to read" : "A result for you to review", at: null };
@@ -923,7 +924,7 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
     if (at !== -1) rows.splice(at, 1);
   }
   // A finished road whose task still waits on this person (a result to review): the last step it reached is theirs.
-  const waitsOnViewer = headline === "Ready for review" || headline === "Needs you";
+  const waitsOnViewer = headline === "Ready" || headline === "Needs you";
   if (waitsOnViewer && !rows.some(row => row.state === "current" || row.state === "stuck")) {
     const last = [...rows].reverse().find(row => row.state === "done");
     if (last !== undefined) Object.assign(last, { state: "current", mark: "needs", needsYou: true, sentence: "", at: null, open: true, opens: true });

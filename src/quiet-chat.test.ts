@@ -149,7 +149,7 @@ describe("quiet chat on Telegram", () => {
     expect(script.edits().every(call => call.params["message_id"] === 100)).toBe(true);
   });
 
-  test("the evening digest is one message a day: what finished, what failed", async () => {
+  test("the evening digest is one message a day: what is ready, what failed", async () => {
     const script = scriptedTelegram();
     await lifecycle(script);
     const evening = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 20, 5);
@@ -163,7 +163,7 @@ describe("quiet chat on Telegram", () => {
     const digests = script.sends().slice(before);
     expect(digests).toHaveLength(1);
     expect(String(digests[0]!.params["text"])).toContain("Evening digest");
-    expect(String(digests[0]!.params["text"])).toContain("Finished (1)\n• Make status replies clear");
+    expect(String(digests[0]!.params["text"])).toContain("Ready (1)\n• Make status replies clear");
     expect(enqueueEveningDigests(store, new Date(evening.getTime() + 60_000))).toBe(0);
   });
 

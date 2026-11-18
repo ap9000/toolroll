@@ -1,5 +1,5 @@
 {
-  "digest": "8f8877cf49d4cc6cc348a544c6c9bf65c3cb0c21cad66f4aa25c72403961e8a2",
+  "digest": "1971d350f1a07ad23ea8458e5c3f762298939bf62d9215359a7fbc89f361f919",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1083,11 +1083,19 @@
                           "string",
                           "null"
                         ]
+                      },
+                      "attempt": {
+                        "type": "string",
+                        "enum": [
+                          "build",
+                          "plan"
+                        ]
                       }
                     },
                     "required": [
                       "retryAt",
-                      "lastFailure"
+                      "lastFailure",
+                      "attempt"
                     ],
                     "additionalProperties": false
                   },
@@ -1815,6 +1823,13 @@
                     "null"
                   ]
                 },
+                "attempt": {
+                  "type": "string",
+                  "enum": [
+                    "build",
+                    "plan"
+                  ]
+                },
                 "agentSaid": {
                   "anyOf": [
                     {
@@ -1833,6 +1848,7 @@
               "required": [
                 "retryAt",
                 "lastFailure",
+                "attempt",
                 "agentSaid"
               ],
               "additionalProperties": false
@@ -1899,6 +1915,114 @@
             }
           ]
         },
+        "planStopped": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "incident": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "plan",
+                    "question",
+                    "stalled"
+                  ]
+                },
+                "line": {
+                  "type": "string"
+                },
+                "problems": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "agentSaid": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "again": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "required": [
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "incident",
+                "kind",
+                "line",
+                "problems",
+                "agentSaid",
+                "again"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "planQueued": {
+          "type": "boolean"
+        },
         "approval": {
           "anyOf": [
             {
@@ -1943,6 +2067,9 @@
         "waiting",
         "held",
         "retry",
+        "planStopped",
+        "plan",
+        "planQueued",
         "approval",
         "room"
       ],
@@ -2263,6 +2390,18 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "lineCount": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -2270,7 +2409,8 @@
             "path",
             "oldPath",
             "meta",
-            "hunks"
+            "hunks",
+            "lineCount"
           ],
           "additionalProperties": false
         },

@@ -165,7 +165,7 @@ describe("bare toolroll at a terminal", () => {
     expect(code).toBe(3);
     expect(spawned).toEqual([]);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^Toolroll can't start: the database's folder is too deep for Toolroll's socket \(\d+ of at most \d+ bytes\).* move it to a shorter folder \(at most \d+ bytes long\), or point TOOLROLL_DB at an orders\.db in one: `TOOLROLL_DB=\/short\/folder\/orders\.db toolroll`\.$/);
+    expect(lines[0]).toMatch(/^Toolroll can't start: the database's folder is too deep for Toolroll's socket \(\d+ of at most \d+ bytes\)\. Put it in a short folder only you can write \(at most \d+ bytes long\), for example: `[^`]+`, then run `TOOLROLL_DB=\S+\/orders\.db toolroll`\.$/);
     expect(existsSync(join(folder, "orders.db"))).toBe(false);
   });
 

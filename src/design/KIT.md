@@ -85,7 +85,7 @@ its title passes `same` (`docHeader({ same: true })`, `KDocHeader same`) or uses
 | Failed | `failed` | vermilion (`failed`) | broke; nothing waits unless it also needs you |
 
 A task's headline (`task-status.ts`) maps onto them with `chipOfHeadline` / `statusOfHeadline` (server
-`headlineChip`, React `KHeadlineChip`): Needs you and Ready for review wait on you; Planning and Building run;
+`headlineChip`, React `KHeadlineChip`): Needs you and Ready wait on you; Planning and Building run;
 Waiting, Queued and Stopped are neutral (something that waits on someone else never carries the needs mark); Complete is finished;
 Failed is failed. Inside a Needs-you group the chip names the specific ask in the `ask` tone (`chip("Plan", "ask")`),
 never the group's word again. A more specific running word (Building, Merging) keeps `live`; a more specific finished

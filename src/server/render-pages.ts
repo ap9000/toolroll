@@ -539,7 +539,7 @@ export function workPage(
       ask: null, group: 'rest' as const, rank: 4, action: null, detail: archivedWords(row.archived), problem: null, notes: [], tidy,
     };
     const actionHref = workActionHref(row);
-    const needsYouDetail = (row.status.views.includes('needs-you') || row.status.label === 'Failed') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.label !== 'Ready for review' && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem;
+    const needsYouDetail = (row.status.views.includes('needs-you') || row.status.label === 'Failed') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.label !== 'Ready' && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem;
     return {
       id: row.rootId, title: row.title, href: taskHref(row.rootId), project: projectOf(row), age: relativeAge(row.updatedAt, data.now),
       status: { label: row.status.label, tone: row.status.tone, token: row.status.token }, chip: row.chip, word: chip,

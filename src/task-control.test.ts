@@ -614,7 +614,7 @@ describe("a finished run's processes settle by themselves", () => {
       expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run_process WHERE run = ?").get(runId)?.["n"]).toBe(0);
       expect(store.raw().prepare("SELECT witnesses, last_exited_at FROM run_process_summary WHERE run = ?").get(runId)).toMatchObject({ witnesses: 1, last_exited_at: later(3_000).toISOString() });
       expect(store.stopQuiescenceProblem(runId)).toBeNull();
-      expect(item("t-outlived").status.label).toBe("Ready for review");
+      expect(item("t-outlived").status.label).toBe("Ready");
       expect(store.recordFinishedRunExits(later(4_000))).toBe(0);
       expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
     } finally { kill.mockRestore(); }
@@ -638,7 +638,7 @@ describe("a finished run's processes settle by themselves", () => {
       for (const runId of newer) expect(store.stopQuiescenceProblem(runId)).toBeNull();
       expect(store.raw().prepare("SELECT exited_at FROM run_process WHERE run = ?").get(stuck)?.["exited_at"]).toBeNull();
       expect(item("t-still-alive").status.label).toBe("Waiting");
-      for (const id of ["t-gone-1", "t-gone-2", "t-gone-3"]) expect(item(id).status.label).toBe("Ready for review");
+      for (const id of ["t-gone-1", "t-gone-2", "t-gone-3"]) expect(item(id).status.label).toBe("Ready");
     } finally { kill.mockRestore(); }
   });
 
@@ -650,7 +650,7 @@ describe("a finished run's processes settle by themselves", () => {
       // The upgrade happens after those processes are long gone.
       kill.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
       expect(repairStaleStatuses(store, later(2_000))).toEqual({ exitsRecorded: 3, readyForReview: 3 });
-      expect(["t-old-1", "t-old-2", "t-old-3"].map(id => item(id).status.label)).toEqual(["Ready for review", "Ready for review", "Ready for review"]);
+      expect(["t-old-1", "t-old-2", "t-old-3"].map(id => item(id).status.label)).toEqual(["Ready", "Ready", "Ready"]);
       expect(repairStaleStatuses(store, later(3_000))).toEqual({ exitsRecorded: 0, readyForReview: 3 });
     } finally { kill.mockRestore(); }
   });
@@ -671,7 +671,7 @@ describe("a finished run's processes settle by themselves", () => {
       ps.mockReturnValue("Mon Sep 14 14:33:43 2026\n");
       expect(store.stopQuiescenceProblem(runId)).toBeNull();
       expect(store.recordFinishedRunExits(later(3_000))).toBe(1);
-      expect(item("t-reused-pid").status.label).toBe("Ready for review");
+      expect(item("t-reused-pid").status.label).toBe("Ready");
     } finally {
       kill.mockRestore(); ps.mockReset(); clock.mockRestore();
       Object.defineProperty(process, "platform", platform);

@@ -370,7 +370,12 @@
     margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important;
     white-space: nowrap !important; border: 0 !important;
   }
-  input[type=password] { font-family: var(--font-mono); }
+  /* A secret typed in a plain field reads in mono; the kit's own fields (sign-in, settings) keep one face for every field. */
+  input[type=password]:not(.k-input) { font-family: var(--font-mono); }
+  /* A browser's autofill paints its own background on one field and not the next: keep the field's own colours. */
+  input.k-input:-webkit-autofill, input.k-input:-webkit-autofill:hover, input.k-input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--so-ink); -webkit-box-shadow: 0 0 0 1000px var(--so-field) inset; box-shadow: 0 0 0 1000px var(--so-field) inset;
+  }
   input:focus-visible, textarea:focus-visible, select:focus-visible {
     outline: 2px solid var(--so-ring); outline-offset: 1px; box-shadow: none;
   }

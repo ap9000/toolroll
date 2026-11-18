@@ -49,6 +49,8 @@ import {
   type ClosedState,
   checkCleanupTaskOf,
   isClosedState,
+  recordAgentSaid,
+  recordPlanProblems,
   refArchived,
   taskStateForClaim,
 } from "./store.js";
@@ -1762,7 +1764,14 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
   if (fenced !== null) return fenced;
   if (kind === "failure" && run.terminalClass === "auth-expired") return { ok: true as const, ...sealAuthExpired(store, run, taskId, now) };
   const malformedKind = args.malformed === "decision" ? "malformed-decision" : "malformed-plan";
-  store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : oneLine(message, 120), now });
+  // A known way a planning turn fails is kept as its reason code (needs-you.ts says each in plain words); anything else
+  // keeps the attempt's own one line, as before.
+  const code = args.code === "agent" ? "agent-error" : args.code === "timeout" || args.code === "provider-init" ? args.code : null;
+  store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : code ?? oneLine(message, 120), now });
+  // Why it was refused and what the agent said, kept on the run for the person who opens the task (cleaned at the
+  // store; read only through planProblemsOf and agentSaidOf). Every notification below says it in Toolroll's own words.
+  if (kind === "malformed" && args.problems !== undefined) recordPlanProblems(store, runId, args.problems);
+  if (args.agentSaid !== undefined) recordAgentSaid(store, runId, args.agentSaid);
 
   if (kind === "malformed") {
     // What failed its checks, field by field, kept on the run for the person who opens the task: the notification below
@@ -1857,6 +1866,12 @@ export type PlanFailureSeal = {
   /** Which payload was malformed (v4 review, finding 12): the mailbox is a `malformed-decision`. */
   malformed?: "decision" | "plan";
   message: string;
+  /** The planner outcome's own reason (planner.ts PlanOutcome.reason: "agent", "timeout", "provider-init", …). */
+  code?: string;
+  /** The validator's own messages for a malformed payload (planner.ts plannerPayload), for the person's own Steps. */
+  problems?: readonly string[];
+  /** What the agent said on its way out (agent-said.ts agentSaidTail), for the person's own Steps. */
+  agentSaid?: readonly string[];
   now: Date;
 };
 

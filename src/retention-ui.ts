@@ -38,6 +38,6 @@ export function retentionHtml(view: RetentionView, said: { said?: string | null;
     body: joinHtml([
       said.problem ? notice(said.problem) : said.said ? infoLine(said.said) : "",
       kitSectionForm({ proof: "retention", action: "/settings/retention", id: "retention-form", gate: true, body: joinHtml(rows) }),
-      note("Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready for review, anything on hold)."),
+      note("Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready, anything on hold)."),
     ]) });
 }

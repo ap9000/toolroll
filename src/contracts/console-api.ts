@@ -287,7 +287,7 @@ export const CONSOLE_FORMS = {
   // Local-owner slice 3: the build and approved plan the page read (`run`, `digest`), read only for the laptop's local owner.
   taskRequeue: formContract("POST /t/<task>/requeue", ["context", "note", "return", "run", "digest"]),
   // Local-owner slice 2: the planning source the page read (planner-source.ts), read only for the laptop's local owner.
-  taskPlan: formContract("POST /t/<task>/plan", ["source"]),
+  taskPlan: formContract("POST /t/<task>/plan", ["source", "incident"]),
   taskFollowUp: formContract("POST /t/<task>/follow-up", ["index"]),
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),

@@ -48,12 +48,12 @@ describe("terminal UI", () => {
     const frame = app.lastFrame() ?? "";
     // The list is the left column: the line each text first shows on there.
     const at = (text: string) => frame.split("\n").findIndex(line => { const column = line.indexOf(text); return column > -1 && column < 40; });
-    for (const text of ["Waiting on you", "Working", "Done", "Other"]) expect(at(text), text).toBeGreaterThan(-1);
+    for (const text of ["Waiting on you", "Working", "Complete", "Other"]) expect(at(text), text).toBeGreaterThan(-1);
     expect(at("Waiting on you")).toBeLessThan(at("Sample: upgrade the test runner"));
     expect(at("Sample: upgrade the test runner")).toBeLessThan(at("Working"));
     expect(at("Working")).toBeLessThan(at("Sample: fix the login redirect"));
-    expect(at("Sample: fix the login redirect")).toBeLessThan(at("Done"));
-    expect(at("Done")).toBeLessThan(at("Sample: add CSV export"));
+    expect(at("Sample: fix the login redirect")).toBeLessThan(at("Complete"));
+    expect(at("Complete")).toBeLessThan(at("Sample: add CSV export"));
     expect(at("Sample: add CSV export")).toBeLessThan(at("Other"));
     expect(at("Other")).toBeLessThan(at("Sample: drop the old banner"));
     await mounted();

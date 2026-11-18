@@ -65,12 +65,12 @@ actions! {
     NextTab = "next-tab", Global, Move, "Next tab (Live, Steps, Diff, Terminal)", ["tab"];
     PreviousTab = "previous-tab", Global, Move, "Previous tab", ["backtab"];
     Steer = "steer", Global, Act, "Steer: send the running agent a note", ["s"];
-    Pause = "pause", Global, Act, "Pause the build (again to resume)", ["p"];
+    Pause = "pause", Global, Act, "Pause the build, or ask for a plan", ["p"];
     Stop = "stop", Global, Act, "Stop the build, or stop retrying a waiting task", ["x"];
     CancelTask = "cancel-task", Global, Act, "Cancel task (asks first)", ["X"];
     Resume = "resume", Global, Act, "Resume retrying a task you stopped (asks first)", [];
     Accept = "accept", Global, Act, "Accept the result, or approve a plan", ["a"];
-    SendBack = "send-back", Global, Act, "Send the result back, with a note (on a failed task: retry it)", ["r"];
+    SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     NewTask = "new-task", Global, Act, "New task", ["n"];

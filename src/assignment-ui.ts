@@ -113,7 +113,7 @@ export function assignmentCardOf(assignment: AssignmentSnapshot, options: Assign
   const notices = [...attention, ...diagnostics.map(one => one.detail)].filter(one => savedMaterialNotice(one, assignment) !== null);
   const partial = notices.some(one => savedMaterialNotice(one, assignment) === 'partial');
   const history = notices.some(one => savedMaterialNotice(one, assignment) === 'history');
-  const recorded = assignment.detail === taskStatus.sentence || taskStatus.headline === 'Ready for review' || taskStatus.headline === 'Complete' ? [] : [assignment.detail];
+  const recorded = assignment.detail === taskStatus.sentence || taskStatus.headline === 'Ready' || taskStatus.headline === 'Complete' ? [] : [assignment.detail];
   return {
     token: status.token, tone: status.tone, label: status.label, status: taskStatus,
     action: options.hideAction || href === null ? null : { label: assignment.primaryAction!.label, href, openResult: options.resultHref !== undefined },

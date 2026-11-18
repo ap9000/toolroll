@@ -21,7 +21,7 @@ import { closeSync, constants, fsyncSync, mkdirSync, openSync, writeSync } from 
 import { dirname, join } from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
 import type { Store } from "./store.js";
-import { SCHEMA_VERSION } from "./store.js";
+import { agentSaidOf, planProblemsOf, SCHEMA_VERSION } from "./store.js";
 import { evidencePack } from "./evidence-pack.js";
 import { SECRET_PATTERNS } from "./evidence.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
@@ -29,6 +29,7 @@ import { readSsoSettings } from "./sso-settings.js";
 import { readEmailSettings } from "./email-settings.js";
 import { SUBSCRIPTION_CAPABLE, readAuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
+import { plural } from "./design/kit.js";
 
 export const EXPORT_FORMAT = "standing-orders/export/v1";
 
@@ -108,6 +109,13 @@ export function redactKeyShapes(text: string): string {
   return out;
 }
 
+/** Columns holding words an agent may have written (what it said on its way out; why its plan was refused): exported only
+ * through their cleaned accessors, never as stored, so a value that reached the database some other way leaves cleaned. */
+const CLEANED_COLUMNS: Readonly<Record<string, (store: Store, runId: number) => string[] | null>> = Object.freeze({
+  "run.agent_said_json": agentSaidOf,
+  "run.plan_problems_json": planProblemsOf,
+});
+
 function cleanValue(value: unknown): unknown {
   if (typeof value === "string") return redactKeyShapes(value);
   if (value instanceof Uint8Array) return { base64: Buffer.from(value).toString("base64") };
@@ -149,7 +157,12 @@ export function buildExport(store: Store, options: { who: string; now: Date; evi
     catch { rows = db.prepare(select.replace(/ ORDER BY rowid$/, "")).all() as Record<string, unknown>[]; }
     for (const row of rows) {
       const clean: Record<string, unknown> = {};
-      for (const column of kept) clean[column] = cleanValue(row[column]);
+      for (const column of kept) {
+        const read = CLEANED_COLUMNS[`${table}.${column}`];
+        if (read === undefined) { clean[column] = cleanValue(row[column]); continue; }
+        const lines = row[column] == null ? null : read(store, Number(row["id"]));
+        clean[column] = lines === null ? null : cleanValue(JSON.stringify(lines));
+      }
       lines.push(JSON.stringify(clean));
     }
     add(`${categoryOf(table)}/${table}.jsonl`, Buffer.from(lines.length === 0 ? "" : `${lines.join("\n")}\n`, "utf8"), lines.length);
@@ -286,5 +299,5 @@ export function exportZip(exported: FullExport): Buffer {
 
 /** One line for the ledger and the person who asked. */
 export function exportSummary(exported: FullExport): string {
-  return `${exported.files.length} files · ${exported.tables} tables · ${exported.packs} evidence packs`;
+  return `${plural(exported.files.length, "file", "files")} · ${plural(exported.tables, "table", "tables")} · ${plural(exported.packs, "evidence pack", "evidence packs")}`;
 }

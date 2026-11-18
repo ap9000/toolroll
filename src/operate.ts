@@ -98,7 +98,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
-import { requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
+import { planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -204,7 +204,7 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
     ...describeContractChanges(record.changes).map(line => `    ${line}`),
   ];
 }
-import { verdictWords as proofVerdictWords, matrixWords, plainReasonWords, semanticCoverage, coverageWords } from "./proof.js";
+import { verdictWords as proofVerdictWords, manualReviewCriterionOf, matrixWords, plainReasonWords, semanticCoverage, coverageWords } from "./proof.js";
 import { probeRepo } from "./probe.js";
 import {
   agentlessFirstRun,
@@ -953,6 +953,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "choice", "claim", "revision", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
+  // Plan again (task plan --incident): the planning incident the terminal read.
+  "incident",
   // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
   // stuck campaign a person ends (recover --abandon).
   "case", "k", "world", "deny", "abandon",
@@ -3472,6 +3474,10 @@ async function tickCommand(
         failure: outcome.kind,
         ...(outcome.kind === "malformed" ? { malformed: outcome.reason === "malformed-decision" ? ("decision" as const) : ("plan" as const) } : {}),
         message: outcome.message,
+        code: outcome.reason,
+        // Why it was refused and what the agent said: kept on the run for the person's own Steps (cleaned at the store).
+        ...(outcome.kind === "malformed" && outcome.problems !== undefined ? { problems: outcome.problems.map(problem => problem.message) } : {}),
+        ...(outcome.agentSaid === undefined ? {} : { agentSaid: outcome.agentSaid }),
         now: clock(),
       });
       if (!sealedFailure.ok && sealedFailure.reason === "stopped") {
@@ -4763,6 +4769,9 @@ async function requeueTask(
   const { store, write, json, clock } = context;
   const [id] = positional;
   if (id === undefined) return fail(write, json, "task requeue", "usage", "`toolroll task requeue <id> --as <you> --token <t>`", EXIT.usage);
+  // A password-free install has no password to give here: say where the act is, never "--as <you> --token <t>".
+  const passwordFree = passwordFreeRefusal(store, flags, "r", context.principal !== undefined);
+  if (passwordFree !== null) return fail(write, json, "task requeue", "local-owner", passwordFree, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok) return refuseApprover(context, "task requeue", verified, "requeueing takes `--as <you> --token <t>` — who overrode the stall is recorded, not asserted", id);
@@ -4938,6 +4947,8 @@ async function incidentCommand(
   if (action !== "resolve") return fail(write, json, "incident", "usage", "`toolroll incident [list|resolve <id>]`", EXIT.usage);
   const id = Number(idText);
   if (!Number.isInteger(id) || id <= 0) return fail(write, json, "incident resolve", "usage", "`toolroll incident resolve <id> --as <you> --token <t>`", EXIT.usage);
+  const passwordFree = passwordFreeRefusal(store, flags, "r", context.principal !== undefined);
+  if (passwordFree !== null) return fail(write, json, "incident resolve", "local-owner", passwordFree, EXIT.refused);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok) return refuseApprover(context, "incident resolve", verified, "resolving takes `--as <you> --token <t>` — who looked is recorded, not asserted", String(id));
@@ -9767,7 +9778,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: open `toolroll` and press p on it to ask for its plan." : null;
+    ? "Next: run `toolroll`, select it and press p to ask for a plan." : null;
   return succeed(
     write,
     json,
@@ -10163,8 +10174,14 @@ function showTask(positional: readonly string[], context: Context): number {
     approvalTerms: scope === null ? null : approvalSummaryOf(scope, summaryContextOf(store, id, scope, now)).key,
   };
 
+  // Accepted (or complete): the person's own check is done, so the frozen "an operator must accept it" lines no longer say
+  // anything true (the page leaves them out the same way, render-results.ts).
+  const checkedByPerson = detail.proofAccepted || shared?.headline === "Complete";
+  const shownReasons = checkedByPerson ? detail.proofReasons.filter(reason => manualReviewCriterionOf(reason) === null) : detail.proofReasons;
+  const shownMatrix = checkedByPerson ? detail.proofMatrix.map(row => ({ ...row, detail: row.detail.filter(line => manualReviewCriterionOf(line) === null) })) : detail.proofMatrix;
   return succeed(write, json, "task show", detail, () => [
-    `${task.id}  ${task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
+    // One status word, the one every surface says (the raw lifecycle state stays in --json as `state`).
+    `${task.id}  ${shared?.headline ?? detail.work?.status.label ?? task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
@@ -10177,8 +10194,8 @@ function showTask(positional: readonly string[], context: Context): number {
       ? []
       : [
           `  checked: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
-          ...(detail.proofReasons.length > 0 ? [`    ${detail.proofReasons.map(plainReasonWords).join(" ")}`] : []),
-          ...matrixWords(detail.proofMatrix),
+          ...(shownReasons.length > 0 ? [`    ${shownReasons.map(plainReasonWords).join(" ")}`] : []),
+          ...matrixWords(shownMatrix),
           ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),
         ]),
     ...(detail.report === null
@@ -14228,6 +14245,7 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   if (binding === null) return fail(write, json, command, "not-local", "This Toolroll already signs in with a password. Sign in with it in the browser.", EXIT.refused);
   if (store.accountOf(binding.account)?.passwordSet === true) return fail(write, json, command, "already-set", "A password is already set. Sign in with it in the browser.", EXIT.refused);
   const typeHidden = context.easySeams?.askHidden ?? askHidden;
+  write("Setting a password signs out open browser tabs and the open Toolroll screen. You can open it again right after.");
   write(`Choose a password for ${binding.account}. It signs you in from other devices and approves what this computer's browser can't.`);
   const chosen = await typeHidden("New password: ");
   if (chosen.length < 8) return fail(write, json, command, "weak-password", "A password needs at least 8 characters. Nothing changed.", EXIT.refused);
@@ -14242,7 +14260,7 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   }
   return succeed(write, json, command, { account: binding.account, generation: enrolled.generation }, () => [
     "Password set.",
-    "Open browser tabs and the terminal UI sign in again: run `toolroll`, or sign in with your password.",
+    "Sign in with it in your browser; an open Toolroll screen asks to open again.",
   ]);
 }
 
@@ -14865,11 +14883,20 @@ async function localPlanCommand(positional: readonly string[], flags: Map<string
     const passwordSet = store.accountOf(currentLocalOwner()?.account ?? "")?.passwordSet === true;
     return fail(write, json, command, "local-owner", `Choosing which agent plans needs your password. ${passwordSet ? "Sign in with your password to do this." : "Set a password first: run \`toolroll password set\`."}`, EXIT.refused);
   }
-  for (const name of flags.keys()) if (!["json", "db", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
-  const id = positional[0], digest = flags.get("digest");
-  const usage = "Use task plan <task> --digest <the plan source you read>.";
+  for (const name of flags.keys()) if (!["json", "db", "digest", "incident"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], digest = flags.get("digest"), incident = flags.get("incident");
+  const usage = "Use task plan <task> --digest <the plan source you read> [--incident <the planning incident you read>].";
   if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
   if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact task you read. ${usage}`, EXIT.usage);
+  // Plan again (the stranger test, round 10): the planner tries again after a planning incident, the same act.
+  if (incident !== undefined) {
+    if (typeof incident !== "string" || !/^[1-9]\d{0,14}$/.test(incident)) return fail(write, json, command, "usage", `--incident needs the incident you read. ${usage}`, EXIT.usage);
+    const again = planAgainAsLocalOwner(store, id, { incident: Number(incident), source: digest }, clock());
+    if (!again.ok) return fail(write, json, command, again.reason, again.message, EXIT.refused);
+    return succeed(write, json, command, { id, replayed: again.replayed, again: true }, () => [
+      again.replayed ? `${id} · Already planning again.` : `${id} · Planning again. You approve the plan before anything is built.`,
+    ]);
+  }
   const done = requestPlanAsLocalOwner(store, id, digest, clock());
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { id, replayed: done.replayed, autoPlan: false }, () => [
@@ -15407,4 +15434,19 @@ async function flexibleSignInConfig(action: string, extra: readonly string[], re
   const checked = saved.check === null ? { outcome: "not-checked" as const } : saved.check;
   return succeed(write, json, command, { saved: true, replaced: saved.replaced, check: checked.outcome, signIn: statusData(flexibleSignInStatus(store, acting.name)) },
     () => [`${saved.replaced ? "Replaced" : "Saved"}. ${signInCheckWords(checked)} It powers only threads you start; a password reset ends it.`]);
+}
+
+// ---- The stranger test, round 10: a password-free install's CLI says where an act is. Kept last. ---------------------------
+
+/**
+ * On a password-free install (local mode on, its owner without a password) a command that asks for `--as <you> --token
+ * <t>` has nothing to take: what it does is the terminal UI's (and the browser's) own road. Null whenever credentials were
+ * named, a remote principal runs it, or the install has a password; the command then asks as it always did. No authority
+ * changes either way.
+ */
+function passwordFreeRefusal(store: Store, flags: Map<string, string | true>, key: string, remote: boolean): string | null {
+  if (remote || ["as", "token", "token-file", "token-env"].some(name => flags.has(name)) || localOwnerRequested() || envValue(process.env, "LEAD_TOKEN") !== undefined) return null;
+  const binding = localOwnerBinding(store);
+  if (binding === null || store.accountOf(binding.account)?.passwordSet === true) return null;
+  return `This Toolroll has no password yet, so this runs from Toolroll itself: run \`toolroll\`, select the task and press ${key}, or open it in the browser.`;
 }

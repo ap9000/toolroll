@@ -60,7 +60,7 @@ export { aclVerdictOf, trustedBinary, type AclVerdict } from "./trusted-path.js"
 import { isTuiPage, type TuiExit, type TuiSession } from "./tui-contract.js";
 
 /** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_*). */
-export const TUI_EXIT = { leave: 0, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
+export const TUI_EXIT = { leave: 0, ended: 1, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
 /** Platforms with a terminal workbench build (scripts/tui-build.mjs PLATFORMS): its optional package's name. The same
  * keys name the bundled binary's folder, dist/tui/<key>/toolroll-tui. */
 export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
@@ -279,7 +279,9 @@ export type TuiRunInput = {
 
 /** How the binary ended: a screen exit, "classic" (open the classic screen; it said why), or "changed" (it isn't the
  * file that was checked any more, so it was never started). */
-export type TuiRunEnd = TuiExit | "classic" | "changed";
+/** `ended`: the screen's session was signed out under it (a password set, a sign-out elsewhere, local mode turned off):
+ * its cause is never claimed, only that it happened. */
+export type TuiRunEnd = TuiExit | "classic" | "changed" | "ended";
 
 /** Run the binary until it ends, signals forwarded, its asks answered. */
 export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
@@ -353,6 +355,36 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
   if (!sentLink) return "classic";
   if (code === TUI_EXIT.stop) return "stop";
   if (code === TUI_EXIT.keep) return "keep";
+  if (code === TUI_EXIT.ended) return "ended";
   if (code === TUI_EXIT.classic || code === TUI_EXIT.unprotected || code === -1) return "classic";
   return "leave";
+}
+
+// ---- The stranger test, round 10: a screen signed out under the person reopens only on their own key -------------------
+
+/** What the launcher asks once the screen was signed out. It names no cause: a password set, a sign-out elsewhere and
+ * local mode turned off all read the same, and none is claimed. */
+export const REOPEN_PROMPT = "This screen was signed out. Open Toolroll again? Enter opens it · q stops Toolroll ";
+
+/**
+ * Whether to open the screen again after it was signed out: only at a person's own terminal (both ends a TTY, not
+ * under a coding agent), and only on their Enter. Any other answer, EOF or a closed input stops; nothing reopens on its
+ * own. Reopening is the ordinary start (a fresh local link, proved by the console as `toolroll` itself does), so it
+ * carries no authority the person wouldn't get by typing `toolroll`.
+ */
+export async function reopenAfterSignOut(input: { terminal: boolean; agent: boolean; ask: (prompt: string) => Promise<string | null> }): Promise<boolean> {
+  if (!input.terminal || input.agent) return false;
+  const answer = await input.ask(REOPEN_PROMPT);
+  return answer !== null && answer.trim() === "";
+}
+
+/** One line typed at this terminal: its text, or null when the input closed (EOF, Ctrl-D) before a line came. */
+export async function askLineOrEof(prompt: string): Promise<string | null> {
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return await new Promise<string | null>(resolve => {
+    let answered = false;
+    rl.once("close", () => { if (!answered) resolve(null); });
+    rl.question(prompt, answer => { answered = true; rl.close(); resolve(answer); });
+  });
 }

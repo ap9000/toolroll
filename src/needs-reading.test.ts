@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
-import { ACTIVITY_ONLY_KINDS, CODE_READING, NEEDS, WAITS } from "./needs-you.js";
+import { ACTIVITY_ONLY_KINDS, askChipOf, CODE_READING, NEEDS, WAITS } from "./needs-you.js";
 import { WAITING_CODES, workIndexPage } from "./work-index.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
@@ -31,6 +31,8 @@ describe("the code table", () => {
       "needs-scope": "write-scope", "invalid-scope": "write-scope", "needs-agent-profile": "select-agent", "needs-approval": "approve-scope",
       "missing-requirement": "repair-capability", "no-worker-registered": "start-worker", "no-worker-online": "start-worker", "worker-at-capacity": null,
       "signed-out": "sign-in", "retry-scheduled": null, updating: null, "planning-ready": null, "scouting-ready": null, queued: null,
+      // The two planning-stopped states open the task, where Plan again is the act; a planner's own backoff waits.
+      "plan-stopped": "inspect-task", "planning-stopped": "inspect-task", "plan-retry": null,
     };
     for (const [code, act] of Object.entries(acts)) expect(CODE_READING[code]?.act ?? null, code).toBe(act);
   });
@@ -44,6 +46,21 @@ describe("the code table", () => {
     // The needs P1.2 names stay needs, over their own acts.
     for (const code of ["vanished-run", "no-worker-online", "earlier-active", "history-problem"]) expect(CODE_READING[code]?.stage, code).toBe("needs-you");
     expect(CODE_READING["waiting-incident"]).toMatchObject({ stage: "failed", act: "retry-task" });
+    expect(CODE_READING["plan-retry"]).toMatchObject({ stage: "waiting", wait: "plan-retry-later" });
+  });
+
+  test("each source keeps its own chip, and two states never share one: builders, plans, results", () => {
+    const chips: [Parameters<typeof askChipOf>[0], string | null][] = [
+      [{ headline: "Needs you", need: "connect-builder" }, "No builder"], [{ headline: "Needs you", need: "start-builder" }, "Builder offline"],
+      [{ headline: "Needs you", need: "plan-again" }, "Plan didn't pass"], [{ headline: "Needs you", need: "planning-stopped" }, "Planning stopped"],
+      [{ headline: "Ready" }, "Ready"], [{ headline: "Needs you", need: "approval" }, "Plan"],
+    ];
+    for (const [read, chip] of chips) expect(askChipOf(read), JSON.stringify(read)).toBe(chip);
+    // A link to a page says where it goes, never an act that hasn't happened.
+    expect(NEEDS.approval.action.label).toBe("Review plan");
+    expect(NEEDS["review-result"].action.label).toBe("Open result");
+    expect([NEEDS["connect-builder"].action.label, NEEDS["start-builder"].action.label]).toEqual(["Connect a builder", "Start the builder"]);
+    expect([NEEDS["plan-again"].action.label, NEEDS["planning-stopped"].action.label]).toEqual(["Plan again", "Plan again"]);
   });
 
   test("a fact that needs nothing pings no phone", () => {

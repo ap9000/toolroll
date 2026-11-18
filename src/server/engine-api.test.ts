@@ -16,7 +16,7 @@ import { mintApiToken } from "../api-tokens.js";
 import { register } from "../runner.js";
 import { addApprover, propose } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
-import { openStore, recordAgentSaid, type Store } from "../store.js";
+import { openStore, recordAgentSaid, recordPlanProblems, type Store } from "../store.js";
 import { presented, T0 } from "../../test/serve-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
 import * as reads from "../engine-reads.js";
@@ -323,10 +323,10 @@ describe("every answer is its contract's shape", () => {
 
   test("a task waiting to try again says when and why, on its steps and its Work row; a build's own start is sent", async () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-wait/steps")).body);
-    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read", agentSaid: null });
+    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read", attempt: "build", agentSaid: null });
     expect(Date.parse(steps.waiting!.retryAt!)).toBeGreaterThan(Date.now());
     const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
-    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual({ retryAt: steps.waiting!.retryAt, lastFailure: steps.waiting!.lastFailure });
+    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual({ retryAt: steps.waiting!.retryAt, lastFailure: steps.waiting!.lastFailure, attempt: "build" });
     // Not waiting: a done task, a failed one.
     expect(rows.rows.find(row => row.id === "t-done")?.waiting).toBeNull();
     expect(stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).waiting).toBeNull();
@@ -348,6 +348,82 @@ describe("every answer is its contract's shape", () => {
       const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
       expect(steps.failure?.agentSaid).toEqual(["[path]: cannot read config", "claude: refusing to run a model"]);
     } finally { store.handle.prepare("UPDATE run SET agent_said_json = NULL WHERE id = ?").run(last.id); }
+  });
+
+  test("a plan that failed its checks stops with its problems and the agent's words, cleaned, and what Plan again binds to", async () => {
+    // A planner whose plan failed validation, as claim.ts sealPlanFailure leaves it: queued, an incident and its hold.
+    store.createTask({ id: "t-plan", title: "Plan t-plan" }, T0);
+    const ref = store.refFor("built-in", "t-plan", "ours").id;
+    store.placeTask(ref, repoA);
+    expect(store.requestPlan(ref, T0)).toEqual({ ok: true });
+    const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim");
+    const run = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", role: "planner", branch: "b-t-plan", worktree, now: new Date(), ...presented(store, ref, "planner") });
+    release(store, taken.claim.leaseId, new Date());
+    store.finishRun(run, { outcome: "failed", reason: "malformed-plan", now: new Date() } as never);
+    recordPlanProblems(store, run, ["plan must start with ## Approach", "plan: Proof must name acceptance criterion c1", "see /Users/me/shop/plan.md"]);
+    recordAgentSaid(store, run, ["\u001b[31mwrote /Users/me/shop/plan.md\u001b[0m"]);
+    const incident = store.createIncident({ run, kind: "malformed-plan" }, new Date());
+    store.holdOwned({ taskRef: ref, ownerKind: "incident", ownerId: String(incident), reason: "malformed-plan", until: null }, new Date());
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-plan/steps")).body);
+    expect(steps.planStopped).toEqual({ incident, kind: "plan", line: "The plan didn't pass its checks.",
+      problems: ["plan must start with ## Approach", "plan: Proof must name acceptance criterion c1", "see [path]"],
+      agentSaid: ["wrote [path]"], again: { source: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    // Nothing waits to retry (an incident is no backoff), nothing to Retry, and a plan is already asked for.
+    expect([steps.waiting, steps.retry, steps.plan]).toEqual([null, null, null]);
+    // Its Work row: Plan didn't pass, the way on, never "Needs a retry" or "no reason was recorded".
+    const row = workRowsSchema.parse((await read("operator", "/work/rows")).body).rows.find(one => one.id === "t-plan")!;
+    expect(row.status.label).toBe("Needs you");
+    expect(row.detail).toBe("The plan didn't pass its checks. Plan again, or edit the task.");
+    expect(row.need?.action?.label).toBe("Plan again");
+    // Its own word on the row, never "Problem" or "Failed".
+    expect(row.chip).toBe("Plan didn't pass");
+    // A task with no plan asked for offers one; a task already approved does not.
+    store.createTask({ id: "t-ask", title: "Ask t-ask" }, T0);
+    store.placeTask(store.refFor("built-in", "t-ask", "ours").id, repoA);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).plan).toEqual({ source: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).plan).toBeNull();
+    // A plan asked for that waits to start (its planner starts on its own) reads planQueued; a bare task, a stopped
+    // plan (its incident holds it) and finished work don't.
+    expect(steps.planQueued).toBe(false);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-ask/steps")).body).planQueued).toBe(false);
+    store.createTask({ id: "t-asked", title: "Asked t-asked" }, T0);
+    const asked = store.refFor("built-in", "t-asked", "ours").id;
+    store.placeTask(asked, repoA);
+    expect(store.requestPlan(asked, T0)).toEqual({ ok: true });
+    const queued = stepCardsSchema.parse((await read("operator", "/t/t-asked/steps")).body);
+    expect([queued.planQueued, queued.waiting, queued.approval, queued.liveRun]).toEqual([true, null, null, null]);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body).planQueued).toBe(false);
+  });
+
+  test("a planner's own backoff: the steps, the task page and the Plan card read the root attempt, never a correction child or a build", async () => {
+    store.createTask({ id: "t-pwait", title: "Plan t-pwait" }, T0);
+    const ref = store.refFor("built-in", "t-pwait", "ours").id;
+    store.placeTask(ref, repoA);
+    expect(store.requestPlan(ref, T0)).toEqual({ ok: true });
+    const planner = (parentRun?: number) => {
+      const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+      if (!taken.ok) throw new Error("claim");
+      const id = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", role: "planner", branch: "b-t-pwait", worktree, now: new Date(), ...(parentRun === undefined ? {} : { parentRun }), ...presented(store, ref, "planner") });
+      release(store, taken.claim.leaseId, new Date());
+      return id;
+    };
+    const root = planner();
+    const child = planner(root);
+    store.finishRun(child, { outcome: "failed", reason: "agent", now: new Date() } as never);
+    store.finishRun(root, { outcome: "failed", reason: "agent-error", now: new Date() } as never);
+    recordAgentSaid(store, root, ["\u001b[31mclaude: /Users/me/shop refused\u001b[0m"]);
+    store.holdOwned({ taskRef: ref, ownerKind: "backoff", ownerId: `plan:${ref}`, reason: "plan retry 1/3 — backing off 1m", until: new Date(Date.now() + 60_000) }, new Date());
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-pwait/steps")).body);
+    expect(steps.waiting).toMatchObject({ attempt: "plan", lastFailure: "The agent stopped with an error", agentSaid: ["claude: [path] refused"] });
+    // The Plan card counts planning attempts (the root), never their correction children.
+    expect(steps.cards!.find(card => card.key === "plan")!.runs).toEqual([root]);
+    // The browser's task page says it too, the agent's words in a disclosure.
+    const page = String((await fetch(`${base}/t/t-pwait`, { headers: { cookie: cookies["operator"]! } }).then(response => response.text())));
+    expect(page).toContain("data-plan-backoff");
+    expect(page).toContain("Last plan attempt failed · The agent stopped with an error.");
+    expect(page).toMatch(/<summary>What the agent said<\/summary><pre class="mono">claude: \[path\] refused<\/pre>/);
+    expect(page).not.toContain("/Users/me/shop");
   });
 
   test("failures in a row count from the last success or the last person's Retry, as the engine counts them", async () => {
@@ -743,5 +819,17 @@ describe("Codex A0 r1 #2: LiveSession polls are passive reads, like the Live gri
     try {
       expect((await fetch(`${base}/agents/live/run/${liveRun}?file=main`, { headers: { cookie }, redirect: "manual" })).status).not.toBe(200);
     } finally { clock.mockRestore(); }
+  });
+});
+
+describe("a file's length from its own patch (resultDiffFile.lineCount)", () => {
+  test("an added file is its one hunk; a deleted one is none; any other file is unknown", () => {
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1,2 @@" }])).toBe(2);
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1 @@" }])).toBe(1);
+    expect(reads.patchLineCount([{ header: "@@ -1,3 +0,0 @@" }])).toBe(0);
+    expect(reads.patchLineCount([{ header: "@@ -1,3 +1,3 @@" }])).toBeNull();
+    expect(reads.patchLineCount([{ header: "@@ -0,0 +1,2 @@" }, { header: "@@ -5,1 +7,1 @@" }])).toBeNull();
+    expect(reads.patchLineCount([])).toBeNull();
+    expect(reads.patchLineCount([{ header: "not a header" }])).toBeNull();
   });
 });

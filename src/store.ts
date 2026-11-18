@@ -32,6 +32,7 @@ import { V169_ADDED_COLUMNS, V169_SCHEMA, V169_STEPS } from "./task-sizing-schem
 import { V170_ADDED_COLUMNS, V170_STEPS } from "./agent-said-schema.js";
 import { V171_SCHEMA, V171_STEPS } from "./flexible-setting-schema.js";
 import { V172_ADDED_COLUMNS, V172_OBJECTS, V172_SCHEMA, V172_STEPS } from "./flexible-sign-in-schema.js";
+import { V173_ADDED_COLUMNS, V173_STEPS } from "./plan-problems-schema.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
@@ -1268,7 +1269,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v172 adds, and changes no saved row (interactive agent threads, beta): each person's own Claude sign-in for threads
 // (flexible_sign_in, a new table) and which sign-in a relay call used (thread_relay_call / thread_relay_pending
 // sign_in_*: saved calls read NULL). V172_SCHEMA, V172_ADDED_COLUMNS (flexible-sign-in-schema.ts).
-export const SCHEMA_VERSION = 172;
+// v173 adds, and changes no saved row (the stranger test, round 10): why a planner's plan or question was refused
+// (run.plan_problems_json: a saved run reads NULL). V173_ADDED_COLUMNS (plan-problems-schema.ts).
+export const SCHEMA_VERSION = 173;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1406,7 +1409,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1670,7 +1673,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2080,7 +2083,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6065,7 +6068,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6560,6 +6563,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const signInDamaged = flexibleSignInShapeProblem(db);
   if (signInDamaged !== null) throw new Error(`${file}: refusing to open — ${signInDamaged}`);
   step("flexible-sign-in");
+  // v173: why a planner's plan or question was refused (V173_ADDED_COLUMNS: saved runs read NULL). Idempotent.
+  for (const [table, columns] of Object.entries(V173_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("plan-problems-column");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -27793,4 +27799,88 @@ function flexibleSignInShapeProblem(db: Database): string | null {
     }
   }
   return null;
+}
+
+/** v173's column, as a current or resumed file must hold it (plan-problems-schema.ts). Null when it does. */
+function planProblemsShapeProblem(db: Database): string | null {
+  return hasColumn(db, "run", "plan_problems_json") ? null : "run.plan_problems_json is missing";
+}
+
+/** Keep why a planner's plan or question was refused (planner.ts plannerPayload's problem messages): cleaned as what the
+ * agent said is (agent-said.ts agentSaidTail: they can echo what the planner wrote), at most eight lines. First write
+ * wins. Read back only through planProblemsOf; never sent outside Toolroll. */
+export function recordPlanProblems(store: Store, runId: number, problems: readonly string[]): void {
+  // The first problems are the ones to fix first: the first eight, each cleaned (agentSaidTail keeps a tail).
+  const kept = agentSaidTail(problems.slice(0, 8).join("\n"));
+  while (kept.length > 0 && JSON.stringify(kept).length > 4096) kept.pop();
+  if (kept.length === 0) return;
+  store.handle.prepare("UPDATE run SET plan_problems_json = ? WHERE id = ? AND plan_problems_json IS NULL").run(JSON.stringify(kept), runId);
+}
+
+/** Why a planner's plan or question was refused, per run: its cleaned problem lines (cleaned again on the way out), or
+ * null when none was kept. */
+export function planProblemsOf(store: Store, runId: number): string[] | null {
+  const row = store.handle.prepare("SELECT plan_problems_json FROM run WHERE id = ?").get(runId);
+  const raw = row?.["plan_problems_json"];
+  if (typeof raw !== "string") return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const lines = agentSaidTail(value.filter((one): one is string => typeof one === "string").join("\n"));
+    return lines.length === 0 ? null : lines;
+  } catch { return null; }
+}
+
+// ---- Plan again (the stranger test, round 10; docs/plans: plan-task-loop v2, S2) ------------------------------------
+
+/** The incidents only a planning turn opens (claim.ts sealPlanFailure). Plan again resolves these, and nothing else. */
+export const PLANNER_INCIDENT_KINDS: ReadonlySet<string> = new Set(["malformed-plan", "malformed-decision", "plan-attempts-exhausted"]);
+/** The ledger acts Plan again is kept under: the local owner's road, and a password session's. */
+export const PLAN_AGAIN_ACTIONS = Object.freeze({ local: "task plan again (local owner)", person: "task plan again" } as const);
+
+/**
+ * Plan again: the planner tries again on the same task after a planning incident (its plan or question failed its checks,
+ * or planning failed again and again). One transaction, which re-reads everything:
+ * - the task exists, is not put away, and is this version's (the incident's run is a planning turn of exactly this
+ *   task's reference, and its kind is a planning one; a build incident is never resolved here);
+ * - requestPlan's own guards (store.ts requestPlan): the task is queued, its scope is not approved, no live claim; the
+ *   only difference is that the plan must already be `requested` (it was asked for, and stopped);
+ * - the same request again (this incident, already resolved by Plan again, the plan still requested) answers "already";
+ * - `before` (the caller's own narrowing, such as withdrawing a pre-authorization) runs inside this transaction, on the
+ *   replay too, before anything else is written;
+ * - then the incident is resolved (its hold and page with it), the planning strikes cleared, and the ledger row written.
+ * It approves nothing, pins nothing and pre-authorizes nothing: the plan it asks for waits for a person's own yes.
+ */
+export function planAgain(store: Store, input: { taskId: string; incident: number; by: string; actor: string; action: string; detail: Record<string, unknown>; now: Date; before?: () => void }):
+  { ok: true; replayed: boolean } | { ok: false; reason: "not-found" | "archived" | "stale" | "refused"; message: string } {
+  return store.transact(() => {
+    const { taskId, incident, now } = input;
+    const ref = store.lookupRef(taskId);
+    const task = store.getTask(taskId);
+    if (ref === null || task === null) return { ok: false as const, reason: "not-found" as const, message: "That task is unavailable in your projects." };
+    if (refArchived(store, ref.id)) return { ok: false as const, reason: "archived" as const, message: "This task is put away. Restore it first." };
+    const row = store.handle.prepare(`SELECT incident.kind, incident.resolved_at, run.task_ref, run.role FROM incident JOIN run ON run.id = incident.run WHERE incident.id = ?`).get(incident);
+    if (row === undefined || Number(row["task_ref"]) !== ref.id || row["role"] !== "planner" || !PLANNER_INCIDENT_KINDS.has(String(row["kind"]))) {
+      return { ok: false as const, reason: "stale" as const, message: "This task changed. Look at it again." };
+    }
+    const changed = { ok: false as const, reason: "stale" as const, message: "This task changed. Look at it again." };
+    if (task.state !== "queued" || ref.plan !== "requested") return changed;
+    const approved = store.handle.prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND approved_digest = digest AND approved_at IS NOT NULL").get(taskId);
+    if (approved !== undefined) return changed;
+    if (store.hasLiveClaim(ref.id, now)) return { ok: false as const, reason: "refused" as const, message: "The planner is already working on this task." };
+    if (row["resolved_at"] !== null) {
+      // Resolved by Plan again already, for this incident: the same request, answered once more and nothing else written.
+      const again = store.handle.prepare(`SELECT detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC`).all(taskId, PLAN_AGAIN_ACTIONS.local, PLAN_AGAIN_ACTIONS.person)
+        .some(one => { try { return (JSON.parse(String(one["detail"] ?? "")) as { incident?: unknown }).incident === incident; } catch { return false; } });
+      if (!again) return changed;
+      input.before?.();
+      return { ok: true as const, replayed: true };
+    }
+    input.before?.();
+    if (!store.resolveIncident(incident, input.by, now)) throw new Error("plan again: the incident was open and couldn't be resolved");
+    store.resetPlanStrikes(ref.id);
+    store.recordAction({ at: now.toISOString(), actor: input.actor, repo: ref.repo, taskId, runId: null, action: input.action, outcome: "requested", source: "request",
+      detail: JSON.stringify({ v: 1, incident, ...input.detail }) });
+    return { ok: true as const, replayed: false };
+  });
 }

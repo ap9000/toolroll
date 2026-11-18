@@ -411,7 +411,7 @@ type Selected = NonNullable<BrowserTaskView["result"]>["selected"];
 const resultOf = (id: string, over: { revision?: string; receipt?: string; youCheck?: boolean; sensitive?: boolean; request?: number; accept?: boolean; batch?: string;
   attention?: string[]; limits?: string[]; mismatch?: Selected["mismatch"]; problem?: string | null; complete?: boolean; build?: number } = {}): BrowserWorkspace => {
   const selected = {
-    taskId: id, title: `Task ${id}`, project: "shop", build: over.build ?? 7, taskHref: `/t/${id}`, chatHref: `/chat?task=${id}`, status: { label: "Ready for review", tone: "ready", token: "ready" },
+    taskId: id, title: `Task ${id}`, project: "shop", build: over.build ?? 7, taskHref: `/t/${id}`, chatHref: `/chat?task=${id}`, status: { label: "Ready", tone: "ready", token: "ready" },
     problem: over.problem ?? null, next: null, decision: { label: "Accept", ready: true, why: null, effect: "", sentence: "" }, checks: { detail: "Checks passed.", problem: false, logHref: null },
     mismatch: over.mismatch ?? null, acts: { primary: over.complete ? null : over.accept === false ? "request-changes" : "accept", secondary: "request-changes", line: null }, runChecks: null, record: null, intent: null, noRun: null, notes: [],
     complete: over.accept === false || over.complete ? null : { action: `/t/${id}/complete`, receipt: over.receipt ?? RECEIPT, run: 7, accept: null },

@@ -10,7 +10,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type Store } from "./store.js";
+import { agentSaidOf, openStore, planProblemsOf, type Store } from "./store.js";
 import { classifyTerminal, isAuthFailure } from "./exhaustion.js";
 import { acquire, finalize } from "./claim.js";
 import { observeProviderReadiness, register } from "./runner.js";
@@ -104,14 +104,17 @@ describe("sign-in pauses", () => {
     const sent = () => store.handle.prepare("SELECT subject, body FROM notification").all().map(row => `${String(row["subject"])}\n${String(row["body"])}`).join("\n");
     const plan = (taskId: string) => {
       const one = attempt(taskId, "claude", "planner");
-      return finalize(store, one.lease, { kind: "plan-failure", runId: one.runId, taskId, failure: "failure", message: said, now: at(1_500) });
+      return finalize(store, one.lease, { kind: "plan-failure", runId: one.runId, taskId, failure: "failure", message: said, agentSaid: [said], now: at(1_500) });
     };
     expect(plan("t-plan-1")).toMatchObject({ ok: true, disposition: "backoff" });
     // The last strike: planning stalls.
     store.handle.prepare("UPDATE task_ref SET plan_strikes = 2 WHERE id = ?").run(store.refFor("built-in", "t-plan-2").id);
     expect(plan("t-plan-2")).toMatchObject({ ok: true, disposition: "exhausted" });
     const malformed = attempt("t-plan-3", "claude", "planner");
-    expect(finalize(store, malformed.lease, { kind: "plan-failure", runId: malformed.runId, taskId: "t-plan-3", failure: "malformed", message: said, now: at(1_500) })).toMatchObject({ ok: true, disposition: "malformed-incident" });
+    expect(finalize(store, malformed.lease, { kind: "plan-failure", runId: malformed.runId, taskId: "t-plan-3", failure: "malformed", message: said, problems: [said], agentSaid: [said], now: at(1_500) })).toMatchObject({ ok: true, disposition: "malformed-incident" });
+    // Why it was refused and what the agent said are kept on the run, cleaned, for the person's own Steps only.
+    expect(planProblemsOf(store, malformed.runId)?.join("\n")).toMatch(/AGENT-SAID: see \[path\]/);
+    expect(agentSaidOf(store, malformed.runId)?.join("\n")).toMatch(/AGENT-SAID/);
     const build = attempt("t-commit");
     expect(finalize(store, build.lease, { kind: "failure", runId: build.runId, taskId: "t-commit", failureClass: "commit-failure", message: said, worktree: "/Users/me/pool/t-commit", now: at(1_000) })).toMatchObject({ ok: true, disposition: "commit-incident" });
     const words = sent();

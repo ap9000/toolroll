@@ -30,7 +30,7 @@ export function redactPasswords(text, secrets = []) {
   }
   return text;
 }
-export const SCENARIOS = ['smoke', 'success', 'agent-error', 'never-initialized', 'signed-out', 'narrow'];
+export const SCENARIOS = ['smoke', 'success', 'agent-error', 'never-initialized', 'signed-out', 'narrow', 'plan-refused', 'plan-error'];
 const word = s => `'${String(s).replace(/'/g, "'\\''")}'`;
 export function checkedEnv(world) {
   assertIsolated(world.env, { root: world.root });
@@ -90,6 +90,11 @@ export function createWorld(root, scenario = 'smoke', outer = process.env) {
       'test/math.test.js': test + "test('negative numbers', () => assert.equal(subtract(-2, 3), -5));\n" },
     conclusion: `${MARKER}: Added coverage for negative numbers.` } });
   provider.add('runtime-verification', { role: 'lead', when: [], answer: { text: 'The subtraction change is available for review.', calls: [] } });
+  // A plan that fails its checks, the first turn and its correction both (no "## Approach"): a planning incident.
+  // Plan again then gets the scripted planner's own valid plan.
+  if (scenario === 'plan-refused') provider.add('runtime-verification', { role: 'planner', when: [], times: 2, answer: { plan: { plan: `${MARKER}: no approach heading here.` } } });
+  // A planner whose agent stops with its own error once: the planning backoff, with what it said.
+  if (scenario === 'plan-error') provider.add('runtime-verification', { role: 'planner', when: [], times: 1, answer: { fail: `${MARKER}: synthetic planner error` } });
   for (const name of AGENT_CLIS) exe(name, '#!/bin/sh\necho "Not installed (stand-in)" >&2\nexit 127\n');
   exe('claude', `#!/bin/sh\n${scenario === 'never-initialized' ? `case "$1" in --version|--help|auth|mcp) ;; *) echo '${MARKER}: exited before initialization' >&2; exit 1 ;; esac\n` : ''}exec ${word(provider.shims.claude)} "$@"\n`);
   // Codex must never turn signed-in just because an auth probe returned zero.

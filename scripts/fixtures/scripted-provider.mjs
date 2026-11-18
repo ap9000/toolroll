@@ -205,6 +205,9 @@ export function turnsOf(entries) {
 export const ROLES = ["lead", "subagent", "draft", "sizing", "reviewer", "memory", "scout", "planner", "builder"];
 const DONE_FILE = /write ONE file named exactly (STANDING-ORDERS-DONE-[0-9a-f]{16}\.json)/;
 const PLAN_FILE = /`(STANDING-ORDERS-PLAN-[0-9a-f]{16}\.json)`/;
+/** A planner's correction turn (planner.ts plannerRepairBrief) names its files bare: "Rewrite <file> and remove <file>". */
+const PLAN_REPAIR = /^Your previous structured planner output failed validation\./m;
+const ANY_PLAN_FILE = /(STANDING-ORDERS-PLAN-[0-9a-f]{16}\.json)/, ANY_PARK_FILE = /(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)/;
 const PARK_FILE = /(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)/;
 
 /** What every world answers when no journey scripted the turn: the turns a world makes in the background. */
@@ -251,7 +254,7 @@ export function roleOf(call, prompt) {
   if (props.findings) return "reviewer";
   if (props.calls && props.text) return /You are auditing one past session/.test(prompt) ? "memory" : "lead";
   if (props.kind) return "scout";
-  if (/You are a PLANNER/.test(prompt) || PLAN_FILE.test(prompt)) return "planner";
+  if (/You are a PLANNER/.test(prompt) || PLAN_FILE.test(prompt) || PLAN_REPAIR.test(prompt)) return "planner";
   if (DONE_FILE.test(prompt)) return "builder";
   if (/You are the automatic REVIEWER/.test(prompt)) return "reviewer";
   if (call.provider === "claude" && call.schema === null && call.format === "json" && call.tools === "") return "draft";
@@ -398,7 +401,8 @@ async function perform(role, answer, { prompt, call, cwd, step, signal }) {
     case "memory": return { value: { text: JSON.stringify({ positive: answer.positive ?? [], negative: answer.negative ?? [], gaps: answer.gaps ?? [] }), calls: [] }, mcp };
     case "scout": return { value: answer.decision ? { kind: "question", decision: decision(answer.decision) } : { kind: "report", report: answer.report ?? DEFAULTS.scout.report }, mcp };
     case "planner": {
-      const park = /`(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)`/.exec(prompt)?.[1], plan = PLAN_FILE.exec(prompt)?.[1];
+      const repair = PLAN_REPAIR.test(prompt);
+      const park = (repair ? ANY_PARK_FILE : /`(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)`/).exec(prompt)?.[1], plan = (repair ? ANY_PLAN_FILE : PLAN_FILE).exec(prompt)?.[1];
       if (answer.question !== undefined) {
         if (park === undefined) throw new Error("the planner's brief names no question file");
         writeWhole(join(cwd, park), JSON.stringify(decision(answer.question), null, 2));

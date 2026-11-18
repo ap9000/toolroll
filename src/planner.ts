@@ -65,6 +65,7 @@ import {
   type PlannerSource,
 } from "./planner-source.js";
 import { canonicalJsonUndefinedAsNull } from "./canonical-json.js";
+import { agentSaidTail } from "./agent-said.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -133,6 +134,9 @@ export type PlanOutcome =
       reason: string;
       message: string;
       problems?: (Problem | PlanProblem)[];
+      /** What the agent said on its way out (agent-said.ts agentSaidTail, already cleaned): kept on the run for the
+       * person's own Steps, never sent outside Toolroll. Absent when it said nothing. */
+      agentSaid?: string[];
     };
 
 /**
@@ -860,7 +864,9 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     return null;
   };
 
-  const malformedOutcome = (payload: Extract<PlannerPayload, { state: "malformed" }>): PlanOutcome => ({
+  // What the agent said on the turn whose output was malformed (the first turn, or its correction), kept with it.
+  const malformedOutcome = (payload: Extract<PlannerPayload, { state: "malformed" }>, said: { agentSaid?: string[] } = {}): PlanOutcome => ({
+    ...said,
     ok: false,
     kind: "malformed",
     reason: payload.kind === "decision" ? "malformed-decision" : "malformed-plan",
@@ -980,6 +986,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         kind: "failure",
         reason: "timeout",
         message: `the planner made no observable progress for ${Math.round(timeoutMs / 60_000)} minutes and was stopped`,
+        ...saidOf(result),
       };
     }
     if (result.initFailed) {
@@ -989,11 +996,12 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         kind: "failure",
         reason: "provider-init",
         message: "the provider harness never initialized — config, auth, or install, not the plan",
+        ...saidOf(result),
       };
     }
     if (result.code !== 0) {
       cleanup(worktree, [mailbox, planFile]);
-      return { ok: false, kind: "failure", reason: "agent", message: `agent exit ${result.code}` };
+      return { ok: false, kind: "failure", reason: "agent", message: `agent exit ${result.code}`, ...saidOf(result) };
     }
     if (result.sessionId !== null) {
       // Buffered test/custom transports may only expose identity in their
@@ -1021,7 +1029,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
       }
     }
     if (payload.state === "plan") return draftedOutcome(root, request.runId, payload.plan);
-    if (!plannerPayloadIsRepairable(payload)) return malformedOutcome(payload);
+    if (!plannerPayloadIsRepairable(payload)) return malformedOutcome(payload, saidOf(result));
 
     const initialAuthority = payload.authorityAnchor;
     let expectedKind = payload.expectedKind;
@@ -1029,7 +1037,9 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     let lastMalformed = payload;
     let sessionId = result.sessionId ?? store.getRun(request.runId)?.sessionId ?? null;
     let repairParentRun = request.runId;
-    if (auditOf(provider).resume !== "native" || sessionId === null) return malformedOutcome(lastMalformed);
+    // The words of the turn that wrote the last malformed output: the first turn's until a correction ran.
+    let lastSaid = saidOf(result);
+    if (auditOf(provider).resume !== "native" || sessionId === null) return malformedOutcome(lastMalformed, lastSaid);
     const parentRoute = store.runRoute(request.runId);
     const parentStamp = parentRoute === null ? null : { routeDigest: parentRoute.routeDigest, phase: parentRoute.phase, provider: parentRoute.provider, model: parentRoute.model, chosen: parentRoute.chosen };
 
@@ -1184,6 +1194,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
           ok: false,
           kind: "failure",
           reason,
+          ...saidOf(turn),
           message: turn.timedOut
             ? "the structured repair turn timed out"
             : turn.initFailed
@@ -1216,6 +1227,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
       }
 
       lastMalformed = corrected;
+      lastSaid = saidOf(turn);
       problems = corrected.problems;
       if (expectedKind === null) expectedKind = corrected.expectedKind ?? corrected.kind;
       store.finishRun(correctionRun, {
@@ -1223,11 +1235,11 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
         reason: corrected.kind === "decision" ? "malformed-decision" : "malformed-plan",
         now: clock(),
       });
-      if (!plannerPayloadIsRepairable(corrected)) return malformedOutcome(corrected);
+      if (!plannerPayloadIsRepairable(corrected)) return malformedOutcome(corrected, lastSaid);
       sessionId = turn.sessionId;
       repairParentRun = correctionRun;
     }
-    return malformedOutcome(lastMalformed);
+    return malformedOutcome(lastMalformed, lastSaid);
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
     liveLog?.close();
@@ -1242,4 +1254,11 @@ function cleanup(worktree: string, names: readonly string[]): void {
       // Missing is fine; unremovable is caught by the next quarantine sweep.
     }
   }
+}
+
+/** What a planner's agent said on its way out of a failed turn, cleaned (agent-said.ts agentSaidTail: at most eight short
+ * lines, no folder, key or control). Its own error output first, else its spoken conclusion; absent when it said nothing. */
+function saidOf(result: { stderr: string; finalMessage: string | null }): { agentSaid?: string[] } {
+  const said = agentSaidTail(result.stderr.trim() !== "" ? result.stderr : result.finalMessage);
+  return said.length === 0 ? {} : { agentSaid: said };
 }

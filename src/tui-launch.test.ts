@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { easyStartArgs } from "./easy-start-args.js";
-import { aclVerdictOf, bundledBinary, chooseTuiBinary, packageRootOf, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
+import { aclVerdictOf, bundledBinary, chooseTuiBinary, packageRootOf, REOPEN_PROMPT, reopenAfterSignOut, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
 import type { TuiSession } from "./tui-contract.js";
 
 const CONTRACT = "c".repeat(64);
@@ -377,6 +377,8 @@ setTimeout(() => process.exit(${code}), 2000);
     expect(await runTuiBinary({ binary: fake(0), link: LINK, session: session(false), project: null, stdio: ["ignore", "ignore", "ignore"] })).toBe("leave");
     expect((JSON.parse(readFileSync(join(dir, "seen-0.json"), "utf8")) as { argv: string[] }).argv).toEqual(["--control-fd", "4"]);
     expect(await runTuiBinary({ binary: fake(42), link: LINK, session: session(false), project: null, stdio: ["ignore", "ignore", "ignore"] })).toBe("classic");
+    // Signed out under it (its session ended): its own end, never a plain leave that stops Toolroll unasked.
+    expect(await runTuiBinary({ binary: fake(1), link: LINK, session: session(false), project: null, stdio: ["ignore", "ignore", "ignore"] })).toBe("ended");
   });
 
   test("a binary gone since its self-check opens the classic screen", async () => {
@@ -433,5 +435,25 @@ setTimeout(() => process.exit(${code}), 2000);
 
   test("only the exact absolute path that was checked is started", async () => {
     await expect(runTuiBinary({ binary: "toolroll-tui", link: LINK, session: session(false), project: null })).rejects.toThrow(/checked, absolute path/);
+  });
+});
+
+describe("a screen signed out under the person reopens only on their own Enter at their own terminal", () => {
+  test("the prompt names no cause; Enter reopens; q, any other answer, EOF, no terminal or a coding agent with a TTY never do", async () => {
+    expect(REOPEN_PROMPT).toBe("This screen was signed out. Open Toolroll again? Enter opens it · q stops Toolroll ");
+    expect(REOPEN_PROMPT).not.toMatch(/password/i);
+    const asked: string[] = [];
+    const answer = (typed: string | null) => async (prompt: string) => { asked.push(prompt); return typed; };
+    expect(await reopenAfterSignOut({ terminal: true, agent: false, ask: answer("") })).toBe(true);
+    expect(await reopenAfterSignOut({ terminal: true, agent: false, ask: answer("  ") })).toBe(true);
+    for (const typed of ["q", "n", "yes", "Q"]) expect(await reopenAfterSignOut({ terminal: true, agent: false, ask: answer(typed) }), typed).toBe(false);
+    // EOF (Ctrl-D, a closed input): stopped, never taken for Enter.
+    expect(await reopenAfterSignOut({ terminal: true, agent: false, ask: answer(null) })).toBe(false);
+    expect(asked).toHaveLength(7);
+    // No person's terminal, or a coding agent holding one: never asked, never reopened.
+    const never = vi.fn(answer(""));
+    expect(await reopenAfterSignOut({ terminal: false, agent: false, ask: never })).toBe(false);
+    expect(await reopenAfterSignOut({ terminal: true, agent: true, ask: never })).toBe(false);
+    expect(never).not.toHaveBeenCalled();
   });
 });
