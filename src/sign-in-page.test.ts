@@ -224,6 +224,15 @@ describe("the terminal UI's w and `toolroll open --web` (openLocalSignIn)", () =
     return { file, store };
   }
 
+  test("a named landing rides the link only from the fixed list (a thread's next step: w on your Claude sign-in); anything else is left off", async () => {
+    const { file } = database();
+    for (const [then, query] of [["flexible-sign-in", "?then=flexible-sign-in"], ["/settings/../people?x=1", ""]] as const) {
+      const { opener, started } = recording();
+      expect((await openLocalSignIn(file, "x", { request: async () => ({ ok: true, url: LINK }), opener, everyMs: 20, then: then as never })).ok).toBe(true);
+      expect(readFileSync(started[0]!.args[0]!, "utf8")).toContain(`${LINK}${query}"`);
+    }
+  });
+
   test("the opener gets the page's path in the database's run folder, never the link; TOOLROLL_BROWSER_COMMAND is ignored; the page goes once the console records the sign-in", async () => {
     vi.stubEnv("TOOLROLL_BROWSER_COMMAND", "/tmp/logs-every-argument");
     const { file, store } = database();

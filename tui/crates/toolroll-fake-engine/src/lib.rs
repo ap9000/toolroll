@@ -130,6 +130,9 @@ pub struct State {
     pub term_refusals: Vec<u16>,
     /// The person's Flexible threads (GET /agents/live/threads); None: Flexible isn't available, as in this build.
     pub threads: Option<Value>,
+    /// What a new thread still needs, as the console names it (`next` on the start's refusal): set, every start is
+    /// refused with it (the console's readiness: on → your own Claude sign-in → the project's terms).
+    pub thread_next: Option<String>,
     /// Each thread's LiveSession window (GET /agents/live/thread/<id>).
     pub thread_windows: HashMap<String, Value>,
     /// The approval waiting on a task (GET /t/<task>/approval, by the address's task), as the console's card says it;
@@ -560,6 +563,7 @@ pub fn scenario() -> State {
         term_attaches: 0,
         term_refusals: Vec::new(),
         threads: None,
+        thread_next: None,
         thread_windows: HashMap::new(),
     }
 }
@@ -1159,6 +1163,16 @@ async fn act(
             );
         }
         if path == "/agents/live/thread" {
+            if let Some(next) = st.thread_next.clone() {
+                let words = match next.as_str() {
+                    "sign-in" => "Threads use your own Claude sign-in. Run `claude setup-token`, then `toolroll config set flexible-sign-in`, or add it in Settings → General. Nothing was started.",
+                    _ => "This project isn't set up for threads yet. Nothing was started.",
+                };
+                return json_answer(
+                    409,
+                    json!({ "outcome": "refused", "words": words, "next": next }),
+                );
+            }
             // A new thread: without a key, its terms card (as the console makes it); with the card's key, started; with
             // any other key, refused as stale.
             let terms = st

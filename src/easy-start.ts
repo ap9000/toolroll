@@ -80,7 +80,7 @@ export type EasyStartSeams = {
   /** Open this computer's browser signed in as the local owner: a one-time link from the live console (the socket `link`
    * verb), handed to the browser only through a 0600 page and the platform's own opener (openLocalSignIn). The link
    * never comes back here. */
-  openSignedIn: () => Promise<SignedInOpen>;
+  openSignedIn: (page?: import("./tui-contract.js").TuiPage) => Promise<SignedInOpen>;
   /** The terminal UI, in this process, as the local owner, until the person quits. */
   openTui: (session: TuiSession) => Promise<TuiExit>;
   /** `background on`, handing over from the `up` this process owns (when it owns one). */
@@ -297,8 +297,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   const session: TuiSession = {
     owned: () => ownedNow() !== null,
     stopped: stoppedOnItsOwn,
-    openBrowser: async () => {
-      const opened = await seams.openSignedIn();
+    openBrowser: async page => {
+      const opened = await seams.openSignedIn(page);
       return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
     },
     shouldAskBackground: () => ownedNow() !== null && !seams.serviceInstalled() && !seams.backgroundAsked(),
@@ -410,7 +410,7 @@ export function defaultEasyStartSeams(options: {
     spawnUp: args => spawnOwnedUp(args, { cwd, databaseFile: file }),
     runUpForeground: async args => (await import("./operate.js")).runOperate("up", [...args, "--db", file], options.write, options.operate ?? {}),
     openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
-    openSignedIn: () => openLocalSignIn(file, options.build),
+    openSignedIn: page => openLocalSignIn(file, options.build, page === undefined ? {} : { then: page }),
     openTui: async session => {
       // The terminal workbench (tui-launch.ts), signed in over descriptor 3; else the classic screen, with one line why.
       const { chooseTuiBinary, runTuiBinary } = await import("./tui-launch.js");
@@ -508,6 +508,8 @@ export async function openLocalSignIn(databaseFile: string, build: string, seams
   platform?: NodeJS.Platform;
   everyMs?: number;
   expiresMs?: number;
+  /** The page to land on once signed in (one of tui-contract.ts TUI_PAGES; the console maps it to its own address). */
+  then?: import("./tui-contract.js").TuiPage;
 } = {}): Promise<SignedInOpen> {
   const { ledgerSpent, NO_SAFE_OPENER, openSignInLink, platformOpener } = await import("./sign-in-page.js");
   if (platformOpener(seams.platform) === null) return { ok: false, message: NO_SAFE_OPENER };
@@ -523,8 +525,10 @@ export async function openLocalSignIn(databaseFile: string, build: string, seams
     // own deadline, counted from before it was minted.
     const spent = ledgerSpent(store, "local link", null);
     const expiresAt = Date.now() + (seams.expiresMs ?? (await import("./server/session.js")).SIGN_IN_LINK_MS);
-    const link = await (seams.request ?? (one => requestLocalLink(databaseFile, one, build)))(store);
-    if (!link.ok) return link;
+    const asked = await (seams.request ?? (one => requestLocalLink(databaseFile, one, build)))(store);
+    if (!asked.ok) return asked;
+    const { isTuiPage } = await import("./tui-contract.js");
+    const link = seams.then !== undefined && isTuiPage(seams.then) ? { ...asked, url: `${asked.url}?then=${seams.then}` } : asked;
     // The page's watcher reads the ledger until the page goes; it closes this store then.
     handed = true;
     const opened = await openSignInLink(link.url, {

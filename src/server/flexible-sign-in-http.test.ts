@@ -184,5 +184,12 @@ test("a laptop's owner with no password: the sign-in document and the switch's t
     const turnOn = (await laptop.send("/settings/change/flexible", "GET", { cookie })).body;
     expect(turnOn).toContain("This needs a Toolroll password, and you haven't set one.");
     expect(turnOn).not.toContain('action="/settings/flexible"');
+    // The terminal's w on a thread's next step: a one-time link lands on the named page from the fixed table; a name not
+    // in it (or a path) lands on the console's start.
+    for (const [then, landing] of [["flexible-sign-in", "/settings/change/flexible-sign-in"], ["flexible", "/settings/general?section=flexible"], ["/people", "/chat"], ["https://elsewhere.invalid", "/chat"]] as const) {
+      const link = laptop.server.mintLocalLink()!;
+      const answer = await laptop.send(`${link}?then=${encodeURIComponent(then)}`, "GET");
+      expect([answer.status, answer.headers.location], then).toEqual([303, landing]);
+    }
   } finally { await laptop.close(); }
 }, LOCAL_WORLD_SETUP_MS);

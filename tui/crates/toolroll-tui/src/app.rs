@@ -343,6 +343,9 @@ pub enum Mode {
     NewThread(String),
     /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
     StartThread(crate::thread::StartTerms),
+    /// A new thread was refused with what this person still needs first (thread.rs NextStep): `w` opens its page in the
+    /// browser, `c` puts its command in the terminal's scrollback.
+    ThreadNext(String),
     /// The Agents screen: an agent's install command, shown whole; only Enter here runs exactly it in a pane.
     ConfirmInstall {
         agent: String,
@@ -712,6 +715,8 @@ pub enum Effect {
     /// The live rooms for what's on screen now (besides `workspace`).
     Watch(Vec<String>),
     OpenBrowser,
+    /// Open the browser signed in, on one of the console's fixed pages by name (tui-contract.ts TUI_PAGES).
+    OpenPage(&'static str),
     /// Open this text (a pane's own, already cleaned) in the person's editor: a private temporary file, the screen
     /// given back to the editor and taken again after (editor.rs, run.rs).
     OpenInEditor {
@@ -1677,6 +1682,13 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::NextStep { words, next })) => {
+                // Said in the console's words; the next step's page and command one key away.
+                self.say(Tone::Refused, words);
+                self.sent_thread();
+                self.mode = Mode::ThreadNext(next);
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::ThreadTerms { key, lines })) => {
                 self.status = None;
                 self.mode = Mode::StartThread(crate::thread::StartTerms::new(
@@ -2475,6 +2487,22 @@ impl App {
                         self.say(Tone::Said, "Not stopped.");
                         vec![]
                     }
+                }
+            }
+            Mode::ThreadNext(next) => {
+                self.mode = Mode::Normal;
+                let step = crate::thread::next_step(&next);
+                match (key.code, step) {
+                    (KeyCode::Char('w'), Some(step)) if step.page.is_some() => {
+                        self.say(Tone::Said, "Opening Toolroll in your browser…");
+                        vec![Effect::OpenPage(step.page.unwrap_or_default())]
+                    }
+                    (KeyCode::Char('c'), Some(step)) if step.command.is_some() => {
+                        let command = step.command(self.project.as_deref());
+                        self.mode = Mode::Copied;
+                        vec![Effect::Scrollback(vec![command])]
+                    }
+                    _ => vec![],
                 }
             }
             Mode::ConfirmHold { task } => {
@@ -3922,6 +3950,7 @@ impl App {
             | Mode::Search(_)
             | Mode::Help
             | Mode::Copied
+            | Mode::ThreadNext(_)
             | Mode::Sending(_)
             | Mode::Fatal(..)
             | Mode::TakeOver => None,
@@ -4716,7 +4745,11 @@ impl App {
                 self.say(Tone::Said, words);
                 self.refresh()
             }
-            Ok(ActOutcome::Terms { .. } | ActOutcome::ThreadTerms { .. }) => {
+            Ok(
+                ActOutcome::Terms { .. }
+                | ActOutcome::ThreadTerms { .. }
+                | ActOutcome::NextStep { .. },
+            ) => {
                 self.say(
                     Tone::Refused,
                     "Toolroll answered something unexpected. Your notes are kept.",

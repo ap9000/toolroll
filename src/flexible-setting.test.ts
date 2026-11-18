@@ -115,7 +115,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(FLEXIBLE_SETTING_WORDS).toBe("Claude Code only for now. Runs inside Toolroll's sandbox with your Claude sign-in relayed; Toolroll never gives the agent your key.");
     expect(page).toContain('href="/settings/change/flexible"');
     expect(await (await fetch(`${base}/settings/change/flexible`, { headers: { cookie } })).text()).toContain('action="/settings/flexible"');
-    expect(await start({})).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
+    expect(await start({})).toEqual({ status: 404, body: { outcome: "refused", words: OFF, next: "turn-on" } });
     // A read: it answers, says threads are off, and lists none (none was ever made).
     expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ version: 1, on: false, threads: [] });
     expect(FLEXIBLE_UNAVAILABLE).toBe(OFF);
@@ -176,7 +176,7 @@ describe("Settings → General, and a thread through the console", () => {
     expect(held.starts[0]).toMatchObject({ repo: world.project, model: expect.stringMatching(/^claude-/), startKey: card.key });
     // Turned off again: the very next start refuses, before anything is looked up.
     setFlexibleSetting(world.store, false, "alex", new Date());
-    expect(await start({ terms: card.key })).toEqual({ status: 404, body: { outcome: "refused", words: OFF } });
+    expect(await start({ terms: card.key })).toEqual({ status: 404, body: { outcome: "refused", words: OFF, next: "turn-on" } });
     expect(held.starts).toHaveLength(1);
   });
 

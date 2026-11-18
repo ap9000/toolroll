@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
-import { flexibleSignInBilling } from "./flexible-sign-in.js";
+import { flexibleSignInBilling, flexibleSignInStatus } from "./flexible-sign-in.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { CLAUDE_EXACT } from "./model-catalog.js";
@@ -79,6 +79,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const credential = flexibleSignInBilling(store, input.by);
   if (!credential.ok) return refuse(credential.reason);
   const billing = credential.billing;
+  const signedIn = flexibleSignInStatus(store, input.by.name);
+  const savedOn = signedIn.state === "none" ? null : signedIn.savedAt.slice(0, 10);
   const open = network.mode === "open";
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(input.repo)?.["name"];
   const caps = terms.caps;
@@ -86,8 +88,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const decisions: SummaryRow[] = [
     { label: "Project", words: typeof project === "string" ? project : input.repo, lines: typeof project === "string" ? [input.repo] : [], fields: ["flexible.repo"] },
     { label: "Level", words: `${FLEXIBLE_LEVEL_WORDS.full}: no permission prompts inside the sandbox`, lines: [FULL_ACCESS_WORDS], fields: ["flexible.level"], risky: true },
-    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted.",
-      billing === "subscription" ? "Billed to your Claude plan (Toolroll's setup-token sign-in)." : "Billed per call to Toolroll's Claude API key."], fields: ["flexible.agent", "flexible.billing"] },
+    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude sign-in stays with Toolroll and never enters the agent; each call is checked and counted.",
+      billing === "subscription" ? `Your Claude plan (the sign-in you saved${savedOn === null ? "" : ` on ${savedOn}`}). It powers only threads you start.` : "Billed per call to your own Claude API key. It powers only threads you start."], fields: ["flexible.agent", "flexible.billing"] },
     { label: "Works in", words: "its own copy of this repository, on its own branch", lines: ["Your repository changes only when you Ship."], fields: ["flexible.repository"] },
     { label: "Network", words: open ? "open: any website, through the thread's own proxy" : lowerFirst(networkWords(network, "claude").replace(/^Network: /, "")),
       lines: ["Nothing on this computer is reachable (no local services, keychain, SSH agent or saved sign-ins)."], fields: ["flexible.network"], ...(open ? { risky: true } : {}) },
@@ -113,4 +115,24 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
     network: networkDigest, message: digestOfMessage, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
   const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", usualSummary: "", key };
   return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", billing, terms } };
+}
+
+/** The first thing a person still needs before a thread can start in a project, in this order: threads on (an
+ * instance operator's switch: `turn-on` for one, `ask-operator` for anyone else), their own Claude sign-in (`sign-in`,
+ * or `sign-in-refused` once Claude didn't accept it), then the project's Flexible terms (`project-terms`). Null when
+ * nothing is missing. From the records only (the sign-in's value is never read). */
+export type FlexibleNextStep = "turn-on" | "ask-operator" | "sign-in" | "sign-in-refused" | "project-terms";
+export const FLEXIBLE_NEXT_WORDS: Readonly<Record<FlexibleNextStep, string>> = Object.freeze({
+  "turn-on": "Threads are off. Turn them on in Settings → General, or with `toolroll config set flexible on`. Nothing was started.",
+  "ask-operator": "Threads are off. Ask an instance operator to turn them on. Nothing was started.",
+  "sign-in": "Threads use your own Claude sign-in. Run `claude setup-token`, then `toolroll config set flexible-sign-in`, or add it in Settings → General. Nothing was started.",
+  "sign-in-refused": "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`. Nothing was started.",
+  "project-terms": "This project isn't set up for threads yet: turn on its Flexible terms in the project's settings, or with `toolroll project flexible enable`. Nothing was started.",
+});
+export function flexibleReadiness(store: Store, by: { name: string; generation: number }, repo: string): FlexibleNextStep | null {
+  if (!flexibleAvailable(store)) return store.isInstanceOperator(by.name) ? "turn-on" : "ask-operator";
+  const signIn = flexibleSignInBilling(store, by);
+  if (!signIn.ok) return signIn.reason === "no-sign-in" ? "sign-in" : "sign-in-refused";
+  const standing = flexibleStanding(store, repo);
+  return standing.state === "secure" ? "project-terms" : null;
 }

@@ -20,6 +20,8 @@ import { activateFlexibleSignIn, flexibleSignInBilling, flexibleSignInStatus, re
 import { onlineCopy, restoreDatabase } from "./backup.js";
 import { V172_ADDED_COLUMNS, V172_TABLES } from "./flexible-sign-in-schema.js";
 import { standInToken } from "../test/flexible-sign-in-kit.js";
+import { flexibleReadiness } from "./flexible-start.js";
+import { threadsStatusNote } from "./flexible-sign-in.js";
 import { PASSWORDLESS_ACTION } from "./passwordless.js";
 
 // Two names forced into one address slot (tool-secret-store.ts signInAddress), only where a test asks. The setup file
@@ -442,5 +444,29 @@ describe("no installation-wide sign-in", () => {
     const relay = readFileSync("src/flexible-relay.ts", "utf8");
     expect(relay).not.toMatch(/readHeldSecret|tool-secret-store/);
     expect(relay).toMatch(/const found = signInForTurn\(store, state, turn\);/);
+  });
+});
+
+describe("readiness", () => {
+  test("the first thing still missing, in order: threads on (an operator turns them on, anyone else asks), your own sign-in (or Claude refused it), then the project's terms; from the record only", async () => {
+    expect(store.setAccountProjects("bob", ["/nowhere"], "alex", NOW)).toEqual({ ok: true });
+    setFlexibleSetting(store, false, "alex", NOW);
+    expect(flexibleReadiness(store, { name: "alex", generation: accountGeneration() }, "/nowhere")).toBe("turn-on");
+    expect(flexibleReadiness(store, { name: "bob", generation: accountGeneration("bob") }, "/nowhere")).toBe("ask-operator");
+    setFlexibleSetting(store, true, "alex", NOW);
+    expect(flexibleReadiness(store, { name: "alex", generation: accountGeneration() }, "/nowhere")).toBe("sign-in");
+    const saved = await save("alex", PASSWORD, standInToken());
+    expect(saved.ok).toBe(true);
+    // With the value gone from its address, readiness still reads the same: it never loads the secret.
+    for (const name of files()) rmSync(join(state, "tool-secrets", "flexible-sign-in", name));
+    expect(flexibleReadiness(store, { name: "alex", generation: accountGeneration() }, "/nowhere")).toBe("project-terms");
+    store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, streamed, status, http_status, cost_basis, sign_in_person, sign_in_generation, sign_in_refused)
+      VALUES (?, ?, ?, 'claude', 't', 't', 'messages', 0, 'upstream-error', 401, 'estimated', 'alex', ?, 1)`).run("a".repeat(32), "b".repeat(32), "c".repeat(32), active());
+    expect(flexibleReadiness(store, { name: "alex", generation: accountGeneration() }, "/nowhere")).toBe("sign-in-refused");
+    // The Agents screen's note says the same, in one line.
+    expect(threadsStatusNote(store, "alex")).toContain("Claude didn't accept your sign-in");
+    expect(threadsStatusNote(store, "bob")).toContain("run `claude setup-token`, then `toolroll config set flexible-sign-in`");
+    setFlexibleSetting(store, false, "alex", NOW);
+    expect(threadsStatusNote(store, "alex")).toContain("Threads are off");
   });
 });

@@ -420,8 +420,13 @@ export function setupOf(id: string, home: string | null = null): AgentsRead["age
 
 /** `GET /engine/agents`: the last detection of this computer's agents (agent-detect.ts) as the contract says it; null
  * (not looked for yet) reads as no agents and the "looking" line. */
-export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full", home: string | null = null): AgentsRead {
-  const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next, setup: setupOf(one.id, home) }));
+export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full", home: string | null = null,
+  /** Claude's note as this person's own live status for threads (their sign-in, the switch), in place of the setup's. */
+  claudeNote: string | null = null): AgentsRead {
+  const agents = (detection?.agents ?? []).map(one => {
+    const setup = setupOf(one.id, home);
+    return { id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next, setup: one.id === "claude" && claudeNote !== null ? { ...setup, note: claudeNote } : setup };
+  });
   const first = detection?.firstTask ?? null;
   const firstTask = first === null ? null : { id: first, name: agents.find(one => one.id === first)?.name ?? first };
   // Summary (a person who isn't an instance operator, server/welcome.ts agentInventoryOf): who the first task goes to,

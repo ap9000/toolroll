@@ -68,7 +68,7 @@ describe("the start's terms card", () => {
     plant();
     const plan = card();
     expect(plan.billing).toBe("subscription");
-    expect(summaryLines(plan.summary).join("\n")).toContain("Billed to your Claude plan");
+    expect(summaryLines(plan.summary).join("\n")).toMatch(/Your Claude plan \(the sign-in you saved on \d{4}-\d{2}-\d{2}\)\. It powers only threads you start\./);
     // alex's removed: pat's sign-in is never alex's.
     removeStandInSignIn(world.store, "alex");
     expect(flexibleStartCard(world.store, { repo: world.project, by: { name: "alex", generation: gen("alex") }, model: null, message: "x" })).toMatchObject({ ok: false, reason: "no-sign-in" });

@@ -484,3 +484,13 @@ export async function recheckFlexibleSignIn(store: Store, state: string, input: 
     return { ok: true as const, check };
   }, { waitMs: 15_000 });
 }
+
+/** A person's threads status in one line (the Agents screen's note on Claude Code): the switch, then their own sign-in,
+ * from the records only (the value is never read). */
+export function threadsStatusNote(store: Store, person: string): string {
+  if (!flexibleAvailable(store)) return "Threads are off for now. An instance operator turns them on in Settings → General.";
+  const status = flexibleSignInStatus(store, person);
+  if (status.state === "none") return "Threads use your own Claude sign-in: run `claude setup-token`, then `toolroll config set flexible-sign-in`.";
+  if (status.state === "refused") return "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token.";
+  return `Threads use the Claude sign-in you saved on ${status.savedAt.slice(0, 10)}. ${signInCheckWords(statusCheck(status))}`;
+}

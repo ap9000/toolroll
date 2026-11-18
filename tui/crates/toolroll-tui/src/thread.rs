@@ -25,6 +25,44 @@ use toolroll_api::{LiveThreads, ThreadFacts, ThreadQuestion, ThreadRow};
 /// Said when `T` is pressed while the console says interactive agent threads are off.
 pub const THREADS_OFF: &str =
     "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`.";
+/// What a new thread still needs first, as the console named it, and what the terminal offers for it: the console page
+/// `w` opens (tui-contract.ts TUI_PAGES) and the command `c` puts in the scrollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NextStep {
+    pub words: &'static str,
+    pub page: Option<&'static str>,
+    pub command: Option<&'static str>,
+}
+impl NextStep {
+    /// The command to copy, with this terminal's project where it needs one.
+    pub fn command(&self, project: Option<&str>) -> String {
+        let base = self.command.unwrap_or_default();
+        match (base, project) {
+            ("toolroll project flexible enable", Some(p)) => format!("{base} --repo {}", clean(p)),
+            _ => base.to_string(),
+        }
+    }
+}
+/// The terminal's words and doors for each step a thread start may name (toolroll_api::NEXT_STEPS).
+pub fn next_step(next: &str) -> Option<NextStep> {
+    Some(match next {
+        "turn-on" => NextStep { words: "Threads are off. w turns them on in the browser.", page: Some("flexible"), command: Some("toolroll config set flexible on") },
+        "ask-operator" => NextStep { words: "Threads are off. Ask an instance operator to turn them on.", page: None, command: None },
+        "sign-in" => NextStep {
+            words: "Threads use your own Claude sign-in. Run `claude setup-token`, then `toolroll config set flexible-sign-in` (c copies it), or w to paste it in the browser.",
+            page: Some("flexible-sign-in"),
+            command: Some("toolroll config set flexible-sign-in"),
+        },
+        "sign-in-refused" => NextStep {
+            words: "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token (c copies the command, w opens the browser).",
+            page: Some("flexible-sign-in"),
+            command: Some("toolroll config set flexible-sign-in"),
+        },
+        "project-terms" => NextStep { words: "This project isn't set up for threads yet. w opens its terms.", page: Some("project"), command: Some("toolroll project flexible enable") },
+        _ => return None,
+    })
+}
+
 /// Said when a thread's question changed (or was answered elsewhere) while its dialog was open.
 pub const THREAD_QUESTION_CHANGED: &str = "This question changed — look again.";
 /// Said when Enter is pressed before the dialog drew the end of what would be allowed.

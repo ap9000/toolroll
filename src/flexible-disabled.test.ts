@@ -223,7 +223,8 @@ describe("off by default", () => {
         ["/agents/live/thread", { repo, message: "hello" }]] as const) {
         const answer = await fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
         expect(answer.status, path).toBe(404);
-        expect(await answer.json(), path).toEqual({ outcome: "refused", words: OFF });
+        // A new thread also names the next step (the start only: on → sign-in → terms), so the terminal can open it.
+        expect(await answer.json(), path).toEqual(path === "/agents/live/thread" ? { outcome: "refused", words: OFF, next: expect.stringMatching(/^(turn-on|ask-operator)$/) } : { outcome: "refused", words: OFF });
       }
       // No thread host was opened for an install that never had one: no coding catalog beside the database.
       expect(existsSync(`${db}.coding.sqlite`)).toBe(false);
@@ -295,7 +296,7 @@ describe("the switch can't become an override", () => {
     // Saving your own sign-in starts something new (its transaction A checks the switch first, and again inside);
     // removing, retiring, tidying, a restore's reset and every read never do, so off can always clean up.
     decided("src/flexible-sign-in.ts", ["stageFlexibleSignIn"], ["setupTokenFromPaste", "placeFlexibleSignIn", "activateFlexibleSignIn", "saveFlexibleSignIn", "removeFlexibleSignIn", "resetFlexibleSignInsForRestore",
-      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn"]);
+      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn", "threadsStatusNote"]);
     // Any answer reaching an agent continues its turn, so none goes while off (a decline included: the switch's stop
     // withdraws every open request instead).
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
@@ -308,7 +309,8 @@ describe("the switch can't become an override", () => {
     decided("src/flexible-import.ts", [], ["readFlexibleCandidate", "importFlexibleCandidate", "foldName", "linkLeadsOut", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"]);
     decided("src/flexible-ship.ts", ["mergeArmedFlexible"],
       ["flexibleShipTerms", "shipFlexible", "flexibleShipSummary", "flexibleShipsOf", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport"]);
-    decided("src/flexible-start.ts", ["flexibleStartCard"], []);
+    // Readiness is a read (it names what is missing, the switch first among them).
+    decided("src/flexible-start.ts", ["flexibleStartCard"], ["flexibleReadiness"]);
     decided("src/flexible-launcher.ts", [], ["flexibleThreadNetwork", "flexibleNetworkDigest", "createFlexibleLauncher"]);
     // The thread start reads it again inside the transaction that records the thread; each model call through the relay
     // reads it inside its own reservation transaction.

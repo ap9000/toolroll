@@ -357,6 +357,27 @@ impl Loop {
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
+            Effect::OpenPage(page) => match opts.control.as_mut() {
+                Some(control) => {
+                    let ask = format!(
+                        "{}\n",
+                        serde_json::json!({ "want": "browser", "page": page })
+                    );
+                    if control
+                        .write_all(ask.as_bytes())
+                        .and_then(|_| control.flush())
+                        .is_err()
+                    {
+                        app.update(Msg::Acted(Ok(toolroll_api::ActOutcome::Refused(
+                            "The browser couldn't be opened from here.".into(),
+                        ))));
+                    }
+                }
+                None => {
+                    let words = format!("Open {} in your browser.", self.client.origin());
+                    app.status = Some((crate::app::Tone::Said, words));
+                }
+            },
             Effect::Notify(words) => {
                 // A desktop notification and the bell, as the settings say, between frames (notify.rs builds the
                 // bytes, from our own constants and words).

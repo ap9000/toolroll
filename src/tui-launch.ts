@@ -57,7 +57,7 @@ import { fileURLToPath } from "node:url";
 import { spawnHoldingLink } from "./engine-handoff.js";
 import { trustedBinary } from "./trusted-path.js";
 export { aclVerdictOf, trustedBinary, type AclVerdict } from "./trusted-path.js";
-import type { TuiExit, TuiSession } from "./tui-contract.js";
+import { isTuiPage, type TuiExit, type TuiSession } from "./tui-contract.js";
 
 /** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_*). */
 export const TUI_EXIT = { leave: 0, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
@@ -328,7 +328,9 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
         }
         // The answer goes back on the same descriptor, one line: what to say ({"said": "..."}).
         if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["want"] === "browser") {
-          void input.session.openBrowser().catch(() => "The browser couldn't be opened.").then(said => {
+          // A named landing only from the fixed list (tui-contract.ts TUI_PAGES); anything else opens the console's start.
+          const page = (ask as Record<string, unknown>)["page"];
+          void (isTuiPage(page) ? input.session.openBrowser(page) : input.session.openBrowser()).catch(() => "The browser couldn't be opened.").then(said => {
             if ("write" in asks && !child.killed && child.exitCode === null) (asks as NodeJS.WritableStream).write(`${JSON.stringify({ said })}\n`);
           });
         }
