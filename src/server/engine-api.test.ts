@@ -371,6 +371,11 @@ describe("every answer is its contract's shape", () => {
       agentSaid: ["wrote [path]"], again: { source: expect.stringMatching(/^[0-9a-f]{64}$/) } });
     // Nothing waits to retry (an incident is no backoff), nothing to Retry, and a plan is already asked for.
     expect([steps.waiting, steps.retry, steps.plan]).toEqual([null, null, null]);
+    // Its Work row: Plan didn't pass, the way on, never "Needs a retry" or "no reason was recorded".
+    const row = workRowsSchema.parse((await read("operator", "/work/rows")).body).rows.find(one => one.id === "t-plan")!;
+    expect(row.status.label).toBe("Needs you");
+    expect(row.detail).toBe("The plan didn't pass its checks. Plan again, or edit the task.");
+    expect(row.need?.action?.label).toBe("Plan again");
     // A task with no plan asked for offers one; a task already approved does not.
     store.createTask({ id: "t-ask", title: "Ask t-ask" }, T0);
     store.placeTask(store.refFor("built-in", "t-ask", "ours").id, repoA);

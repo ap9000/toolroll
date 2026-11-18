@@ -5119,7 +5119,7 @@ fn ask_word(ask: Option<&str>) -> Option<&'static str> {
     Some(match ask? {
         "approve" => "Approve",
         "answer" => "Question",
-        "review" => "Result",
+        "review" => "Ready",
         "release" => "Release",
         "wrong" => "Problem",
         "setup" => "Set up",

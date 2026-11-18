@@ -115,17 +115,17 @@ const INDEX_NEED: Readonly<Record<string, NeedKey>> = Object.fromEntries(['earli
   .map(code => [code, CODE_READING[code]!.need!] as const));
 /** Every index code that can wait on a person. A wait (stopping, waiting its turn, a retry later) is never one. */
 const PERSON_CODES = ['finding-held', 'history-problem', 'earlier-active', 'ready-to-check', 'waiting-decision', 'decision-queue', 'result-needs-attention',
-  'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'terminal-dependency', 'needs-project',
+  'process-needs-attention', 'failed', 'vanished-run', 'stopped', 'held', 'waiting-incident', 'plan-stopped', 'terminal-dependency', 'needs-project',
   'needs-scope', 'invalid-scope', 'needs-agent-profile', 'needs-approval', 'missing-requirement', 'no-worker-registered', 'no-worker-online', 'signed-out', 'storage-blocked'];
 /** A family's findings held for a person (findings.ts). A database not yet at v155 has no such table: see registerValidators. */
 const HELD_FINDINGS = `(SELECT COUNT(*) FROM finding fd WHERE fd.family_root=root.id AND fd.state='with-person')`;
 /** The index codes that wait on nobody: finished or running work, and every wait (needs-you.ts CODE_READING). */
 export const WAITING_CODES: readonly string[] = ['cancelled', 'complete', 'running', 'queued',
-  ...['stopping', 'updating', 'retry-scheduled', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
+  ...['stopping', 'updating', 'retry-scheduled', 'plan-retry', 'waiting-dependency', 'worker-at-capacity', 'planning-ready', 'scouting-ready'].filter(code => isWaitCode(code))];
 const WAITING_SQL = WAITING_CODES.map(code => `'${code}'`).join(',');
 /** The words on a state's own act (a need's act wears its need's label). */
 const STATE_ACT_LABEL: Readonly<Record<string, string>> = {
-  'ready-to-check': 'Open result', complete: 'Open result', cancelled: 'View task details', failed: 'Review and retry', 'waiting-incident': 'Review and retry',
+  'ready-to-check': 'Open result', complete: 'Open result', cancelled: 'View task details', failed: 'Review and retry', 'waiting-incident': 'Review and retry', 'plan-stopped': 'Plan again',
   stopped: 'Review pause', held: 'Review hold', 'result-needs-attention': 'Open the build', 'process-needs-attention': 'Open the build',
 };
 /** A code's ask: a saved result is Review (unless its build may still run), otherwise its need's ask. */
@@ -141,7 +141,7 @@ const ASK_RANK = `CASE WHEN code IN (${codesOf('decide')}) THEN 0 WHEN code IN (
  * for its yes, a question, a build that failed or stopped unexpectedly, a saved result to review (ASK_RANK's Review),
  * and everything else that waits on a person. Read on Needs you rows only. */
 const ASK_GROUP_SQL = `CASE WHEN code='needs-approval' AND c.id IN (SELECT value FROM json_each($releaseTasks)) THEN 'release' WHEN code='needs-approval' THEN 'approve' WHEN code IN ('waiting-decision','decision-queue') THEN 'answer'
-      WHEN code IN ('failed','waiting-incident','vanished-run') THEN 'wrong' WHEN code IN (${codesOf('review')}) AND NOT custody_unresolved THEN 'review' ELSE 'other' END`;
+      WHEN code IN ('failed','waiting-incident','plan-stopped','vanished-run') THEN 'wrong' WHEN code IN (${codesOf('review')}) AND NOT custody_unresolved THEN 'review' ELSE 'other' END`;
 /** Where a row sits in the list: Decide, Review, Unblock, then building, then the rest by recency. */
 const ORDER = `(CASE WHEN rank=0 THEN ask_rank WHEN rank=1 THEN 3 ELSE 4 END)`;
 /** A row whose build may still be running (the store's reading, custodyReadings): Waiting, not Needs you. */
@@ -219,7 +219,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     root.id root_id,root.title root_title,fam.fam_refs,fam.fam_ids,
     result.role result_role,result.outcome result_outcome,result.head_revision,result.scope_digest,result.finished_at,
     (SELECT id FROM run WHERE task_ref=c.ref_id AND lease_id=c.live_lease AND outcome IS NULL ORDER BY id DESC LIMIT 1) live_run,
-    h.owner_kind hold_kind,h.reason hold_reason,h.until hold_until,
+    h.owner_kind hold_kind,h.owner_id hold_owner,h.reason hold_reason,h.until hold_until,
     sc.task_id scope_id,sc.digest,sc.approved_at,sc.proposed_at,sc.profile_state,
     -- A prepared candidate: the machine checks out that commit and runs its check; no agent runs (machine-check.ts).
     (typeof(sc.candidate)='text' AND sc.candidate<>'') machine_check,
@@ -323,8 +323,14 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN state='running' OR unfinished IS NOT NULL THEN 'vanished-run'
     WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_desktop_update_*') THEN 'updating'
     WHEN hold_kind='backoff' AND substr(hold_reason,1,${STORAGE_HOLD_PREFIX.length})='${STORAGE_HOLD_PREFIX}' THEN 'storage-blocked'
+    -- A planner's own backoff (claim.ts sealPlanFailure: owner plan:<ref>) tries the plan again, never a build.
+    WHEN hold_kind='backoff' AND substr(hold_owner,1,5)='plan:' THEN 'plan-retry'
     WHEN hold_kind='backoff' THEN 'retry-scheduled'
     WHEN hold_kind='decision' THEN 'waiting-decision'
+    -- A planning incident (its planning turn's plan or question failed its checks, or planning failed again and again):
+    -- Plan again is the way on, never Retry.
+    WHEN hold_kind='incident' AND EXISTS(SELECT 1 FROM incident pi JOIN run pr ON pr.id=pi.run WHERE pi.id=CAST(hold_owner AS INTEGER) AND pr.role='planner'
+      AND pi.kind IN ('malformed-plan','malformed-decision','plan-attempts-exhausted')) THEN 'plan-stopped'
     WHEN hold_kind='incident' THEN 'waiting-incident'
     WHEN hold_kind='stop' THEN 'stopped'
     WHEN hold_id IS NOT NULL THEN 'held'
@@ -874,9 +880,13 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   }
   if (code === 'cancelled') detail = 'This task was cancelled.';
   // The same failure again and again: what failed, and the two ways on.
+  // A plan that stopped on its checks: what stopped it and the way on (the problems themselves are on the task).
+  if (code === 'plan-stopped') detail = (s(row, 'hold_reason') ?? '').startsWith('plan-attempts-exhausted') ? 'Planning failed again and again. Plan again, or edit the task.'
+    : (s(row, 'hold_reason') ?? '').startsWith('malformed-decision') ? "The planner's question didn't pass its checks. Plan again, or edit the task." : "The plan didn't pass its checks. Plan again, or edit the task.";
   if (code === 'waiting-incident') detail = `The last attempts failed the same way (${failedAttemptSentence(s(row, 'attempt_reason')).replace(/[.\s]+$/, '').replace(/^./, first => first.toLowerCase())}). Retry, or change the plan.`;
   /** The build, the task or the time a sentence names. */
   const context: NeedContext = code === 'stopping' ? { build: n(row, 'stop_run') || null }
+    : code === 'plan-retry' ? { retry: s(row, 'hold_until') === null ? null : retryWhenWords(s(row, 'hold_until')!, now) }
     : code === 'retry-scheduled' ? { build: n(row, 'attempt_run') || null, attempt: n(row, 'attempt_no') || null, retry: s(row, 'hold_until') === null ? null : retryWhenWords(s(row, 'hold_until')!, now) }
     : code === 'vanished-run' ? { build: n(row, 'unfinished') || null }
     : code === 'earlier-active' ? { task: s(row, 'earlier_id') }

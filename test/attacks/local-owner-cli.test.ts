@@ -116,6 +116,22 @@ describe("CLI commands as the local owner", () => {
     expect((await asOwner("task list")).envelope).toMatchObject({ ok: false, reason: "refused", message: "Local mode is off. Sign in with your password in the browser." });
   });
 
+  test("typed in a shell on a password-free install, a credentialed act says where it runs; nothing changes, and naming credentials keeps the old road", async () => {
+    const shell = async (words: string[]) => {
+      let out = "";
+      const code = await runOperate(words[0]!, [...words.slice(1), "--json", "--db", file], text => { out += text; }, { now });
+      return { code, envelope: JSON.parse(out.trim() || "{}") as Record<string, unknown> };
+    };
+    const words = "This Toolroll has no password yet, so this runs from Toolroll itself: run `toolroll`, select the task and press r, or open it in the browser.";
+    for (const argv of [["task", "requeue", "one"], ["task", "retry", "one"], ["incident", "resolve", "1"]]) {
+      expect((await shell(argv)).envelope, argv.join(" ")).toMatchObject({ ok: false, reason: "local-owner", message: words });
+    }
+    // Credentials named: the command asks as it always did (and here refuses them), never the password-free words.
+    const named = await shell(["task", "requeue", "one", "--as", "alex", "--token", "nope"]);
+    expect(named.envelope).toMatchObject({ ok: false });
+    expect(String(named.envelope["message"])).not.toBe(words);
+  });
+
   test("outside the terminal UI's door nothing changes: the same command runs as before", async () => {
     let out = "";
     const code = await runOperate("task", ["list", "--json", "--db", file], text => { out += text; }, { now });

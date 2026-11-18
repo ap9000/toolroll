@@ -389,7 +389,7 @@ const ALWAYS_NEEDS: ReadonlySet<string> = new Set(["planner-source", "signed-out
 
 /** Queue reasons worth a sentence of their own; any other queued or
  * building reason is scheduler wording, and the default sentence is plainer. */
-const QUEUED_REASONS = new Set(["worker-at-capacity", "waiting-dependency", "retry-scheduled", "updating", "planning-ready", "scouting-ready", "provider-quota"]);
+const QUEUED_REASONS = new Set(["worker-at-capacity", "waiting-dependency", "retry-scheduled", "plan-retry", "updating", "planning-ready", "scouting-ready", "provider-quota"]);
 export function plainReasonOf(stage: TaskStage, code: string, detail: string | null | undefined): string | null {
   if (stage === "building" || stage === "checking" || stage === "reviewing" || stage === "planning") return null;
   if (stage === "queued") return QUEUED_REASONS.has(code) ? detail ?? null : null;
