@@ -621,7 +621,8 @@ async function exercise(feature, context) {
       // missing step and its command; the command saves it at a terminal (hidden prompts); T again shows the card saying
       // whose plan powers it, and the thread starts. The world keeps a saved sign-in afterwards. It is the map's last
       // feature: the thread it starts would otherwise take one of the project's three live threads from a later one.
-      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], [{ prompt: /password:/, answer: world.password }]);
+      // A solo install: removing your own sign-in only narrows, so it asks for no password (threads-everyday S8, D5).
+      await context.runCli(['config', 'clear', 'flexible-sign-in', '--as', world.owner], []);
       await term.press('T', /New thread:/);
       const message = 'Check the sign-in, then review the subtraction change.';
       term.send(message);

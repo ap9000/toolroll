@@ -1321,3 +1321,27 @@ function shipFactsOf(store: Store, thread: string): { ship?: { seq: number; stat
   if (ship === null || ship.state === "removed") return {};
   return { ship: { seq: ship.seq, state: ship.state, words: shipWords(ship) } };
 }
+
+/** A person's own threads from the record alone (the command line: no console's memory), newest first. */
+export type FlexibleThreadRecord = { id: string; title: string; repo: string; project: string | null; createdAt: string; turn: string | null; endWords: string | null; ended: boolean;
+  ship: string | null; shipWords: string | null };
+export function flexibleThreadRecords(store: Store, input: { owner: string }): FlexibleThreadRecord[] {
+  const rows = store.handle.prepare("SELECT id, repo, created_at FROM flexible_thread WHERE created_by = ? AND state = 'ready' ORDER BY created_at DESC, id LIMIT 50").all(input.owner);
+  return rows.map(row => {
+    const id = String(row["id"]), repo = String(row["repo"]);
+    const last = store.handle.prepare("SELECT id, status FROM thread_turn WHERE thread = ? AND status <> 'withdrawn' ORDER BY seq DESC LIMIT 1").get(id);
+    const status = last === undefined ? null : String(last["status"]);
+    const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(repo)?.["name"];
+    const end = threadEndOf(store, id).ended, ship = shipFactsOf(store, id).ship;
+    return { id, title: flexibleThreadTitleOf(store, id), repo, project: typeof project === "string" ? project : null, createdAt: String(row["created_at"]), turn: status,
+      endWords: last === undefined || status === null ? null : endWordsOf(store, String(last["id"]), status).endWords ?? null, ended: end !== undefined, ship: ship?.state ?? null, shipWords: ship?.words ?? null };
+  });
+}
+
+/** Remove a thread's working copy (F2a removeFlexibleThread: its owner; refused while anything of its agent may run or
+ * a Ship is open). Its record, title and end stay. */
+export async function removeFlexibleThreadCopy(store: Store, input: { thread: string; by: string; now: Date }): Promise<{ ok: true } | { ok: false; reason: string; message: string }> {
+  if (ownThread(store, input.thread, { name: input.by }) === null) return refuse("thread-unknown");
+  const removed = await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.now });
+  return removed.ok ? { ok: true } : { ok: false, reason: removed.reason, message: removed.message };
+}
