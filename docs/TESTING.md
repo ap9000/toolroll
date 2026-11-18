@@ -484,14 +484,17 @@ release gate lists or make this new command an automatic release requirement.
 ## The real Claude Code against the sign-in relay
 
 `src/flexible-relay-client.slow.test.ts` records, against the real Claude Code,
-how it shows the relay's answer to a refused Claude sign-in (Toolroll's 403
-permission_error: shown once, in Toolroll's words, no retry, no `/login`) and why
-a raw 401 is never passed through (the client retries it). It runs only when a
-person names the installed binary, `TOOLROLL_TEST_REAL_CLAUDE=/path/to/claude
-npx vitest run src/flexible-relay-client.slow.test.ts`, and only on macOS: the
-binary runs inside `sandbox-exec` with every network but loopback, the keychain's
-services and the person's own `~/.claude`, `~/.claude.json`, `~/.config`,
-Keychains and Claude application folders denied, a throwaway HOME and
-CLAUDE_CONFIG_DIR, an environment built from nothing, a made-up relay token and a
-stand-in relay on loopback. Unset (CI), it skips with that note. The owner runs
-it once before a release.
+how it shows each of the relay's turn-ending refusals (all Toolroll's own 403
+permission_error answers: shown once, in Toolroll's words, one request, no
+`/login`) and why a 401 or a 5xx is never sent (the client retries each silently).
+It runs only when a person names the installed binary,
+`TOOLROLL_TEST_REAL_CLAUDE=/path/to/claude npx vitest run src/flexible-relay-client.slow.test.ts`,
+and only on macOS. The client starts from an empty working folder with an
+environment made by `scripts/isolated-env.mjs` (`isolatedEnvironment`, checked by
+`assertIsolated`; the only names added are the stand-in relay's loopback address
+and a made-up relay token), inside `sandbox-exec` with files denied by default
+(it may read only /System, /usr, /dev, the root folder's listing, the binary and
+the metadata of the folders above the world and the binary, and read and write
+only its own world), network only to the stand-in's port, and the keychain's
+services denied. Other operations stay allowed by the profile's default. Unset
+(CI), it skips with that note. The owner runs it once before a release.
