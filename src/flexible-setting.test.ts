@@ -19,9 +19,9 @@ import { flexibleAvailable, setFlexibleSetting } from "./flexible-available.js";
 import { flexibleDigestOf, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
 import { prepareFlexibleThread } from "./flexible-thread.js";
-import { FLEXIBLE_RELAY_CREDENTIAL, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { answerFlexibleRequest, attachFlexibleAgent, openFlexibleSessions, startFlexibleThreadSession, settleFlexibleStops, type FlexibleSessions } from "./flexible-session.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { standInSignIn } from "../test/flexible-sign-in-kit.js";
 import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -52,10 +52,8 @@ vi.mock("./flexible-relay-upstreams.js", async importOriginal => {
 
 const OFF = "Interactive agent threads are off: Settings → General, or `toolroll config set flexible on`.";
 const NOW = new Date();
-/** The relay's own Claude credential (built here, never a real one). */
-function signIn(state: string): void {
-  writeHeldSecret(state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: ["sk", "ant", "oat01", randomBytes(24).toString("hex")].join("-") }));
-}
+/** alex's own Claude sign-in for threads (a stand-in, never a real one). */
+function signIn(world: ThreadWorld): void { standInSignIn(world.store, world.state, "alex"); }
 /** Signed Flexible terms for the project (as a person's yes would have left them). */
 function plantTerms(world: ThreadWorld, signer: string): string {
   const terms: FlexibleTerms = { version: 1, repo: world.project, signer, signerGeneration: world.store.accountOf(signer)!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full", max: "full",
@@ -75,7 +73,7 @@ describe("Settings → General, and a thread through the console", () => {
     if (!alex.ok) throw new Error("alex");
     password = alex.token;
     plantTerms(world, "alex");
-    signIn(world.state);
+    signIn(world);
     const minted = mintApiToken();
     world.store.createApiToken({ id: minted.id, account: "alex", name: "act", secretHash: minted.hash, access: "act", expiresAt: new Date(NOW.getTime() + 86_400_000).toISOString(), by: "alex" }, NOW);
     actToken = minted.token;
@@ -251,7 +249,7 @@ describe("turned off while a thread runs: stopped safely", () => {
     world = threadWorld();
     world.store.saveApprover("alex", "hash-a", NOW);
     const digest = plantTerms(world, "alex");
-    signIn(world.state);
+    signIn(world);
     upstreamCalls = 0;
     upstream = createServer((request, response) => {
       request.resume();

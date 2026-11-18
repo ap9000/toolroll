@@ -821,6 +821,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-carry.ts#preflightCarry@21": 3,
   },
   "freshFacts": {
+    // B of a sign-in save proved by a one-use re-check: that same request's session still live as this person.
+    "src/flexible-sign-in.ts#<module>": 2,
+    "src/flexible-sign-in.ts#activateFlexibleSignIn@12>store.transact(_)@1": 1,
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@36": 1,
     "src/scope.ts#proveAccountNow@38": 1,
@@ -1071,6 +1074,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Solo or team (Codex round 2): a credential-class shared action's secure screen takes a credential proof.
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@26": 1,
+    // Your own Claude sign-in for threads (flexible-sign-in.ts): a credential proof in transaction A, and again in B.
+    "src/flexible-sign-in.ts#<module>": 2,
+    "src/flexible-sign-in.ts#activateFlexibleSignIn@12>store.transact(_)@1": 1,
+    "src/flexible-sign-in.ts#stageFlexibleSignIn@10>store.transact(_)@1": 1,
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,
     "src/scope.ts#proveCredential@41": 1,
     // Passwordless review round 1: reviewed new sites.

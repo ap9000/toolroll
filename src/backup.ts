@@ -6,7 +6,10 @@
  * quick check) before it counts, and each one's outcome is kept.
  *
  * Only the database is copied. Provider keys, sign-in files and other secrets
- * live in their own files beside it and are never part of a backup.
+ * live in their own files beside it and are never part of a backup. Restoring
+ * one resets every person's Claude sign-in for threads (flexible-sign-in.ts):
+ * each is retired in the restored database before that database is put in
+ * service, so a restored record can never point at a secret again.
  *
  * `restore` puts a backup back, only with Toolroll stopped: it checks
  * the backup's schema version and walks its ledger chain first, keeps the
@@ -22,6 +25,7 @@ import { BACKUP_EVERY_HOURS, MAX_KEEP } from "./backup-ui.js";
 import { verifyLedgerChain } from "./ledger-chain.js";
 import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, type BackupSettings, type Database, type Store } from "./store.js";
+import { resetFlexibleSignInsForRestore } from "./flexible-sign-in.js";
 
 /** A scheduled backup's name: the database it came from (see `databaseTag`), then when it was made. Backups made
  * before the tag was added have none, and ones made before 0.9.105 start `standing-orders-` (still listed and pruned).
@@ -241,7 +245,9 @@ export type RestoreReport = {
  * Toolroll database this build can read (its schema version), or when its ledger chain doesn't verify. The
  * backup is copied beside the database first and every check runs on that copy, so what was checked is what goes in.
  */
-export async function restoreDatabase(options: { databaseFile: string; file: string; dryRun: boolean; now: Date; actor?: string }): Promise<RestoreReport> {
+export async function restoreDatabase(options: { databaseFile: string; file: string; dryRun: boolean; now: Date; actor?: string;
+  /** Tests only: called right after the restored database is put in service (to stop a restore there). */
+  afterPublish?: () => void }): Promise<RestoreReport> {
   const { databaseFile, dryRun, now } = options;
   const file = resolve(options.file);
   const report: RestoreReport = { ok: false, dryRun, file, refusals: [], schemaVersion: null, ledger: null, savedAs: null };
@@ -305,18 +311,35 @@ export async function restoreDatabase(options: { databaseFile: string; file: str
     try { await onlineCopy(databaseFile, partial); renameSync(partial, saved); } catch (error) { rmSync(partial, { force: true }); throw new Error(`the current database couldn't be saved first, so nothing was replaced (${message(error)})`); }
     report.savedAs = saved;
 
-    // Again, just before the swap: nothing may have started meanwhile.
+    // Again, just before the swap: nothing may have started meanwhile. And every sign-in address the database in service
+    // knows, so the restored one can retire them too (their secrets are then deleted by the upkeep).
     const store = openStore(databaseFile);
+    let carried: { person: string; generation: string; accountGeneration: number }[];
     try {
       const running = runningNow(store, new Date());
       if (running.length > 0) return refuse("running", `Toolroll started (${running.join(" and ")}). Stop it first, then restore. The database is unchanged.`);
+      carried = store.handle.prepare("SELECT person, generation, account_generation FROM flexible_sign_in").all()
+        .map(row => ({ person: String(row["person"]), generation: String(row["generation"]), accountGeneration: Number(row["account_generation"]) }));
     } finally { store.close(); }
+    // The restored database is brought up to this build and every Claude sign-in in it retired BEFORE it is put in
+    // service: an interruption at any point after the swap finds no sign-in a restored record still points at.
+    try {
+      const prepared = openStore(staged);
+      try { prepared.transact(() => { resetFlexibleSignInsForRestore(prepared, { now, carried }); }); } finally { prepared.close(); }
+      const folded = connect(staged);
+      try { folded.exec("PRAGMA wal_checkpoint(TRUNCATE)"); folded.exec("PRAGMA journal_mode = DELETE"); } finally { folded.close(); }
+      for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${staged}${suffix}`, { force: true });
+    } catch (error) {
+      for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${staged}${suffix}`, { force: true });
+      return refuse("schema", `That backup doesn't open as a Toolroll database (${firstLine(error)}). The database is unchanged.`);
+    }
     // Fold the write-ahead log in and drop it, so nothing of the old database is left beside the new one.
     const live = connect(databaseFile);
     try { live.exec("PRAGMA wal_checkpoint(TRUNCATE)"); live.exec("PRAGMA journal_mode = DELETE"); } finally { live.close(); }
     for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${databaseFile}${suffix}`, { force: true });
     renameSync(staged, databaseFile);
     keepStaged = true;
+    options.afterPublish?.();
 
     // The restored database brought up to this build, and the restore in its ledger. Should it still not open, the
     // database it replaced goes back, and the restore says so.

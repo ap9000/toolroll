@@ -21,11 +21,9 @@ import { stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { realCustodyIO } from "./flexible-custody.js";
 import { FLEXIBLE_PROVEN } from "./flexible-levels.js";
 import { beginFlexibleThreadTurn, openFlexibleSessions, startFlexibleThread, type FlexibleSessions } from "./flexible-session.js";
-import { FLEXIBLE_RELAY_CREDENTIAL } from "./flexible-relay.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { removeStandInSignIn, standInSignIn } from "../test/flexible-sign-in-kit.js";
 import { readdirSync } from "node:fs";
 import { tgit } from "../test/flexible-thread-world.js";
-import { randomBytes } from "node:crypto";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -56,11 +54,6 @@ afterEach(async () => {
   rmSync(world.dir, { recursive: true, force: true });
 });
 
-/** The relay's own Claude credential, of one kind (built here, never a real one). */
-function signIn(kind: "setup-token" | "api-key"): void {
-  const value = ["sk", "ant", kind === "setup-token" ? "oat01" : "api03", randomBytes(24).toString("hex")].join("-");
-  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
-}
 /** pat's signed terms for the project, at its network posture now. */
 function plantTerms(caps: Partial<FlexibleTerms["caps"]> = {}): void {
   const terms: FlexibleTerms = { version: 1, repo: world.project, signer: "pat", signerGeneration: world.store.accountOf("pat")!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full",
@@ -249,7 +242,7 @@ describe("the real start path: limits before storage, one thread per start, noth
     if (!opened.ok) throw new Error(opened.message);
     sessions = opened.sessions;
     sessionsOpen.push(sessions);
-    signIn("setup-token");
+    standInSignIn(world.store, world.state, "pat");
   });
   /** Threads besides the fixture's, their folders, and the keep-refs in the project's repository. */
   const leftovers = () => ({
@@ -328,15 +321,13 @@ describe("the real start path: limits before storage, one thread per start, noth
     expect(leftovers().rows.filter(row => row["state"] !== "removed")).toEqual([]);
   });
 
-  test("billing: the card's kind must be the relay credential's kind now, or nothing is made; with no credential nothing starts", async () => {
+  test("billing: the card's kind must be the starter's own sign-in's kind now, or nothing is made; with no sign-in of theirs nothing starts", async () => {
     plantTerms();
     const { launcher, asked } = counted(async () => { throw new Error("walk unfinished"); });
     expect(await start(launcher, { billing: "api-key" })).toMatchObject({ ok: false, reason: "billing-changed" });
     expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
-    signIn("api-key");
-    expect(await start(launcher, { billing: "subscription" })).toMatchObject({ ok: false, reason: "billing-changed" });
-    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, null);
-    expect(await start(launcher)).toMatchObject({ ok: false, reason: "no-credential" });
+    removeStandInSignIn(world.store, "pat");
+    expect(await start(launcher)).toMatchObject({ ok: false, reason: "no-sign-in" });
     expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
     expect(asked).toEqual([]);
   });

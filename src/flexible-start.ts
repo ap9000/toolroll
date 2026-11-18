@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
-import { flexibleRelayBilling } from "./flexible-relay.js";
+import { flexibleSignInBilling } from "./flexible-sign-in.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { CLAUDE_EXACT } from "./model-catalog.js";
@@ -31,14 +31,15 @@ export const FLEXIBLE_DEFAULT_MODEL: string = CLAUDE_EXACT.find(one => one.value
 /** A model the sign-in relay forwards for Claude (flexible-relay-upstreams.ts): anything else is refused here. */
 const RELAY_MODEL = /^claude-(?:opus|sonnet|haiku|fable)-\d{1,2}(?:-\d{1,2})?(?:-\d{8})?$/;
 
-export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter" | "no-sign-in"; message: string };
+export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter" | "no-sign-in" | "sign-in-refused"; message: string };
 const WORDS = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That isn't a thread Toolroll can start: name a project and a Claude model. Nothing was started.",
   "not-flexible": "This project isn't Flexible, so threads can't start in it. Nothing was started.",
   "terms-unreadable": "This project's Flexible terms can't be read, so they allow nothing. Nothing was started.",
   "not-a-starter": "These terms don't let you start threads in this project. Nothing was started.",
-  "no-sign-in": "Toolroll holds no Claude sign-in for Flexible threads yet, so no thread can start. Nothing was started.",
+  "no-sign-in": "Threads use your own Claude sign-in, and you haven't saved one. Run `claude setup-token`, then `toolroll config set flexible-sign-in`. Nothing was started.",
+  "sign-in-refused": "Claude didn't accept your sign-in for threads. Run `claude setup-token` again and save the new token with `toolroll config set flexible-sign-in`. Nothing was started.",
 } as const);
 const refuse = (reason: Exclude<FlexibleStartRefusal["reason"], "terms-lapsed">): FlexibleStartRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
@@ -73,9 +74,10 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   if (terms.starters === "signer" && input.by.name !== terms.signer) return refuse("not-a-starter");
   const network = flexibleThreadNetwork(store, input.repo);
   if ("ok" in network) return refuse("not-available");
-  // How its turns are billed: the kind of the relay's own credential, as the relay reads it (never a request's word).
-  const credential = flexibleRelayBilling(store);
-  if (!credential.ok) return refuse("no-sign-in");
+  // How its turns are billed: the kind of the person's own sign-in, from its record (never a request's word, never
+  // anyone else's sign-in, and the value is never read here).
+  const credential = flexibleSignInBilling(store, input.by);
+  if (!credential.ok) return refuse(credential.reason);
   const billing = credential.billing;
   const open = network.mode === "open";
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(input.repo)?.["name"];

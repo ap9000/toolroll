@@ -10,18 +10,11 @@ import { flexibleDigestOf, flexibleTermsJson, OPEN_NETWORK_WORDS, type FlexibleT
 import { flexibleStartCard, FLEXIBLE_DEFAULT_MODEL } from "./flexible-start.js";
 import { summaryLines } from "./approval-summary.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
-import { randomBytes } from "node:crypto";
-import { FLEXIBLE_RELAY_CREDENTIAL } from "./flexible-relay.js";
-import { writeHeldSecret } from "./tool-secret-store.js";
+import { removeStandInSignIn, standInSignIn } from "../test/flexible-sign-in-kit.js";
 
 vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => true }));
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
-/** The relay's own Claude credential, of one kind (built here, never a real one). */
-function signIn(state: string, kind: "setup-token" | "api-key"): void {
-  const value = ["sk", "ant", kind === "setup-token" ? "oat01" : "api03", randomBytes(24).toString("hex")].join("-");
-  writeHeldSecret(state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
-}
 
 let world: ThreadWorld;
 const gen = (name: string) => world.store.accountOf(name)!.generation;
@@ -30,7 +23,8 @@ beforeEach(() => {
   world.store.saveApprover("alex", "hash-a", NOW);
   world.store.saveApprover("pat", "hash-p", NOW);
   expect(world.store.setAccountProjects("pat", [world.project], "alex", NOW)).toEqual({ ok: true });
-  signIn(world.state, "setup-token");
+  standInSignIn(world.store, world.state, "pat");
+  standInSignIn(world.store, world.state, "alex");
 });
 afterEach(() => { world.store.close(); rmSync(world.dir, { recursive: true, force: true }); });
 
@@ -70,17 +64,17 @@ describe("the start's terms card", () => {
     expect(hosted.summary.key).not.toBe(limited.summary.key);
   });
 
-  test("billing is the relay credential's kind, shown and bound; no credential, no card", () => {
+  test("billing is the starter's own sign-in's kind, shown and bound; someone else's sign-in never counts; none, no card", () => {
     plant();
     const plan = card();
     expect(plan.billing).toBe("subscription");
     expect(summaryLines(plan.summary).join("\n")).toContain("Billed to your Claude plan");
-    signIn(world.state, "api-key");
-    const keyed = card();
-    expect(keyed.billing).toBe("api-key");
-    expect(summaryLines(keyed.summary).join("\n")).toContain("Billed per call to Toolroll's Claude API key");
-    expect(keyed.summary.key).not.toBe(plan.summary.key);
-    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, null);
+    // alex's removed: pat's sign-in is never alex's.
+    removeStandInSignIn(world.store, "alex");
+    expect(flexibleStartCard(world.store, { repo: world.project, by: { name: "alex", generation: gen("alex") }, model: null, message: "x" })).toMatchObject({ ok: false, reason: "no-sign-in" });
+    // A session at an older generation than the sign-in's (or a newer one) is no sign-in.
+    expect(flexibleStartCard(world.store, { repo: world.project, by: { name: "pat", generation: gen("pat") - 1 }, model: null, message: "x" })).toMatchObject({ ok: false, reason: "no-sign-in" });
+    removeStandInSignIn(world.store, "pat");
     expect(flexibleStartCard(world.store, { repo: world.project, by: { name: "pat", generation: gen("pat") }, model: null, message: "x" })).toMatchObject({ ok: false, reason: "no-sign-in" });
   });
 

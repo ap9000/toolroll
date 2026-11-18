@@ -22,7 +22,10 @@ import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow, type LiveThreads } from "../contracts/engine-api.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { flexibleAvailable } from "../flexible-available.js";
+import { tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
@@ -186,6 +189,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   const threadsRead = (): FlexibleSessions | null => flexible ?? (flexibleAvailable(store) || flexibleThreadsExist(store) ? openHost() : null);
   /** Threads turned off are being stopped (one pass at a time). */
   let stopping = false;
+  /** People's retired sign-ins are being tidied (one pass at a time). */
+  let tidying = false;
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -449,6 +454,16 @@ export function createEngineHandlers(runtime: ServerRuntime) {
      * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
      * now), every thread and launch of this host's. Nothing without a host. */
     upkeep: (): void => {
+      // People's Claude sign-ins for threads: retired generations' secrets deleted, expired saves and sign-ins whose
+      // account changed retired (flexible-sign-in.ts). Whatever the switch says, and with or without a host.
+      if (!tidying) {
+        tidying = true;
+        void (async () => {
+          const file = store.databaseFile();
+          if (file === null || file === "" || file === ":memory:") return;
+          await tidyFlexibleSignIns(store, dirname(realpathSync(file)), { now: new Date() });
+        })().catch(() => { /* the next tick tries again */ }).finally(() => { tidying = false; });
+      }
       const host = flexible;
       if (host === null) return;
       try { tickFlexibleSessions(store, host); } catch { /* the next tick tries again */ }

@@ -20,9 +20,7 @@ import { attachFlexibleAgent, startFlexibleThreadSession, type FlexibleSessions 
 import { liveSessionWindowSchema, liveThreadsSchema } from "../contracts/engine-api.js";
 import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.js";
 import { fakePid } from "../../test/fake-pid.js";
-import { randomBytes } from "node:crypto";
-import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
-import { writeHeldSecret } from "../tool-secret-store.js";
+import { standInSignIn } from "../../test/flexible-sign-in-kit.js";
 
 vi.mock("../flexible-available.js", async original => ({ ...await original<typeof import("../flexible-available.js")>(), flexibleAvailable: () => true }));
 // The console's own host, kept where the test can attach a scripted agent to it (the real opener, called as the console
@@ -119,8 +117,8 @@ beforeAll(async () => {
   mkdirSync(join(world.state, "threads", T1), { recursive: true });
   store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
     .run(T1, world.project, world.second, `refs/toolroll/threads/${T1}/base`, join(world.state, "threads", T1), NOW.toISOString());
-  // The relay's own Claude credential (built here, never a real one): a thread's terms card names its billing.
-  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: ["sk", "ant", "oat01", randomBytes(24).toString("hex")].join("-") }));
+  // Each starter's own Claude sign-in for threads (stand-ins, never real ones): a thread's terms card names its billing.
+  for (const person of ["alex", "pat", "ines"]) standInSignIn(store, world.state, person);
   server = createDecisionServer({ store, evidenceRoot: join(world.dir, "evidence"), repos: [world.project], clock: () => new Date() });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
