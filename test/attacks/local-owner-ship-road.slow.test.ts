@@ -1,11 +1,12 @@
 /**
- * The laptop Ship road end to end (the owner's D1; Codex review of the build, round 1, finding 6), over the real console
- * with the workbench's own local-owner session: the terms, the one-key press, the sealed check task dispatched to a
- * worker (the real acquire, which reads the local seal), its check on the exact candidate, the armed completion and the
- * merge's reservation, with a scripted GitHub (never the network) and a stand-in check command. And the install
- * stopping being one where nobody has a password part way: during the armed pass's asynchronous read (the cancellation
- * is committed: a fresh read finds it cancelled and nothing merges), and between completion and the merge's
- * reservation (refused there, cancelled for good). Never a real model or agent.
+ * The laptop Ship road end to end (the owner's D1; Codex review of the build, rounds 1 and 2, finding 6), over the real
+ * console with the workbench's own local-owner session: the terms, the one-key press, then the sealed check task run by
+ * the real worker (`toolroll tick`: the real acquire, which reads the local seal; the prepared candidate checked out by
+ * the machine, no agent; the project's stand-in check command run on that exact commit, its receipts sealed), the armed
+ * completion and the merge's reservation, with a scripted GitHub (never the network). And the install stopping being one
+ * where nobody has a password part way: during the armed pass's asynchronous read (the cancellation is committed: a
+ * fresh read finds it cancelled and nothing merges), and during GitHub's read just before the merge's reservation
+ * (cancelled for good there, no `gh pr merge`). Never a real model or agent: the agent runner refuses if called.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -18,24 +19,22 @@ import { enableFlexible, proposedFlexibleTerms } from "../../src/flexible.js";
 import { setFlexibleSetting } from "../../src/flexible-available.js";
 import { hashPassword } from "../../src/scope.js";
 import { register } from "../../src/runner.js";
-import { acquireIfReady, release } from "../../src/claim.js";
 import { savePublishing } from "../../src/pull-request-flow.js";
 import { publishPass, type PublishExec } from "../../src/publish.js";
-import { storeEvidence } from "../../src/evidence.js";
-import { sealVerificationReceipt } from "../../src/verification-evidence.js";
-import { recordRunCheckLevel } from "../../src/check-levels.js";
-import { taskBranch } from "../../src/names.js";
+import { runOperate } from "../../src/operate.js";
 import { run } from "../../src/exec.js";
 import { allowWhereUnfenced } from "../../src/unfenced-test-support.js";
 import type { Runner } from "../../src/worktree.js";
 
 const NOW = new Date();
-let world: LocalWorld, root: string, threadId: string, repo: string;
+let world: LocalWorld, root: string, pool: string, threadId: string, repo: string;
 
 beforeEach(async () => {
   world = await openLocalWorld();
   const store = allowWhereUnfenced(world.store);
-  root = join(world.root, "evidence");
+  // Where the worker (`toolroll tick` on this database) seals its evidence, read by the armed pass.
+  root = join(world.root, "config", "evidence");
+  pool = join(world.root, "worktrees");
   mkdirSync(root, { recursive: true });
   store.upsertProject(world.repo, "shop", NOW);
   register(store, { name: "worker-1", host: "test", capacity: 4, repos: [world.repo], now: NOW, newToken: () => "tok-worker-1" });
@@ -63,13 +62,16 @@ function commit(): string {
   tgit(repo, "commit", "-qm", "thread work");
   return tgit(repo, "rev-parse", "HEAD");
 }
-/** A scripted gh: the pull request opens as #7 and reads open on `head` until merged, then merged. */
+/** A scripted gh: the pull request opens as #7 and reads open on `head` until merged, then merged. `beforeView`, when
+ * set, runs once as gh reads the pull request (the read the merge's reservation stands on). */
 function github(head: string) {
   let merged = false;
   const calls: string[] = [];
+  const hook = { beforeView: null as (() => void) | null };
   const exec: PublishExec = async (file, args) => {
     const line = [file, ...args].join(" ");
     calls.push(line);
+    if (line.startsWith("gh pr view") && hook.beforeView !== null) { const once = hook.beforeView; hook.beforeView = null; once(); }
     const ok = (stdout = "") => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false });
     if (line.startsWith("gh pr list")) return ok("[]");
     if (line.startsWith("gh pr create")) return ok("https://github.com/alex/shop/pull/7\n");
@@ -80,7 +82,7 @@ function github(head: string) {
     if (line.startsWith("gh api")) return { code: 1, stdout: "", stderr: "HTTP 404", timedOut: false, notFound: false };
     return ok();
   };
-  return { exec, merges: () => calls.filter(one => one.startsWith("gh pr merge")) };
+  return { exec, hook, calls, merges: () => calls.filter(one => one.startsWith("gh pr merge")) };
 }
 /** The press from the workbench: its terms read, then the one key, over the console with the local owner's session. */
 async function pressFromWorkbench(): Promise<string> {
@@ -95,28 +97,23 @@ async function pressFromWorkbench(): Promise<string> {
   expect(ships()).toEqual([expect.objectContaining({ state: "armed", proof: "local-owner" })]);
   return task;
 }
-/** The worker takes the check task through the real dispatch (its local seal read by acquire), and it is built at `head`
- * with the stand-in check passed on that exact commit. */
-function dispatchedAndChecked(taskId: string, head: string): void {
-  const store = world.store;
-  const ref = store.lookupRef(taskId)!;
-  const claimed = acquireIfReady(store, ref.id, "worker-1", { token: "tok-worker-1", now: NOW });
-  expect(claimed).toMatchObject({ ok: true });
-  if (!claimed.ok) return;
-  release(store, claimed.claim.leaseId, NOW);
-  const authority = store.routeAuthorityFor(ref.id, "builder");
-  if (!authority?.ok) throw new Error("route");
-  const runId = store.startRun({ taskRef: ref.id, leaseId: `l-${taskId}`, runner: "worker-1", branch: taskBranch(taskId), worktree: `/pool/${taskId}`, route: authority.stamp, now: NOW });
-  store.stampRun(runId, { scopeDigest: store.getScope(taskId)!.digest, baseRevision: tgit(world.repo, "rev-parse", "main") });
-  store.recordOutcomeFacts(runId, { headRevision: head, handoff: "Installed the imported candidate and checked it." });
-  store.finishRun(runId, { outcome: "built", committed: true, now: NOW });
-  store.setTaskState(taskId, "done", NOW);
-  store.saveProofVerdict(runId, "verified", [], NOW, [{ id: "c1", statement: "The project's checks pass on this exact commit.", requiredEvidence: ["check"], state: "pass", detail: [], answered: [], review: null }] as never, "verified");
-  storeEvidence(store, root, runId, "terminal-diff", "diff.patch", Buffer.from("--- a/src/feature.js\n+++ b/src/feature.js\n"), "git diff (exit 0)", NOW, { captureStatus: "ok" });
-  storeEvidence(store, root, runId, "check-log", "checks.txt", Buffer.from("ok"), "test -f README.md", NOW, { captureStatus: "ok" });
-  sealVerificationReceipt(store, root, runId, head, store.liveVerifyCommand(world.repo)!, { configured: true, ran: true, exitCode: 0 }, NOW);
-  recordRunCheckLevel(store, { id: runId, taskId, repo: world.repo }, "full", "project", NOW);
-  store.recordRunCheck(runId, { status: "passed", exitCode: 0, suites: [] }, NOW);
+/** No agent runs on this road: a prepared candidate is checked out by the machine. */
+const noAgent = async (file: string, args: readonly string[]): Promise<never> => { throw new Error(`an agent was started: ${file} ${args.join(" ").slice(0, 120)}`); };
+/** The worker's own pass, as the service runs it: `toolroll tick` on this database, for this project. */
+async function workerTick(): Promise<{ code: number; said: string }> {
+  const lines: string[] = [];
+  const code = await runOperate("tick", ["--runner", "worker-1", "--token", "tok-worker-1", "--repo", world.repo, "--pool", pool, "--json"], line => lines.push(line),
+    { databaseFile: join(world.root, "config", "state.db"), now: NOW, agentRunner: noAgent });
+  return { code, said: lines.join("\n") };
+}
+/** The check task, dispatched and run by the real worker: built at exactly the candidate, its check passed there. */
+async function dispatchedAndChecked(taskId: string, head: string): Promise<void> {
+  const ticked = await workerTick();
+  const ref = world.store.lookupRef(taskId)!;
+  const ran = world.store.handle.prepare("SELECT id, outcome, head_revision FROM run WHERE task_ref = ? ORDER BY id DESC LIMIT 1").get(ref.id);
+  expect(ran, ticked.said).toMatchObject({ outcome: "built", head_revision: head });
+  // The project's own check command ran there, and its log is sealed with the run.
+  expect(world.store.artifactsFor(Number(ran!["id"])).map(one => one.kind), ticked.said).toContain("check-log");
 }
 const step = (taskId: string, exec: PublishExec, runner?: Runner) => mergeArmedFlexible(world.store, { taskId, root, clock: () => NOW, exec, ...(runner === undefined ? {} : { runner }) });
 const anotherWithPassword = () => { world.store.saveApprover("bob", hashPassword("bob-password-333"), NOW); };
@@ -125,7 +122,7 @@ describe("the laptop road, from the workbench to the merge", () => {
   test("pressed with one key, dispatched, checked on the exact candidate, completed and merged", async () => {
     const candidate = commit();
     const taskId = await pressFromWorkbench();
-    dispatchedAndChecked(taskId, candidate);
+    await dispatchedAndChecked(taskId, candidate);
     const gh = github(candidate);
     expect(await step(taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
     await publishPass(world.store, { repo: world.repo, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
@@ -136,7 +133,7 @@ describe("the laptop road, from the workbench to the merge", () => {
   test("the install gains a password during the armed pass's own read: the cancellation is committed, and nothing merges", async () => {
     const candidate = commit();
     const taskId = await pressFromWorkbench();
-    dispatchedAndChecked(taskId, candidate);
+    await dispatchedAndChecked(taskId, candidate);
     const gh = github(candidate);
     // The armed pass reads the base asynchronously (merge-base) between its first look and the transaction that
     // completes: the install changes right there.
@@ -153,16 +150,21 @@ describe("the laptop road, from the workbench to the merge", () => {
     expect(gh.merges()).toEqual([]);
   });
 
-  test("the install gains a password after completion: the merge's reservation refuses it and cancels it for good", async () => {
+  test("the install gains a password during GitHub's read just before the merge's reservation: cancelled for good, no merge", async () => {
     const candidate = commit();
     const taskId = await pressFromWorkbench();
-    dispatchedAndChecked(taskId, candidate);
+    await dispatchedAndChecked(taskId, candidate);
     const gh = github(candidate);
     expect(await step(taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
     await publishPass(world.store, { repo: world.repo, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
-    anotherWithPassword();
+    // The pass's own first look finds the road standing; the install changes while GitHub is read, right before the
+    // reservation that would let the merge run.
+    let changed = false;
+    gh.hook.beforeView = () => { changed = true; anotherWithPassword(); };
     expect(await step(taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled" });
-    expect(world.store.handle.prepare("SELECT state FROM flexible_ship").get()?.["state"]).toBe("cancelled");
+    expect(changed).toBe(true);
+    expect(world.store.handle.prepare("SELECT state, merge_token FROM flexible_ship").get()).toMatchObject({ state: "cancelled", merge_token: null });
+    expect(await step(taskId, gh.exec)).toMatchObject({ ok: false, reason: "wrong-state" });
     expect(gh.merges()).toEqual([]);
   });
 });
