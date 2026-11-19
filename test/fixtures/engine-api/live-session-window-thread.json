@@ -102,6 +102,18 @@
         "answerable": true,
         "parts": []
       }
-    ]
+    ],
+    "runtime": "stream-json",
+    "terminal": {
+      "available": false,
+      "launch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": "exited",
+      "viewing": "detached",
+      "control": "none",
+      "protocol": 1,
+      "cols": 80,
+      "rows": 24
+    }
   }
 }

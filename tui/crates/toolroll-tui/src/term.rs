@@ -748,3 +748,69 @@ mod tests {
         assert!(pane.paste_bytes(&"x".repeat(PASTE_MAX_BYTES + 1)).is_err());
     }
 }
+
+// Shared agent-output security corpus: raw bytes enter the existing VT emulator, only cleaned cells leave it.
+// No host terminal, socket, PTY, credentials or environment mutation is involved.
+#[cfg(test)]
+mod terminal_attack_corpus {
+    use super::*;
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn hostile_output_leaves_only_safe_cells() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../test/fixtures/terminal-attacks.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let chunks: Vec<Vec<u8>> = case["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|chunk| unhex(chunk.as_str().unwrap()))
+                .collect();
+            let bytes = chunks.concat();
+            // Original chunks and every possible byte split use the actual parser/draw boundary.
+            for split in 0..=bytes.len() {
+                let mut parser = vt100::Parser::new(24, 80, 0);
+                parser.process(&bytes[..split]);
+                parser.process(&bytes[split..]);
+                let area = Rect::new(0, 0, 80, 24);
+                let mut buf = Buffer::empty(area);
+                draw(&mut buf, area, parser.screen(), Style::default());
+                let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(
+                    text.chars().all(|c| !c.is_control()),
+                    "{}: control in cell",
+                    case["name"]
+                );
+                assert!(
+                    text.contains(
+                        case.get("rawVisible")
+                            .unwrap_or(&case["visible"])
+                            .as_str()
+                            .unwrap()
+                    ),
+                    "{}: missing visible text: {:?}",
+                    case["name"],
+                    text
+                );
+                for absent in case["absent"].as_array().unwrap() {
+                    assert!(
+                        !text.contains(absent.as_str().unwrap()),
+                        "{}: leaked payload",
+                        case["name"]
+                    );
+                }
+            }
+        }
+    }
+}

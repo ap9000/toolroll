@@ -217,6 +217,54 @@ pub struct ThreadTurn {
     pub billing: Option<String>,
 }
 
+/// Attach preparation only; facts never confer launch, viewing or control authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThreadRuntime {
+    StreamJson,
+    Interactive,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalLifecycle {
+    Starting,
+    Live,
+    Stopping,
+    Exited,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalViewing {
+    Detached,
+    Viewing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalControl {
+    None,
+    #[serde(rename = "self")]
+    ThisClient,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadTerminal {
+    pub available: bool,
+    pub launch: String,
+    pub generation: u64,
+    pub lifecycle: TerminalLifecycle,
+    pub viewing: TerminalViewing,
+    pub control: TerminalControl,
+    pub protocol: u8,
+    pub cols: u16,
+    pub rows: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadFacts {
@@ -228,6 +276,10 @@ pub struct ThreadFacts {
     pub agent: Option<ThreadAgent>,
     pub turn: Option<ThreadTurn>,
     pub questions: Vec<ThreadQuestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<ThreadRuntime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<ThreadTerminal>,
     /// Ended (End is final): Toolroll's words for it, and whether its agent's stop is still being verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<ThreadEnded>,
