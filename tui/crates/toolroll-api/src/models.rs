@@ -969,6 +969,217 @@ pub struct AgentsRead {
     pub lines: Vec<String>,
 }
 
+// ---- Central Lead chat ---------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadLink {
+    pub label: String,
+    pub href: String,
+    pub task: Option<String>,
+    pub tab: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum LeadCardPrimary {
+    Confirm {
+        label: String,
+        irreversible: bool,
+        native: bool,
+    },
+    Link {
+        label: String,
+        href: String,
+        task: Option<String>,
+        tab: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardColumn {
+    pub label: String,
+    pub numeric: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardChartPoint {
+    pub label: String,
+    pub value: serde_json::Number,
+    pub shown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ChatCardBlock {
+    Text {
+        text: String,
+    },
+    Divider {},
+    Facts {
+        heading: String,
+        items: Vec<ChatCardFact>,
+    },
+    Table {
+        heading: String,
+        origin: String,
+        columns: Vec<ChatCardColumn>,
+        rows: Vec<Vec<String>>,
+        more: i64,
+    },
+    Notes {
+        heading: String,
+        origin: String,
+        items: Vec<String>,
+        more: i64,
+    },
+    Chart {
+        heading: String,
+        chart: String,
+        points: Vec<ChatCardChartPoint>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardButton {
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardAction {
+    pub proposal: i64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ChatCard {
+    pub version: u32,
+    pub title: String,
+    pub as_of: String,
+    pub repos: Vec<String>,
+    pub blocks: Vec<ChatCardBlock>,
+    pub buttons: Vec<ChatCardButton>,
+    pub actions: Vec<ChatCardAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadCard {
+    pub id: i64,
+    pub kind: String,
+    pub label: String,
+    pub state: String,
+    pub data: bool,
+    pub lines: Vec<String>,
+    pub card: Option<ChatCard>,
+    pub said: Option<String>,
+    pub note: Option<String>,
+    pub primary: Option<LeadCardPrimary>,
+    pub dismissable: bool,
+    pub links: Vec<LeadLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadAsk {
+    pub turn: i64,
+    pub question: String,
+    pub options: Vec<String>,
+    pub open: bool,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LeadMessage {
+    pub id: i64,
+    pub role: String,
+    pub text: String,
+    pub activity: Option<String>,
+    pub created_at: String,
+    pub cards: Vec<LeadCard>,
+    pub ask: Option<LeadAsk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadQueued {
+    pub id: i64,
+    pub text: String,
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+/// `GET /engine/chat`: the person's central Lead conversation (messages, structured cards, proposals, queue).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LeadChat {
+    pub version: u32,
+    pub room: String,
+    pub session: Option<i64>,
+    pub lead_name: String,
+    pub can_send: bool,
+    pub problem: Option<String>,
+    pub project: Option<String>,
+    pub busy: bool,
+    pub pending_proposals: i64,
+    pub queued: Vec<LeadQueued>,
+    pub messages: Vec<LeadMessage>,
+}
+
+/// A live reply snapshot carried on `GET /live?room=chat` as `event: turn`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurn {
+    #[serde(default)]
+    pub steps: Vec<LiveTurnStep>,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurnStep {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<LiveTurnTool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurnTool {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
 // ---- Live terminals (take over) -------------------------------------------------------------------------------------
 
 /// `GET /term/state`: this session's live terminals. `task` and `run`: the build a take-over opened on.

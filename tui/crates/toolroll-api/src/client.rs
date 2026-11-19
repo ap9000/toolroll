@@ -258,13 +258,31 @@ pub fn check_hello(hello: &Hello) -> Result<(), String> {
     Ok(())
 }
 
-/// A `/live` signal: a room changed, the stream asked to be reopened, or a room is gone from view.
+/// A `/live` signal: a room changed, a Lead turn streamed a snapshot, the stream asked to be reopened, or a room is gone.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveSignal {
     Change(String),
+    Turn { room: String, turn: LiveTurn },
     Gone(String),
     Reload,
     Ended,
+}
+
+/// What `POST /chat` answered in JSON (`accept: application/json`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatSendOutcome {
+    Accepted { session: i64, queued: bool },
+    Refused(String),
+}
+
+/// What `POST /chat/proposal/<id>/(confirm|dismiss)` answered in JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProposalActOutcome {
+    Done {
+        said: String,
+        task_id: Option<String>,
+    },
+    Refused(String),
 }
 
 impl Client {
@@ -406,6 +424,134 @@ impl Client {
                 .await?,
             |r| r.version,
         )
+    }
+
+    /// The person's central Lead conversation (GET /engine/chat[?project=]).
+    pub async fn chat(&self, project: Option<&str>) -> Result<LeadChat, ApiError> {
+        let path = match project {
+            Some(p) if !p.is_empty() => format!("/engine/chat?project={}", encode(p)),
+            _ => "/engine/chat".to_string(),
+        };
+        versioned(
+            self.get::<LeadChat>(&path, "the Lead conversation").await?,
+            |r| r.version,
+        )
+    }
+
+    /// Send a message to the central Lead (`POST /chat`, `accept: application/json`).
+    pub async fn chat_send(
+        &self,
+        message: &str,
+        request: &str,
+        session: Option<i64>,
+        project: Option<&str>,
+    ) -> Result<ChatSendOutcome, ApiError> {
+        let mut fields: Vec<(&str, String)> = vec![
+            ("message", message.to_string()),
+            ("request", request.to_string()),
+        ];
+        if let Some(s) = session {
+            fields.push(("request-session", s.to_string()));
+        }
+        if let Some(p) = project.filter(|p| !p.is_empty()) {
+            fields.push(("project", p.to_string()));
+        }
+        let borrowed: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let text = match self.post_form_json("/chat", &borrowed).await {
+            Ok(t) => t,
+            Err(ApiError::Refused(words)) => return Ok(ChatSendOutcome::Refused(words)),
+            Err(e) => return Err(e),
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if v["ok"] == true {
+                let session = v["session"].as_i64().unwrap_or(0);
+                let queued = v["queued"].as_bool().unwrap_or(false);
+                return Ok(ChatSendOutcome::Accepted { session, queued });
+            }
+            if let Some(said) = v["said"].as_str().or_else(|| v["error"].as_str()) {
+                return Ok(ChatSendOutcome::Refused(said.to_string()));
+            }
+        }
+        Ok(ChatSendOutcome::Refused(
+            "Couldn't read the reply from Lead chat.".into(),
+        ))
+    }
+
+    /// Confirm or dismiss a Lead proposal (`POST /chat/proposal/<id>/(confirm|dismiss)`).
+    pub async fn proposal_act(
+        &self,
+        id: i64,
+        op: &str,
+        confirm_yes: bool,
+    ) -> Result<ProposalActOutcome, ApiError> {
+        let mut fields: Vec<(&str, &str)> = Vec::new();
+        if confirm_yes {
+            fields.push(("confirm", "yes"));
+        }
+        let path = format!("/chat/proposal/{id}/{op}");
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        for (k, v) in &fields {
+            body.push('&');
+            body.push_str(&encode(k));
+            body.push('=');
+            body.push_str(&encode(v));
+        }
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("cookie", self.creds.cookie.as_str())
+            .header("origin", &self.origin)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-act", "in-place")
+            .header("x-toolroll-client", "terminal")
+            .timeout(Duration::from_secs(30))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if session_gone(
+            status,
+            res.headers().get("location").and_then(|v| v.to_str().ok()),
+        ) {
+            return Err(ApiError::SessionEnded);
+        }
+        let text = res.text().await.unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let said = v["said"]
+                .as_str()
+                .or_else(|| v["words"].as_str())
+                .or_else(|| v["error"].as_str())
+                .unwrap_or("")
+                .to_string();
+            if v["ok"] == true {
+                return Ok(ProposalActOutcome::Done {
+                    said: if said.is_empty() {
+                        if op == "dismiss" {
+                            "Dismissed.".into()
+                        } else {
+                            "Confirmed.".into()
+                        }
+                    } else {
+                        said
+                    },
+                    task_id: v["taskId"].as_str().map(str::to_owned),
+                });
+            }
+            return Ok(ProposalActOutcome::Refused(non_empty(said, status)));
+        }
+        Ok(ProposalActOutcome::Refused(non_empty(
+            String::new(),
+            status,
+        )))
+    }
+
+    /// Remove a queued follow-up message (`POST /chat/queued/<id>/remove`).
+    pub async fn queued_remove(&self, id: i64) -> Result<ActOutcome, ApiError> {
+        self.act(&format!("/chat/queued/{id}/remove"), &[], "Removed.")
+            .await
     }
 
     /// Look for this computer's agents again (POST /engine/agents/check: the console's bounded status checks, no model
@@ -771,13 +917,18 @@ impl Client {
 }
 
 fn signal_of(ev: &SseEvent) -> Option<LiveSignal> {
+    let parsed = || serde_json::from_str::<serde_json::Value>(&ev.data).ok();
     let room = || {
-        serde_json::from_str::<serde_json::Value>(&ev.data)
-            .ok()
-            .and_then(|v| v["room"].as_str().map(str::to_owned))
+        parsed().and_then(|v| v["room"].as_str().map(str::to_owned))
     };
     match ev.event.as_str() {
         "change" => room().map(LiveSignal::Change),
+        "turn" => {
+            let v = parsed()?;
+            let room = v["room"].as_str()?.to_owned();
+            let turn = serde_json::from_value::<LiveTurn>(v).ok()?;
+            Some(LiveSignal::Turn { room, turn })
+        }
         "gone" => room().map(LiveSignal::Gone),
         "reload" => Some(LiveSignal::Reload),
         _ => None,
@@ -918,5 +1069,22 @@ mod tests {
     fn encodes_reserved_characters() {
         assert_eq!(encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
         assert_eq!(encode("t-1_x.y~"), "t-1_x.y~");
+    }
+
+    #[test]
+    fn parses_live_turn_sse_frame() {
+        let ev = SseEvent {
+            event: "turn".into(),
+            data: r#"{"room":"chat","phase":"writing","status":"Writing…","text":"Checking t-done","done":false,"ok":false,"steps":[{"tools":["read tasks"],"toolCalls":[{"id":"tc1","label":"read tasks","state":"ok","summary":"5 tasks"}]}]}"#.into(),
+        };
+        let Some(LiveSignal::Turn { room, turn }) = signal_of(&ev) else {
+            panic!("expected LiveSignal::Turn");
+        };
+        assert_eq!(room, "chat");
+        assert_eq!(turn.phase, "writing");
+        assert_eq!(turn.status, "Writing…");
+        assert_eq!(turn.text, "Checking t-done");
+        assert_eq!(turn.steps.len(), 1);
+        assert_eq!(turn.steps[0].tool_calls[0].label, "read tasks");
     }
 }

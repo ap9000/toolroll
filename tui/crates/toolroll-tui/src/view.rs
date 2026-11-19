@@ -22,6 +22,19 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use toolroll_api::{StepCard, StepCards};
 
+/// Running spinner glyph respecting `reduced_motion` and the active glyph set.
+pub(crate) fn live_mark(app: &App) -> &'static str {
+    if app.prefs.settings.reduced_motion {
+        return marks().running;
+    }
+    let frames = if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
+        [marks().running, "/", "-", "\\"]
+    } else {
+        [marks().running, "◓", "◑", "◒"]
+    };
+    frames[app.spinner_frame % frames.len()]
+}
+
 /// "2026-11-14T12:00:00.000Z" → seconds since the epoch (UTC only; anything else is None).
 pub fn epoch(iso: &str) -> Option<i64> {
     let b = iso.as_bytes();
@@ -422,6 +435,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | Mode::TakeOver
             | Mode::ShellOpening
             | Mode::Steer(_)
+            | Mode::ChatCompose(_)
             | Mode::NewTask(..)
             | Mode::Note(..)
             | Mode::ListFilter(_)
@@ -453,6 +467,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    app.last_width = area.width;
+    app.areas.lead_row = Rect::default();
+    app.areas.chat_area = Rect::default();
+    app.areas.peek_area = Rect::default();
     sheet::paint(f.buffer_mut(), area, ground());
     if area.height < 8 || area.width < 34 {
         f.render_widget(Paragraph::new("Make the window larger."), area);
@@ -574,34 +592,81 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             app.areas.rows.clear();
         }
     }
-    // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
-    // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
-    let layout = if alone {
-        crate::panes::Layout::Focused
+    // Central Lead chat + Peeked Task docked split (Slice 3), or single Lead chat (Slice 2), or the task panel(s).
+    if app.chat_split_active() {
+        app.panes.areas = vec![];
+        let chat_w = (u32::from(right.width.saturating_sub(1)) * 48 / 100) as u16;
+        let chat_rect = Rect {
+            x: right.x,
+            y: right.y,
+            width: chat_w,
+            height: right.height,
+        };
+        let peek_rect = Rect {
+            x: right.x + chat_w + 1,
+            y: right.y,
+            width: right.width.saturating_sub(chat_w + 1),
+            height: right.height,
+        };
+        app.areas.chat_area = chat_rect;
+        app.areas.peek_area = peek_rect;
+        let chat_inner = sheet::sheet(f.buffer_mut(), chat_rect);
+        crate::chat::draw(f, app, chat_inner, true);
+        let peek_inner = sheet::sheet(f.buffer_mut(), peek_rect);
+        draw_right(f, app, peek_inner);
+        if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+            crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+        }
+        if focus == Focus::Detail {
+            let active_rect = match app.chat_focus {
+                crate::chat::ChatFocus::Chat => chat_rect,
+                crate::chat::ChatFocus::Peek => peek_rect,
+            };
+            sheet::outline_focus(f.buffer_mut(), active_rect);
+        }
+    } else if app.chat_open {
+        app.panes.areas = vec![];
+        app.areas.tabs.clear();
+        app.areas.chat_area = right;
+        let inner = sheet::sheet(f.buffer_mut(), right);
+        app.areas.right = inner;
+        crate::chat::draw(f, app, inner, false);
+        if focus == Focus::Detail && !alone && list_state != crate::viewstate::ListState::Hidden {
+            sheet::focus_bar(f.buffer_mut(), right);
+        }
     } else {
-        app.panes.layout
-    };
-    let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
-    app.panes.areas = if alone { vec![] } else { places.clone() };
-    let several = places.len() > 1;
-    for (i, place) in places.iter().enumerate() {
-        let slot = if alone { app.panes.focus } else { i };
-        let inner = sheet::sheet(f.buffer_mut(), *place);
-        if slot == app.panes.focus {
-            draw_right(f, app, inner);
-            // Search: every match in this panel lit.
-            if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
-                crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
-            }
-            // With several panels, the focused one is outlined in ink, heavy (reads without colour too);
-            // with one panel beside the list, a crisp top accent bar shows when Detail holds keyboard focus.
-            if several {
-                sheet::outline_focus(f.buffer_mut(), *place);
-            } else if focus == Focus::Detail && !alone && list_state != crate::viewstate::ListState::Hidden {
-                sheet::focus_bar(f.buffer_mut(), *place);
-            }
+        // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
+        // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
+        let layout = if alone {
+            crate::panes::Layout::Focused
         } else {
-            crate::panes::draw_watch(f, app, slot, inner);
+            app.panes.layout
+        };
+        let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
+        app.panes.areas = if alone { vec![] } else { places.clone() };
+        let several = places.len() > 1;
+        for (i, place) in places.iter().enumerate() {
+            let slot = if alone { app.panes.focus } else { i };
+            let inner = sheet::sheet(f.buffer_mut(), *place);
+            if slot == app.panes.focus {
+                draw_right(f, app, inner);
+                // Search: every match in this panel lit.
+                if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+                    crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+                }
+                // With several panels, the focused one is outlined in ink, heavy (reads without colour too);
+                // with one panel beside the list, a crisp top accent bar shows when Detail holds keyboard focus.
+                if several {
+                    sheet::outline_focus(f.buffer_mut(), *place);
+                } else if focus == Focus::Detail
+                    && !alone
+                    && list_state != crate::viewstate::ListState::Hidden
+                {
+                    sheet::focus_bar(f.buffer_mut(), *place);
+                }
+            } else {
+                crate::panes::draw_watch(f, app, slot, inner);
+            }
         }
     }
     draw_status(f, app, status);
@@ -847,6 +912,49 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         ));
         lines.push((Line::raw(""), None));
     }
+    // Pinned Central Lead chat row at the top of the Work rail (once loaded or opened).
+    let mut lead_line_index: Option<usize> = None;
+    if app.chat.loaded || app.chat_visible() {
+        lead_line_index = Some(lines.len());
+        let lead_active = app.chat_focused();
+        let name = app.chat.lead_name();
+        let pending = app.chat.pending_proposals();
+        let busy = app.chat.is_busy();
+        let mark_span = if busy {
+            Span::styled(format!("{} ", live_mark(app)), running())
+        } else {
+            Span::styled("◆ ", if lead_active { selected() } else { ink() })
+        };
+        let label = format!("{name} · central chat");
+        let badge = if pending > 0 {
+            Some(sheet::chip(&format!("{pending}")))
+        } else if busy {
+            Some(sheet::badge("Live", crate::theme::Role::Running))
+        } else {
+            None
+        };
+        let badge_w = badge.as_ref().map(|b| width(&b.content) + 1).unwrap_or(2);
+        let text_w = w.saturating_sub(2 + badge_w);
+        let shown = fit(&label, text_w);
+        let pad = text_w.saturating_sub(width(&shown));
+        let row_style = if lead_active {
+            selected()
+        } else {
+            ink().add_modifier(Modifier::BOLD)
+        };
+        let mut spans = vec![
+            mark_span,
+            Span::styled(shown, row_style),
+            Span::styled(" ".repeat(pad + 1), if lead_active { selected() } else { dim() }),
+        ];
+        if let Some(b) = badge {
+            spans.push(b);
+        } else {
+            spans.push(Span::styled("C", if lead_active { selected() } else { dim() }));
+        }
+        lines.push((Line::from(spans), None));
+        lines.push((Line::raw(""), None));
+    }
     // Live `/` list filter, shown inline at the top of the list.
     if let Mode::ListFilter(q) = &app.mode {
         let shown = fit(&clean(q), w.saturating_sub(4));
@@ -953,6 +1061,16 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     for (row, (_, index)) in lines.iter().skip(top).take(h).enumerate() {
         app.areas.rows.push((area.y + row as u16, *index));
+    }
+    if let Some(li) = lead_line_index {
+        if li >= top && li < top + h {
+            app.areas.lead_row = Rect {
+                x: area.x,
+                y: area.y + (li - top) as u16,
+                width: area.width,
+                height: 1,
+            };
+        }
     }
     f.render_widget(Paragraph::new(shown), area);
 }
@@ -3286,7 +3404,19 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         }
     };
     let mut out: Vec<(String, &'static str)> = vec![];
-    if app.items.is_empty() && app.list_query.is_empty() {
+    if app.chat_focused() {
+        out.push(("s".into(), "message"));
+        out.push(("e".into(), "tools"));
+        out.push(("[/]".into(), "select"));
+        out.push(("Enter".into(), "act"));
+        if app.chat_split_active() {
+            out.push(("o".into(), "peek"));
+            out.push(("D".into(), "undock"));
+        } else {
+            out.push(("D".into(), "dock"));
+        }
+        out.push(("Esc".into(), "list"));
+    } else if app.items.is_empty() && app.list_query.is_empty() {
         for (a, what) in [
             (&[NewTask][..], "new task"),
             (&[Agents][..], "agents"),
@@ -3998,6 +4128,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } | Mode::Approve { .. } => return draw_build(f, app, area),
+        Mode::ConfirmProposal(_) => return draw_proposal_dialog(f, app, area),
         Mode::ConfirmInstall { .. }
         | Mode::PickModel(_)
         | Mode::ConfirmModels(_)
@@ -4510,6 +4641,103 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
     keys.extend(sheet::act("w", "Review in the browser", false));
     lines.push(Line::from(keys));
     lines.push(Line::from(Span::styled("Esc files nothing.", dim())));
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// Confirming a Lead proposal card (`Mode::ConfirmProposal`): every plain-text line drawn whole (scrolled with j/k or
+/// Space), `seen_end` required before Enter/y confirms, and explicit `a` arming when `irreversible` is true.
+fn draw_proposal_dialog(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::ConfirmProposal(pin) = &mut app.mode else {
+        return;
+    };
+    let w = area.width.saturating_sub(4).min(88);
+    let h = area.height.saturating_sub(2);
+    let inner_w = w.saturating_sub(4) as usize;
+    let footer_h = if pin.irreversible { 7 } else { 5 };
+    let visible = (h as usize).saturating_sub(3 + footer_h);
+    let r = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + 1,
+        width: w,
+        height: h,
+    };
+    let title = format!(" {} ", fit(&pin.label, inner_w.saturating_sub(2).max(8)));
+    let block = dialog(f, r, &title);
+    if inner_w < 16 || visible < 2 {
+        pin.seen_end = false;
+        let lines: Vec<Line<'static>> = wrap(
+            "Make the window larger to read this proposal whole before confirming.",
+            inner_w.max(8),
+        )
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, ink())))
+        .collect();
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
+    }
+    let mut body: Vec<Line<'static>> = Vec::new();
+    for (i, line_str) in pin.lines.iter().enumerate() {
+        let style = if i == 0 {
+            ink().add_modifier(Modifier::BOLD)
+        } else {
+            ink()
+        };
+        for piece in wrap(&clean(line_str), inner_w) {
+            body.push(Line::from(Span::styled(piece, style)));
+        }
+    }
+    if body.is_empty() {
+        body.push(Line::from(Span::styled(pin.label.clone(), ink())));
+    }
+    let max_scroll = body.len().saturating_sub(visible);
+    if pin.scroll > max_scroll {
+        pin.scroll = max_scroll;
+    }
+    let end = (pin.scroll + visible).min(body.len());
+    if end >= body.len() {
+        pin.seen_end = true;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled("Confirm exactly this proposal:", dim())),
+        Line::raw(""),
+    ];
+    lines.extend(body[pin.scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if end < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
+            ink(),
+        )));
+    }
+    if pin.irreversible {
+        let check = if pin.armed { "[x]" } else { "[ ]" };
+        let style = if pin.armed { failed() } else { ink() };
+        lines.push(Line::from(Span::styled(
+            format!("{check} I understand this cannot be undone (press a to toggle)"),
+            style,
+        )));
+        lines.push(Line::raw(""));
+    }
+    if pin.seen_end && (!pin.irreversible || pin.armed) {
+        let mut acts = sheet::act("Enter", &pin.action_label, true);
+        acts.push(Span::raw("   "));
+        acts.extend(sheet::act("Esc", "Cancel", false));
+        lines.push(Line::from(acts));
+    } else if !pin.seen_end {
+        lines.push(Line::from(Span::styled(
+            "Read to the end first (j or Space), then press Enter.",
+            dim(),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Press a to arm irreversible confirmation, or Esc to cancel.",
+            dim(),
+        )));
+    }
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 

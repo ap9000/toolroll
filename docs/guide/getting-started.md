@@ -169,6 +169,8 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | Enter | Open and focus the changes for a result, otherwise its live output |
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
 | `n` | New task (in focused Diff, next note instead) |
+| `C` | Central Lead chat (open / focus the Lead conversation shared with `/chat`; also pinned at the top of the Work rail) |
+| `D` | Dock Central Lead chat beside the Peeked Task panel (`o` switches focus between Chat and Peek; task links inside Lead cards jump the Peek panel straight to that task's Diff / Steps / Live) |
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
 | `s` / `a` / `x` / `X` on a thread | Reply to it / Ship its work / stop its agent's turn / end it (asks first) |
 | `x` / `r` on a thread that is shipping | Stop the Ship for good / send it back with a note |

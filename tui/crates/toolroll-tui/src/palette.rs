@@ -88,6 +88,8 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 | Action::ThreadStop
                 | Action::ThreadEnd => -100,
                 Action::Open
+                | Action::LeadChat
+                | Action::DockChat
                 | Action::NewTask
                 | Action::NextNeedsYou
                 | Action::Search

@@ -33,6 +33,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { chatCardSchema } from "./chat-card.js";
 import { parseContract, type ContractIssue } from "./contract.js";
 
 /** Bumped on a change a client must know about; the client sends nothing, it checks this. */
@@ -473,6 +474,81 @@ export const termStartedSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 
+// ---- Central Lead chat ----------------------------------------------------------------------------------------------
+
+/** An internal Toolroll link inside a Lead card or proposal; `task` and `tab` are parsed on the server from fixed paths,
+ * never inferred from model prose, so a terminal client can jump its Peek inspector directly to that task and tab. */
+const leadLinkSchema = z.object({
+  label: z.string(),
+  href: z.string(),
+  task: z.string().nullable(),
+  tab: z.enum(["live", "steps", "diff"]).nullable(),
+});
+
+const leadCardPrimarySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("confirm"), label: z.string(), irreversible: z.boolean(), native: z.boolean() }),
+  z.object({ kind: z.literal("link"), label: z.string(), href: z.string(), task: z.string().nullable(), tab: z.enum(["live", "steps", "diff"]).nullable() }),
+]);
+
+/** One card attached to a Lead reply: either a Toolroll data card (`data: true`, with `card` carrying the validated
+ * `ChatCard` blocks) or an actionable proposal (`data: false`, plain-text `lines`, confirmable via POST /chat/proposal/<id>/confirm). */
+export const leadChatCardSchema = z.object({
+  id: z.number().int(),
+  kind: z.string(),
+  label: z.string(),
+  state: z.enum(["pending", "confirmed", "refused", "dismissed", "expired"]),
+  data: z.boolean(),
+  lines: z.array(z.string()),
+  card: chatCardSchema.nullable(),
+  said: z.string().nullable(),
+  note: z.string().nullable(),
+  primary: leadCardPrimarySchema.nullable(),
+  dismissable: z.boolean(),
+  links: z.array(leadLinkSchema),
+});
+
+const leadAskSchema = z.object({
+  turn: z.number().int(),
+  question: z.string(),
+  options: z.array(z.string()),
+  open: z.boolean(),
+  stale: z.boolean(),
+});
+
+const leadMessageSchema = z.object({
+  id: z.number().int(),
+  role: z.enum(["operator", "assistant"]),
+  text: z.string(),
+  activity: z.string().nullable(),
+  createdAt: iso,
+  cards: z.array(leadChatCardSchema),
+  ask: leadAskSchema.nullable(),
+});
+
+const leadQueuedSchema = z.object({
+  id: z.number().int(),
+  text: z.string(),
+  status: z.enum(["queued", "starting", "cancelled", "failed", "uncertain"]),
+  detail: z.string().nullable(),
+});
+
+/** `GET /engine/chat[?project=]`: the person's central Lead conversation (the same thread `/chat` renders, as structured
+ * plain text, validated `ChatCard` blocks, and confirmable proposals — never HTML). Sends go to `POST /chat` and live
+ * reply updates arrive on `GET /live?room=<room>` as `event: turn` and `event: change`. */
+export const leadChatSchema = z.object({
+  version,
+  room: z.string(),
+  session: z.number().int().nullable(),
+  leadName: z.string(),
+  canSend: z.boolean(),
+  problem: z.string().nullable(),
+  project: z.string().nullable(),
+  busy: z.boolean(),
+  pendingProposals: z.number().int(),
+  queued: z.array(leadQueuedSchema),
+  messages: z.array(leadMessageSchema),
+});
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -515,6 +591,7 @@ export const ENGINE_RESPONSES = {
   hello: { route: "GET /engine/hello", schema: helloSchema },
   agents: { route: "GET /engine/agents", schema: agentsReadSchema },
   models: { route: "GET /engine/models", schema: modelsReadSchema },
+  leadChat: { route: "GET /engine/chat", schema: leadChatSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
   termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
 } as const;
@@ -532,6 +609,9 @@ export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
 export type ModelsRead = z.infer<typeof modelsReadSchema>;
+export type LeadChat = z.infer<typeof leadChatSchema>;
+export type LeadChatCard = z.infer<typeof leadChatCardSchema>;
+export type LeadChatLink = z.infer<typeof leadLinkSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;

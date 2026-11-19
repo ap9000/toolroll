@@ -398,6 +398,31 @@ impl Loop {
             Effect::FetchModels => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Models(client.models().await));
             })),
+            Effect::FetchLeadChat => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::LeadChat(client.chat(None).await));
+            })),
+            Effect::ChatSend {
+                message,
+                request,
+                session,
+                project,
+            } => drop(tokio::spawn(async move {
+                let res = client
+                    .chat_send(&message, &request, session, project.as_deref())
+                    .await;
+                let _ = tx.send(Msg::ChatSent(res));
+            })),
+            Effect::ProposalAct {
+                id,
+                op,
+                confirm_yes,
+            } => drop(tokio::spawn(async move {
+                let result = client.proposal_act(id, op, confirm_yes).await;
+                let _ = tx.send(Msg::ProposalActed { id, op, result });
+            })),
+            Effect::QueuedRemove(id) => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Acted(client.queued_remove(id).await));
+            })),
             Effect::CheckAgents => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Agents(client.agents_check().await));
             })),
@@ -584,8 +609,9 @@ async fn event_loop(
     let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
-    let mut pending: Vec<Effect> = vec![Effect::FetchWork];
+    let mut pending: Vec<Effect> = vec![Effect::FetchWork, Effect::FetchLeadChat];
     app.fetching_work = true;
+    app.chat.loading = true;
     if let Some((words, code)) = opts.fatal.take() {
         app.mode = crate::app::Mode::Fatal(words, code);
         pending.clear();

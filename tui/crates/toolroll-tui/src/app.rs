@@ -11,9 +11,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
-    ActOutcome, AgentsRead, ApiError, ApprovalCard, LiveRecord, LiveSessionWindow, LiveSignal,
-    LiveThreads, NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, Spend,
-    StepCards, TermEvent, TermSend, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, ApprovalCard, ChatSendOutcome, LeadChat, LiveRecord,
+    LiveSessionWindow, LiveSignal, LiveThreads, NeedRow, ProposalActOutcome, Question, ResultDiff,
+    ResultDiffContext, ResultDiffFile, Spend, StepCards, TermEvent, TermSend, Window, WorkRow,
+    WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -461,6 +462,10 @@ pub enum Mode {
     Search(crate::search::Search),
     /// Filtering the task list live (`/` while the list has focus).
     ListFilter(String),
+    /// Typing a message to the central Lead (`s`/`i` while Lead chat is focused).
+    ChatCompose(String),
+    /// Confirming a Lead proposal card (pinned lines, `seen_end` gate, and explicit arming if irreversible).
+    ConfirmProposal(crate::chat::ProposalPin),
     Help,
     /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
     Settings,
@@ -826,6 +831,23 @@ pub enum Effect {
         agent: String,
         confirm: Option<String>,
     },
+    /// Read the person's central Lead conversation (GET /engine/chat).
+    FetchLeadChat,
+    /// Send or queue a message to the central Lead (POST /chat).
+    ChatSend {
+        message: String,
+        request: String,
+        session: Option<i64>,
+        project: Option<String>,
+    },
+    /// Confirm or dismiss a Lead proposal card (POST /chat/proposal/<id>/(confirm|dismiss)).
+    ProposalAct {
+        id: i64,
+        op: &'static str,
+        confirm_yes: bool,
+    },
+    /// Remove a queued follow-up message (POST /chat/queued/<id>/remove).
+    QueuedRemove(i64),
 }
 
 /// One read of a task's changes: which task, which build (None: the newest), and the request's generation. Its answer
@@ -914,6 +936,16 @@ pub enum Msg {
     Term(String, TermEvent),
     /// The installation's models (the Agents screen).
     Models(Result<toolroll_api::ModelsRead, ApiError>),
+    /// Central Lead conversation read (GET /engine/chat).
+    LeadChat(Result<LeadChat, ApiError>),
+    /// Central Lead message send outcome (POST /chat).
+    ChatSent(Result<ChatSendOutcome, ApiError>),
+    /// Central Lead proposal confirm/dismiss outcome.
+    ProposalActed {
+        id: i64,
+        op: &'static str,
+        result: Result<ProposalActOutcome, ApiError>,
+    },
 }
 
 /// Where things were drawn last frame (for the mouse).
@@ -1005,6 +1037,12 @@ pub struct Areas {
     pub split_x: u16,
     /// The top bar's "N need you" chip: clicking it jumps to the oldest item waiting on you.
     pub needs_chip: Rect,
+    /// The pinned `Lead` row at the top of the Work rail (clickable to open/focus Lead chat).
+    pub lead_row: Rect,
+    /// Where the Lead chat sheet was drawn last frame.
+    pub chat_area: Rect,
+    /// Where the docked Peeked Task sheet was drawn last frame (when `chat_split_active()`).
+    pub peek_area: Rect,
     /// The links drawn this frame (only ours: link.rs), written clickable after it.
     pub links: Vec<crate::link::LinkArea>,
 }
@@ -1034,6 +1072,16 @@ pub struct App {
     pub focus: Focus,
     /// Live text filter on the task list (`/` while List is focused); empty shows every filtered row.
     pub list_query: String,
+    /// Central Lead chat state (chat.rs), synced live with `/chat`.
+    pub chat: crate::chat::LeadChatState,
+    /// Whether the main panel is showing Central Lead chat (normal view) or keeping it open.
+    pub chat_open: bool,
+    /// Whether Central Lead chat is docked beside the Peeked Task panel on wide viewports (Slice 3).
+    pub chat_docked: bool,
+    /// Which side holds focus when Lead chat and Peeked Task are docked side by side.
+    pub chat_focus: crate::chat::ChatFocus,
+    /// Last drawn terminal width (used to decide whether docked Chat + Peek split fits).
+    pub last_width: u16,
     pub tab: Tab,
     pub mode: Mode,
     pub steps: Option<StepCards>,
@@ -1208,6 +1256,11 @@ impl App {
             loaded: false,
             focus: Focus::List,
             list_query: String::new(),
+            chat: crate::chat::LeadChatState::new(),
+            chat_open: false,
+            chat_docked: false,
+            chat_focus: crate::chat::ChatFocus::Chat,
+            last_width: 0,
             tab: Tab::Live,
             mode: Mode::Normal,
             steps: None,
@@ -1315,6 +1368,158 @@ impl App {
             }
         } else {
             self.focus
+        }
+    }
+
+    /// Whether the docked Chat + Peek split is active right now (wide enough viewport, not zoomed, not narrow).
+    pub fn chat_split_active(&self) -> bool {
+        self.chat_docked
+            && !self.zoom
+            && !self.narrow
+            && (self.last_width == 0
+                || self.last_width >= 136
+                || (self.list_state != crate::viewstate::ListState::Full && self.last_width >= 104))
+    }
+
+    /// Whether the central Lead chat panel is currently drawn on screen.
+    pub fn chat_visible(&self) -> bool {
+        self.chat_open || self.chat_split_active()
+    }
+
+    /// Whether keyboard navigation in Detail belongs to the central Lead chat panel.
+    pub fn chat_focused(&self) -> bool {
+        self.effective_focus() == Focus::Detail
+            && ((self.chat_split_active() && self.chat_focus == crate::chat::ChatFocus::Chat)
+                || (!self.chat_split_active() && self.chat_open))
+    }
+
+    /// Open and focus Central Lead chat (fetching it if not yet loaded).
+    pub fn open_lead_chat(&mut self) -> Vec<Effect> {
+        self.chat_open = true;
+        self.chat_focus = crate::chat::ChatFocus::Chat;
+        self.focus = Focus::Detail;
+        self.narrow_list = false;
+        self.status = None;
+        let mut fx = Vec::new();
+        if !self.chat.loaded && !self.chat.loading {
+            self.chat.loading = true;
+            fx.push(Effect::FetchLeadChat);
+        }
+        fx.push(Effect::Watch(self.rooms()));
+        fx
+    }
+
+    /// Toggle Docked Chat + Peek split layout (Slice 3).
+    pub fn toggle_dock_chat(&mut self) -> Vec<Effect> {
+        self.chat_docked = !self.chat_docked;
+        let mut fx = Vec::new();
+        if self.chat_docked {
+            self.chat_open = true;
+            self.chat_focus = crate::chat::ChatFocus::Chat;
+            self.focus = Focus::Detail;
+            self.narrow_list = false;
+            if !self.chat.loaded && !self.chat.loading {
+                self.chat.loading = true;
+                fx.push(Effect::FetchLeadChat);
+            }
+            if self.last_width > 0 && !self.chat_split_active() {
+                self.say(
+                    Tone::Said,
+                    "Docked chat needs a wider window (or press b for a slim rail). Showing Lead chat.",
+                );
+            } else {
+                self.say(
+                    Tone::Said,
+                    "Docked Lead chat beside task. o moves between Chat and Peek.",
+                );
+            }
+        } else {
+            self.say(Tone::Said, "Undocked Lead chat.");
+        }
+        fx.push(Effect::Watch(self.rooms()));
+        fx
+    }
+
+    /// Jump the Peek inspector straight to `task` and optional preferred tab (`diff` / `steps` / `live`).
+    pub fn peek_task(&mut self, task: &str, tab: Option<&str>) -> Vec<Effect> {
+        let mut fx = self.show_task(task);
+        let target_tab = match tab {
+            Some("diff") => Some(Tab::Diff),
+            Some("steps") => Some(Tab::Steps),
+            Some("live") => Some(Tab::Live),
+            _ => None,
+        };
+        if let Some(t) = target_tab {
+            fx.extend(self.set_tab(t));
+        }
+        if self.chat_split_active() {
+            self.chat_focus = crate::chat::ChatFocus::Peek;
+            self.focus = Focus::Detail;
+        } else {
+            self.chat_open = false;
+            self.focus = Focus::Detail;
+            self.narrow_list = false;
+        }
+        fx
+    }
+
+    fn send_chat_message(&mut self, text: String) -> Vec<Effect> {
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return vec![];
+        }
+        let Some(data) = &self.chat.data else {
+            self.say(Tone::Refused, "Lead chat is still loading.");
+            return vec![];
+        };
+        if !data.can_send {
+            self.say(
+                Tone::Refused,
+                data.problem
+                    .clone()
+                    .unwrap_or_else(|| "Start a Lead conversation in the browser first.".into()),
+            );
+            return vec![];
+        }
+        let session = data.session;
+        let project = data.project.clone();
+        let request = self.chat.next_request_id(self.now);
+        self.chat.sending = true;
+        self.say(Tone::Said, "Sending to Lead…");
+        vec![Effect::ChatSend {
+            message: trimmed,
+            request,
+            session,
+            project,
+        }]
+    }
+
+    fn activate_chat_hit(&mut self, hit: crate::chat::ChatHit) -> Vec<Effect> {
+        match hit {
+            crate::chat::ChatHit::ConfirmProposal(id) => {
+                if let Some(pin) = self.chat.pin_proposal(id) {
+                    self.mode = Mode::ConfirmProposal(pin);
+                } else {
+                    self.say(Tone::Refused, "That proposal is no longer waiting.");
+                }
+                vec![]
+            }
+            crate::chat::ChatHit::DismissProposal(id) => {
+                self.say(Tone::Said, "Dismissing proposal…");
+                vec![Effect::ProposalAct {
+                    id,
+                    op: "dismiss",
+                    confirm_yes: false,
+                }]
+            }
+            crate::chat::ChatHit::PeekTask { task, tab, .. } => {
+                self.peek_task(&task, tab.as_deref())
+            }
+            crate::chat::ChatHit::AnswerAsk(option) => self.send_chat_message(option),
+            crate::chat::ChatHit::RemoveQueued(id) => {
+                self.say(Tone::Said, "Removing queued message…");
+                vec![Effect::QueuedRemove(id)]
+            }
         }
     }
 
@@ -2034,6 +2239,69 @@ impl App {
                 vec![]
             }
             Msg::Models(read) => crate::agents::on_models(self, read),
+            Msg::LeadChat(read) => match read {
+                Ok(chat) => {
+                    // If a proposal confirmation dialog is open, verify the pinned proposal still matches.
+                    if let Mode::ConfirmProposal(pin) = &self.mode {
+                        let still = chat.messages.iter().find_map(|m| {
+                            m.cards.iter().find(|c| {
+                                c.id == pin.id && !c.data && c.state == "pending"
+                            })
+                        });
+                        let same = still.is_some_and(|c| {
+                            c.lines.iter().map(|l| clean(l)).collect::<Vec<_>>() == pin.lines
+                        });
+                        if !same {
+                            self.mode = Mode::Normal;
+                            self.say(Tone::Refused, "This proposal changed — look again.");
+                        }
+                    }
+                    self.chat.apply_data(chat);
+                    vec![Effect::Watch(self.rooms())]
+                }
+                Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
+                Err(e) => {
+                    self.chat.loading = false;
+                    self.chat.error = Some(e.to_string());
+                    vec![]
+                }
+            },
+            Msg::ChatSent(result) => {
+                self.chat.sending = false;
+                match result {
+                    Ok(ChatSendOutcome::Accepted { queued, .. }) => {
+                        self.say(
+                            Tone::Said,
+                            if queued {
+                                "Queued for Lead."
+                            } else {
+                                "Sent to Lead."
+                            },
+                        );
+                        self.chat.loading = true;
+                        vec![Effect::FetchLeadChat, Effect::Watch(self.rooms())]
+                    }
+                    Ok(ChatSendOutcome::Refused(words)) => {
+                        self.say(Tone::Refused, words);
+                        vec![]
+                    }
+                    Err(e) => self.failed(e),
+                }
+            }
+            Msg::ProposalActed { result, .. } => match result {
+                Ok(ProposalActOutcome::Done { said, task_id }) => {
+                    self.say(Tone::Said, said);
+                    if let Some(id) = task_id {
+                        self.filed = Some(id);
+                    }
+                    vec![Effect::FetchLeadChat, Effect::FetchWork]
+                }
+                Ok(ProposalActOutcome::Refused(words)) => {
+                    self.say(Tone::Refused, words);
+                    vec![Effect::FetchLeadChat]
+                }
+                Err(e) => self.failed(e),
+            },
         }
     }
 
@@ -2475,6 +2743,22 @@ impl App {
     fn signal(&mut self, signal: LiveSignal) -> Vec<Effect> {
         match signal {
             LiveSignal::Change(room) if room == "workspace" => self.fetch_work(),
+            LiveSignal::Change(room) if room == self.chat.room() || room.starts_with("chat") => {
+                self.chat.loading = true;
+                vec![Effect::FetchLeadChat]
+            }
+            LiveSignal::Turn { room, turn }
+                if room == self.chat.room() || room.starts_with("chat") =>
+            {
+                let finished = turn.done;
+                self.chat.apply_turn(turn);
+                if finished {
+                    self.chat.loading = true;
+                    vec![Effect::FetchLeadChat]
+                } else {
+                    vec![]
+                }
+            }
             LiveSignal::Change(room) if room.starts_with("task:") => {
                 let mut fx = self.watch_changed(&room);
                 let mine = self.steps.as_ref().is_none_or(|s| s.room == room) || fx.is_empty();
@@ -2636,6 +2920,9 @@ impl App {
     /// The rooms that say when what's on screen changed (the watched panels' too).
     pub(crate) fn rooms(&self) -> Vec<String> {
         let mut rooms = self.watch_rooms();
+        if self.chat.loaded || self.chat_visible() {
+            rooms.push(self.chat.room());
+        }
         if let Some(steps) = &self.steps {
             rooms.push(steps.room.clone());
         }
@@ -2969,6 +3256,105 @@ impl App {
                     }
                 }
             }
+            Mode::ChatCompose(mut text) => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                KeyCode::Enter => {
+                    self.mode = Mode::Normal;
+                    self.send_chat_message(text)
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !c.is_control() =>
+                {
+                    if text.chars().count() < 10_000 {
+                        text.push(c);
+                    }
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                _ => {
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+            },
+            Mode::ConfirmProposal(mut pin) => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, NOTHING_CHANGED);
+                    vec![]
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(' ')
+                    if !pin.seen_end || key.code != KeyCode::Char(' ') =>
+                {
+                    let step = if key.code == KeyCode::Char(' ') { 6 } else { 1 };
+                    pin.scroll = pin.scroll.saturating_add(step);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    pin.scroll = pin.scroll.saturating_sub(1);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::PageDown => {
+                    pin.scroll = pin.scroll.saturating_add(10);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::PageUp => {
+                    pin.scroll = pin.scroll.saturating_sub(10);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char(' ')
+                    if pin.irreversible =>
+                {
+                    pin.armed = !pin.armed;
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if !pin.seen_end {
+                        self.mode = Mode::ConfirmProposal(pin);
+                        self.say(
+                            Tone::Refused,
+                            "Read the proposal to the end first (j or Space).",
+                        );
+                        return vec![];
+                    }
+                    if pin.irreversible && !pin.armed {
+                        self.mode = Mode::ConfirmProposal(pin);
+                        self.say(
+                            Tone::Refused,
+                            "Press a first to confirm you understand this cannot be undone.",
+                        );
+                        return vec![];
+                    }
+                    let id = pin.id;
+                    let confirm_yes = pin.irreversible && pin.armed;
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, "Confirming proposal…");
+                    vec![Effect::ProposalAct {
+                        id,
+                        op: "confirm",
+                        confirm_yes,
+                    }]
+                }
+                _ => {
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+            },
             Mode::ThreadNext(next) => {
                 self.mode = Mode::Normal;
                 let step = crate::thread::next_step(&next);
@@ -3590,6 +3976,7 @@ impl App {
                 return self.apply_list_query(next, true);
             }
             Mode::Steer(t)
+            | Mode::ChatCompose(t)
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
             | Mode::ThreadReply(_, t)
@@ -3630,8 +4017,39 @@ impl App {
                 return vec![];
             }
         }
+        // When Central Lead chat holds Detail focus, handle its stream-specific keys before global task shortcuts.
+        if self.chat_focused() {
+            match key.code {
+                KeyCode::Char('i')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.mode = Mode::ChatCompose(String::new());
+                    return vec![];
+                }
+                KeyCode::Char('e')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.chat.tools_expanded = !self.chat.tools_expanded;
+                    return vec![];
+                }
+                KeyCode::Char(']') => {
+                    self.chat.select_next_hit();
+                    return vec![];
+                }
+                KeyCode::Char('[') => {
+                    self.chat.select_prev_hit();
+                    return vec![];
+                }
+                _ => {}
+            }
+        }
         // The Diff tab's keys apply only when the Detail panel is focused (never stealing j/k or n from the task list).
         if self.effective_focus() == Focus::Detail
+            && !self.chat_focused()
             && self.tab == Tab::Diff
             && self.thread_selected().is_none()
         {
@@ -3737,13 +4155,82 @@ impl App {
     pub fn run_action(&mut self, action: Action) -> Vec<Effect> {
         let item = self.selected_item().cloned();
         let focus = self.effective_focus();
-        let diff_here = self.tab == Tab::Diff && self.thread_selected().is_none();
+        let chat_here = self.chat_focused();
+        let diff_here = !chat_here && self.tab == Tab::Diff && self.thread_selected().is_none();
         // (An agent's sign-in pane is never the Terminal tab's, and never copied.)
-        let terminal_here =
-            self.tab == Tab::Terminal && self.term.as_ref().is_some_and(|p| !p.sensitive);
+        let terminal_here = !chat_here
+            && self.tab == Tab::Terminal
+            && self.term.as_ref().is_some_and(|p| !p.sensitive);
         match action {
+            Action::LeadChat => {
+                if chat_here && !self.chat_split_active() {
+                    // Already focused on Lead chat (not docked): toggle back to the selected task panel.
+                    self.chat_open = false;
+                    self.focus = Focus::Detail;
+                    vec![]
+                } else {
+                    self.open_lead_chat()
+                }
+            }
+            Action::DockChat => self.toggle_dock_chat(),
+            Action::MoveDown | Action::MoveUp if chat_here => {
+                if action == Action::MoveDown {
+                    self.chat.scroll_down(1);
+                } else {
+                    self.chat.scroll_up(1);
+                }
+                vec![]
+            }
+            Action::ScrollUp | Action::ScrollDown if chat_here => {
+                let page = self.chat.view_height.saturating_sub(2).max(6);
+                if action == Action::ScrollUp {
+                    self.chat.scroll_up(page);
+                } else {
+                    self.chat.scroll_down(page);
+                }
+                vec![]
+            }
+            Action::Follow if chat_here => {
+                self.chat.follow_end();
+                vec![]
+            }
+            Action::Open if chat_here => {
+                if let Some(hit) = self.chat.current_hit().cloned() {
+                    self.activate_chat_hit(hit)
+                } else {
+                    self.mode = Mode::ChatCompose(String::new());
+                    vec![]
+                }
+            }
+            Action::Steer if chat_here => {
+                self.mode = Mode::ChatCompose(String::new());
+                vec![]
+            }
+            Action::Stop if chat_here => {
+                if let Some(crate::chat::ChatHit::ConfirmProposal(id)) =
+                    self.chat.current_hit().cloned()
+                {
+                    if self.chat.find_proposal(id).is_some_and(|c| c.dismissable) {
+                        return self.activate_chat_hit(crate::chat::ChatHit::DismissProposal(id));
+                    }
+                }
+                self.say(
+                    Tone::Said,
+                    "Select a dismissable proposal card with [ / ] first.",
+                );
+                vec![]
+            }
+            Action::NextTab if chat_here => {
+                self.chat.select_next_hit();
+                vec![]
+            }
+            Action::PreviousTab if chat_here => {
+                self.chat.select_prev_hit();
+                vec![]
+            }
             Action::MoveDown | Action::MoveUp
                 if focus == Focus::Detail
+                    && !chat_here
                     && self.tab == Tab::Steps
                     && self.thread_selected().is_none() =>
             {
@@ -3752,6 +4239,7 @@ impl App {
             }
             Action::Open
                 if focus == Focus::Detail
+                    && !chat_here
                     && self.tab == Tab::Steps
                     && self.thread_selected().is_none() =>
             {
@@ -3779,6 +4267,9 @@ impl App {
                     }
                     vec![]
                 } else {
+                    if !self.chat_split_active() {
+                        self.chat_open = false;
+                    }
                     self.select(self.selected + 1)
                 }
             }
@@ -3795,6 +4286,9 @@ impl App {
                     }
                     vec![]
                 } else {
+                    if !self.chat_split_active() {
+                        self.chat_open = false;
+                    }
                     self.select(self.selected.saturating_sub(1))
                 }
             }
@@ -3832,7 +4326,12 @@ impl App {
                 {
                     return self.expand(true);
                 }
-                // Open: the tab that answers what it asks, and move focus into the panel.
+                // Open: the tab that answers what it asks, and move focus into the task panel.
+                if !self.chat_split_active() {
+                    self.chat_open = false;
+                } else {
+                    self.chat_focus = crate::chat::ChatFocus::Peek;
+                }
                 self.focus = Focus::Detail;
                 let tab = match item
                     .as_ref()
@@ -4240,6 +4739,14 @@ impl App {
                 vec![]
             }
             Action::Layout => self.next_layout(),
+            Action::NextPane | Action::PreviousPane if self.chat_split_active() => {
+                self.focus = Focus::Detail;
+                self.chat_focus = match self.chat_focus {
+                    crate::chat::ChatFocus::Chat => crate::chat::ChatFocus::Peek,
+                    crate::chat::ChatFocus::Peek => crate::chat::ChatFocus::Chat,
+                };
+                vec![]
+            }
             Action::NextPane => self.move_focus(1),
             Action::PreviousPane => self.move_focus(-1),
             Action::LayoutFocused => self.set_layout(crate::panes::Layout::Focused),
@@ -4776,6 +5283,7 @@ impl App {
             }
             Mode::Normal
             | Mode::Steer(_)
+            | Mode::ChatCompose(_)
             | Mode::Note(..)
             | Mode::NewTask(..)
             | Mode::NewThread(_)
@@ -4806,6 +5314,10 @@ impl App {
             Mode::ConfirmAccept(pin) => {
                 Some(format!("ConfirmAccept {pin:?} {}", self.accept_attach))
             }
+            Mode::ConfirmProposal(pin) => Some(format!(
+                "ConfirmProposal {} {:?} {} {}",
+                pin.id, pin.lines, pin.irreversible, pin.armed
+            )),
             other => Some(format!("{other:?}")),
         }
     }
@@ -5946,12 +6458,44 @@ impl App {
                     return self.set_tab(tab);
                 }
                 if inside(self.areas.list) {
+                    if self.areas.lead_row.width > 0 && inside(self.areas.lead_row) {
+                        return self.open_lead_chat();
+                    }
                     self.focus = Focus::List;
                     if let Some((_, Some(index))) =
                         self.areas.rows.iter().find(|(row, _)| *row == y).cloned()
                     {
+                        if !self.chat_split_active() {
+                            self.chat_open = false;
+                        }
                         return self.select(index);
                     }
+                    return vec![];
+                }
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) {
+                    self.focus = Focus::Detail;
+                    self.chat_focus = crate::chat::ChatFocus::Chat;
+                    if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
+                        self.mode = Mode::ChatCompose(String::new());
+                        return vec![];
+                    }
+                    if let Some((_, hit)) = self
+                        .chat
+                        .hits
+                        .iter()
+                        .find(|(r, _)| inside(*r))
+                        .cloned()
+                    {
+                        if let Some(idx) = self.chat.items.iter().position(|x| x == &hit) {
+                            self.chat.selected_hit = idx;
+                        }
+                        return self.activate_chat_hit(hit);
+                    }
+                    return vec![];
+                }
+                if self.areas.peek_area.width > 0 && inside(self.areas.peek_area) {
+                    self.focus = Focus::Detail;
+                    self.chat_focus = crate::chat::ChatFocus::Peek;
                     return vec![];
                 }
                 if inside(self.areas.right) {
@@ -5995,6 +6539,14 @@ impl App {
                 self.select(self.selected.saturating_sub(1))
             }
             MouseEventKind::ScrollDown if inside(self.areas.list) => self.select(self.selected + 1),
+            MouseEventKind::ScrollUp if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) => {
+                self.chat.scroll_up(3);
+                vec![]
+            }
+            MouseEventKind::ScrollDown if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) => {
+                self.chat.scroll_down(3);
+                vec![]
+            }
             MouseEventKind::ScrollUp => {
                 self.scroll_by(3);
                 vec![]

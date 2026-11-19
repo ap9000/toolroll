@@ -77,6 +77,8 @@ actions! {
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
+    LeadChat = "lead-chat", Global, Act, "Central Lead chat (open / focus)", ["C"];
+    DockChat = "dock-chat", Global, Layout, "Dock Lead chat beside task", ["D"];
     ThreadReply = "thread-reply", Global, Act, "Reply to the thread (s on a thread)", [];
     ThreadStop = "thread-stop", Global, Act, "Stop the thread's agent (x on a thread)", [];
     ThreadEnd = "thread-end", Global, Act, "End the thread, for good (X on a thread; asks first)", [];
@@ -216,6 +218,16 @@ impl Preset {
 /// Actions help shows as one row ("j/k  Move through the list"): the pair, and the row's words.
 const PAIRS: &[(Action, Action, &str)] = &[
     (Action::Agents, Action::Models, "Agents / model assignments"),
+    (
+        Action::LeadChat,
+        Action::DockChat,
+        "Central Lead chat / dock beside task",
+    ),
+    (
+        Action::Stop,
+        Action::CancelTask,
+        "Stop build or retries / cancel task",
+    ),
     (Action::MoveDown, Action::MoveUp, "Move in list / scroll panel"),
     (Action::FocusList, Action::FocusDetail, "Focus list / panel"),
     (
