@@ -914,11 +914,63 @@ pub enum ComposerClick {
     Cancel,
 }
 
+/// A click follows the destination that was drawn, even if a refresh races the mouse event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepDestination {
+    Details,
+    Plan(String),
+    Live(i64),
+    Changes(i64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepLink {
+    pub task: String,
+    pub step: String,
+    pub destination: StepDestination,
+}
+
+impl StepLink {
+    pub fn new(steps: &StepCards, card: &toolroll_api::StepCard) -> Self {
+        let destination = match card.key.as_str() {
+            "approve"
+                if card.state == "current"
+                    && card.needs_you
+                    && steps.live_run.is_none()
+                    && steps.review.is_none() =>
+            {
+                card.terms
+                    .as_ref()
+                    .map(|terms| StepDestination::Plan(terms.key.clone()))
+            }
+            "build" if card.mark == "live" => steps.live_run.map(StepDestination::Live),
+            "ready" => steps
+                .review
+                .as_ref()
+                .map(|review| StepDestination::Changes(review.run)),
+            _ => None,
+        };
+        Self {
+            task: steps.task.id.clone(),
+            step: card.key.clone(),
+            destination: destination.unwrap_or(StepDestination::Details),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct StepNavigation {
+    pub expanded: Option<String>,
+    pending: Option<StepLink>,
+    pub selected: Option<String>,
+    pub offset: usize,
+    pub reveal: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
     pub list: Rect,
-    /// Visible approval step, bound to the task and terms drawn in it.
-    pub review_plan: Vec<(Rect, Tab, String, String)>,
+    pub steps: Vec<(Rect, Tab, StepLink)>,
     pub approval_dialog: Rect,
     pub approval_controls: Vec<(Rect, KeyCode)>,
     pub steer_targets: Vec<(Rect, i64, ComposerClick)>,
@@ -1097,6 +1149,7 @@ pub struct App {
     pub build_unfold: bool,
     pub work_again: bool,
     pub areas: Areas,
+    pub step_nav: StepNavigation,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
     pub line_cache: Option<LineCache>,
     /// Seconds since the epoch, for elapsed times (the loop sets it; tests fix it).
@@ -1212,6 +1265,7 @@ impl App {
             build_unfold: false,
             work_again: false,
             areas: Areas::default(),
+            step_nav: StepNavigation::default(),
             line_cache: None,
             now: 0,
             spinner_frame: 0,
@@ -1768,6 +1822,14 @@ impl App {
                     && self.mode == Mode::Normal
                 {
                     fx.extend(self.take_over());
+                }
+                if let Some(link) = self
+                    .step_nav
+                    .pending
+                    .take()
+                    .filter(|_| self.mode == Mode::Normal)
+                {
+                    fx.extend(self.open_step(&link));
                 }
                 fx
             }
@@ -2536,6 +2598,7 @@ impl App {
     }
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
+        self.step_nav = StepNavigation::default();
         // Opened: no longer unread (a thread: its news seen, so it moves on to Recent once nothing else waits).
         if let Some(id) = self.selected_id() {
             self.unread.remove(&id);
@@ -2627,6 +2690,67 @@ impl App {
         self.selection_changed()
     }
 
+    fn open_step(&mut self, link: &StepLink) -> Vec<Effect> {
+        let Some(steps) = self.steps_here() else {
+            return vec![];
+        };
+        let Some(card) = steps
+            .cards
+            .iter()
+            .flatten()
+            .find(|c| c.in_chain && c.key == link.step)
+        else {
+            return vec![];
+        };
+        if StepLink::new(steps, card) != *link {
+            return vec![];
+        }
+        self.focus = Focus::Detail;
+        self.step_nav.expanded =
+            if self.tab == Tab::Steps && self.step_nav.expanded.as_ref() == Some(&link.step) {
+                None
+            } else {
+                Some(link.step.clone())
+            };
+        self.step_nav.selected = Some(link.step.clone());
+        self.step_nav.reveal = true;
+        match &link.destination {
+            StepDestination::Plan(key) if self.approval_changed(&link.task, key).is_none() => {
+                self.run_action(Action::Accept)
+            }
+            StepDestination::Plan(_) => vec![],
+            StepDestination::Live(_) => self.set_tab(Tab::Live),
+            StepDestination::Changes(_) => self.set_tab(Tab::Diff),
+            StepDestination::Details => self.set_tab(Tab::Steps),
+        }
+    }
+
+    fn move_step(&mut self, down: bool) {
+        let Some(steps) = self.steps_here() else {
+            return;
+        };
+        let cards: Vec<_> = steps
+            .cards
+            .iter()
+            .flatten()
+            .filter(|c| c.in_chain)
+            .collect();
+        let Some(last) = cards.len().checked_sub(1) else {
+            return;
+        };
+        let next = match cards
+            .iter()
+            .position(|c| Some(&c.key) == self.step_nav.selected.as_ref())
+        {
+            Some(i) if down => (i + 1).min(last),
+            Some(i) => i.saturating_sub(1),
+            None if down => 0,
+            None => last,
+        };
+        self.step_nav.selected = Some(cards[next].key.clone());
+        self.step_nav.reveal = true;
+    }
+
     fn set_tab(&mut self, tab: Tab) -> Vec<Effect> {
         if self.tab != tab {
             // What was said belonged to the tab left.
@@ -2642,6 +2766,7 @@ impl App {
     // ---- keys ---------------------------------------------------------------------------------------------------
 
     pub fn key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        self.step_nav.pending = None;
         // A key: what was said before it may give way now.
         self.key_since_said = true;
         // Typing in the terminal: every key is the terminal's (Ctrl-C too), but Ctrl-].
@@ -3511,6 +3636,30 @@ impl App {
         let terminal_here =
             self.tab == Tab::Terminal && self.term.as_ref().is_some_and(|p| !p.sensitive);
         match action {
+            Action::MoveDown | Action::MoveUp
+                if focus == Focus::Detail
+                    && self.tab == Tab::Steps
+                    && self.thread_selected().is_none() =>
+            {
+                self.move_step(action == Action::MoveDown);
+                vec![]
+            }
+            Action::Open
+                if focus == Focus::Detail
+                    && self.tab == Tab::Steps
+                    && self.thread_selected().is_none() =>
+            {
+                let Some(steps) = self.steps_here() else {
+                    return vec![];
+                };
+                let cards = || steps.cards.iter().flatten().filter(|c| c.in_chain);
+                let card = cards()
+                    .find(|c| Some(&c.key) == self.step_nav.selected.as_ref())
+                    .or_else(|| cards().find(|c| c.state == "current"))
+                    .or_else(|| cards().next());
+                let link = card.map(|c| StepLink::new(steps, c));
+                link.map_or_else(Vec::new, |link| self.open_step(&link))
+            }
             Action::MoveDown => {
                 if focus == Focus::Detail {
                     if diff_here {
@@ -4255,7 +4404,10 @@ impl App {
                     pane.scroll_by(up - pane.scroll as i64);
                 }
             }
-            Tab::Steps => {}
+            Tab::Steps => {
+                self.step_nav.offset = i;
+                self.step_nav.reveal = false;
+            }
         }
     }
 
@@ -4671,6 +4823,11 @@ impl App {
 
     /// Scroll the right pane: positive is up (older). In Diff the cursor moves with the view.
     pub fn scroll_by(&mut self, lines: i64) {
+        if self.tab == Tab::Steps && self.thread_selected().is_none() {
+            self.step_nav.offset = self.step_nav.offset.saturating_add_signed(-lines as isize);
+            self.step_nav.reveal = false;
+            return;
+        }
         if self.tab == Tab::Diff {
             let last = self.rows.len().saturating_sub(1) as i64;
             self.diff_scroll = (self.diff_scroll as i64 - lines).clamp(0, last.max(0)) as usize;
@@ -5501,6 +5658,7 @@ impl App {
         // A click is the person's next act, like a key (a move or the wheel isn't).
         if matches!(ev.kind, MouseEventKind::Down(_)) {
             self.key_since_said = true;
+            self.step_nav.pending = None;
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
@@ -5515,12 +5673,33 @@ impl App {
             return key.map_or_else(Vec::new, |code| self.key(KeyEvent::new(code, KeyModifiers::NONE)));
         }
         if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
-            if let Some((_, _, task, key)) = self.areas.review_plan.iter().find(|(r, tab, _, _)| *tab == self.tab && inside(*r)) {
-                if self.approval_changed(task, key).is_some() {
-                    return vec![];
+            if let Some((_, _, link)) = self
+                .areas
+                .steps
+                .iter()
+                .find(|(r, tab, _)| *tab == self.tab && inside(*r))
+                .cloned()
+            {
+                if let Some(slot) = self
+                    .panes
+                    .areas
+                    .iter()
+                    .position(|r| inside(*r))
+                    .filter(|slot| *slot != self.panes.focus)
+                {
+                    self.focus = Focus::Detail;
+                    let mut fx = self.focus_pane(slot);
+                    if fx
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::FetchSteps(_)))
+                    {
+                        self.step_nav.pending = Some(link);
+                    } else {
+                        fx.extend(self.open_step(&link));
+                    }
+                    return fx;
                 }
-                self.focus = Focus::Detail;
-                return self.run_action(Action::Accept);
+                return self.open_step(&link);
             }
         }
         if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.tab == Tab::Live {

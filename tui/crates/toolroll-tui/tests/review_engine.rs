@@ -542,7 +542,13 @@ async fn click_approval_to_review_then_explicitly_start_the_build() {
     let before = engine.acts().len();
     app.tab = Tab::Live;
     screen(&mut app, 144, 32);
-    let &(chip, _, _, _) = app.areas.review_plan.first().expect("visible pipeline badge");
+    let (chip, _, _) = app
+        .areas
+        .steps
+        .iter()
+        .find(|(_, _, link)| link.step == "approve")
+        .expect("visible pipeline badge")
+        .clone();
     let fx = app.mouse(click(chip.x + 1, chip.y));
     assert!(matches!(fx.as_slice(), [Effect::FetchApproval(_)]));
     pump(&mut app, &client, fx).await;
@@ -552,7 +558,14 @@ async fn click_approval_to_review_then_explicitly_start_the_build() {
     for width in [144, 48] {
         let shown = screen(&mut app, width, 32);
         assert!(shown.contains("Review plan"), "{shown}");
-        let &(r, _, _, _) = app.areas.review_plan.last().expect("visible approval card");
+        let (r, _, _) = app
+            .areas
+            .steps
+            .iter()
+            .rev()
+            .find(|(_, _, link)| link.step == "approve")
+            .expect("visible approval card")
+            .clone();
         let fx = app.mouse(click(r.right() - 1, r.y));
         assert!(matches!(fx.as_slice(), [Effect::FetchApproval(_)]));
         pump(&mut app, &client, fx).await;

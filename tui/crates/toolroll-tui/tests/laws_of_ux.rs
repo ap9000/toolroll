@@ -413,3 +413,98 @@ fn only_a_visible_live_stage_animates_and_reduced_motion_keeps_the_clock() {
     draw(&mut app, 80, 24);
     assert!(app.areas.steer_targets.is_empty() && !app.areas.spinner_visible);
 }
+
+#[test]
+fn every_visible_stage_opens_from_its_drawn_cells_without_sending_an_action() {
+    for key in ["plan", "approve", "build", "checks", "ready"] {
+        let mut app = on("t-live");
+        let drawn = draw(&mut app, 160, 42);
+        let (rect, _, link) = app
+            .areas
+            .steps
+            .iter()
+            .find(|(_, _, l)| l.step == key)
+            .unwrap()
+            .clone();
+        let label = &link.step;
+        let cell = drawn.backend().buffer()[(rect.x, rect.y)].symbol();
+        assert!(!cell.is_empty(), "{label}");
+        let fx = app.mouse(left_click(rect));
+        assert!(fx.iter().all(|e| !matches!(e, Effect::Act { .. })));
+        assert_eq!(app.focus, Focus::Detail);
+        if key == "build" {
+            assert_eq!(app.tab, Tab::Live);
+        } else {
+            assert_eq!(app.tab, Tab::Steps);
+            assert_eq!(app.step_nav.expanded.as_deref(), Some(key));
+            draw(&mut app, 48, 23);
+            let (row, _, _) = app
+                .areas
+                .steps
+                .iter()
+                .rev()
+                .find(|(_, _, l)| l.step == key)
+                .unwrap()
+                .clone();
+            app.mouse(left_click(row));
+            assert!(app.step_nav.expanded.is_none(), "{key}");
+        }
+    }
+    let mut app = on("t-done");
+    draw(&mut app, 160, 42);
+    let (ready, _, _) = app
+        .areas
+        .steps
+        .iter()
+        .find(|(_, _, l)| l.step == "ready")
+        .unwrap()
+        .clone();
+    let fx = app.mouse(left_click(ready));
+    assert_eq!(app.tab, Tab::Diff);
+    assert!(fx.iter().all(|e| !matches!(e, Effect::Act { .. })));
+}
+
+#[test]
+fn step_navigation_scrolls_independently_and_ignores_a_stale_build_target() {
+    let mut app = on("t-live");
+    app.tab = Tab::Steps;
+    app.focus = Focus::Detail;
+    draw(&mut app, 120, 24);
+    let (rect, _, _) = app
+        .areas
+        .steps
+        .iter()
+        .find(|(_, _, l)| l.step == "build")
+        .unwrap()
+        .clone();
+    app.steps.as_mut().unwrap().live_run = Some(12345);
+    assert!(app.mouse(left_click(rect)).is_empty());
+    assert_eq!(app.tab, Tab::Steps);
+    for _ in 0..5 {
+        app.key(key('j'));
+    }
+    draw(&mut app, 48, 20);
+    assert_eq!(app.step_nav.selected.as_deref(), Some("ready"));
+    assert!(app.step_nav.offset > 0);
+    app.key(code(KeyCode::Enter));
+    assert_eq!(app.step_nav.expanded.as_deref(), Some("ready"));
+    assert_eq!(app.scroll, 0);
+    app.scroll_by(100);
+    draw(&mut app, 48, 20);
+    assert_eq!(app.step_nav.offset, 0);
+}
+
+#[test]
+fn a_stage_in_another_panel_opens_on_that_task_after_its_steps_arrive() {
+    let mut app = on("t-live");
+    let fx = app.run_action(Action::LayoutGrid);
+    answer(&mut app, fx);
+    draw(&mut app, 220, 50);
+    let (rect, _, link) = app.areas.steps.iter()
+        .find(|(_, _, link)| link.task == "t-done" && link.step == "ready")
+        .expect("visible Ready stage in the watched panel").clone();
+    let fx = app.mouse(left_click(rect));
+    answer(&mut app, fx);
+    assert_eq!(app.items[app.selected].id, link.task);
+    assert_eq!(app.tab, Tab::Diff);
+}

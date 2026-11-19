@@ -2,7 +2,9 @@
 //!
 //! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
 //! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
-use crate::app::{App, ComposerClick, Focus, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::app::{
+    App, ComposerClick, Focus, Item, Mode, NoteKind, Section, StepDestination, StepLink, Tab, Tone,
+};
 use crate::keys::Action;
 use crate::review::{self, Checks, Kind, Note, Row};
 use crate::settings::{Column, Density};
@@ -123,32 +125,75 @@ fn pipeline_carries_stage(steps: &StepCards) -> bool {
 /// (`◐ Build · 4m 12s`, solid ink `● Ready` when waiting on you, red `✕ Build` on failure), upcoming steps muted.
 /// Serves as both the canonical state home (Prägnanz) and proximity to completion (Goal-Gradient).
 pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
-    strip_with_mark(app, steps, w, marks().running)
+    strip_with_mark(app, steps, w, marks().running).0
 }
 
-fn strip_with_mark(app: &App, steps: &StepCards, w: usize, running_mark: &str) -> Line<'static> {
+/// The cells of each stage are taken from the same compact or full strip that is drawn.
+pub(crate) fn pipeline_at(
+    app: &App,
+    steps: &StepCards,
+    rect: Rect,
+    mark: &str,
+) -> (Line<'static>, Vec<(Rect, Tab, StepLink)>) {
+    let (line, ranges) = strip_with_mark(app, steps, usize::from(rect.width), mark);
+    let targets = ranges
+        .into_iter()
+        .filter_map(|(cols, card)| {
+            let end = cols.end.min(usize::from(rect.width));
+            (cols.start < end && rect.height > 0).then(|| {
+                let target = Rect::new(
+                    rect.x + cols.start as u16,
+                    rect.y,
+                    (end - cols.start) as u16,
+                    1,
+                );
+                (target, app.tab, StepLink::new(steps, card))
+            })
+        })
+        .collect();
+    (line, targets)
+}
+
+type StageRanges<'a> = Vec<(std::ops::Range<usize>, &'a StepCard)>;
+
+fn strip_with_mark<'a>(
+    app: &App,
+    steps: &'a StepCards,
+    w: usize,
+    running_mark: &str,
+) -> (Line<'static>, StageRanges<'a>) {
     let cards = chain_cards(steps);
     let wide = step_line_with(app, steps, &cards, " ── ", running_mark);
-    if wide.width() <= w {
+    if wide.0.width() <= w {
         return wide;
     }
     let compact = step_line_with(app, steps, &cards, " › ", running_mark);
-    if compact.width() <= w {
+    if compact.0.width() <= w {
         return compact;
     }
     let active: Vec<_> = cards
         .into_iter()
         .filter(|c| active_stage(steps, c))
         .collect();
-    if active.is_empty() {
-        return fit_line(compact, w);
-    }
-    fit_line(step_line_with(app, steps, &active, " › ", running_mark), w)
+    let (line, ranges) = if active.is_empty() {
+        compact
+    } else {
+        step_line_with(app, steps, &active, " › ", running_mark)
+    };
+    (fit_line(line, w), ranges)
 }
 
-fn step_line_with(app: &App, steps: &StepCards, cards: &[&StepCard], join: &str, running_mark: &str) -> Line<'static> {
+fn step_line_with<'a>(
+    app: &App,
+    steps: &StepCards,
+    cards: &[&'a StepCard],
+    join: &str,
+    running_mark: &str,
+) -> (Line<'static>, StageRanges<'a>) {
     let m = marks();
     let mut spans = vec![];
+    let mut ranges = Vec::with_capacity(cards.len());
+    let mut x = 0;
     for (i, card) in cards.iter().enumerate() {
         if i > 0 {
             let prev_done = cards[i - 1].mark == "done";
@@ -158,7 +203,9 @@ fn step_line_with(app: &App, steps: &StepCards, cards: &[&StepCard], join: &str,
                 dim()
             };
             spans.push(Span::styled(join.to_string(), sep_style));
+            x += width(join);
         }
+        let first = spans.len();
         let label = step_label(card);
         let wait = build_wait(steps, card);
         if let Some(wait_words) = wait {
@@ -169,42 +216,45 @@ fn step_line_with(app: &App, steps: &StepCards, cards: &[&StepCard], join: &str,
             };
             let text = format!("{mark} {label} · {wait_words}");
             spans.push(sheet::badge(&text, crate::theme::Role::Fill));
-            continue;
+        } else {
+            match card.mark.as_str() {
+                "done" => {
+                    spans.push(Span::styled(format!("{} ", m.passed), passed()));
+                    spans.push(Span::styled(label, dim()));
+                }
+                "live" => {
+                    let elapsed = card
+                        .latest_started_at
+                        .as_deref()
+                        .or(card.started_at.as_deref())
+                        .and_then(epoch)
+                        .map(|start| format!(" · {}", duration(app.now - start)))
+                        .unwrap_or_default();
+                    let text = format!("{running_mark} {label}{elapsed}");
+                    spans.push(sheet::badge(&text, crate::theme::Role::Running));
+                }
+                "needs" => {
+                    spans.push(sheet::chip(&format!("{} {label}", m.needs)));
+                }
+                "stuck" => {
+                    spans.push(sheet::badge(
+                        &format!("{} {label}", m.failed),
+                        crate::theme::Role::Failed,
+                    ));
+                }
+                "skipped" => {
+                    spans.push(Span::styled(format!("{} {label}", m.skipped), dim()));
+                }
+                _ => {
+                    spans.push(Span::styled(label, dim()));
+                }
+            }
         }
-        match card.mark.as_str() {
-            "done" => {
-                spans.push(Span::styled(format!("{} ", m.passed), passed()));
-                spans.push(Span::styled(label, dim()));
-            }
-            "live" => {
-                let elapsed = card
-                    .latest_started_at
-                    .as_deref()
-                    .or(card.started_at.as_deref())
-                    .and_then(epoch)
-                    .map(|start| format!(" · {}", duration(app.now - start)))
-                    .unwrap_or_default();
-                let text = format!("{running_mark} {label}{elapsed}");
-                spans.push(sheet::badge(&text, crate::theme::Role::Running));
-            }
-            "needs" => {
-                spans.push(sheet::chip(&format!("{} {label}", m.needs)));
-            }
-            "stuck" => {
-                spans.push(sheet::badge(
-                    &format!("{} {label}", m.failed),
-                    crate::theme::Role::Failed,
-                ));
-            }
-            "skipped" => {
-                spans.push(Span::styled(format!("{} {label}", m.skipped), dim()));
-            }
-            _ => {
-                spans.push(Span::styled(label, dim()));
-            }
-        }
+        let end = x + sheet::spans_width(&spans[first..]);
+        ranges.push((x..end, *card));
+        x = end;
     }
-    Line::from(spans)
+    (Line::from(spans), ranges)
 }
 
 /// A build card's words while its task waits: on a person's hold, or to try again after a failed build (None: neither).
@@ -341,7 +391,7 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
     app.areas.links.clear();
-    app.areas.review_plan.clear();
+    app.areas.steps.clear();
     app.areas.approval_dialog = Rect::default();
     app.areas.approval_controls.clear();
     app.areas.steer_targets.clear();
@@ -1231,23 +1281,15 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             marks().running
         };
-        let pipeline = strip_with_mark(app, steps, w, mark);
-        if app.approval_waiting() && head_lines.len() < usize::from(head.height) {
-            if let Some((card, terms)) = steps.cards.iter().flatten()
-                .find(|c| c.key == "approve" && c.in_chain && c.mark == "needs")
-                .and_then(|c| c.terms.as_ref().map(|t| (c, t))) {
-                let chip = sheet::chip(&format!("{} {}", marks().needs, step_label(card)));
-                let mut x = head.x;
-                for span in &pipeline.spans {
-                    if *span == chip {
-                        let rect = Rect::new(x, head.y + head_lines.len() as u16, span.width() as u16, 1);
-                        app.areas.review_plan.push((rect, app.tab, steps.task.id.clone(), terms.key.clone()));
-                        break;
-                    }
-                    x += span.width() as u16;
-                }
-            }
-        }
+        let row = head_lines.len() as u16;
+        let rect = Rect::new(
+            head.x,
+            head.y + row,
+            head.width,
+            u16::from(row < head.height),
+        );
+        let (pipeline, targets) = pipeline_at(app, steps, rect, mark);
+        app.areas.steps.extend(targets);
         head_lines.push(pipeline);
     }
     if roomy {
@@ -1880,26 +1922,58 @@ fn outcome_of(card: &StepCard) -> (&'static str, Style) {
 /// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
 /// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
 fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
-    let mut review = None;
-    let lines = layout_steps(app, Room::screen(area.width as usize), &mut review);
-    if let Some((rows, task, key)) = review {
-        let end = rows.end.min(usize::from(area.height));
-        if rows.start < end {
-            let rect = Rect { y: area.y + rows.start as u16, height: (end - rows.start) as u16, ..area };
-            app.areas.review_plan.push((rect, app.tab, task, key));
+    let mut cards = Vec::new();
+    let lines = layout_steps(app, Room::screen(usize::from(area.width)), &mut cards);
+    let height = usize::from(area.height);
+    let last = lines.len().saturating_sub(height);
+    let mut offset = app.step_nav.offset.min(last);
+    if app.step_nav.reveal {
+        if let Some((rows, _)) = cards
+            .iter()
+            .find(|(_, link)| Some(&link.step) == app.step_nav.selected.as_ref())
+        {
+            if rows.start < offset || rows.end > offset + height {
+                offset = rows.start.min(last);
+            }
+        }
+        app.step_nav.reveal = false;
+    }
+    app.step_nav.offset = offset;
+    for (range, link) in cards {
+        let start = range.start.max(offset);
+        let end = range.end.min(offset + height);
+        if start < end {
+            let rect = Rect::new(
+                area.x,
+                area.y + (start - offset) as u16,
+                area.width,
+                (end - start) as u16,
+            );
+            app.areas.steps.push((rect, app.tab, link));
         }
     }
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(offset)
+                .take(height)
+                .collect::<Vec<_>>(),
+        ),
+        area,
+    );
 }
 
 /// Drawing, search and export use the same step layout.
 pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
-    layout_steps(app, room, &mut None)
+    layout_steps(app, room, &mut Vec::new())
 }
 
-type ReviewPlanRows = (std::ops::Range<usize>, String, String);
-
-fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> Vec<Line<'static>> {
+fn layout_steps(
+    app: &App,
+    room: Room,
+    ranges: &mut Vec<(std::ops::Range<usize>, StepLink)>,
+) -> Vec<Line<'static>> {
     let w = room.w;
     let Some(steps) = &app.steps else {
         if app.steps_unreadable_here() {
@@ -1924,7 +1998,10 @@ fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> V
     } else if !waiting_lines(app, room).is_empty() {
         lines.extend(waiting_lines(app, room));
         lines.push(Line::raw(""));
-    } else if let Some(headline) = steps.headline.as_ref().filter(|h| !waiting_approval || !h.eq_ignore_ascii_case("Needs you")) {
+    } else if let Some(headline) = steps.headline.as_ref().filter(|h| {
+        !(waiting_approval && h.eq_ignore_ascii_case("Needs you")
+            || steps.live_run.is_some() && h.eq_ignore_ascii_case("Building"))
+    }) {
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
         }
@@ -1939,13 +2016,21 @@ fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> V
     }
     // Laid out whole (export): no raised blocks, so nothing is padded out to a width.
     let fills = crate::theme::fills() && !room.whole();
-    // Each step a raised block (without fills, its lines with a blank line between).
+    // Only the selected or active step gets a surface. Status words and marks work at every colour depth.
     for (i, card) in cards.iter().enumerate() {
         if i > 0 && !fills {
             lines.push(Line::raw(""));
         }
-        let pending = card.terms.as_ref().filter(|_| waiting_approval && card.key == "approve" && card.state == "current");
-        let raised = fills && (!waiting_approval || pending.is_some());
+        let link = StepLink::new(steps, card);
+        let selected = Some(&card.key) == app.step_nav.selected.as_ref();
+        let expanded = Some(&card.key) == app.step_nav.expanded.as_ref();
+        let action = match &link.destination {
+            StepDestination::Plan(_) => Some("Review plan"),
+            StepDestination::Live(_) => Some("Open live"),
+            StepDestination::Changes(_) => Some("View changes"),
+            StepDestination::Details => None,
+        };
+        let raised = fills && (selected || active_stage(steps, card));
         let w = if raised { w.saturating_sub(4) } else { w };
         let start = lines.len();
         let mut c: Vec<Line<'static>> = vec![];
@@ -1965,18 +2050,45 @@ fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> V
             Some(_) => "waiting to retry",
             None => outcome,
         };
-        let mut right = if pending.is_some() {
-            let key = if room.hints { key_name(app, Action::Accept) } else { String::new() };
-            vec![sheet::button("Review plan", &key, true)]
-        } else {
-            vec![Span::styled(outcome, outcome_style)]
-        };
-        // The step's current build, on the header's own clock (build_clock).
+        let mut timing = String::new();
         if let Some(secs) = build_clock(app, steps, card) {
-            right.push(Span::styled(format!(" · {}", duration(secs)), dim()));
+            timing.push_str(&format!(" · {}", duration(secs)));
         }
         if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
-            right.push(Span::styled(format!(" · ${cost:.2}"), dim()));
+            timing.push_str(&format!(" · ${cost:.2}"));
+        }
+        let tint = match (card.mark.as_str(), wait, room.hints) {
+            ("live", None, true) => Some(crate::theme::Role::Running),
+            ("stuck", None, true) => Some(crate::theme::Role::Failed),
+            _ => None,
+        };
+        let mut right = match tint {
+            Some(role) => vec![sheet::badge(&format!("{outcome}{timing}"), role)],
+            None => vec![Span::styled(outcome, outcome_style), Span::styled(timing, dim())],
+        };
+        let mut second_line = None;
+        if let Some(words) = action.filter(|_| room.hints) {
+            if matches!(link.destination, StepDestination::Plan(_)) {
+                right = vec![sheet::button(words, &key_name(app, Action::Accept), true)];
+            } else {
+                let button = sheet::button(words, "", false);
+                if 5 + width(&step_label(card)) + sheet::spans_width(&right) + button.width() <= w {
+                    right.push(Span::raw("  "));
+                    right.push(button);
+                } else {
+                    second_line = Some(Line::from(vec![Span::raw("  "), button]));
+                }
+            }
+        }
+        if room.hints && action.is_none() {
+            let ascii = app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii;
+            let indicator = match (expanded, ascii) {
+                (true, false) => "  ▾",
+                (false, false) => "  ›",
+                (true, true) => "  v",
+                (false, true) => "  >",
+            };
+            right.push(Span::styled(indicator, dim()));
         }
         let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
         let name_style = if card.needs_you {
@@ -1992,19 +2104,86 @@ fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> V
         };
         let mut head = vec![
             Span::styled(format!("{mark} "), mark_style),
-            Span::styled(name, name_style),
+            Span::styled(
+                name,
+                if selected {
+                    name_style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    name_style
+                },
+            ),
             Span::raw(" ".repeat(gap)),
         ];
         head.extend(right);
         c.push(fit_line(Line::from(head), w));
+        if let Some(button) = second_line {
+            c.push(button);
+        }
         let sentence = if waiting_approval && card.key == "plan" {
             card.sentence.strip_suffix(" · shown below").unwrap_or(&card.sentence)
         } else {
             &card.sentence
         };
-        if !sentence.is_empty() && wait.is_none() && !(waiting_approval && sentence == "Shown below") {
+        let show_details = expanded || card.mark != "todo" || room.whole();
+        let repeats_status = matches!(link.destination, StepDestination::Live(_)) && sentence == "Building now";
+        if show_details
+            && !repeats_status
+            && !sentence.is_empty()
+            && wait.is_none()
+            && !(waiting_approval && sentence == "Shown below")
+        {
             for l in wrap(&clean(sentence), w.saturating_sub(2)) {
                 c.push(Line::raw(format!("  {l}")));
+            }
+        }
+        if expanded {
+            if card.key == "plan" && waiting_approval {
+                if let Some(terms) = cards
+                    .iter()
+                    .find(|c| c.key == "approve")
+                    .and_then(|c| c.terms.as_ref())
+                {
+                    for row in &terms.rows {
+                        c.push(Line::from(Span::styled(
+                            format!("  {}", clean(&row.label)),
+                            ink(),
+                        )));
+                        for text in std::iter::once(&row.words)
+                            .chain(&row.lines)
+                            .filter(|t| !t.is_empty())
+                        {
+                            for l in wrap(&clean(text), w.saturating_sub(2)) {
+                                c.push(Line::raw(format!("  {l}")));
+                            }
+                        }
+                    }
+                }
+            }
+            if card.key == "approve" {
+                if let Some(approval) = &steps.approval {
+                    for line in wrap(
+                        &format!("Approved by {}", clean(&approval.by)),
+                        w.saturating_sub(2),
+                    ) {
+                        c.push(Line::from(format!("  {line}")));
+                    }
+                }
+            }
+            for (label, time) in [
+                ("Started", &card.started_at),
+                ("Finished", &card.finished_at),
+                ("Recorded", &card.at),
+            ] {
+                if label == "Recorded"
+                    && (card.at == card.started_at || card.at == card.finished_at)
+                {
+                    continue;
+                }
+                if let Some(time) = time {
+                    for line in wrap(&format!("{label} {}", clean(time)), w.saturating_sub(2)) {
+                        c.push(Line::from(Span::styled(format!("  {line}"), dim())));
+                    }
+                }
             }
         }
         let mut facts = vec![];
@@ -2081,10 +2260,7 @@ fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> V
                 lines.push(Line::raw(""));
             }
         }
-        if let Some(terms) = pending {
-            let end = lines.len() - usize::from(fills);
-            *review = Some((start..end, steps.task.id.clone(), terms.key.clone()));
-        }
+        ranges.push((start..lines.len() - usize::from(fills), link));
     }
     if steps.chain == "just-code" {
         lines.push(Line::raw(""));
@@ -3109,6 +3285,14 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                     (&[ScrollUp, ScrollDown], "scroll"),
                     (&[Copy], "copy"),
                     (&[NextTab], "next tab"),
+                ]
+            }
+            Tab::Steps if app.thread_selected().is_none() => {
+                vec![
+                    (&[MoveDown, MoveUp], "step"),
+                    (&[Open], "open step"),
+                    (&[ScrollUp, ScrollDown], "scroll"),
+                    (&[Search], "search"),
                 ]
             }
             Tab::Terminal if app.pane_here().is_some() => {
