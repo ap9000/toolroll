@@ -9,7 +9,7 @@
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
 import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
-import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
+import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
 import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
@@ -122,7 +122,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     shell: shellOf(store, family,
       assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
         ? assignment.receipt.runId : builds[0]?.id ?? null),
-    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, builds) : null,
+    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, current.repo, builds) : null,
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
       if (waiting === null) return null;
@@ -160,14 +160,20 @@ function shellOf(store: Store, family: TaskFamily, runId: number | null): StepCa
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
  * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
-function failureOf(store: Store, taskRef: number | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+function failureOf(store: Store, taskRef: number | null, repo: string | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
   const last = latestFinishedAttempt(builds);
   // The engine's own count (claim.ts addStrike): failures since the last success or the last person's Retry, which
   // clears them (store.requeueTask resetStrikes). The words "N consecutive failures" mean exactly that.
   const failedInARow = taskRef === null ? 0
     : Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(taskRef)?.["strikes"] ?? 0);
-  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason),
-    agentSaid: last === null ? null : agentSaidOf(store, last.id) };
+  const agentSaid = last === null ? null : agentSaidOf(store, last.id);
+  const codexHint = last === null ? null : codexOfflineDependencySuggestion({
+    provider: last.provider,
+    agentSaid,
+    hasSetup: repo !== null && store.liveWorktreeSetup(repo) !== null,
+  });
+  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : (codexHint ?? stopSuggestionOf(last.reason)),
+    agentSaid };
 }
 
 /** A cancelled task's history: its builds as they ran, then Cancelled, the end (no road goes on from there). */

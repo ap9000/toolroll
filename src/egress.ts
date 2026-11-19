@@ -240,9 +240,19 @@ export function unaccountedHosts(network: NetworkProfile, provider: string): str
   return network.hosts.filter(one => !known.has(one));
 }
 
-export function networkWords(network: NetworkProfile | null, provider: string): string {
-  if (network === null) return "Network: approved before network rules (provider and package registries only)";
-  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}`;
+/** Codex's own command sandbox can't route through Toolroll's egress proxy (agent-fence.ts codexNetworkOn):
+ * its shell commands reach the network only when the build has both Full access and an open network. */
+export function codexCommandsOffline(profile: { provider: string; sandboxMode?: string; network?: NetworkProfile | null }): boolean {
+  if (profile.provider !== "codex") return false;
+  return !(profile.sandboxMode === "danger-full-access" && profile.network?.mode === "open");
+}
+
+export function networkWords(network: NetworkProfile | null, provider: string, options?: { commandsOffline?: boolean }): string {
+  const offlineSuffix = options?.commandsOffline !== true ? ""
+    : network?.mode === "open" ? " (Codex commands run offline until Full access is on)"
+    : " (Codex commands run offline — set a worktree setup command for dependencies)";
+  if (network === null) return `Network: approved before network rules (provider and package registries only)${offlineSuffix}`;
+  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}${offlineSuffix}`;
   // Only what is accounted for collapses into a name: this agent's own provider hosts, and a registry whose every host is
   // listed. Any other host — another provider's included, or part of a registry — is said exactly (the terms diet,
   // Codex r1 finding 3).
@@ -253,7 +263,8 @@ export function networkWords(network: NetworkProfile | null, provider: string): 
   const added = network.hosts.filter(one => !known.has(one));
   const parts = [...(named ? ["the agent's provider"] : []), ...full.map(([name]) => REGISTRY_NAMES[name])];
   return `Network: ${parts.length === 0 && added.length === 0 ? "no hosts" : [parts.join(", "), added.length === 0 ? "" : `${parts.length === 0 ? "" : "and "}${added.join(", ")}`].filter(Boolean).join(", ")}`
-    + (network.loopback === "any" ? "; and every local service on this Mac" : "");
+    + (network.loopback === "any" ? "; and every local service on this Mac" : "")
+    + offlineSuffix;
 }
 const REGISTRY_NAMES: Readonly<Record<Ecosystem, string>> = { npm: "npm", python: "PyPI", rust: "crates.io", go: "the Go proxy", ruby: "RubyGems", jvm: "Maven and Gradle" };
 
