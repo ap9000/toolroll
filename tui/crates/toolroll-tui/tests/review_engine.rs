@@ -443,7 +443,7 @@ async fn send_back_then_approve_the_revision_in_the_workbench() {
     assert!(shown.contains("Waiting for your approval."), "{shown}");
     assert!(!shown.contains("Nothing is building"), "{shown}");
     assert!(
-        shown.contains("a approve") && shown.contains("w browser"),
+        shown.contains("a review plan") && shown.contains("w browser"),
         "{shown}"
     );
     assert!(!shown.contains("stop retrying"), "{shown}");
@@ -463,7 +463,7 @@ async fn send_back_then_approve_the_revision_in_the_workbench() {
         "{shown}"
     );
     assert!(shown.contains("Round the tax to cents. (alex)"), "{shown}");
-    assert!(shown.contains("Enter  Approve"), "{shown}");
+    assert!(shown.contains("Approve build"), "{shown}");
     assert!(
         !format!("{:?}", app.mode).contains(&engine.state.lock().unwrap().nonces[0].2),
         "the nonce is never printed"
@@ -528,6 +528,51 @@ async fn send_back_then_approve_the_revision_in_the_workbench() {
         "{}",
         said(&app)
     );
+}
+
+/// Follow the same steps a mouse user sees, in a wide split and a narrow single pane.
+#[tokio::test(flavor = "multi_thread")]
+async fn click_approval_to_review_then_explicitly_start_the_build() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let click = |x, y| MouseEvent {
+        column: x, row: y, kind: MouseEventKind::Down(MouseButton::Left),
+        modifiers: KeyModifiers::NONE,
+    };
+    let (engine, client, mut app) = sent_back().await;
+    let before = engine.acts().len();
+    app.tab = Tab::Live;
+    screen(&mut app, 144, 32);
+    let &(chip, _, _, _) = app.areas.review_plan.first().expect("visible pipeline badge");
+    let fx = app.mouse(click(chip.x + 1, chip.y));
+    assert!(matches!(fx.as_slice(), [Effect::FetchApproval(_)]));
+    pump(&mut app, &client, fx).await;
+    assert!(matches!(app.mode, Mode::Approve { .. }));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.tab = Tab::Steps;
+    for width in [144, 48] {
+        let shown = screen(&mut app, width, 32);
+        assert!(shown.contains("Review plan"), "{shown}");
+        let &(r, _, _, _) = app.areas.review_plan.last().expect("visible approval card");
+        let fx = app.mouse(click(r.right() - 1, r.y));
+        assert!(matches!(fx.as_slice(), [Effect::FetchApproval(_)]));
+        pump(&mut app, &client, fx).await;
+        let mut shown = screen(&mut app, width, 20);
+        while let Some(&(rect, _)) = app.areas.approval_controls.iter().find(|(_, k)| *k == KeyCode::PageDown) {
+            assert!(shown.contains("Read more"), "{shown}");
+            let fx = app.mouse(click(rect.x + 1, rect.y));
+            assert!(fx.is_empty());
+            shown = screen(&mut app, width, 20);
+        }
+        assert!(shown.contains("Approve build"), "{shown}");
+        assert_eq!(engine.acts().len(), before);
+        let key = if width == 144 { KeyCode::Esc } else { KeyCode::Enter };
+        let &(rect, _) = app.areas.approval_controls.iter().find(|(_, k)| *k == key).unwrap();
+        let fx = app.mouse(click(rect.x + 1, rect.y));
+        pump(&mut app, &client, fx).await;
+        assert_eq!(app.mode, Mode::Normal);
+    }
+    assert_eq!(engine.acts().len(), before + 1);
+    assert_eq!(engine.acts().last().unwrap().path, "/t/t-done-v2/approve");
 }
 
 /// What is shown is what is approved: any other key approves nothing; unread terms can't be approved; terms that change

@@ -143,6 +143,10 @@ beside the selected task. **Live** shows the agent's output, **Steps** shows
 progress and failures, **Diff** shows the result and your notes, and
 **Terminal** holds a shell on the build. The top bar shows today's cost.
 
+When a plan needs your approval, click its **Approval** card in **Steps**, or
+press **a**. Read the terms with the wheel, **Read more**, or **Space**.
+Choose **Approve build** to start, or **Back** to leave it waiting.
+
 ### Keys and layout
 
 These are the default keys from the workbench's keymap. Press `?` for help

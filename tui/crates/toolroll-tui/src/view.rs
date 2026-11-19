@@ -341,6 +341,9 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
     app.areas.links.clear();
+    app.areas.review_plan.clear();
+    app.areas.approval_dialog = Rect::default();
+    app.areas.approval_controls.clear();
     app.areas.steer_targets.clear();
     app.areas.spinner_visible = false;
     // On screen this frame only if draw_terminal draws it, and no dialog is drawn over it.
@@ -1207,6 +1210,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     let mut head_lines = vec![Line::from(title_spans)];
     match app.steps.as_ref().and_then(|s| facts_line(app, s, w)) {
         Some(l) => head_lines.push(fit_line(l, w)),
+        None if app.approval_waiting() => head_lines.push(Line::raw("")),
         None => head_lines.push(Line::from(Span::styled(fit(&item.detail, w), dim()))),
     }
     if let Some(steps) = &app.steps {
@@ -1227,7 +1231,24 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             marks().running
         };
-        head_lines.push(strip_with_mark(app, steps, w, mark));
+        let pipeline = strip_with_mark(app, steps, w, mark);
+        if app.approval_waiting() && head_lines.len() < usize::from(head.height) {
+            if let Some((card, terms)) = steps.cards.iter().flatten()
+                .find(|c| c.key == "approve" && c.in_chain && c.mark == "needs")
+                .and_then(|c| c.terms.as_ref().map(|t| (c, t))) {
+                let chip = sheet::chip(&format!("{} {}", marks().needs, step_label(card)));
+                let mut x = head.x;
+                for span in &pipeline.spans {
+                    if *span == chip {
+                        let rect = Rect::new(x, head.y + head_lines.len() as u16, span.width() as u16, 1);
+                        app.areas.review_plan.push((rect, app.tab, steps.task.id.clone(), terms.key.clone()));
+                        break;
+                    }
+                    x += span.width() as u16;
+                }
+            }
+        }
+        head_lines.push(pipeline);
     }
     if roomy {
         // A rule under the head, across the sheet (joining the sheet's outline when it has one).
@@ -1858,15 +1879,27 @@ fn outcome_of(card: &StepCard) -> (&'static str, Style) {
 /// The Steps tab (T4): one card per step of the task's chain, from the engine's step cards: its mark and name, its
 /// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
 /// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
-fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
-    f.render_widget(
-        Paragraph::new(steps_lines(app, Room::screen(area.width as usize))),
-        area,
-    );
+fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
+    let mut review = None;
+    let lines = layout_steps(app, Room::screen(area.width as usize), &mut review);
+    if let Some((rows, task, key)) = review {
+        let end = rows.end.min(usize::from(area.height));
+        if rows.start < end {
+            let rect = Rect { y: area.y + rows.start as u16, height: (end - rows.start) as u16, ..area };
+            app.areas.review_plan.push((rect, app.tab, task, key));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Everything the Steps tab shows, at width `w`: one source for drawing, search and export (search.rs pane_text).
+/// Drawing, search and export use the same step layout.
 pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    layout_steps(app, room, &mut None)
+}
+
+type ReviewPlanRows = (std::ops::Range<usize>, String, String);
+
+fn layout_steps(app: &App, room: Room, review: &mut Option<ReviewPlanRows>) -> Vec<Line<'static>> {
     let w = room.w;
     let Some(steps) = &app.steps else {
         if app.steps_unreadable_here() {
@@ -1878,6 +1911,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         return vec![Line::raw("Reading…")];
     };
     let mut lines = vec![];
+    let waiting_approval = app.approval_waiting();
     let why = failure_lines(app, room);
     let stopped = plan_stopped_lines(app, room);
     if !why.is_empty() {
@@ -1890,7 +1924,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     } else if !waiting_lines(app, room).is_empty() {
         lines.extend(waiting_lines(app, room));
         lines.push(Line::raw(""));
-    } else if let Some(headline) = &steps.headline {
+    } else if let Some(headline) = steps.headline.as_ref().filter(|h| !waiting_approval || !h.eq_ignore_ascii_case("Needs you")) {
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
         }
@@ -1906,11 +1940,14 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     // Laid out whole (export): no raised blocks, so nothing is padded out to a width.
     let fills = crate::theme::fills() && !room.whole();
     // Each step a raised block (without fills, its lines with a blank line between).
-    let w = if fills { w.saturating_sub(4) } else { w };
     for (i, card) in cards.iter().enumerate() {
         if i > 0 && !fills {
             lines.push(Line::raw(""));
         }
+        let pending = card.terms.as_ref().filter(|_| waiting_approval && card.key == "approve" && card.state == "current");
+        let raised = fills && (!waiting_approval || pending.is_some());
+        let w = if raised { w.saturating_sub(4) } else { w };
+        let start = lines.len();
         let mut c: Vec<Line<'static>> = vec![];
         let (mark, mark_style) = mark_of(card);
         let (outcome, outcome_style) = outcome_of(card);
@@ -1928,7 +1965,12 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             Some(_) => "waiting to retry",
             None => outcome,
         };
-        let mut right = vec![Span::styled(outcome, outcome_style)];
+        let mut right = if pending.is_some() {
+            let key = if room.hints { key_name(app, Action::Accept) } else { String::new() };
+            vec![sheet::button("Review plan", &key, true)]
+        } else {
+            vec![Span::styled(outcome, outcome_style)]
+        };
         // The step's current build, on the header's own clock (build_clock).
         if let Some(secs) = build_clock(app, steps, card) {
             right.push(Span::styled(format!(" · {}", duration(secs)), dim()));
@@ -1955,8 +1997,13 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         ];
         head.extend(right);
         c.push(fit_line(Line::from(head), w));
-        if !card.sentence.is_empty() && wait.is_none() {
-            for l in wrap(&clean(&card.sentence), w.saturating_sub(2)) {
+        let sentence = if waiting_approval && card.key == "plan" {
+            card.sentence.strip_suffix(" · shown below").unwrap_or(&card.sentence)
+        } else {
+            &card.sentence
+        };
+        if !sentence.is_empty() && wait.is_none() && !(waiting_approval && sentence == "Shown below") {
+            for l in wrap(&clean(sentence), w.saturating_sub(2)) {
                 c.push(Line::raw(format!("  {l}")));
             }
         }
@@ -2017,7 +2064,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
                 }
             }
         }
-        if fills {
+        if raised {
             let full = w + 4;
             let raised = crate::theme::raised();
             lines.push(sheet::band(Line::raw(""), full, raised));
@@ -2030,6 +2077,13 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             lines.push(Line::raw(""));
         } else {
             lines.extend(c);
+            if fills {
+                lines.push(Line::raw(""));
+            }
+        }
+        if let Some(terms) = pending {
+            let end = lines.len() - usize::from(fills);
+            *review = Some((start..end, steps.task.id.clone(), terms.key.clone()));
         }
     }
     if steps.chain == "just-code" {
@@ -3001,7 +3055,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[Accept], "accept"));
             v.push((&[SendBack], "send back"));
         } else if approval {
-            v.push((&[Accept], "approve"));
+            v.push((&[Accept], "review plan"));
             v.push((&[Browser], "browser"));
         } else if plan_again {
             v.push((&[SendBack], "plan again"));
@@ -3040,7 +3094,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                     v.push((&[Accept], "accept"));
                     v.push((&[SendBack], "send back"));
                 } else if approval {
-                    v.push((&[Accept], "approve"));
+                    v.push((&[Accept], "review plan"));
                 }
                 v.push((&[PreviousFile, NextFile], "file"));
                 v
@@ -4001,14 +4055,14 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         .min(18);
     let text_w = inner_w.saturating_sub(label_w + 2);
     // Head 2 lines, foot 4 lines: what's left shows the terms.
-    let visible = (h as usize).saturating_sub(2 + 6);
+    let visible = (h as usize).saturating_sub(if approving { 9 } else { 8 });
     let r = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + 1,
         width: w,
         height: h,
     };
-    let block = dialog(f, r, if approving { " Approve " } else { " New task " });
+    let block = dialog(f, r, if approving { " Review plan " } else { " New task " });
     if text_w < 16 || visible < 3 {
         // Too small to show them: no in-terminal Build (or approval).
         *seen_end = false;
@@ -4093,21 +4147,33 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::raw(""));
     }
     if approving {
-        if *seen_end {
-            let mut keys = sheet::act("Enter", "Approve", true);
-            keys.push(Span::styled(" (or y)", dim()));
-            lines.push(Line::from(keys));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "Enter approves once you've read to the end.",
-                dim(),
-            )));
+        use crossterm::event::KeyCode;
+        let inner = block.inner(r);
+        app.areas.approval_dialog = r;
+        let mut add_control = |row: usize, span: Span<'static>, key: KeyCode| {
+            let rect = Rect {
+                x: inner.x,
+                y: inner.y.saturating_add(row as u16),
+                width: (span.width() as u16).min(inner.width),
+                height: 1,
+            };
+            if rect.y < inner.bottom() {
+                app.areas.approval_controls.push((rect, key));
+            }
+            Line::from(span)
+        };
+        if end < body.len() {
+            let row = lines.len() - 1;
+            let words = format!("Read more · {} lines left", body.len() - end);
+            lines[row] = add_control(row, sheet::button(&words, "Space", false), KeyCode::PageDown);
         }
-        lines.push(Line::from(sheet::act("w", "Review in the browser", false)));
-        lines.push(Line::from(Span::styled(
-            "Any other key approves nothing.",
-            dim(),
-        )));
+        if *seen_end {
+            lines.push(add_control(lines.len(), sheet::button("Approve build", "Enter", true), KeyCode::Enter));
+        } else {
+            lines.push(Line::from(Span::styled("Read to the end to approve.", dim())));
+        }
+        lines.push(add_control(lines.len(), sheet::button("Open in browser", "w", false), KeyCode::Char('w')));
+        lines.push(add_control(lines.len(), sheet::button("Back", "Esc", false), KeyCode::Esc));
         f.render_widget(Paragraph::new(lines).block(block), r);
         return;
     }

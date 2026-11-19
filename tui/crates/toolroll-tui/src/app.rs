@@ -917,6 +917,10 @@ pub enum ComposerClick {
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
     pub list: Rect,
+    /// Visible approval step, bound to the task and terms drawn in it.
+    pub review_plan: Vec<(Rect, Tab, String, String)>,
+    pub approval_dialog: Rect,
+    pub approval_controls: Vec<(Rect, KeyCode)>,
     pub steer_targets: Vec<(Rect, i64, ComposerClick)>,
     pub spinner_visible: bool,
     /// The list's screen rows and the item each shows (None: a heading).
@@ -5500,6 +5504,25 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if matches!(self.mode, Mode::Approve { .. }) && inside(self.areas.approval_dialog) {
+            let key = match ev.kind {
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::Down(MouseButton::Left) => self.areas.approval_controls.iter()
+                    .find(|(rect, _)| inside(*rect)).map(|(_, key)| *key),
+                _ => None,
+            };
+            return key.map_or_else(Vec::new, |code| self.key(KeyEvent::new(code, KeyModifiers::NONE)));
+        }
+        if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some((_, _, task, key)) = self.areas.review_plan.iter().find(|(r, tab, _, _)| *tab == self.tab && inside(*r)) {
+                if self.approval_changed(task, key).is_some() {
+                    return vec![];
+                }
+                self.focus = Focus::Detail;
+                return self.run_action(Action::Accept);
+            }
+        }
         if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.tab == Tab::Live {
             if let Some(&(_, run, target)) = self.areas.steer_targets.iter().find(|(r, _, _)| inside(*r)) {
                 if self.steps_here().and_then(|s| s.live_run) != Some(run) {
