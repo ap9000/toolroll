@@ -42,6 +42,15 @@ process.env.TOOLROLL_SECRET_STORE = "files";
 process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
 
 export const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** A real Codex build binds an actual model ID, never the lead UI's default sentinel. */
+export function codexJourneyModel(requested, configured) {
+  const model = requested ?? configured;
+  if (typeof model !== "string" || model.trim() === "" || ["default", "inherit"].includes(model)) {
+    throw new Error("Real Codex journeys need a model ID: pass --real-model or configure a model in Codex (default and inherit are not model IDs).");
+  }
+  return model;
+}
 const args = process.argv.slice(2);
 export const flag = name => args.includes(name);
 export const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
@@ -370,7 +379,16 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   const realProvider = option("--real-provider", "codex");
   if (realProvider !== "codex" && realProvider !== "claude") throw new Error("--real-provider takes codex or claude");
   const agentProvider = provider.mode === "scripted" ? "claude" : realProvider;
-  const agentModel = agentProvider === "codex" ? "default" : "sonnet";
+  let agentModel = "sonnet";
+  if (provider.mode === "real") {
+    const requested = option("--real-model", null);
+    if (agentProvider === "codex") {
+      // Read only the existing model preference on the intentional real-provider road. The helper returns
+      // model/effort, never credentials; scripted worlds do not inspect the person's configuration.
+      const { codexDefaults, codexHomeDir } = await import("../dist/provider-home.js");
+      agentModel = codexJourneyModel(requested, requested === null ? codexDefaults(codexHomeDir(process.env, homedir())).model : undefined);
+    } else agentModel = requested ?? "sonnet";
+  }
   const leadProvider = `${agentProvider}-subscription`;
   // A scripted run is a throwaway computer (isolated-env.mjs): this process's environment is replaced by one built from
   // nothing, so everything it starts — the CLI, the console, the worker, a demo, a fresh install, and the agents those

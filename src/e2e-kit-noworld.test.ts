@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error plain ESM script without declarations
-import { checkedEnv } from "../scripts/e2e-kit.mjs";
+import { checkedEnv, codexJourneyModel } from "../scripts/e2e-kit.mjs";
 // @ts-expect-error plain ESM script without declarations
 import { makeTempRoot, removeRoot } from "../scripts/suite-lifecycle.mjs";
 
@@ -35,5 +35,16 @@ describe("a run's cleanup", () => {
       removeRoot(ours);
       expect(() => realpathSync(ours)).toThrow();
     } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
+// The native CLI rejects the lead UI's "default" sentinel before a build can run.
+describe("real Codex journey model", () => {
+  it("binds the explicit or configured model and refuses unresolved aliases", () => {
+    expect(codexJourneyModel("requested-model", "configured-model")).toBe("requested-model");
+    expect(codexJourneyModel(null, "configured-model")).toBe("configured-model");
+    for (const model of [undefined, "", "default", "inherit"]) {
+      expect(() => codexJourneyModel(model, undefined)).toThrow(/model ID/);
+    }
   });
 });
