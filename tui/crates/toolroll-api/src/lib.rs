@@ -4,7 +4,7 @@ pub mod models;
 pub mod sse;
 pub mod term;
 pub mod task_builder;
-pub use task_builder::TaskBuilder;
+pub use task_builder::{BuilderPicker, TaskBuilder};
 
 pub use client::{
     check_hello, redeem, said_of, ActOutcome, ApiError, ChatSendOutcome, Client, LiveSignal,

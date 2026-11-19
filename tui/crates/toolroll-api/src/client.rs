@@ -53,6 +53,10 @@ pub enum ActOutcome {
         task: String,
     },
     Refused(String),
+    BuilderPassword {
+        task: String,
+        setup: bool,
+    },
     /// New task's offer (POST /tasks/add for a small task): the exact terms Build would approve, and the preview and
     /// digest Build posts (POST /tasks/fast).
     Terms {
@@ -742,6 +746,10 @@ impl Client {
                     .unwrap_or_else(|| "The console could not switch Lead. Check the membership sign-in or open Lead settings.".into()))
             });
         }
+        let local_refusal = res
+            .headers()
+            .get("x-toolroll-refused")
+            .is_some_and(|v| v == "local-owner");
         let json = res
             .headers()
             .get("content-type")
@@ -750,9 +758,15 @@ impl Client {
         let text = res.text().await.unwrap_or_default();
         if json {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if status == 403 && local_refusal {
+                    if let Some(step) = builder_password_step(path, v["href"].as_str()) {
+                        return Ok(step);
+                    }
+                }
                 let words = v["words"]
                     .as_str()
                     .or_else(|| v["error"].as_str())
+                    .or_else(|| v["said"].as_str())
                     .unwrap_or("")
                     .to_string();
                 if v["outcome"] == "thread-terms" && status == 200 {
@@ -992,6 +1006,24 @@ fn session_gone(status: u16, location: Option<&str>) -> bool {
         || ((300..400).contains(&status) && location.is_some_and(|l| l.starts_with("/login")))
 }
 
+// The console names its password step. Build the destination ourselves from this request.
+pub(crate) fn builder_password_step(path: &str, href: Option<&str>) -> Option<ActOutcome> {
+    let page = path.strip_suffix("/route")?;
+    let task = filed_task(page)?;
+    if page != format!("/t/{task}") {
+        return None;
+    }
+    let back = encode(page);
+    let setup = if href == Some(&format!("/login?return={back}")) {
+        false
+    } else if href == Some(&format!("/password/set?next={back}")) {
+        true
+    } else {
+        return None;
+    };
+    Some(ActOutcome::BuilderPassword { task, setup })
+}
+
 fn non_empty(words: String, status: u16) -> String {
     if words.trim().is_empty() {
         format!("Refused (status {status}).")
@@ -1012,6 +1044,31 @@ fn versioned<T>(value: T, version: impl Fn(&T) -> u32) -> Result<T, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builder_password_handoff_matches_only_this_tasks_password_door() {
+        let path = "/t/homepage-nameplate/route";
+        for (href, setup) in [
+            ("/login?return=%2Ft%2Fhomepage-nameplate", false),
+            ("/password/set?next=%2Ft%2Fhomepage-nameplate", true),
+        ] {
+            assert_eq!(
+                builder_password_step(path, Some(href)),
+                Some(ActOutcome::BuilderPassword {
+                    task: "homepage-nameplate".into(),
+                    setup
+                })
+            );
+        }
+        assert_eq!(
+            builder_password_step(path, Some("/login?return=%2Ft%2Fother")),
+            None
+        );
+        assert_eq!(
+            builder_password_step("/t/homepage-nameplate/requeue", None),
+            None
+        );
+    }
 
     #[test]
     fn only_local_one_time_links() {

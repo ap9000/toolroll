@@ -328,7 +328,9 @@ offer those installers, copy the command and run it yourself if you trust
 it. The screen also lets you copy sign-in commands.
 
 For an existing idle task, click **Change builder** beside its model in Work, or press
-`m`. Select a configured model and choose **Use builder**. Review the updated
+`m`. If Toolroll asks for your password, open the task in your browser,
+then choose **Agents → Change agents → Builder → Use**. In a session that can
+save directly, select the model and choose **Use builder**. Review the updated
 approval before resuming a held task. The model in the previous attempt stays in
 its history. The picker shows configured choices; provider quota can change.
 

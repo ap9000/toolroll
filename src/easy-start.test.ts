@@ -142,10 +142,12 @@ describe("which invocations are an easy start", () => {
     const { seams, calls } = scripted({ proofs: [LIVE], tui: async session => {
       expect(await session.openBrowser("lead-providers")).toBe("Opened Lead settings in your browser.");
       expect(await session.openBrowser("projects")).toBe("Opened Projects in your browser.");
+      await session.openBuilderPassword!("homepage-nameplate", false);
+      await session.openBuilderPassword!("homepage-nameplate", true);
       return "leave";
     } });
     expect(await runEasyStart("start", bare, seams)).toBe(0);
-    expect(calls).toEqual(["tui", `browser ${new URL("/settings/lead#lead-config", LIVE.url).href}`, `browser ${new URL("/projects", LIVE.url).href}`]);
+    expect(calls).toEqual(["tui", `browser ${new URL("/settings/lead#lead-config", LIVE.url).href}`, `browser ${new URL("/projects", LIVE.url).href}`, `browser ${new URL("/t/homepage-nameplate#agents", LIVE.url).href}`, `browser ${new URL("/password/set?next=%2Ft%2Fhomepage-nameplate", LIVE.url).href}`]);
   });
 
   test("cli.ts: at a person's terminal, bare `toolroll` is the easy start", async () => {

@@ -1,3 +1,4 @@
+import { localOwnerRefusal } from "../local-owner.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
 import { familyInWebReach } from "../findings.js";
@@ -543,6 +544,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         // and the focused chat, with the readiness this task's runners report.
         route: routeView,
         canEditRoute: who.role === "approver",
+        ...(who.via === "cookie" && who.authority === "local-owner" && who.role === "approver"
+          ? { routeSignIn: localOwnerRefusal(runtime.store.accountOf(who.name)?.passwordSet === true, taskHref(taskId)) } : {}),
         // Results routing (slice 1): the family's saved record, or the one its rows give now; never a reason to fail the page.
         resultRecord: resultRecordWordsOf(runtime.store, taskId, runtime.evidenceRoot, now),
         spendDefaults: runtime.store.getSpendDefaults(),

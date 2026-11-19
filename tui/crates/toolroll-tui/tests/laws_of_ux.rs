@@ -523,11 +523,13 @@ fn change_builder_on_an_existing_task_by_mouse_only_changes_its_build_route() {
     assert!(matches!(fx.as_slice(), [Effect::FetchTaskBuilder {task: t, ..}] if t == &task));
     app.update(Msg::TaskBuilder(
         task.clone(),
-        Ok(toolroll_api::TaskBuilder {
-            digest: "a".repeat(32),
-            current: Some("claude|opus".into()),
-            choices: vec!["claude|opus".into(), "codex|sol".into()],
-        }),
+        Ok(toolroll_api::BuilderPicker::Choices(
+            toolroll_api::TaskBuilder {
+                digest: "a".repeat(32),
+                current: Some("claude|opus".into()),
+                choices: vec!["claude|opus".into(), "codex|sol".into()],
+            },
+        )),
     ));
     draw(&mut app, 48, 24);
     assert!(!app
@@ -555,4 +557,61 @@ fn change_builder_on_an_existing_task_by_mouse_only_changes_its_build_route() {
         if path == &format!("/t/{task}/route") && fields.contains(&("phase".into(),"build".into()))
         && fields.contains(&("agent".into(),"codex|sol".into())) && fields.contains(&("sawDigest".into(),"a".repeat(32)))));
     assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn a_password_required_to_change_builders_opens_only_the_selected_task() {
+    use toolroll_tui::app::BuilderControl;
+    let mut app = on("t-rate");
+    let s = app.steps.as_mut().unwrap();
+    s.live_run = None;
+    s.review = None;
+    s.task.state = "failed".into();
+    let task = s.task.id.clone();
+    let fx = app.update(Msg::Acted(Ok(toolroll_api::ActOutcome::BuilderPassword {
+        task: task.clone(),
+        setup: false,
+    })));
+    assert!(fx.is_empty());
+    for (w, h) in [(48, 24), (120, 40)] {
+        let screen = draw(&mut app, w, h).backend().to_string();
+        assert!(screen.contains("Change builder in browser"), "{screen}");
+        assert!(screen.contains("Open task"), "{screen}");
+    }
+    let (button, _) = *app
+        .areas
+        .builder_controls
+        .iter()
+        .find(|(_, c)| matches!(c, BuilderControl::Save))
+        .unwrap();
+    assert_eq!(
+        app.mouse(left_click(button)),
+        vec![Effect::OpenBuilderPassword { task, setup: false }]
+    );
+}
+
+#[test]
+fn changing_the_builder_shows_the_saved_plan_above_the_previous_attempt() {
+    let mut app = on("t-rate");
+    let steps = app.steps.as_mut().unwrap();
+    steps.task.state = "failed".into();
+    steps.live_run = None;
+    steps.review = None;
+    let approval = steps
+        .cards
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|card| card.key == "approve")
+        .unwrap();
+    approval.terms = Some(parse(serde_json::json!({
+        "key": "new-plan", "revision": null, "warnings": [], "usualLabel": "", "usual": [],
+        "rows": [{"label": "Your pick", "words": "builder Codex · gpt-6-sol", "lines": []}]
+    })));
+    let screen = draw(&mut app, 150, 36).backend().to_string();
+    assert!(
+        screen.contains("Awaiting approval · builder Codex · gpt-6-sol"),
+        "{screen}"
+    );
+    assert!(screen.contains("Last build:"), "{screen}");
 }

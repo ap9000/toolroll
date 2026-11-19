@@ -143,6 +143,7 @@ export interface TuiSession {
   stopped?(): string | null;
   /** Open this computer's browser on the console, signed in (on one of TUI_PAGES when named). Resolves with what to say. */
   openBrowser(page?: TuiPage): Promise<string>;
+  openBuilderPassword?(task: string, setup: boolean): Promise<string>;
   /** Whether to ask, now, "Keep Toolroll running in the background?" (once per installation). */
   shouldAskBackground(): boolean;
   /** Record the answer; yes moves Toolroll to the background service. Resolves with what to say. */

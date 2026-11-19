@@ -1411,6 +1411,23 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(Span::styled(fit(&item.detail, available), dim()))
             }
         });
+    // The approval terms describe the saved plan. A build card describes the last run.
+    let proposed = app.steps_here().filter(|_| builder_task.is_some()).and_then(|s| {
+        let cards = s.cards.as_ref()?;
+        if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
+            return None;
+        }
+        let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
+        let row = terms
+            .rows
+            .iter()
+            .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
+            .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
+        Some(format!("Awaiting approval · {}", clean(&row.words)))
+    });
+    if let Some(words) = proposed.as_ref().filter(|_| !roomy) {
+        facts = Line::from(Span::styled(fit(words, available), ink()));
+    }
     if let Some(task) = builder_task.filter(|_| head.height >= 2) {
         let mut row = vec![button, Span::raw(" ")];
         row.extend(facts.spans);
@@ -1423,7 +1440,10 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     head_lines.push(fit_line(facts, w));
     if let Some(steps) = &app.steps {
         if roomy {
-            head_lines.push(Line::raw(""));
+            head_lines.push(Line::from(Span::styled(
+                fit(proposed.as_deref().unwrap_or(""), w),
+                ink(),
+            )));
         }
         app.areas.spinner_visible = matches!(app.mode, Mode::Normal | Mode::Steer(_))
             && !app.prefs.settings.reduced_motion
@@ -3797,6 +3817,52 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
         Mode::LeadProviders(_) => return crate::chat_providers::draw_providers(f, app, area),
+        Mode::BuilderPassword { task, setup } => {
+            let task = clean(task);
+            let setup = *setup;
+            let w = area.width.saturating_sub(2).min(62);
+            let inner_width = usize::from(w.saturating_sub(4)).max(1);
+            let words = format!("Open {task} in your browser to choose its builder. Toolroll requires your password to save this change.");
+            let mut lines: Vec<Line> = wrap(&words, inner_width)
+                .into_iter()
+                .map(Line::raw)
+                .collect();
+            lines.push(Line::raw(""));
+            let h = (lines.len() as u16 + 3).min(area.height);
+            let rect = Rect::new(
+                area.x + (area.width - w) / 2,
+                area.y + (area.height - h) / 2,
+                w,
+                h,
+            );
+            let block = dialog(f, rect, " Change builder in browser ");
+            let inner = block.inner(rect);
+            let button = sheet::button(
+                if setup { "Set password" } else { "Open task" },
+                "Enter",
+                true,
+            );
+            let back = sheet::button("Back", "Esc", false);
+            let y = inner.y + lines.len() as u16;
+            if inner.width >= button.width() as u16 && y < inner.bottom() {
+                app.areas.builder_controls.push((
+                    Rect::new(inner.x, y, button.width() as u16, 1),
+                    crate::app::BuilderControl::Save,
+                ));
+                let x = inner.x + button.width() as u16 + 1;
+                if x + back.width() as u16 <= inner.right() {
+                    app.areas.builder_controls.push((
+                        Rect::new(x, y, back.width() as u16, 1),
+                        crate::app::BuilderControl::Back,
+                    ));
+                }
+            } else {
+                app.drawn_dialog = None;
+            }
+            lines.push(Line::from(vec![button, Span::raw(" "), back]));
+            f.render_widget(Paragraph::new(lines).block(block), rect);
+            return;
+        }
         Mode::TaskBuilder { .. } => return draw_task_builder(f, app, area),
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),

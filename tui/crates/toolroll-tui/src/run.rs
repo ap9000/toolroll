@@ -357,6 +357,29 @@ impl Loop {
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
+            Effect::OpenBuilderPassword { task, setup } => {
+                let page = format!("/t/{}", toolroll_api::client::encode(&task));
+                let door = if setup {
+                    "/password/set?next="
+                } else {
+                    "/login?return="
+                };
+                let url = format!(
+                    "{}{door}{}",
+                    self.client.origin(),
+                    toolroll_api::client::encode(&page)
+                );
+                let ask =
+                    serde_json::json!({ "want": "builder-password", "task": task, "setup": setup });
+                let opened = opts.control.as_mut().is_some_and(|control| {
+                    writeln!(control, "{ask}")
+                        .and_then(|_| control.flush())
+                        .is_ok()
+                });
+                if !opened {
+                    app.update(Msg::Said(format!("Open {url} to change the builder.")));
+                }
+            }
             Effect::OpenPage(page) => match opts.control.as_mut() {
                 Some(control) => {
                     let ask = format!(

@@ -12,6 +12,12 @@ pub struct TaskBuilder {
     pub current: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuilderPicker {
+    Choices(TaskBuilder),
+    Password { setup: bool },
+}
+
 #[derive(Deserialize)]
 struct Workspace {
     version: u32,
@@ -33,7 +39,7 @@ fn select(css: &str) -> Selector {
 }
 
 impl Client {
-    pub async fn task_builder(&self, root: &str, task: &str) -> Result<TaskBuilder, ApiError> {
+    pub async fn task_builder(&self, root: &str, task: &str) -> Result<BuilderPicker, ApiError> {
         let page: Workspace = self
             .get_json(
                 &format!(
@@ -50,7 +56,19 @@ impl Client {
             .iter()
             .find(|s| s.id == "scope" && page.view.kind == "task" && page.version == 1)
             .ok_or_else(|| ApiError::Refused("The task has no editable plan.".into()))?;
-        builder_form(task, &scope.html)
+        let page = Html::parse_fragment(&scope.html);
+        if let Some(link) = page
+            .select(&select("#agents a[data-builder-password]"))
+            .next()
+        {
+            let path = format!("/t/{}/route", encode(task));
+            if let Some(crate::ActOutcome::BuilderPassword { setup, .. }) =
+                crate::client::builder_password_step(&path, link.value().attr("href"))
+            {
+                return Ok(BuilderPicker::Password { setup });
+            }
+        }
+        builder_form(task, &scope.html).map(BuilderPicker::Choices)
     }
 }
 

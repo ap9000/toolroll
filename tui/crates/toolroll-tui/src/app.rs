@@ -324,6 +324,10 @@ pub const UNDRAWN: &str = "Make the window bigger to see this first.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
+    BuilderPassword {
+        task: String,
+        setup: bool,
+    },
     TaskBuilder {
         task: String,
         form: Option<toolroll_api::TaskBuilder>,
@@ -796,6 +800,10 @@ pub enum Effect {
     OpenBrowser,
     /// Open the browser signed in, on one of the console's fixed pages by name (tui-contract.ts TUI_PAGES).
     OpenPage(&'static str),
+    OpenBuilderPassword {
+        task: String,
+        setup: bool,
+    },
     /// Open this text (a pane's own, already cleaned) in the person's editor: a private temporary file, the screen
     /// given back to the editor and taken again after (editor.rs, run.rs).
     OpenInEditor {
@@ -905,7 +913,7 @@ pub struct ContextAsk {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Msg {
-    TaskBuilder(String, Result<toolroll_api::TaskBuilder, ApiError>),
+    TaskBuilder(String, Result<toolroll_api::BuilderPicker, ApiError>),
     Work(Result<WorkRows, ApiError>),
     Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
@@ -2190,6 +2198,16 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::BuilderPassword { task, setup })) => {
+                self.say(
+                    Tone::Refused,
+                    "Builder unchanged. Toolroll requires a password for this change.",
+                );
+                if self.mode == Mode::Normal && self.builder_task().as_deref() == Some(&task) {
+                    self.mode = Mode::BuilderPassword { task, setup };
+                }
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::NextStep { words, next })) => {
                 // Said in the console's words; the next step's page and command one key away.
                 self.say(Tone::Refused, words);
@@ -2243,7 +2261,14 @@ impl App {
                     return vec![];
                 }
                 match read {
-                    Ok(form) if self.builder_task().as_deref() == Some(task.as_str()) => {
+                    Ok(toolroll_api::BuilderPicker::Password { setup })
+                        if self.builder_task().as_deref() == Some(&task) =>
+                    {
+                        self.mode = Mode::BuilderPassword { task, setup };
+                    }
+                    Ok(toolroll_api::BuilderPicker::Choices(form))
+                        if self.builder_task().as_deref() == Some(task.as_str()) =>
+                    {
                         let index = form
                             .choices
                             .iter()
@@ -3013,7 +3038,10 @@ impl App {
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
         self.step_nav = StepNavigation::default();
-        if matches!(self.mode, Mode::TaskBuilder { .. }) {
+        if matches!(
+            self.mode,
+            Mode::TaskBuilder { .. } | Mode::BuilderPassword { .. }
+        ) {
             self.mode = Mode::Normal;
         }
         // Opened: no longer unread (a thread: its news seen, so it moves on to Recent once nothing else waits).
@@ -3232,6 +3260,17 @@ impl App {
                 );
                 vec![Effect::ResumeScreen]
             }
+            Mode::BuilderPassword { task, setup } => match key.code {
+                KeyCode::Enter if self.builder_task().as_deref() == Some(&task) => {
+                    self.mode = Mode::Normal;
+                    vec![Effect::OpenBuilderPassword { task, setup }]
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                _ => vec![],
+            },
             Mode::TaskBuilder { task, form, index } => {
                 if key.code == KeyCode::Esc {
                     self.mode = Mode::Normal;
@@ -5453,6 +5492,9 @@ impl App {
     /// was seen are left out (they change as it is read); Accept's "notes go with it" is part of it.
     pub fn dialog_key(&self) -> Option<String> {
         match &self.mode {
+            Mode::BuilderPassword { task, setup } => {
+                Some(format!("BuilderPassword {task} {setup}"))
+            }
             Mode::TaskBuilder { task, form, index } => {
                 Some(format!("TaskBuilder {task} {form:?} {index}"))
             }
@@ -6395,6 +6437,7 @@ impl App {
                 | ActOutcome::ThreadTerms { .. }
                 | ActOutcome::ThreadStarted { .. }
                 | ActOutcome::ShipTerms { .. }
+                | ActOutcome::BuilderPassword { .. }
                 | ActOutcome::NextStep { .. },
             ) => {
                 self.say(
@@ -6488,7 +6531,10 @@ impl App {
             }
             return vec![];
         }
-        if matches!(self.mode, Mode::TaskBuilder { .. }) {
+        if matches!(
+            self.mode,
+            Mode::TaskBuilder { .. } | Mode::BuilderPassword { .. }
+        ) {
             let code = match ev.kind {
                 MouseEventKind::ScrollDown => Some(KeyCode::Down),
                 MouseEventKind::ScrollUp => Some(KeyCode::Up),
