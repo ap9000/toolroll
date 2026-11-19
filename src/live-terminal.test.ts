@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { CLOSE_GRACE_MS, dropPendingInput, MIRROR_PAUSE_CHARS, VIEWER_PAUSE_BYTES, trustedPath, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, dropPendingInput, MIRROR_PAUSE_CHARS, VIEWER_PAUSE_BYTES, takeOverAgentEnvironment, trustedPath, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -499,6 +499,21 @@ describe("a take-over's PATH", () => {
       symlinkSync(join(project, "node_modules", ".bin"), join(dir, "sneaky"));
       const path = ["/usr/bin", join(project, "node_modules", ".bin"), "", ".", "bin", join(state, "live-worktrees", "abc", "bin"), join(dir, "sneaky"), join(dir, "tools"), `${dir}/tools/../shop`, "/bin"].join(":");
       expect(trustedPath(path, [project, state])).toBe(["/usr/bin", join(dir, "tools"), "/bin"].join(":"));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("takeOverAgentEnvironment keeps agent auth vars while scrubbing build-writable PATH entries", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-agent-env-")));
+    try {
+      const project = join(dir, "shop");
+      mkdirSync(join(project, "bin"), { recursive: true });
+      const env = takeOverAgentEnvironment(
+        { HOME: dir, ANTHROPIC_API_KEY: "sk-test", OPENAI_API_KEY: "oa-test", PATH: `/usr/bin:${join(project, "bin")}:/bin` },
+        [project],
+      );
+      expect(env["ANTHROPIC_API_KEY"]).toBe("sk-test");
+      expect(env["OPENAI_API_KEY"]).toBe("oa-test");
+      expect(env["PATH"]).toBe("/usr/bin:/bin");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

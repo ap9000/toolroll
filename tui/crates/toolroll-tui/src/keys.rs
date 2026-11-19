@@ -75,6 +75,7 @@ actions! {
     SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
+    TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex)", ["i"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
     LeadChat = "lead-chat", Global, Act, "Central Lead chat (open / focus)", ["C"];
@@ -217,6 +218,11 @@ impl Preset {
 
 /// Actions help shows as one row ("j/k  Move through the list"): the pair, and the row's words.
 const PAIRS: &[(Action, Action, &str)] = &[
+    (
+        Action::TakeOver,
+        Action::TakeOverAgent,
+        "Open build shell / live agent",
+    ),
     (Action::Agents, Action::Models, "Agents / model assignments"),
     (
         Action::LeadChat,

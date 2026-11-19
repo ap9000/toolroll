@@ -1093,11 +1093,20 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
   if (view.historical != null) return <HistoricalResult view={view} loaded={loadedResult.current} csrf={csrf} result={result} />;
+  const terminalRunId = view.result?.selected.build
+    ?? view.status?.attempts.find(a => a.runId !== null)?.runId
+    ?? view.earlier?.attempts.find(a => a.runId !== null)?.runId
+    ?? null;
+  const terminalAgent = view.details?.find(d => d.label === "Agent" || d.label === "Builder")?.value.toLowerCase() ?? "";
+  const terminalHref = terminalRunId === null
+    ? null
+    : `/term?task=${encodeURIComponent(view.id)}&run=${terminalRunId}&program=${terminalAgent.includes("codex") ? "codex" : "claude"}`;
   return <ResultStatusAct.Provider value={statusAct}><ResultStatusWarnings.Provider value={outcomeFirst ? statusWarnings : null}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/", "Work"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
+          {terminalHref !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label="Terminal" href={terminalHref} data-open-terminal="" />}
           <KButton ref={activityButton} variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : openActivity()} data-open-activity="" />
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />

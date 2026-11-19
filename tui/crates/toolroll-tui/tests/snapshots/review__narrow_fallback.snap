@@ -28,7 +28,7 @@ expression: narrow
 " │ ✓ Bump dependencies             Complete │ │  @@ -20,3 +21,3 @@ impl Cart {                    │ "
 " │   3h ago                                 │ │    21       pub fn count(&self) -> usize {        │ "
 " │                                          │ │    21 −         self.items.len()                  │ "
-" │                                          │ │    22 +         self.items.iter().filter(|i| **i  │ "
+" │                                          │ │    22 +         self.items.iter().filter(|i| **i… │ "
 " │                                          │ │                                                   │ "
 " │                                          │ │ ╭───────────────────────────────────────────────╮ │ "
 " │                                          │ │ │  Needs you   Chec…  Accept  a  [Send back  r] │ │ "

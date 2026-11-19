@@ -484,10 +484,11 @@ pub enum Mode {
     /// live. What is typed meanwhile is kept for it (bounded, as a paste is) and sent on hello, never to the workbench;
     /// Esc or Ctrl-] goes back, and a shell that fails or never answers goes back with words, sending nothing.
     ShellOpening,
-    /// What taking over this build opens, said before anything starts (TAKE_OVER_SCOPE): t opens it, Esc doesn't.
+    /// What taking over this build opens, said before anything starts: t / i / Enter opens it, 1/2/3/Tab switches program, Esc doesn't.
     ConfirmTakeOver {
         task: String,
         run: i64,
+        program: String,
     },
 }
 
@@ -518,6 +519,42 @@ pub const READ_TERMS_FIRST: &str =
 /// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
 pub fn take_over_scope(attempt: &str) -> String {
     format!("A shell in a separate copy of this task's latest build. It does not control the running agent. Build: {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
+}
+
+/// Scope explanation for the program selected in `ConfirmTakeOver` ("shell", "claude", or "codex").
+pub fn take_over_scope_for(attempt: &str, program: &str, live: bool) -> String {
+    if program == "shell" {
+        return take_over_scope(attempt);
+    }
+    let name = crate::term::program_label(program);
+    if live {
+        format!("An interactive {name} session in a separate copy of this task's build ({attempt}), pre-loaded with the task goal and context. The background worker keeps running independently.")
+    } else {
+        format!("An interactive {name} session in a separate copy of this task's build ({attempt}), pre-loaded with the task goal and latest build status. Your local agent credentials and project tools run there.")
+    }
+}
+
+/// Default interactive agent program for a task: Codex if the task's build ran on Codex, else Claude Code.
+pub fn default_agent_program(steps: &StepCards) -> &'static str {
+    let provider = steps
+        .cards
+        .as_ref()
+        .and_then(|cards| cards.iter().find(|c| c.key == "build"))
+        .and_then(|card| card.agent.as_ref())
+        .map(|agent| agent.provider.as_str());
+    match provider {
+        Some("codex") => "codex",
+        _ => "claude",
+    }
+}
+
+/// Cycle program order in ConfirmTakeOver (`shell` -> `claude` -> `codex`).
+fn cycle_program(program: &str, reverse: bool) -> &'static str {
+    match (program, reverse) {
+        ("shell", false) | ("codex", true) => "claude",
+        ("claude", false) | ("shell", true) => "codex",
+        _ => "shell",
+    }
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -812,11 +849,12 @@ pub enum Effect {
     },
     Notify(String),
     Exit(i32),
-    /// Open build shell (T4): find this session's terminal on that task's build (GET /term/state), else start one
-    /// (POST /term/start), then attach (GET /term/<id>/socket).
+    /// Open build shell or live agent (T4): find this session's terminal on that task's build (GET /term/state), else
+    /// start one (POST /term/start), then attach (GET /term/<id>/socket).
     TermOpen {
         task: String,
         run: i64,
+        program: String,
     },
     /// Typed input or a new size for terminal `id` (dropped unless it is the terminal the pane shows).
     TermSend {
@@ -1241,11 +1279,11 @@ pub struct App {
     pub spinner_frame: usize,
     /// The Terminal tab's terminal (T4): the selected task's take-over, when one is open.
     pub term: Option<Pane>,
-    /// The builds (task, build) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
-    pub confirmed: HashSet<(String, i64)>,
-    /// `t` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as ever) once
-    /// they are, while the person is still on that task's Terminal tab with nothing else open.
-    take_over_wanted: Option<String>,
+    /// The builds (task, build, program) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
+    pub confirmed: HashSet<(String, i64, String)>,
+    /// `t` or `i` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as
+    /// ever) once they are, while the person is still on that task's Terminal tab with nothing else open.
+    take_over_wanted: Option<(String, bool)>,
     /// Typed while the build shell opened (Mode::ShellOpening): sent once it is live, never anywhere else.
     pub shell_typed: Vec<u8>,
     /// When the build shell started opening (Mode::ShellOpening): it goes back with words after SHELL_OPEN_LIMIT.
@@ -2075,13 +2113,16 @@ impl App {
                         .into_iter()
                         .filter(|e| !matches!(e, Effect::Watch(_))),
                 );
-                // A `t` pressed before these steps were read: the same take-over now (its confirm first), only while
-                // the person is still on this task's Terminal tab with no dialog open.
-                if self.take_over_wanted.take().as_deref() == Some(task.as_str())
-                    && self.tab == Tab::Terminal
-                    && self.mode == Mode::Normal
-                {
-                    fx.extend(self.take_over());
+                // A `t` or `i` pressed before these steps were read: the same take-over now (its confirm first), only
+                // while the person is still on this task's Terminal tab with no dialog open.
+                if let Some((wanted, agent)) = self.take_over_wanted.take() {
+                    if wanted == task && self.tab == Tab::Terminal && self.mode == Mode::Normal {
+                        fx.extend(if agent {
+                            self.take_over_agent()
+                        } else {
+                            self.take_over()
+                        });
+                    }
                 }
                 if let Some(link) = self
                     .step_nav
@@ -4053,18 +4094,57 @@ impl App {
             | Mode::PickModel(_)
             | Mode::ConfirmModels(_)
             | Mode::ConfirmSignInAgain { .. } => crate::agents::mode_key(self, key),
-            Mode::ConfirmTakeOver { task, run } => match key.code {
-                KeyCode::Char('t') => {
+            Mode::ConfirmTakeOver { task, run, program } => match key.code {
+                KeyCode::Char('1') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "shell".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('2') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "claude".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('3') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "codex".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let next = cycle_program(&program, key.code == KeyCode::BackTab);
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: next.into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('t') | KeyCode::Char('i') | KeyCode::Enter => {
                     self.mode = Mode::Normal;
                     // Still the task on screen, and still its build to take over: else nothing opens.
                     let still = self.selected_item().is_some_and(|i| i.id == task)
-                        && self.steps.as_ref().is_some_and(|s| s.live_run != Some(run));
+                        && self.steps.as_ref().is_some_and(|s| {
+                            if program == "shell" {
+                                s.live_run != Some(run)
+                            } else {
+                                shell_run_of(s) == Some(run) || s.live_run == Some(run)
+                            }
+                        });
                     if !still {
                         self.say(Tone::Refused, RESULT_CHANGED);
                         return vec![];
                     }
-                    self.confirmed.insert((task.clone(), run));
-                    self.open_take_over(task, run)
+                    self.confirmed.insert((task.clone(), run, program.clone()));
+                    self.open_take_over(task, run, program)
                 }
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
@@ -4782,6 +4862,7 @@ impl App {
             }
             Action::NewTask => self.open_new_task(),
             Action::TakeOver => self.take_over(),
+            Action::TakeOverAgent => self.take_over_agent(),
             Action::Browser => {
                 self.say(Tone::Said, "Opening Toolroll in your browser…");
                 vec![Effect::OpenBrowser]
@@ -5256,6 +5337,9 @@ impl App {
                 if let Some(pane) = self.term.as_mut().filter(|p| !p.sensitive) {
                     let up = total.saturating_sub(i + 3) as i64;
                     pane.scroll_by(up - pane.scroll as i64);
+                } else {
+                    self.follow = false;
+                    self.scroll = total.saturating_sub(i + 3);
                 }
             }
             Tab::Steps => {
@@ -7432,7 +7516,7 @@ impl App {
             }
         }
         let Some(steps) = self.steps.as_ref() else {
-            self.take_over_wanted = Some(item.id.clone());
+            self.take_over_wanted = Some((item.id.clone(), false));
             self.say(Tone::Said, "Reading this task…");
             return vec![];
         };
@@ -7448,13 +7532,21 @@ impl App {
             // The first time on a build, what opening it means is said first, and nothing starts until t again.
             Some(run)
                 if Some(run) != steps.live_run
-                    && !self.confirmed.contains(&(item.id.clone(), run)) =>
+                    && !self
+                        .confirmed
+                        .contains(&(item.id.clone(), run, "shell".into())) =>
             {
                 self.status = None;
-                self.mode = Mode::ConfirmTakeOver { task: item.id, run };
+                self.mode = Mode::ConfirmTakeOver {
+                    task: item.id,
+                    run,
+                    program: "shell".into(),
+                };
                 vec![]
             }
-            Some(run) if Some(run) != steps.live_run => self.open_take_over(item.id, run),
+            Some(run) if Some(run) != steps.live_run => {
+                self.open_take_over(item.id, run, "shell".into())
+            }
             _ if steps.live_run.is_some() => {
                 self.say(Tone::Refused, STILL_BUILDING);
                 vec![]
@@ -7469,16 +7561,76 @@ impl App {
         }
     }
 
+    /// `i`: open an interactive agent session (`claude` or `codex`, matching the task's builder) on an isolated copy
+    /// of this task's build, pre-loaded with the task goal and latest build status. Works on finished, failed, and
+    /// running builds alike.
+    fn take_over_agent(&mut self) -> Vec<Effect> {
+        let Some(item) = self.selected_item().filter(|i| i.is_task).cloned() else {
+            self.say(Tone::Refused, "Choose a task to open a live agent.");
+            return vec![];
+        };
+        self.tab = Tab::Terminal;
+        self.focus = Focus::Detail;
+        if let Some(pane) = self.pane_here() {
+            if pane.program != "shell" {
+                match pane.link {
+                    Link::Live => {
+                        self.mode = Mode::TakeOver;
+                        self.say(Tone::Said, TYPING);
+                        return vec![];
+                    }
+                    Link::Opening | Link::Attaching => {
+                        self.shell_opening();
+                        return vec![];
+                    }
+                    Link::Ended { .. } | Link::Closed(_) => {}
+                }
+            }
+        }
+        let Some(steps) = self.steps.as_ref() else {
+            self.take_over_wanted = Some((item.id.clone(), true));
+            self.say(Tone::Said, "Reading this task…");
+            return vec![];
+        };
+        self.take_over_wanted = None;
+        if let Some(why) = shell_refusal_of(steps) {
+            self.say(Tone::Refused, why);
+            return vec![];
+        }
+        let Some(run) = shell_run_of(steps).or(steps.live_run) else {
+            self.say(
+                Tone::Refused,
+                "This task has no build to open a live agent on yet.",
+            );
+            return vec![];
+        };
+        let program = default_agent_program(steps).to_string();
+        if !self
+            .confirmed
+            .contains(&(item.id.clone(), run, program.clone()))
+        {
+            self.status = None;
+            self.mode = Mode::ConfirmTakeOver {
+                task: item.id,
+                run,
+                program,
+            };
+            return vec![];
+        }
+        self.open_take_over(item.id, run, program)
+    }
+
     /// Open (or reattach to) the console's terminal on that build: a person's yes to it was given (ConfirmTakeOver).
-    fn open_take_over(&mut self, task: String, run: i64) -> Vec<Effect> {
+    fn open_take_over(&mut self, task: String, run: i64, program: String) -> Vec<Effect> {
         let mut fx = self.drop_term();
-        self.term = Some(Pane::opening(task.clone(), run));
+        let label = crate::term::program_label(&program);
+        self.term = Some(Pane::opening_program(task.clone(), run, program.clone()));
         self.tab = Tab::Terminal;
         self.focus = Focus::Detail;
         self.narrow_list = false;
-        let words = format!("Opening a terminal on {}…", self.attempt_words(run));
+        let words = format!("Opening {label} on {}…", self.attempt_words(run));
         self.status = Some((Tone::Said, words));
-        fx.push(Effect::TermOpen { task, run });
+        fx.push(Effect::TermOpen { task, run, program });
         fx
     }
 

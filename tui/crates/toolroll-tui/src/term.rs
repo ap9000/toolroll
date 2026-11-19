@@ -14,6 +14,16 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
+/// Plain display name for a console terminal program id ("shell", "claude", "codex").
+pub fn program_label(program: &str) -> &'static str {
+    match program {
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "shell" => "Build shell",
+        _ => "Terminal",
+    }
+}
+
 /// Lines above the screen kept for scrolling back (the console keeps the same for a page that attaches later).
 pub const SCROLLBACK_LINES: usize = 5000;
 /// The largest screen-as-it-was a pane holds while attaching (the console sends at most 8 Mi characters of it).
@@ -49,6 +59,7 @@ pub enum Link {
 pub struct Pane {
     pub task: String,
     pub run: i64,
+    pub program: String,
     pub id: Option<String>,
     pub link: Link,
     pub parser: vt100::Parser,
@@ -86,9 +97,14 @@ impl std::fmt::Debug for Pane {
 
 impl Pane {
     pub fn opening(task: String, run: i64) -> Pane {
+        Self::opening_program(task, run, "shell".into())
+    }
+
+    pub fn opening_program(task: String, run: i64, program: String) -> Pane {
         Pane {
             task,
             run,
+            program,
             id: None,
             link: Link::Opening,
             parser: vt100::Parser::new(24, 80, SCROLLBACK_LINES),
@@ -103,6 +119,10 @@ impl Pane {
             input_full: false,
             parsed: 0,
         }
+    }
+
+    pub fn program_label(&self) -> &'static str {
+        program_label(&self.program)
     }
 
     pub fn live(&self) -> bool {

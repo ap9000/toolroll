@@ -137,9 +137,16 @@ struct Loop {
     editor: Option<(String, String)>,
 }
 
-/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
-/// again (it must still be this session's) before it is attached; its frames come back as messages until it closes.
-async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
+/// Take over: this session's own terminal on that task's build for `program` (the console lists only its own), else a
+/// new one; listed again (it must still be this session's) before it is attached; its frames come back as messages until
+/// it closes.
+async fn open_terminal(
+    client: Client,
+    tx: mpsc::UnboundedSender<Msg>,
+    task: String,
+    run: i64,
+    program: String,
+) {
     let fail = |e: ApiError| {
         let _ = tx.send(Msg::TermOpened {
             task: task.clone(),
@@ -154,6 +161,7 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
             .find(|one| {
                 one.task.as_deref() == Some(task.as_str())
                     && one.run == Some(run)
+                    && one.program == program
                     && one.ended_at.is_none()
             })
             .map(|one| (one.id.clone(), one.branch.clone()))
@@ -163,7 +171,7 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
         Err(e) => return fail(e),
     };
     if listed.is_none() {
-        if let Err(e) = client.term_start(&task, run, "shell").await {
+        if let Err(e) = client.term_start(&task, run, &program).await {
             return fail(e);
         }
     }
@@ -412,8 +420,8 @@ impl Loop {
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
-            Effect::TermOpen { task, run } => {
-                drop(tokio::spawn(open_terminal(client, tx, task, run)));
+            Effect::TermOpen { task, run, program } => {
+                drop(tokio::spawn(open_terminal(client, tx, task, run, program)));
             }
             Effect::FetchTaskBuilder { root, task } => drop(tokio::spawn(async move {
                 let result = client.task_builder(&root, &task).await;

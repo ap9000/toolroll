@@ -32,6 +32,19 @@ import { wasInterrupted } from "./run-ending.js";
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
 
+/** Any builder or scout run a live terminal can open on (finished, failed, or still running). */
+export const isTakeOverRun = (run: Pick<Run, "role">): boolean => run.role === "builder" || run.role === "scout";
+
+const VALID_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** A recorded full git commit SHA (SHA-1 or SHA-256), or null. */
+export const validSha = (value: string | null | undefined): string | null =>
+  value !== null && value !== undefined && VALID_SHA.test(value) ? value : null;
+
+/** The commit Toolroll opens a build terminal on: the build's own saved commit when it made one, else the base commit it started from. */
+export const takeOverRevisionOf = (run: Pick<Run, "headRevision" | "baseRevision">): string | null =>
+  validSha(run.headRevision) ?? validSha(run.baseRevision);
+
 /** Approvals no person gave at the moment of approval (a check rule's own yes). */
 const AUTOMATIC = new Set(["auto-check", "auto-green"]);
 
@@ -151,10 +164,11 @@ export const SHELL_NO_COMMIT = "This build has no saved commit to open a termina
 /** Open build shell's build (`run`) and why it can't be opened (null: it can be, as far as the saved facts say). */
 function shellOf(store: Store, family: TaskFamily, runId: number | null): StepCards["shell"] {
   if (runId === null) return null;
-  const run = resultRunsOf(store, family).find(one => one.id === runId) ?? null;
+  const run = resultRunsOf(store, family).find(one => one.id === runId)
+    ?? takeOverRunsOf(store, family).find(one => one.id === runId)
+    ?? null;
   if (run === null) return { run: runId, why: SHELL_NO_RESULT };
-  const revision = run.headRevision;
-  if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return { run: runId, why: SHELL_NO_COMMIT };
+  if (takeOverRevisionOf(run) === null) return { run: runId, why: SHELL_NO_COMMIT };
   return { run: runId, why: null };
 }
 
@@ -268,6 +282,11 @@ function runFacts(runs: readonly Run[]): Pick<StepCard, "agent" | "startedAt" | 
 /** The family's result runs, newest first: every run the Result tab can pick. */
 export function resultRunsOf(store: Store, family: TaskFamily): Run[] {
   return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isResultRun).sort((a, b) => b.id - a.id);
+}
+
+/** Every builder or scout run in the family that a live terminal can open on, newest first. */
+export function takeOverRunsOf(store: Store, family: TaskFamily): Run[] {
+  return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isTakeOverRun).sort((a, b) => b.id - a.id);
 }
 
 /** The patch cut at each file's `diff --git` line: each file's own text, in the patch's order. */

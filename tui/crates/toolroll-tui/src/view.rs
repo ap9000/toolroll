@@ -1284,9 +1284,9 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         app.mode,
         Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(..) | Mode::NewThread(_)
     );
-    // The composer stays at the foot of a running build's Live tab, ready for a note; any other time only while typing.
+    // The composer stays at the foot of a running build's Live and Terminal (live console) tabs, ready to steer.
     let live_build = item.as_ref().is_some_and(|i| i.is_task && !i.thread)
-        && app.tab == Tab::Live
+        && (app.tab == Tab::Live || (app.tab == Tab::Terminal && app.pane_here().is_none()))
         && app.steps.as_ref().is_some_and(|s| s.live_run.is_some());
     // (A question waiting takes the foot instead: the composer shows again once it is answered, or while typing.)
     let composer_h = if input || (live_build && area.height >= 12 && question.is_none()) {
@@ -2097,10 +2097,19 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             ..area
         }
     };
+    draw_transcript_body(f, app, area);
+}
+
+/// Shared scrollable transcript body used by both the Live tab and the Terminal tab's live worker console.
+fn draw_transcript_body(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = area.width as usize;
     let t = &app.transcript;
     // Following the newest: only the tail that fills the pane is laid out (cheap at any length). Scrolled back: the
     // whole transcript, laid out again at most twice a second while records keep arriving.
     let h = area.height as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
     let from = if app.follow {
         t.main.len().saturating_sub((h * 3).max(300))
     } else {
@@ -3598,6 +3607,28 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             Tab::Terminal if app.pane_here().is_some() => {
                 vec![(&[TakeOver], "Open build shell"), (&[NextTab], "next tab")]
             }
+            Tab::Terminal if app.live_run().is_some() => {
+                vec![
+                    (&[Steer], "steer"),
+                    (&[TakeOverAgent], "live agent"),
+                    (&[Pause], "pause"),
+                    (&[Stop], "stop"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
+            Tab::Terminal
+                if app.selected_item().is_some_and(|i| i.is_task && !i.thread)
+                    && app
+                        .steps_here()
+                        .and_then(crate::app::shell_refusal_of)
+                        .is_none() =>
+            {
+                vec![
+                    (&[TakeOverAgent], "live agent"),
+                    (&[TakeOver], "build shell"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
             _ => {
                 let mut v: Vec<(&[Action], &str)> = vec![
                     (&[MoveDown, MoveUp], "scroll"),
@@ -3992,20 +4023,60 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(sheet::act("Esc", "Back", false)));
             (" Quit Toolroll? ", lines)
         }
-        Mode::ConfirmTakeOver { run, .. } => {
+        Mode::ConfirmTakeOver { run, program, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
-            let mut lines = vec![Line::raw("")];
+            let live = app.steps_here().is_some_and(|s| s.live_run == Some(*run));
+            let fills = crate::theme::fills();
+            let mut picker: Vec<Span<'static>> = vec![];
+            for (i, (id, label)) in [
+                ("shell", "1 Shell"),
+                ("claude", "2 Claude Code"),
+                ("codex", "3 Codex"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if i > 0 {
+                    picker.push(Span::raw(" "));
+                }
+                let active = program == id;
+                let text = if fills {
+                    format!(" {label} ")
+                } else if active {
+                    format!("[{label}]")
+                } else {
+                    label.to_string()
+                };
+                let style = if active {
+                    crate::theme::tab_on()
+                } else {
+                    crate::theme::tab_off()
+                };
+                picker.push(Span::styled(text, style));
+            }
+            let mut lines = vec![Line::raw(""), fit_line(Line::from(picker), w), Line::raw("")];
             lines.extend(
-                wrap(&crate::app::take_over_scope(&app.attempt_words(*run)), w)
-                    .into_iter()
-                    .map(|l| Line::from(Span::styled(l, ink()))),
+                wrap(
+                    &crate::app::take_over_scope_for(&app.attempt_words(*run), program, live),
+                    w,
+                )
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, ink()))),
             );
             lines.push(Line::raw(""));
-            let mut keys = sheet::act("t", "to open,", true);
+            let open_key = if program == "shell" { "t" } else { "i" };
+            let mut keys = sheet::act(open_key, "to open,", true);
             keys.push(Span::raw("  "));
-            keys.extend(sheet::act("Esc", "to cancel", false));
-            lines.push(Line::from(keys));
-            (" Open build shell ", lines)
+            keys.extend(sheet::act("Tab", "switch,", false));
+            keys.push(Span::raw("  "));
+            keys.extend(sheet::act("Esc", "cancel", false));
+            lines.push(fit_line(Line::from(keys), w));
+            let title = match program.as_str() {
+                "claude" => " Open Claude Code ",
+                "codex" => " Open Codex ",
+                _ => " Open build shell ",
+            };
+            (title, lines)
         }
         Mode::ThreadNext(next) => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
@@ -5021,19 +5092,126 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .steps_here()
         .and_then(crate::app::shell_refusal_of)
         .filter(|_| item.is_task);
-    let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
-        let words = if let Some(why) = &unavailable {
-            why.as_str()
-        } else if item.is_task {
-            "Open build shell: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
-        } else {
-            "This isn't a task. Press w to open it in the browser."
-        };
-        let lines: Vec<Line> = wrap(words, w)
-            .into_iter()
-            .map(|l| Line::from(Span::styled(l, dim())))
-            .collect();
+    let live_run = app.steps_here().and_then(|s| s.live_run).filter(|_| item.is_task);
+    let default_agent = app
+        .steps_here()
+        .map(crate::app::default_agent_program)
+        .unwrap_or("claude");
+    let target_attempt = app
+        .steps_here()
+        .and_then(|s| crate::app::shell_run_of(s).or(s.live_run))
+        .map(|run| app.attempt_words(run));
+    let worker_agent = app
+        .steps_here()
+        .and_then(|s| s.cards.as_ref())
+        .and_then(|cards| cards.iter().find(|c| c.key == "build"))
+        .and_then(|card| card.agent.as_ref())
+        .map(|a| clean(&a.provider));
+    if app.term.as_ref().is_none_or(|p| p.task != item.id) {
+        if let Some(run) = live_run {
+            // Layer 1: Live Worker Console — framed live transcript with direct steering & jump-in controls.
+            let [head, _, frame] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(u16::from(area.height >= 12)),
+                Constraint::Min(1),
+            ])
+            .areas(area);
+            let mut hspans = vec![sheet::badge("Live worker", crate::theme::Role::Running)];
+            if let Some(agent) = worker_agent.filter(|a| !a.is_empty()) {
+                hspans.push(Span::styled(format!(" · {agent}"), ink()));
+            }
+            hspans.push(Span::styled(format!(" · {}", app.attempt_words(run)), dim()));
+            let full_hint = "i live agent · s steer · p pause · x stop";
+            let short_hint = "i live agent";
+            let used = sheet::spans_width(&hspans);
+            let hint = if w >= used + width(full_hint) + 2 {
+                Some(full_hint)
+            } else if w >= used + width(short_hint) + 2 {
+                Some(short_hint)
+            } else {
+                None
+            };
+            if let Some(hint) = hint {
+                hspans.push(Span::raw(" ".repeat(w - used - width(hint))));
+                hspans.push(Span::styled(hint, dim()));
+            }
+            f.render_widget(Paragraph::new(fit_line(Line::from(hspans), w)), head);
+            if frame.height >= 3 && frame.width >= 6 {
+                sheet::outline(f.buffer_mut(), frame, line());
+                let body = Rect {
+                    x: frame.x + 2,
+                    y: frame.y + 1,
+                    width: frame.width.saturating_sub(4),
+                    height: frame.height.saturating_sub(2),
+                };
+                if app.transcript.main.is_empty() {
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            "Waiting for worker output…",
+                            dim(),
+                        ))),
+                        body,
+                    );
+                } else {
+                    draw_transcript_body(f, app, body);
+                }
+            } else {
+                draw_transcript_body(f, app, frame);
+            }
+            return;
+        }
+        if let Some(why) = &unavailable {
+            let lines: Vec<Line> = wrap(why, w)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, dim())))
+                .collect();
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+        if !item.is_task {
+            let lines: Vec<Line> = wrap("This isn't a task. Press w to open it in the browser.", w)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, dim())))
+                .collect();
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+        // Layers 2 & 3: Interactive Terminal Launcher for finished or failed builds.
+        let agent_name = crate::term::program_label(default_agent);
+        let mut lines: Vec<Line<'static>> = vec![];
+        let mut title = vec![Span::styled("Terminal", ink())];
+        if let Some(att) = target_attempt {
+            title.push(Span::styled(format!(" · separate copy at {att}"), dim()));
+        }
+        lines.push(fit_line(Line::from(title), w));
+        lines.push(Line::raw(""));
+        lines.push(fit_line(
+            Line::from(sheet::act(
+                "i",
+                &format!("Live {agent_name} (interactive, with task context)"),
+                true,
+            )),
+            w,
+        ));
+        lines.push(fit_line(
+            Line::from(sheet::act(
+                "t",
+                "Build shell (isolated copy of this build)",
+                false,
+            )),
+            w,
+        ));
+        lines.push(Line::raw(""));
+        for l in wrap(
+            "Press i to jump into a live agent or t for a shell. Ctrl-] comes back here, and the terminal keeps running in Toolroll.",
+            w,
+        ) {
+            lines.push(Line::from(Span::styled(l, dim())));
+        }
         f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+    let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         return;
     };
     let [head, _, frame] = Layout::vertical([
@@ -5102,6 +5280,9 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         pane.link,
         crate::term::Link::Closed(_) | crate::term::Link::Opening
     ) {
+        if pane.program != "shell" {
+            spans.push(Span::styled(format!(" · {}", pane.program_label()), ink()));
+        }
         spans.push(Span::styled(format!(" · {place}"), dim()));
     }
     f.render_widget(Paragraph::new(fit_line(Line::from(spans), w)), head);

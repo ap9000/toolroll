@@ -336,6 +336,17 @@ export function takeOverEnvironment(from: NodeJS.ProcessEnv, buildWritable: read
 }
 
 /**
+ * Environment for an interactive agent take-over (`claude` / `codex`): keeps the console's coding environment (so the
+ * agent's own auth/config variables carry over, as in a standalone live terminal) while still scrubbing `PATH` to
+ * trusted folders outside every build-writable root.
+ */
+export function takeOverAgentEnvironment(from: NodeJS.ProcessEnv, buildWritable: readonly string[] = []): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...from };
+  if (env["PATH"] !== undefined) env["PATH"] = trustedPath(env["PATH"], buildWritable);
+  return env;
+}
+
+/**
  * PATH for a take-over's shell: only absolute folders outside every build-writable root (each registered project and
  * its worktrees, Toolroll's state folder with its build worktrees and live copies), compared both as written and as
  * their real paths, so a program a build wrote is never what the person's `git` or `npm` turns out to be. Relative and
@@ -368,7 +379,15 @@ export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): stri
   return null;
 }
 
-function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv): { file: string; args: string[] } | null {
+function sanitizePrompt(prompt: string | undefined): string | null {
+  if (prompt === undefined) return null;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = prompt.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").trim().slice(0, 1200);
+  if (cleaned === "") return null;
+  return cleaned.startsWith("-") ? `Task: ${cleaned}` : cleaned;
+}
+
+function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv, prompt?: string): { file: string; args: string[] } | null {
   if (program === "shell") {
     if (process.platform === "win32") return { file: onPath("pwsh", env) ?? onPath("powershell", env) ?? "cmd.exe", args: [] };
     const shell = env["SHELL"];
@@ -376,7 +395,10 @@ function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv): { fil
     return { file, args: ["-l"] };
   }
   const file = onPath(program, env);
-  return file === null ? null : { file, args: [] };
+  if (file === null) return null;
+  const brief = sanitizePrompt(prompt);
+  if (brief === null) return { file, args: [] };
+  return { file, args: program === "claude" ? ["--", brief] : [brief] };
 }
 
 export class TerminalHost {
@@ -432,16 +454,17 @@ export class TerminalHost {
    */
   async start({ name: owner, generation, localGeneration = null }: { name: string; generation: number; localGeneration?: number | null }, repoPath: string, program: TerminalProgram,
     size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null,
-    from: { revision: string; task: string; run: number } | null = null): Promise<TerminalSummary> {
+    from: { revision: string; task: string; run: number; prompt?: string } | null = null): Promise<TerminalSummary> {
     if (this.stopped) throw new TerminalError("The console is stopping.");
     if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
     if (this.kept() + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
     // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
-    // the person's login shell then reads its own startup files, as any new terminal does (the pane says so).
+    // an interactive agent take-over keeps coding auth variables while scrubbing PATH to trusted folders.
     const roots = [this.options.worktreeRoot, ...(this.options.buildWritable?.() ?? []), ...this.moreBuildWritable.flatMap(more => more())];
-    const env = { ...(from === null ? this.env() : takeOverEnvironment(this.env(), roots)), TERM: "xterm-256color", COLORTERM: "truecolor" };
-    const command = this.options.programs?.[program] ?? defaultProgram(program, env);
+    const baseEnv = from === null ? this.env() : program === "shell" ? takeOverEnvironment(this.env(), roots) : takeOverAgentEnvironment(this.env(), roots);
+    const env = { ...baseEnv, TERM: "xterm-256color", COLORTERM: "truecolor" };
+    const command = this.options.programs?.[program] ?? defaultProgram(program, env, from?.prompt);
     if (command === null) throw new TerminalError(`${program === "claude" ? "Claude Code" : "Codex"} isn't installed on this computer (\`${program}\` is not on PATH).`);
     const id = randomBytes(16).toString("hex");
     // The slot is held, here and for the updater, before any slow work.

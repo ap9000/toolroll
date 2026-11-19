@@ -66,6 +66,8 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 Action::SendBack if review || retry => 310,
                 Action::Retry if retry => 310,
                 Action::Steer if live => 320,
+                Action::TakeOverAgent if !thread && (live || retry || review) => 285,
+                Action::TakeOver if !thread && (retry || review) => 280,
                 Action::Pause if live || app.plan_pins().is_some() => 300,
                 Action::Stop if live || held || queued => 290,
                 Action::Resume if held => 300,
