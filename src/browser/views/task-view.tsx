@@ -607,6 +607,43 @@ export function attemptGlyph(label: string): GlyphKind {
   return headline === undefined ? "idle" : HEADLINE_GLYPH[HEADLINE_TONE[headline]];
 }
 
+/** Highest-signal provenance facts surfaced above the fold (Graphite/Linear pattern): Agent, Base, PR, Blockers, Usage.
+ * Purely read-only; full grouped facts stay in the Details drawer. */
+export function taskVitalsOf(details: readonly BrowserTaskDetailGroup[] | undefined): { label: string; fact: BrowserTaskFact }[] {
+  if (!details || details.length === 0) return [];
+  const byGroup = (title: string) => details.find(one => one.title === title)?.facts ?? [];
+  const find = (title: string, label: string) => byGroup(title).find(one => one.label === label);
+  const vitals: { label: string; fact: BrowserTaskFact }[] = [];
+  const agent = find("Work", "Agent");
+  if (agent !== undefined) vitals.push({ label: "Agent", fact: agent });
+  const base = find("Work", "Base");
+  if (base !== undefined) vitals.push({ label: "Base", fact: base });
+  const pr = find("Links", "Pull request");
+  if (pr !== undefined) vitals.push({ label: "Pull request", fact: pr });
+  const blocked = find("Links", "Blocked by");
+  if (blocked !== undefined) vitals.push({ label: "Blocked by", fact: blocked });
+  const usage = find("About", "Usage, this attempt") ?? find("About", "Usage, all attempts");
+  if (usage !== undefined) vitals.push({ label: "Usage", fact: usage });
+  return vitals;
+}
+
+/** Compact inline provenance strip under the task title: eliminates opening Details or scrolling for agent/base/PR/cost. */
+export function TaskVitals({ details, extra, className, dataAttr = "data-task-vitals" }: { details: readonly BrowserTaskDetailGroup[] | undefined; extra?: readonly { label: string; value: ReactNode }[]; className?: string; dataAttr?: "data-task-vitals" | "data-work-vitals" }) {
+  const vitals = taskVitalsOf(details);
+  const extras = extra ?? [];
+  if (vitals.length === 0 && extras.length === 0) return null;
+  return <dl className={cn("so-task-vitals", className)} {...(dataAttr === "data-task-vitals" ? { "data-task-vitals": "" } : { "data-work-vitals": "" })}>
+    {vitals.map(one => <div key={one.label} className="so-task-vital" data-vital={one.label.toLowerCase().replace(/\s+/g, "-")}>
+      <dt>{one.label}</dt>
+      <dd><FactValue fact={one.fact} /></dd>
+    </div>)}
+    {extras.map(one => <div key={one.label} className="so-task-vital" data-vital={one.label.toLowerCase().replace(/\s+/g, "-")}>
+      <dt>{one.label}</dt>
+      <dd>{one.value}</dd>
+    </div>)}
+  </dl>;
+}
+
 /** The Details drawer: the task's properties grouped Work, Links, Review and About. Read-only facts: every form lives
  * in a tab (docs/plans/one-page-task-and-agent.md). */
 export function TaskDetails({ view }: { view: BrowserTaskView }) {
@@ -1046,7 +1083,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       case "checks":
         return <>{status}{!here && view.status !== null && <StatusFacts card={view.status} runChecks={view.runChecks ?? null} only={key => key === "checks"} />}{leadCards(leadOf("checks"))}</>;
       case "ready":
-        return <>{status}{resultBody}{readyExtras(resultBody !== null)}{leadCards(leadOf("ready"))}</>;
+        return <>{status}{readyExtras(resultBody !== null)}{resultBody}{leadCards(leadOf("ready"))}</>;
     }
   };
   const items: KStepRowItem[] = (rows ?? []).map(row => {
@@ -1066,6 +1103,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
           <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} show={show} />
         </nav>} />
+      <TaskVitals details={view.details} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
         text={<>{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())}>{shortWhen(view.archived.at, new Date(), viewerZone())}</time></>}
@@ -1076,8 +1114,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         terms={view.archived.restore !== null ? "Restoring puts it back in Work. Its history and results were kept." : "An approver can restore it."} />}
       {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
         {statusBox("ready", true)}
-        {resultBody}
         {readyExtras(resultBody !== null)}
+        {resultBody}
         {leadCards(leadOf("ready"))}
       </div>}
       {rows !== null ? outcomeFirst

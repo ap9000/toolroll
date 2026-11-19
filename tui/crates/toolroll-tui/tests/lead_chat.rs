@@ -643,3 +643,13 @@ fn chat_choices_match_their_mouse_targets_and_keep_numbers_in_drafts() {
         assert_eq!(fx, vec![Effect::ProposalAct { id: 102, op: "dismiss", confirm_yes: false }]);
     }
 }
+
+#[test]
+fn lead_chat_shows_mission_control_fleet_vitals_above_the_fold() {
+    let mut app = loaded_app();
+    app.key(key('C'));
+    let shown = render(&mut app, 120, 28);
+    assert!(shown.contains("2 need you"), "expected needs-you telemetry in Lead header:\n{shown}");
+    assert!(shown.contains("2 working"), "expected working telemetry in Lead header:\n{shown}");
+    assert!(shown.contains("D dock task"), "expected dock hint in Lead header:\n{shown}");
+}

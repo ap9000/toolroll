@@ -226,3 +226,31 @@ test("a running build keeps its open steps: nothing folds", () => {
   expect(host.querySelector('[data-step-row="build"]')?.getAttribute("aria-current")).toBe("step");
   expect(host.querySelector('[data-step-row="build"]')!.closest("details")).toBeNull();
 });
+
+test("above-the-fold task vitals surface agent, base, PR, blockers, and usage without opening Details, and merge readiness reads before the result body", () => {
+  const selected = reported(null);
+  const view = viewOf(cardOf("Ready"), { stage: "needs-you", need: "review-result" }, true, {
+    details: [
+      { title: "Work", facts: [{ label: "Agent", parts: ["claude · sonnet on local"] }, { label: "Base", parts: ["main (up to date)"] }] },
+      { title: "Links", facts: [{ label: "Pull request", parts: [{ label: "#42", href: "https://example.test/pr/42" }, " · Open"] }, { label: "Blocked by", parts: ["t-0"] }] },
+      { title: "About", facts: [{ label: "Usage, this attempt", parts: ["$0.31"] }] },
+    ],
+    result: { selected, current: true, attempts: [], revision: "r1" },
+    mergeReady: { answer: "no", sentence: "Checks failed.", rows: [{ key: "checks", label: "Checks", say: "1 failed", mark: "no", act: null }] },
+    tab: "result",
+  });
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
+    result: one => createElement("div", { "data-result-body-marker": one.build }) }))));
+  const vitals = host.querySelector<HTMLElement>("[data-task-vitals]")!;
+  expect(vitals).not.toBeNull();
+  expect(vitals.textContent).toContain("claude · sonnet on local");
+  expect(vitals.textContent).toContain("main (up to date)");
+  expect(vitals.textContent).toContain("#42");
+  expect(vitals.textContent).toContain("t-0");
+  expect(vitals.textContent).toContain("$0.31");
+  const mergeReady = host.querySelector<HTMLElement>("[data-merge-ready]")!;
+  const resultMarker = host.querySelector<HTMLElement>("[data-result-body-marker]")!;
+  expect(mergeReady).not.toBeNull();
+  expect(before(vitals, mergeReady)).toBe(true);
+  expect(before(mergeReady, resultMarker)).toBe(true);
+});

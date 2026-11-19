@@ -4244,8 +4244,19 @@ impl App {
                     return vec![];
                 }
                 KeyCode::Tab | KeyCode::BackTab if self.chat.data.as_ref().is_some_and(|d| d.can_send)
-                    && (self.chat.items.is_empty() || (key.code == KeyCode::Tab && self.chat.selected_hit + 1 >= self.chat.items.len())
-                        || (key.code == KeyCode::BackTab && self.chat.selected_hit == 0)) =>
+                    && (self.chat.items.is_empty()
+                        || (key.code == KeyCode::Tab
+                            && self.chat.selected_hit + 1 >= self.chat.items.len())
+                        || (key.code == KeyCode::BackTab
+                            && self.chat.selected_hit
+                                <= self
+                                    .chat
+                                    .hits
+                                    .first()
+                                    .and_then(|(_, hit)| {
+                                        self.chat.items.iter().position(|item| item == hit)
+                                    })
+                                    .unwrap_or(0))) =>
                 {
                     self.mode = Mode::ChatCompose(self.chat.draft.clone());
                     return vec![];

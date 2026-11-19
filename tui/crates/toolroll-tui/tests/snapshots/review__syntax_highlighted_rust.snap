@@ -2,18 +2,18 @@
 source: crates/toolroll-tui/tests/review.rs
 expression: shown
 ---
-         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:├─────────────────────────────────────────────────────────────────────┤⟧
-⟦Reset+BOLD | REVERSED: Result ⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ 2 files  ⟦Green:+3⟧ ⟦Red:−2⟧⟦Reset+DIM: · ⟧⟦Green:Checks passed⟧⟦Reset+DIM: · $0.42⟧                              ⟦Reset+DIM:│⟧
-         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD | REVERSED:› src/cart.rs⟧  ⟦Green:+3⟧ ⟦Red:−2⟧                                                ⟦Reset+DIM:│⟧
+         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ 2 files  ⟦Green:+3⟧ ⟦Red:−2⟧⟦Reset+DIM: · ⟧⟦Green:Checks passed⟧⟦Reset+DIM: · $0.42⟧                              ⟦Reset+DIM:│⟧
+⟦Reset+BOLD | REVERSED: Result ⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD | REVERSED:› src/cart.rs⟧  ⟦Green:+3⟧ ⟦Red:−2⟧                                                ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧   README.md  ⟦Green:+1⟧ ⟦Red:−0⟧                                                  ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧                                                                     ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD:›⟧⟦Reset+DIM | REVERSED:@@ -1,6 +1,7 @@⟧                                                    ⟦Reset+DIM:│⟧
-⟦Blue:Building⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   1    1   ⟧⟦Reset+BOLD:use⟧ std::fmt;                                          ⟦Reset+DIM:│⟧
-         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   2    2   ⟧                                                       ⟦Reset+DIM:│⟧
+         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   1    1   ⟧⟦Reset+BOLD:use⟧ std::fmt;                                          ⟦Reset+DIM:│⟧
+⟦Blue:Building⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   2    2   ⟧                                                       ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   3      ⟧⟦Red:− fn ⟧⟦Red+REVERSED:total⟧⟦Red:(items: &[i64]) -> i64 {⟧                       ⟦Reset+DIM:│⟧
-⟦Blue:Planning⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:        3 ⟧⟦Green:+ ⟧⟦Reset+BOLD:fn⟧ ⟦Reset+REVERSED:subtotal⟧(items: ⟦Reset+BOLD:&⟧[⟦Reset+BOLD:i64⟧]) -> ⟦Reset+BOLD:i64⟧ {                    ⟦Reset+DIM:│⟧
-         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   4    4   ⟧    items.iter().sum()                                 ⟦Reset+DIM:│⟧
+         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:        3 ⟧⟦Green:+ ⟧⟦Reset+BOLD:fn⟧ ⟦Reset+REVERSED:subtotal⟧(items: ⟦Reset+BOLD:&⟧[⟦Reset+BOLD:i64⟧]) -> ⟦Reset+BOLD:i64⟧ {                    ⟦Reset+DIM:│⟧
+⟦Blue:Planning⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   4    4   ⟧    items.iter().sum()                                 ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   5    5   ⟧}                                                      ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:        6 ⟧⟦Green:+ ⟧⟦Reset+DIM | ITALIC:// Tax is added at checkout.⟧                           ⟦Reset+DIM:│⟧
          ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:   6    7   ⟧                                                       ⟦Reset+DIM:│⟧
-⟦Green:Complete⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ 13 hidden lines · e/E show more⟧                                  ⟦Reset+DIM:│⟧
+         ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ 13 hidden lines · e/E show more⟧                                  ⟦Reset+DIM:│⟧
+⟦Green:Complete⟧ ⟦Reset+DIM:│⟧ ⟦Reset+DIM:│⟧ ⟦Reset+BOLD: ⟧⟦Reset+DIM:@@ -20,3 +21,3 @@ impl Cart {⟧                                      ⟦Reset+DIM:│⟧

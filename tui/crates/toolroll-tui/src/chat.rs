@@ -4,10 +4,10 @@
 //! browser), streams live `event: turn` snapshots from `GET /live?room=chat`, displays structured `ChatCard` blocks
 //! (facts, tables, notes, charts) and confirmable `Proposal` cards, and lets task links jump the Peek inspector
 //! straight to that task's `Diff` / `Steps` / `Live` panel.
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, Section};
 use crate::sheet;
 use crate::text::{clean, fit, width, wrap};
-use crate::theme::{dim, failed, ink, line, marks, passed, running, selected, Role};
+use crate::theme::{dim, failed, ink, line, marks, needs_you, passed, running, selected, Role};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -416,7 +416,103 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
 
     f.render_widget(Paragraph::new(Line::from(providers)), app.areas.lead_providers_button);
 
-    let rule_y = area.y + 1;
+    // Herdr-style Mission Control fleet strip: live task telemetry across the workspace above the fold,
+    // so the operator can see what needs attention or is running without leaving Lead Chat.
+    let show_fleet = area.width >= 56 && area.height >= 16 && app.loaded;
+    let header_rows: u16 = if show_fleet { 3 } else { 2 };
+    if show_fleet {
+        let needs = app
+            .all_items
+            .iter()
+            .filter(|i| i.section == Section::NeedsYou)
+            .count();
+        let working = app
+            .all_items
+            .iter()
+            .filter(|i| i.section == Section::Working && !i.paused)
+            .count();
+        let queued = app
+            .all_items
+            .iter()
+            .filter(|i| i.section == Section::UpNext)
+            .count();
+        let done = app
+            .all_items
+            .iter()
+            .filter(|i| i.section == Section::Recent && i.tone == "done")
+            .count();
+        let failed_n = app
+            .all_items
+            .iter()
+            .filter(|i| i.section == Section::Recent && i.tone == "problem")
+            .count();
+        let mut fleet: Vec<Span<'static>> = vec![];
+        let push_sep = |v: &mut Vec<Span<'static>>| {
+            if !v.is_empty() {
+                v.push(Span::styled(" · ", dim()));
+            }
+        };
+        if needs > 0 {
+            push_sep(&mut fleet);
+            fleet.push(Span::styled(
+                format!(
+                    "{} {needs} {}",
+                    m.needs,
+                    if needs == 1 { "needs you" } else { "need you" }
+                ),
+                needs_you().add_modifier(Modifier::BOLD),
+            ));
+        }
+        if working > 0 {
+            push_sep(&mut fleet);
+            fleet.push(Span::styled(
+                format!("{} {working} working", crate::view::live_mark(app)),
+                running(),
+            ));
+        }
+        if queued > 0 {
+            push_sep(&mut fleet);
+            fleet.push(Span::styled(format!("{} {queued} queued", m.todo), dim()));
+        }
+        if done > 0 {
+            push_sep(&mut fleet);
+            fleet.push(Span::styled(format!("{} {done} done", m.passed), passed()));
+        }
+        if failed_n > 0 {
+            push_sep(&mut fleet);
+            fleet.push(Span::styled(
+                format!("{} {failed_n} failed", m.failed),
+                failed(),
+            ));
+        }
+        if fleet.is_empty() {
+            fleet.push(Span::styled(
+                "No active tasks · ask Lead to start one",
+                dim(),
+            ));
+        }
+        let dock_hint = if docked {
+            "D undock · Tab peek"
+        } else {
+            "D dock task"
+        };
+        let fleet_w = sheet::spans_width(&fleet);
+        let hint_w = width(dock_hint);
+        if fleet_w + hint_w + 2 <= w {
+            fleet.push(Span::raw(" ".repeat(w - fleet_w - hint_w)));
+            fleet.push(Span::styled(dock_hint, dim()));
+        }
+        f.render_widget(
+            Paragraph::new(crate::view::fit_line(Line::from(fleet), w)),
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+        );
+    }
+
+    let rule_y = area.y + header_rows - 1;
     f.render_widget(
         Paragraph::new(Line::from(Span::styled("─".repeat(w), line()))),
         Rect {
@@ -432,9 +528,11 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
     let box_inner_w = w.saturating_sub(6).max(10);
     let wrapped_draft = wrap_draft_lines(draft_text, box_inner_w);
     let visible_draft_lines = wrapped_draft.len().clamp(1, 4) as u16;
-    let composer_h = (visible_draft_lines + 2).min(area.height.saturating_sub(4)).max(3);
+    let composer_h = (visible_draft_lines + 2)
+        .min(area.height.saturating_sub(header_rows + 2))
+        .max(3);
     let stream_y = rule_y + 1;
-    let stream_h = area.height.saturating_sub(2 + composer_h);
+    let stream_h = area.height.saturating_sub(header_rows + composer_h);
     let stream_area = Rect {
         x: area.x,
         y: stream_y,

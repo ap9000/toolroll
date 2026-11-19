@@ -615,3 +615,60 @@ fn changing_the_builder_shows_the_saved_plan_above_the_previous_attempt() {
     );
     assert!(screen.contains("Last build:"), "{screen}");
 }
+
+#[test]
+fn tab_bar_vitals_and_medium_width_changed_files_rail_surface_diff_without_scrolling() {
+    let mut app = on("t-done");
+    // Open Diff tab via Enter (Result task opens Diff and focuses Detail) so diff totals load.
+    let fx = app.key(code(KeyCode::Enter));
+    answer(&mut app, fx);
+    assert_eq!(app.tab, Tab::Diff);
+    // On Diff tab at a normal 140-col desktop width (panel inner >= 84 cols), the Changed files rail appears beside
+    // code and the tab bar shows file/line position.
+    let diff_screen = draw(&mut app, 140, 30).backend().to_string();
+    assert!(
+        diff_screen.contains("Changed files"),
+        "expected side-by-side Changed files rail at 140 cols:\n{diff_screen}"
+    );
+    assert!(
+        diff_screen.contains("file 1/"),
+        "expected file/line position on Diff tab bar:\n{diff_screen}"
+    );
+    // Switch back to Live tab: diff totals stay visible right-aligned on the tab bar without switching back to Diff.
+    app.tab = Tab::Live;
+    let live_screen = draw(&mut app, 140, 30).backend().to_string();
+    assert!(
+        live_screen.contains("files +") || live_screen.contains("file +"),
+        "expected right-aligned diff vitals on Live tab bar:\n{live_screen}"
+    );
+}
+
+#[test]
+fn work_rail_pins_lead_row_above_scrolling_tasks_and_shows_overflow_indicator() {
+    let mut app = on("t-done");
+    app.update(Msg::LeadChat(Ok(parse(fake::scenario_lead_chat()))));
+    // Add enough tasks that the Work rail must scroll on a 20-row window.
+    let base_item = app.items.last().unwrap().clone();
+    for i in 0..15 {
+        let mut item = base_item.clone();
+        item.id = format!("t-extra-{i}");
+        item.title = format!("Extra task {i}");
+        app.all_items.push(item.clone());
+        app.items.push(item);
+    }
+    // Top of list: overflow indicator tells the operator more tasks sit below the fold.
+    let top_screen = draw(&mut app, 120, 20).backend().to_string();
+    assert!(top_screen.contains("central chat"), "{top_screen}");
+    assert!(top_screen.contains("more · j/k scroll"), "{top_screen}");
+    // Scroll to the very bottom task: Lead Chat row stays pinned at the top of the Work rail!
+    app.selected = app.items.len() - 1;
+    let bottom_screen = draw(&mut app, 120, 20).backend().to_string();
+    assert!(
+        bottom_screen.contains("central chat"),
+        "Lead Chat row should remain pinned when scrolled to the bottom:\n{bottom_screen}"
+    );
+    assert!(
+        app.areas.lead_row.width > 0,
+        "pinned Lead row must stay clickable when scrolled down"
+    );
+}

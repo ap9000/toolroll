@@ -9,24 +9,24 @@ expression: "text(&draw(&mut app, 110, 36))"
          │       read                                                                              │          
    Needs │                                                                                         │          
          │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
-   ● Fix │                     background)                                                         │          
-     3m a│   Density           compact                                                             │› Ready   
-         │   Glyphs            unicode                                                             │───────── 
+   ● Fix │                     background)                                                         │› Ready   
+     3m a│   Density           compact                                                             │───────── 
+         │   Glyphs            unicode                                                             │          
    ● Add │   List side         left                                                                │          
      12m │   Notify: asks      on                                                                  │          
          │   Notify: finished  off                                                                 │          
    Workin│   Notify: failed    on                                                                  │          
          │                                                                                         │          
-   ◐ Upgr│   Colour            full colour                                                         │          
-     2m a│   Key bar           on                                                                  │s         
+   ◐ Upgr│   Colour            full colour                                                         │s         
+     2m a│   Key bar           on                                                                  │          
          │   Costs             shown                                                               │          
    ◐ Rate│   Columns           step                                                                │          
      7m a│   Keys              default preset                                                      │          
          │   Bell              on                                                                  │          
    Recent│   Reduced motion    off                                                                 │          
          │   Delivered         desktop notifications (OSC 9)                                       │          
-   ✓ Bump│   Agent threads     not known yet (beta). Change it in the browser or with `toolroll    │          
-     3h a│                     config set flexible on`                                             │fig       
+   ✓ Bump│   Agent threads     not known yet (beta). Change it in the browser or with `toolroll    │fig       
+     3h a│                     config set flexible on`                                             │          
          │                                                                                         │          
          │ Not used                                                                                │          
          │   tui.toml: Line 3: themes isn't a setting, so it was ignored.                          │          

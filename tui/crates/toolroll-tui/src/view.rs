@@ -903,23 +903,22 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     app.areas.list = area;
     app.areas.rows.clear();
     let w = area.width as usize;
-    let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
+    // Pinned header rows (Work N, Central Lead chat, live filter/showing bar) stay fixed above the scrollable task list
+    // so scrolling a long queue never hides Lead Chat or the active filter.
+    let mut pinned: Vec<Line<'static>> = vec![];
     // The sheet's head: "Work 5" (bold ink when List holds focus, muted when Detail holds focus).
     let list_focused = app.effective_focus() == Focus::List;
     if area.height >= 6 {
-        lines.push((
-            Line::from(vec![
-                Span::styled("Work ", if list_focused { ink() } else { dim() }),
-                sheet::count(app.items.len(), false),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("Work ", if list_focused { ink() } else { dim() }),
+            sheet::count(app.items.len(), false),
+        ]));
+        pinned.push(Line::raw(""));
     }
     // Pinned Central Lead chat row at the top of the Work rail (once loaded or opened).
     let mut lead_line_index: Option<usize> = None;
     if app.chat.loaded || app.chat_visible() {
-        lead_line_index = Some(lines.len());
+        lead_line_index = Some(pinned.len());
         let lead_active = app.chat_focused();
         let name = app.chat.lead_name();
         let pending = app.chat.pending_proposals();
@@ -956,42 +955,34 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             spans.push(Span::styled("C", if lead_active { selected() } else { dim() }));
         }
-        lines.push((Line::from(spans), None));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(spans));
+        pinned.push(Line::raw(""));
     }
     // Live `/` list filter, shown inline at the top of the list.
     if let Mode::ListFilter(q) = &app.mode {
         let shown = fit(&clean(q), w.saturating_sub(4));
-        lines.push((
-            Line::from(vec![
-                Span::styled("/ ", ink()),
-                Span::raw(shown),
-                Span::styled("▏", ink()),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("/ ", ink()),
+            Span::raw(shown),
+            Span::styled("▏", ink()),
+        ]));
+        pinned.push(Line::raw(""));
     } else if !app.list_query.is_empty() {
-        lines.push((
-            Line::from(vec![
-                Span::styled("Filter: ", dim()),
-                Span::styled(fit(&clean(&app.list_query), w.saturating_sub(8)), ink()),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("Filter: ", dim()),
+            Span::styled(fit(&clean(&app.list_query), w.saturating_sub(8)), ink()),
+        ]));
+        pinned.push(Line::raw(""));
     }
     // The filter in use, said once at the top (the palette changes it).
     if let Some(words) = app.filter.words() {
-        lines.push((
-            Line::from(vec![
-                Span::styled("Showing: ", dim()),
-                Span::styled(fit(&words, w.saturating_sub(9)), ink()),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("Showing: ", dim()),
+            Span::styled(fit(&words, w.saturating_sub(9)), ink()),
+        ]));
+        pinned.push(Line::raw(""));
     }
+    let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
     if app.loaded && app.items.is_empty() {
         let words = if app.all_items.is_empty() {
             "Nothing yet."
@@ -1018,7 +1009,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         v.dedup();
         v.len()
     };
-    let spaced = lines.len() + sections * 3 + app.items.len() * (per + 1) <= area.height as usize;
+    let spaced = pinned.len() + lines.len() + sections * 3 + app.items.len() * (per + 1) <= area.height as usize;
     let mut last: Option<Section> = None;
     for (index, item) in app.items.iter().enumerate() {
         if last != Some(item.section) {
@@ -1050,31 +1041,60 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push((l, Some(index)));
         }
     }
-    // Keep the selected row in view (all of its lines).
+    // Render pinned header first, then keep the selected row in view inside the remaining height.
     let h = area.height as usize;
+    let pinned_n = pinned.len().min(h);
+    let avail = h.saturating_sub(pinned_n);
     let at = lines
         .iter()
         .rposition(|(_, i)| *i == Some(app.selected))
         .unwrap_or(0);
-    let top = (at + 1).saturating_sub(h);
-    let shown: Vec<Line<'static>> = lines
-        .iter()
-        .skip(top)
-        .take(h)
-        .map(|(l, _)| l.clone())
-        .collect();
-    for (row, (_, index)) in lines.iter().skip(top).take(h).enumerate() {
-        app.areas.rows.push((area.y + row as u16, *index));
+    let top = (at + 1).saturating_sub(avail);
+    let clipped_below = top + avail < lines.len();
+    let take_n = if clipped_below && avail >= 2 {
+        avail - 1
+    } else {
+        avail
+    };
+    let mut shown: Vec<Line<'static>> = Vec::with_capacity(h);
+    for (row, line_item) in pinned.into_iter().take(pinned_n).enumerate() {
+        app.areas.rows.push((area.y + row as u16, None));
+        shown.push(line_item);
     }
     if let Some(li) = lead_line_index {
-        if li >= top && li < top + h {
+        if li < pinned_n {
             app.areas.lead_row = Rect {
                 x: area.x,
-                y: area.y + (li - top) as u16,
+                y: area.y + li as u16,
                 width: area.width,
                 height: 1,
             };
         }
+    }
+    for (offset_row, (l, index)) in lines.iter().skip(top).take(take_n).enumerate() {
+        let row = pinned_n + offset_row;
+        app.areas.rows.push((area.y + row as u16, *index));
+        shown.push(l.clone());
+    }
+    if clipped_below && avail >= 2 {
+        // Count how many tasks sit entirely below the visible window so nothing is silently hidden.
+        let last_shown = lines
+            .iter()
+            .skip(top)
+            .take(take_n)
+            .filter_map(|(_, i)| *i)
+            .max();
+        let more_tasks = match last_shown {
+            Some(idx) => app.items.len().saturating_sub(idx + 1),
+            None => app.items.len(),
+        };
+        let label = if more_tasks > 0 {
+            format!("↓ {more_tasks} more · j/k scroll")
+        } else {
+            "↓ more below · j/k scroll".to_string()
+        };
+        app.areas.rows.push((area.y + (pinned_n + take_n) as u16, None));
+        shown.push(Line::from(Span::styled(fit(&label, w), dim())));
     }
     f.render_widget(Paragraph::new(shown), area);
 }
@@ -1284,8 +1304,26 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         0
     };
-    // The head: the tab track, the task with its badge, what runs it, and its step strip (when its steps are read).
-    let head_h: u16 = if app.steps.is_some() { 3 } else { 2 } + if roomy { 2 } else { 0 };
+    let builder_task = app.builder_task();
+    // The approval terms describe the saved plan. A build card describes the last run.
+    let proposed = app.steps_here().filter(|_| builder_task.is_some()).and_then(|s| {
+        let cards = s.cards.as_ref()?;
+        if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
+            return None;
+        }
+        let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
+        let row = terms
+            .rows
+            .iter()
+            .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
+            .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
+        Some(format!("Awaiting approval · {}", clean(&row.words)))
+    });
+    // The head: the task with its badge, what runs it, optional proposed-builder note, its step strip, and rule.
+    // Reclaim the extra blank row when no proposed-builder note exists so more task content fits above the fold.
+    let has_proposed = roomy && proposed.is_some();
+    let head_h: u16 =
+        if app.steps.is_some() { 3 } else { 2 } + u16::from(roomy) + u16::from(has_proposed);
     let [tabs, _, head, content, qa, input_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(u16::from(roomy)),
@@ -1335,6 +1373,53 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             if room > width(&short) + 1 {
                 spans.push(Span::raw(" ".repeat(room - width(&short))));
                 spans.push(Span::styled(short, dim()));
+            }
+        }
+    } else if !app.narrow && item.as_ref().is_some_and(|i| i.is_task && !i.thread) {
+        // Use empty right-side tab-bar space for zero-scroll task vitals (Cursor/Devin pattern):
+        // on Live/Steps/Terminal show diff totals when loaded; on Diff show current file/line position.
+        let mut vitals: Vec<Span<'static>> = vec![];
+        if app.tab == Tab::Diff {
+            if let Some(d) = &app.diff {
+                if !d.files.is_empty() {
+                    let pos = if app.rows.is_empty() {
+                        format!("file {}/{}", app.diff_index + 1, d.files.len())
+                    } else {
+                        format!(
+                            "file {}/{} · line {}/{}",
+                            app.diff_index + 1,
+                            d.files.len(),
+                            (app.diff_cursor + 1).min(app.rows.len()),
+                            app.rows.len()
+                        )
+                    };
+                    vitals.push(Span::styled(pos, dim()));
+                }
+            }
+        } else if let Some((files, add, del)) = facts_of(app).totals {
+            vitals.push(Span::styled(format!("{} ", files_words(files)), dim()));
+            vitals.push(Span::styled(format!("+{add}"), passed()));
+            vitals.push(Span::raw(" "));
+            vitals.push(Span::styled(format!("−{del}"), failed()));
+            if let Some(kept) = app
+                .diff
+                .as_ref()
+                .and_then(|d| d.run.map(|r| app.notes_of(&d.task, r).len()))
+                .filter(|&k| k > 0)
+            {
+                vitals.push(Span::styled(
+                    format!(" · {kept} {}", if kept == 1 { "note" } else { "notes" }),
+                    ink(),
+                ));
+            }
+        }
+        if !vitals.is_empty() {
+            let used = sheet::spans_width(&spans);
+            let vw = sheet::spans_width(&vitals);
+            let room = (tabs.width as usize).saturating_sub(used);
+            if room >= vw + 2 {
+                spans.push(Span::raw(" ".repeat(room - vw)));
+                spans.extend(vitals);
             }
         }
     }
@@ -1393,7 +1478,6 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         title_spans.push(badge);
     }
     let mut head_lines = vec![Line::from(title_spans)];
-    let builder_task = app.builder_task();
     let button = sheet::button("Change builder", &key_name(app, Action::TaskBuilder), false);
     let available = if builder_task.is_some() {
         w.saturating_sub(button.width() + 1)
@@ -1411,20 +1495,6 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(Span::styled(fit(&item.detail, available), dim()))
             }
         });
-    // The approval terms describe the saved plan. A build card describes the last run.
-    let proposed = app.steps_here().filter(|_| builder_task.is_some()).and_then(|s| {
-        let cards = s.cards.as_ref()?;
-        if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
-            return None;
-        }
-        let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
-        let row = terms
-            .rows
-            .iter()
-            .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
-            .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
-        Some(format!("Awaiting approval · {}", clean(&row.words)))
-    });
     if let Some(words) = proposed.as_ref().filter(|_| !roomy) {
         facts = Line::from(Span::styled(fit(words, available), ink()));
     }
@@ -1439,7 +1509,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     }
     head_lines.push(fit_line(facts, w));
     if let Some(steps) = &app.steps {
-        if roomy {
+        if has_proposed {
             head_lines.push(Line::from(Span::styled(
                 fit(proposed.as_deref().unwrap_or(""), w),
                 ink(),
@@ -2116,10 +2186,16 @@ fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
         }
         app.step_nav.reveal = false;
     }
+    let clipped = offset + height < lines.len();
+    let visible_h = if clipped && height >= 3 {
+        height - 1
+    } else {
+        height
+    };
     app.step_nav.offset = offset;
     for (range, link) in cards {
         let start = range.start.max(offset);
-        let end = range.end.min(offset + height);
+        let end = range.end.min(offset + visible_h);
         if start < end {
             let rect = Rect::new(
                 area.x,
@@ -2130,16 +2206,20 @@ fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
             app.areas.steps.push((rect, app.tab, link));
         }
     }
-    f.render_widget(
-        Paragraph::new(
-            lines
-                .into_iter()
-                .skip(offset)
-                .take(height)
-                .collect::<Vec<_>>(),
-        ),
-        area,
-    );
+    let mut rendered: Vec<Line<'static>> = lines
+        .iter()
+        .skip(offset)
+        .take(visible_h)
+        .cloned()
+        .collect();
+    if clipped && height >= 3 {
+        let rem = lines.len().saturating_sub(offset + visible_h);
+        rendered.push(Line::from(Span::styled(
+            fit(&format!("↓ {rem} more lines · j/k scroll"), usize::from(area.width)),
+            dim(),
+        )));
+    }
+    f.render_widget(Paragraph::new(rendered), area);
 }
 
 /// Drawing, search and export use the same step layout.
@@ -2302,7 +2382,15 @@ fn layout_steps(
         } else {
             &card.sentence
         };
-        let show_details = expanded || card.mark != "todo" || room.whole();
+        // When a task has 4+ steps, keep finished non-selected steps to 1 scannable row so Checks and Ready fit
+        // above the fold without scrolling (Enter expands any step in full).
+        let compact_done = cards.len() >= 4
+            && card.mark == "done"
+            && !selected
+            && !expanded
+            && !active_stage(steps, card)
+            && !room.whole();
+        let show_details = !compact_done && (expanded || card.mark != "todo" || room.whole());
         let repeats_status = matches!(link.destination, StepDestination::Live(_)) && sentence == "Building now";
         if show_details
             && !repeats_status
@@ -2388,7 +2476,7 @@ fn layout_steps(
                 format!("attempt {n} (build #{newest})")
             });
         }
-        if !facts.is_empty() {
+        if !facts.is_empty() && !compact_done {
             c.push(fit_line(
                 Line::from(Span::styled(format!("  {}", facts.join(" · ")), dim())),
                 w,
@@ -2797,12 +2885,13 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let fills = crate::theme::fills();
-    // A wide panel keeps a "Changed files" column on the left (unless it would cost side by side its room).
-    const FILES_W: u16 = 30;
-    let column = area.width >= 110
+    // Keep a Devin/Cursor-style "Changed files" rail beside the diff on normal desktop terminals (>= 84 cols)
+    // unless it would squeeze side-by-side split diff below its minimum width.
+    let files_w: u16 = (area.width / 4).clamp(22, 30);
+    let column = area.width >= 84
         && !(app.diff_split
             && area.width >= review::SPLIT_MIN_WIDTH
-            && area.width.saturating_sub(FILES_W + 2) < review::SPLIT_MIN_WIDTH);
+            && area.width.saturating_sub(files_w + 2) < review::SPLIT_MIN_WIDTH);
     // A result waiting for you: the decision row at the foot, outlined in ink, with Accept and Send back.
     let waits = app.steps.as_ref().is_some_and(|s| s.review.is_some()) && area.height >= 16;
     let foot_h: u16 = if waits { 4 } else { 0 };
@@ -2812,8 +2901,8 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let code_area = if column {
         Rect {
-            x: main.x + FILES_W + 2,
-            width: main.width.saturating_sub(FILES_W + 2),
+            x: main.x + files_w + 2,
+            width: main.width.saturating_sub(files_w + 2),
             ..main
         }
     } else {
@@ -2870,7 +2959,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             app,
             &diff,
             Rect {
-                width: FILES_W,
+                width: files_w,
                 ..main
             },
         );
@@ -3087,7 +3176,11 @@ fn draw_files(f: &mut Frame, app: &App, diff: &toolroll_api::ResultDiff, area: R
         Line::raw(""),
     ];
     let n = diff.files.len();
-    let fit_n = (inner.height as usize).saturating_sub(3) / 3;
+    let avail_rows = (inner.height as usize).saturating_sub(3);
+    // Use compact 2-row file entries when spacing would push files off-screen, so more changed files stay visible.
+    let compact = n * 3 > avail_rows;
+    let per_file = if compact { 2 } else { 3 };
+    let fit_n = avail_rows / per_file;
     let shown = fit_n.max(1).min(n);
     let first = app
         .diff_index
@@ -3124,7 +3217,9 @@ fn draw_files(f: &mut Frame, app: &App, diff: &toolroll_api::ResultDiff, area: R
         }
         lines.push(a);
         lines.push(b);
-        lines.push(Line::raw(""));
+        if !compact {
+            lines.push(Line::raw(""));
+        }
     }
     if n > shown {
         lines.push(Line::from(Span::styled(
