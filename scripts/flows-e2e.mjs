@@ -22,7 +22,7 @@
  * group. With no --group, every check runs in one world, one after another.
  *
  * Needs: a built dist/, git, npm, `gh` logged in; for real-model journeys
- * `claude` logged in (subscription), which spends a few subscription turns and
+ * `codex` logged in (or --real-provider claude), which spends a few subscription turns and
  * one real build. Everything it writes lives in a temporary folder (database,
  * login, worktrees, evidence); the installed Toolroll is never touched.
  */
@@ -39,7 +39,7 @@ import { checkedEnv, flag, keyedHeaders, kitSave, groupList, mailSink, option, R
 const GROUPS = {
   build: { journeys: 4, real: 3, shared: 1, about: "The lead saves a script and draws a flow from plain words, and a card goes all the way through a real build" },
   lead: { journeys: 3, real: 2, shared: 1, about: "The lead draws a sorting flow and a reply-and-approve flow from plain words" },
-  steps: { journeys: 4, real: 1, shared: 1, about: "Jev sorts through OpenRouter, a Draft step writes with Claude, and web request, email and tool steps reach outside" },
+  steps: { journeys: 4, real: 1, shared: 1, about: "Jev sorts through OpenRouter, a Draft step writes with the lead's agent, and web request, email and tool steps reach outside" },
   triggers: { journeys: 10, real: 1, shared: 1, about: "A failing script and Insights, a script that waits for browser use until a person allows it, then a public form, a webhook, GitHub, a schedule, mentions, and the lead on where flows break" },
 };
 /** Not a group: the checks every group has (the first-run setup; the kit adds the browser-error check). */
@@ -79,15 +79,15 @@ await journey(EVERY, SCRIPTED, "Sign in and turn the lead chat on (first-run set
   // Onboarding turned the lead on by itself and moved its form to Settings → Lead → Advanced.
   await page.goto(`${base}/settings/lead`);
   await page.locator("details.k-disclose:has(#lead-config-form)").evaluate(el => { el.open = true; });
-  await page.selectOption("#lead-config-form select[name=provider]", "claude-subscription");
-  await page.fill("#lead-config-form input[name=model]", "sonnet");
+  await page.selectOption("#lead-config-form select[name=provider]", w.leadProvider);
+  await page.fill("#lead-config-form input[name=model]", w.agentModel);
   await kitSave(page, page.locator("#lead-config-form"), { password: alexPassword });
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
 });
 
 let flowId = null;
-await journey("build", REAL_MODEL, "The lead saves a script from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("build", REAL_MODEL, "The lead saves a script from plain words (real coding agent turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const { reply, text } = await askLead("Make a project script called unit-tests that runs npm test, for up to 5 minutes.");
   await shot("lead-script-card");
   await confirmCard(reply, "unit-tests");
@@ -96,7 +96,7 @@ await journey("build", REAL_MODEL, "The lead saves a script from plain words (re
   return { saved };
 });
 
-await journey("build", REAL_MODEL, "The lead draws a flow from plain words (real Claude turn)", ["The lead saves a script from plain words (real Claude turn)"], async () => {
+await journey("build", REAL_MODEL, "The lead draws a flow from plain words (real coding agent turn)", ["The lead saves a script from plain words (real coding agent turn)"], async () => {
   const { reply, text } = await askLead("Make a flow called Bug fixes in this project: new requests wait in an inbox, then an agent builds the fix, then it runs the unit-tests script, then I review it and decide. If the script fails, send the card back to the build.");
   await shot("lead-flow-card");
   const { href } = await confirmCard(reply, "Bug fixes");
@@ -116,7 +116,7 @@ await journey("build", REAL_MODEL, "The lead draws a flow from plain words (real
   return { zones: view.stages.map(one => `${one.title} (${one.kind})`) };
 });
 
-await journey("lead", REAL_MODEL, "The lead draws a sorting flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+await journey("lead", REAL_MODEL, "The lead draws a sorting flow from plain words (real coding agent turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   const { reply, text } = await askLead("Make a flow called Ticket sorter in this project: Jev sorts each new ticket into billing, technical or account questions, each going to its own team's zone, and anything it isn't sure about waits in a zone called Sort by hand. Also note how urgent each ticket is.");
   await shot("lead-sort-card");
   const { href } = await confirmCard(reply, "Ticket sorter");
@@ -234,8 +234,8 @@ await journey("steps", SCRIPTED, "A Draft step writes a reply with Claude, and t
   return { draft: draft.slice(0, 200), seconds: Math.round(run.duration_ms / 100) / 10, result: run.result };
 });
 
-await journey("lead", REAL_MODEL, "The lead drafts a reply-and-approve flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
-  let { reply, text } = await askLead("Make a flow called Customer replies in this project: Claude drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.");
+await journey("lead", REAL_MODEL, "The lead drafts a reply-and-approve flow from plain words (real coding agent turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
+  let { reply, text } = await askLead(`Make a flow called Customer replies in this project: ${w.agentProvider === "codex" ? "Codex" : "Claude"} drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.`);
   // An earlier check made a similar "Replies" flow, and the lead may fairly ask whether to reuse it, or hold back for a
   // missing chat app: whenever no card was drafted, it is asked once more, the way a person would.
   const drafted = await reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: "Customer replies" }).first().waitFor({ timeout: 10_000 }).then(() => true, () => false);
@@ -334,7 +334,7 @@ createInterface({ input: process.stdin }).on("line", line => {
 });
 
 let buildCard = null;
-await journey("build", REAL_MODEL, "A card goes all the way through with a real build, a real script and a person's decision", ["The lead draws a flow from plain words (real Claude turn)"], async () => {
+await journey("build", REAL_MODEL, "A card goes all the way through with a real build, a real script and a person's decision", ["The lead draws a flow from plain words (real coding agent turn)"], async () => {
   if (skipBuild) throw new Skip("--skip-build");
   await page.goto(`${base}/flows/${flowId}`);
   await page.waitForSelector("[data-zone]");
@@ -351,7 +351,7 @@ await journey("build", REAL_MODEL, "A card goes all the way through with a real 
   await page.selectOption("#flow-move", build.id);
   const filed = await until("the build zone to file a task", async () => (await flowView(flowId)).cards.find(one => one.id === buildCard)?.task?.id, { timeoutMs: 60_000 });
   say(`      filed task ${filed}; waiting for it to be ready to approve`);
-  // Planning may run first (a real Claude plan); approval comes when the exact work is ready.
+  // Planning may run first; approval comes when the exact work is ready.
   await until("the task to wait for approval", async () => {
     const task = cli(["task", "show", filed]);
     const plan = rows(`SELECT plan FROM task_ref WHERE external_id = '${filed}'`)[0]?.plan ?? null;
@@ -360,7 +360,7 @@ await journey("build", REAL_MODEL, "A card goes all the way through with a real 
   const shownFiled = cli(["task", "show", filed]);
   const scope = shownFiled.scope;
   cli(["task", "approve", filed, "--yes", "--digest", scope.digest, "--terms", shownFiled.approvalTerms, ...auth]);
-  say("      approved; the worker builds it with Claude");
+  say(`      approved; the worker builds it with ${w.agentProvider}`);
   await until("the card to reach the review zone", async () => {
     const card = (await flowView(flowId)).cards.find(one => one.id === buildCard);
     if (card?.stage === build.id && /failed|cancelled/i.test(card.waiting ?? "")) throw new Error(`the build stopped: ${card.waiting}`);
@@ -579,7 +579,7 @@ await journey("triggers", SCRIPTED, "People: a mention reaches only the person m
   return { notifications: notes };
 });
 
-await journey("triggers", REAL_MODEL, "The lead explains where the flows break (real Claude turn)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+await journey("triggers", REAL_MODEL, "The lead explains where the flows break (real coding agent turn)", ["A failing script sends the card back, and Insights show where and why"], async () => {
   const { text } = await askLead("Where do my flows break? Keep it short.");
   if (!/lint/i.test(text)) throw new Error(`the answer doesn't mention the failing Lint step: ${text.slice(0, 400)}`);
   return { answer: text.slice(0, 400) };

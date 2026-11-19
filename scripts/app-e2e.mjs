@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Toolroll, end to end: every main feature a person uses, through
- * the real console, the real worker and real Claude, in a throwaway world
+ * the real console, the real worker and a real coding agent, in a throwaway world
  * (scripts/e2e-kit.mjs). Flows have their own run (scripts/flows-e2e.mjs);
  * this one covers the rest, and the newer flow features on top.
  *
@@ -14,9 +14,9 @@
  * A journey others build on can be in more than one group (it runs in each).
  * With no --group, every journey runs in one world, one after another.
  *
- * Needs: a built dist/, `claude` logged in, git, npm, sqlite3; Docker for the
+ * Needs: a built dist/, `codex` logged in (or --real-provider claude), git, npm, sqlite3; Docker for the
  * real mail server (the email inbox check is skipped without it); python3
- * for the Python script. Spends a few Claude turns and real builds.
+ * for the Python script. Spends a few subscription turns and real builds.
  */
 import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -599,8 +599,8 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
-  // Work folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
-  // where the limit has its meter and the plan's windows are tiles as Claude said them.
+  // Work folds usage (the limit, and the selected provider's plan windows) to one line; its link opens Spend,
+  // where the limit has its meter and the plan's windows are tiles.
   await page.goto(`${base}/?view=all`);
   const usage = page.locator("[data-usage-summary]");
   await usage.waitFor({ timeout: 15_000 });
@@ -608,8 +608,8 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await Promise.all([page.waitForNavigation(), usage.locator("a").click()]);
   if (new URL(page.url()).pathname !== "/spend") throw new Error(`the usage line opened ${page.url()}`);
   await page.locator('.spend-lim[data-budget] [role="meter"]').first().waitFor({ timeout: 15_000 });
-  const claudeRan = rows("SELECT 1 FROM run WHERE provider = 'claude' AND tokens_in IS NOT NULL LIMIT 1").length > 0;
-  if (claudeRan && await page.locator('[data-limit^="claude:"]').count() === 0) throw new Error(`Claude ran but Tasks shows no Claude window: ${JSON.stringify(rows("SELECT * FROM provider_limit"))}`);
+  const providerRan = rows(`SELECT 1 FROM run WHERE provider = '${w.agentProvider}' AND tokens_in IS NOT NULL LIMIT 1`).length > 0;
+  if (providerRan && await page.locator(`[data-limit^="${w.agentProvider}:"]`).count() === 0) throw new Error(`${w.agentProvider} ran but Tasks shows no usage window: ${JSON.stringify(rows("SELECT * FROM provider_limit"))}`);
   await shot("limits");
   // Leave nothing that could hold later checks' work back.
   cli(["budget", "remove", "--all", ...auth]);
@@ -1078,8 +1078,8 @@ async function turnLeadChatOn() {
   // Onboarding turned the lead on by itself and moved its form to Settings → Lead → Advanced.
   await page.goto(`${base}/settings/lead`);
   await page.locator("details.k-disclose:has(#lead-config-form)").evaluate(el => { el.open = true; });
-  await page.selectOption("#lead-config-form select[name=provider]", "claude-subscription");
-  await page.fill("#lead-config-form input[name=model]", "sonnet");
+  await page.selectOption("#lead-config-form select[name=provider]", w.leadProvider);
+  await page.fill("#lead-config-form input[name=model]", w.agentModel);
   await kitSave(page, page.locator("#lead-config-form"), { password: w.passwords.alex });
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
@@ -1197,7 +1197,7 @@ await journey("lead", SCRIPTED, "The lead's reply shows live as it is written: a
   return { desktop: deskFacts, phone: phoneFacts };
 });
 
-await journey("lead", REAL_MODEL, "The lead answers a question about the project from its files (real Claude turn)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
+await journey("lead", REAL_MODEL, "The lead answers a question about the project from its files (real coding agent turn)", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
   // The project's code index, refreshed the way Settings → Knowledge does, so the lead's project search reads a current one.
   await page.goto(`${base}/settings/knowledge?repo=${encodeURIComponent(repo)}`);
   const refreshed = await post("/settings/knowledge/refresh", { repo });
@@ -1213,7 +1213,7 @@ await journey("lead", REAL_MODEL, "The lead answers a question about the project
   return { searched: found.args, answer: text.slice(0, 200) };
 });
 
-await journey("lead", REAL_MODEL, "The lead files a task from plain words, as a card you confirm (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
+await journey("lead", REAL_MODEL, "The lead files a task from plain words, as a card you confirm (real coding agent turn)", ["The lead answers a question about the project from its files (real coding agent turn)"], async () => {
   const { reply } = await askLead("File a task in this project to add a short usage section about add() to README.md. Just file it, no need to ask.");
   const card = reply.locator('[data-view="chat-card"][data-card-kind="task"][data-card-state="pending"]').first();
   await waitFor(card, "a task card to confirm in the lead's reply", { timeoutMs: 20_000, seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
@@ -1226,7 +1226,7 @@ await journey("lead", REAL_MODEL, "The lead files a task from plain words, as a 
 
 // ------------------------------------------------------------------ projects, knowledge, skills, tools, models
 
-await journey("lead", REAL_MODEL, "The lead draws a follow-up flow from plain words: it emails, waits for a reply, and nudges when none comes (real Claude turn)", ["The lead answers a question about the project from its files (real Claude turn)"], async () => {
+await journey("lead", REAL_MODEL, "The lead draws a follow-up flow from plain words: it emails, waits for a reply, and nudges when none comes (real coding agent turn)", ["The lead answers a question about the project from its files (real coding agent turn)"], async () => {
   const before = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow")[0].id;
   const { reply } = await askLead("Make a flow called Quote follow-up in this project: email the customer our quote, wait 3 days for them to reply, and if they don't, send them a short reminder. Replies go to a holding step called Replied. Just draft it, no need to ask.");
   const card = await pendingCard(reply, "the flow card to confirm in the lead's reply");
@@ -1838,7 +1838,7 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
 
 // ------------------------------------------------------------------ two people on one flow
 
-await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)", [], async () => {
+await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused", [], async () => {
   // What Maya decides, card by card: questions answered, the $30 refund approved, the $400 one handed to you.
   const reads = /WHERE YOU ARE: the zone “Maya reads it”/, decides = /WHERE YOU ARE: the zone “Refund\?”/;
   script(
@@ -1938,7 +1938,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200), ...(smallHandedOff === null ? {} : { smallHandedOff: smallHandedOff.slice(0, 200) }) };
 });
 
-await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
+await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused"], async () => {
   const maya = rows("SELECT id FROM subagent WHERE handle = 'maya' AND state = 'active'")[0]?.id;
   if (!maya) throw new Error("Maya isn't on the team");
   // Settings → Lead: the lead and its subagents in one place (its Subagents section), with one action to add another.
@@ -2138,7 +2138,7 @@ await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboar
   } finally { await putPhoneDown(); }
 });
 
-await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
+await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real coding agent turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused"], async () => {
   // The lead's own proposal is what's checked: the card it drafted (a reply without one fails quoting the reply and the
   // tools the lead called), then what confirming it saved.
   const confirm = async (asked, what) => {
@@ -2164,7 +2164,7 @@ function rosaRefunds(title, order, amount, zone = "Rosa handles it") {
   ];
 }
 
-const TOOL_CHECK = "Subagents that act: Rosa uses a real store tool under her rules — looks orders up and refunds $30 on her own, asks you before $400, and your Approve makes exactly that call (real Claude turns)";
+const TOOL_CHECK = "Subagents that act: Rosa uses a real store tool under her rules — looks orders up and refunds $30 on her own, asks you before $400, and your Approve makes exactly that call";
 await journey(["rosa", "memory"], SCRIPTED, TOOL_CHECK, [], async () => {
   // What Rosa does with each card: looks the order up, refunds it with the store (the $400 one waits for you), says where it goes.
   script(rosaRefunds("Charged twice for order 2201", "2201", 30), rosaRefunds("Broken TV, order 2202", "2202", 400));
@@ -2283,7 +2283,7 @@ createInterface({ input: process.stdin }).on("line", line => {
 });
 
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
-await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
+await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real coding agent turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
   // A chat card can only tighten a rule (letting her do more takes the password on her page), so the lead tightens one.
   const { reply } = await askLead("Rosa should ask me before any refund over $20 in the store from now on; under that she can still refund on her own. Just draft it.");
@@ -2304,7 +2304,7 @@ await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from 
   return { rule: rules.refund_order };
 });
 
-await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap (real Claude turns)", [TOOL_CHECK], async () => {
+await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap", [TOOL_CHECK], async () => {
   const mate = rows("SELECT id FROM subagent WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   const flowId = rows("SELECT id FROM flow WHERE name = 'Refund desk'")[0]?.id;
   if (!mate || !flowId) throw new Error("Rosa or her flow is missing");
@@ -2373,7 +2373,7 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   return { memory: kept.text, suggestion: suggestion.said, rule };
 });
 
-await journey("rosa", SCRIPTED, "A subagent's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager (real Claude turn)", [TOOL_CHECK], async () => {
+await journey("rosa", SCRIPTED, "A subagent's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager", [TOOL_CHECK], async () => {
   const mate = rows("SELECT id FROM subagent WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   if (!mate) throw new Error("Rosa is missing");
   await page.goto(`${base}/settings/lead/subagents/${mate}#desk`);
@@ -2445,7 +2445,7 @@ await journey("rosa", SCRIPTED, "A subagent's week and undo: its page shows the 
   return { report: report.body.slice(0, 300) };
 });
 
-await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)", [], async () => {
+await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check", [], async () => {
   script({ role: "subagent", when: [/WHERE YOU ARE: the zone “Maya answers”/, /Title: Where's my order/], answer: { action: "route", answer: "Reply", text: "Hi Priya, good news: order #1042 shipped on the 15th with UPS and is out for delivery tomorrow. Thanks for your patience! — Maya", reason: "The order's status is in the message." } });
   await page.goto(`${base}/kits`);
   await page.waitForSelector('[data-kit="support-desk"]');
@@ -2490,7 +2490,7 @@ await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up May
   return { stage: worked.stage, draft: draft.slice(0, 160) };
 });
 
-await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the kit's checklist, allow it on Stripe's page, and Maya can use it; the sign-in stays out of the database and the worker renews it", ["Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)"], async () => {
+await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the kit's checklist, allow it on Stripe's page, and Maya can use it; the sign-in stays out of the database and the worker renews it", ["Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check"], async () => {
   // Toolroll's own secrets folder beside its database (as files: the kit keeps every run out of the login keychain).
   const secrets = join(dirname(w.db), "tool-secrets", createHash("sha256").update(repo).digest("hex").slice(0, 16), "stripe.json");
   try {

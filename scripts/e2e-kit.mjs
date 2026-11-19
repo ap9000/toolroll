@@ -365,6 +365,13 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // The models: a scripted run answers from the journeys' scripts; any other run uses the real CLIs, each call counted.
   // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
   const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
+  // Live verification uses the owner's available coding agent. Scripted worlds keep their existing Claude
+  // fixtures; an explicit --real-provider claude retains the Claude integration path when it is available.
+  const realProvider = option("--real-provider", "codex");
+  if (realProvider !== "codex" && realProvider !== "claude") throw new Error("--real-provider takes codex or claude");
+  const agentProvider = provider.mode === "scripted" ? "claude" : realProvider;
+  const agentModel = agentProvider === "codex" ? "default" : "sonnet";
+  const leadProvider = `${agentProvider}-subscription`;
   // A scripted run is a throwaway computer (isolated-env.mjs): this process's environment is replaced by one built from
   // nothing, so everything it starts — the CLI, the console, the worker, a demo, a fresh install, and the agents those
   // start — has this world's HOME, XDG folders and an allowlisted PATH (its stand-ins, approved tools), finds no agent
@@ -479,10 +486,15 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   }
   const setup = argv => new Promise((done, fail) => execFile(process.execPath, refusePort4180([BIN, ...argv, "--db", db, "--json"]), { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "" }), timeout: 180_000 },
     (error, stdout, stderr) => error ? fail(new Error(`standing-orders ${argv.join(" ")}: ${(stdout ?? "") + (stderr ?? "")}`.slice(0, 2000))) : done(JSON.parse(stdout))));
+  // Repair is bound to the builder's provider. Change the builder first, before parallel independent phase setup.
+  const phases = async () => {
+    await setup(["config", "set", "build", "--provider", agentProvider, "--model", agentModel, ...auth]);
+    return Promise.all(["plan", "repair", "review"].map(phase => setup(["config", "set", phase, "--provider", agentProvider, "--model", agentModel, ...auth])));
+  };
   const [runner] = await Promise.all([
     setup(["runner", "register", "worker", "--repo", repo, ...auth]),
     setup(["approver", "add", "sam", "--password", passwords.sam, ...auth]),
-    ...["plan", "build", "repair", "review"].map(phase => setup(["config", "set", phase, "--provider", "claude", "--model", "sonnet", ...auth])),
+    phases(),
     setup(["verify", "set", "--repo", repo, "--command", "npm test", "--timeout-seconds", "120", "--yes", ...auth]),
   ]);
   writeFileSync(join(state, "runner-token"), runner.token, { mode: 0o600 });
@@ -587,6 +599,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       const wrong = provider.journal().filter(one => one.turn && !one.ok && !one.intended);
       if (wrong.length > 0) throw new Error(wrong.slice(0, 3).map(one => `${one.provider} ${one.role}: ${one.error}`).join(" | "));
     }, { always: true });
+    if (provider.mode === "real") await check("Live coding-agent turns use the selected provider", [], async () => {
+      const wrong = provider.journal().filter(one => one.turn && one.provider !== agentProvider);
+      if (wrong.length > 0) throw new Error(`Selected ${agentProvider}, but model turns used ${[...new Set(wrong.map(one => one.provider))].join(", ")}`);
+    }, { always: true });
     // A LIMITED residue check (isolated-env.mjs residueCheck): Claude transcript folders named after this world, its
     // repository's build cache and Toolroll's git incident log in the person's home, read-only, before and after; a
     // place that can't be read is unknown and fails the check (unless this run's own sandbox denies it). Plus: no real
@@ -610,14 +626,14 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     const passed = results.filter(one => one.state === "passed").length, bad = results.filter(one => one.state === "failed").length, skipped = results.filter(one => one.state === "skipped").length;
     const modelCalls = turnsOf(journal);
     const catalogued = groups === null ? [] : catalogueProblems(catalogue, groups);
-    const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, journeys, models: provider.mode, modelCalls, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }), ...(catalogued.length === 0 ? {} : { catalogue: catalogued }) };
+    const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, journeys, models: provider.mode, agentProvider, agentModel, leadProvider, modelCalls, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }), ...(catalogued.length === 0 ? {} : { catalogue: catalogued }) };
     writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
     // The release check reads results only from its pipes (check-results.mjs), never from report.json: one line per
     // journey, then the group's own end.
     for (const one of results) checkResult({ kind: "journey", name: one.name, state: one.state === "passed" || one.state === "failed" ? one.state : "skipped" });
     checkResult({ kind: "journey-end", browserCheck: results.find(one => one.name === BROWSER_CHECK)?.state ?? null, unstopped: unstopped !== null, catalogue: catalogued.length });
     writeFileSync(join(out, "report.md"), [`# ${title} — ${passed} passed, ${bad} failed, ${skipped} skipped (${report.minutes} min)`, "",
-      `Models: ${provider.mode === "scripted" ? `scripted (${modelCalls.scripted} scripted model calls)` : "real"}; real model turns: ${modelCalls.real}`, "",
+      `Models: ${provider.mode === "scripted" ? `scripted (${modelCalls.scripted} scripted model calls)` : "real"}; coding agent: ${agentProvider} (${agentModel}); real CLI turns: ${modelCalls.real}`, "",
       ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.mode === undefined ? "" : ` [${one.mode}]`}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}${one.state === "skipped" ? `\n  - skipped: ${one.because.join(", ")}` : ""}`),
       ...catalogued.map(one => `- ❌ ${one}`),
       "", `Workspace: ${root}${flag("--keep") ? "" : " (removed; --keep keeps it)"}`, `Logs and screenshots: ${out}`, ""].join("\n"));
@@ -630,7 +646,7 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   }
 
   return { root, repo, state, db, out, base, port, passwords, auth, cli, sql, rows, until, check, say, git, browser, signIn, page, json, shot, askLead, leadCalls, pendingCard, confirmCard, problems, openPages, start, finish, bin: BIN,
-    journeys, scripted: provider.mode === "scripted", provider, script, listing: false };
+    journeys, scripted: provider.mode === "scripted", provider, agentProvider, agentModel, leadProvider, script, listing: false };
 }
 
 /** The journeys to run again from a failed group's report: the failed ones, the ones skipped because of them, and everything
