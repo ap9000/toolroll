@@ -109,57 +109,42 @@ fn chain_cards(steps: &StepCards) -> Vec<&StepCard> {
         .collect()
 }
 
-/// A step's time on the strip: "42s", "4m", "1h 05m".
-pub fn short_duration(secs: i64) -> String {
-    let secs = secs.max(0);
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
-    }
+fn active_stage(steps: &StepCards, card: &StepCard) -> bool {
+    matches!(card.mark.as_str(), "live" | "needs" | "stuck") || build_wait(steps, card).is_some()
 }
 
-/// Whether the pipeline strip already carries the task's active stage (live, needs you, failed, or waiting/held),
-/// so the header doesn't repeat the same status badge on the title line.
 fn pipeline_carries_stage(steps: &StepCards) -> bool {
-    chain_cards(steps).into_iter().any(|c| {
-        matches!(c.mark.as_str(), "live" | "needs" | "stuck") || build_wait(steps, c).is_some()
-    })
+    chain_cards(steps)
+        .into_iter()
+        .any(|c| active_stage(steps, c))
 }
 
 /// The pipeline strip in a panel's header: completed steps quiet (`✓ Plan`), the active stage highlighted as a pill
 /// (`◐ Build · 4m 12s`, solid ink `● Ready` when waiting on you, red `✕ Build` on failure), upcoming steps muted.
 /// Serves as both the canonical state home (Prägnanz) and proximity to completion (Goal-Gradient).
 pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
-    let wide = step_line_with(app, steps, ClockMode::Exact, " ── ");
+    let cards = chain_cards(steps);
+    let wide = step_line_with(app, steps, &cards, " ── ");
     if wide.width() <= w {
         return wide;
     }
-    let medium = step_line_with(app, steps, ClockMode::Short, " › ");
-    if medium.width() <= w {
-        return medium;
+    let compact = step_line_with(app, steps, &cards, " › ");
+    if compact.width() <= w {
+        return compact;
     }
-    fit_line(step_line_with(app, steps, ClockMode::None, " · "), w)
+    let active: Vec<_> = cards
+        .into_iter()
+        .filter(|c| active_stage(steps, c))
+        .collect();
+    if active.is_empty() {
+        return fit_line(compact, w);
+    }
+    fit_line(step_line_with(app, steps, &active, " › "), w)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ClockMode {
-    Exact,
-    Short,
-    None,
-}
-
-fn step_line_with(
-    app: &App,
-    steps: &StepCards,
-    clock: ClockMode,
-    join: &str,
-) -> Line<'static> {
+fn step_line_with(app: &App, steps: &StepCards, cards: &[&StepCard], join: &str) -> Line<'static> {
     let m = marks();
     let mut spans = vec![];
-    let cards = chain_cards(steps);
     for (i, card) in cards.iter().enumerate() {
         if i > 0 {
             let prev_done = cards[i - 1].mark == "done";
@@ -178,10 +163,7 @@ fn step_line_with(
             } else {
                 m.running
             };
-            let text = match clock {
-                ClockMode::Exact | ClockMode::Short => format!("{mark} {label} · {wait_words}"),
-                ClockMode::None => format!("{mark} {label}"),
-            };
+            let text = format!("{mark} {label} · {wait_words}");
             spans.push(sheet::badge(&text, crate::theme::Role::Fill));
             continue;
         }
@@ -196,11 +178,7 @@ fn step_line_with(
                     .as_deref()
                     .or(card.started_at.as_deref())
                     .and_then(epoch)
-                    .map(|start| match clock {
-                        ClockMode::Exact => format!(" · {}", duration(app.now - start)),
-                        ClockMode::Short => format!(" {}", short_duration(app.now - start)),
-                        ClockMode::None => String::new(),
-                    })
+                    .map(|start| format!(" · {}", duration(app.now - start)))
                     .unwrap_or_default();
                 let text = format!("{} {label}{elapsed}", m.running);
                 spans.push(sheet::badge(&text, crate::theme::Role::Running));
@@ -3077,10 +3055,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     } else {
         let mut five: Vec<(&[Action], &'static str)> =
             vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
-        if !app.all_items.is_empty()
-            && !app.zoom
-            && app.list_state != crate::viewstate::ListState::Hidden
-        {
+        if !app.all_items.is_empty() {
             five.push((&[Search], "filter"));
         }
         if app.panes.layout.count() > 1 {
@@ -3230,7 +3205,10 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         .collect();
     let work_acts: Vec<Vec<Line<'static>>> = rows
         .iter()
-        .filter(|r| r.scope == crate::keys::Scope::Global && r.group == crate::keys::Group::Act)
+        .filter(|r| {
+            r.scope == crate::keys::Scope::Global
+                && matches!(r.group, crate::keys::Group::Act | crate::keys::Group::Filter | crate::keys::Group::Setting)
+        })
         .map(|r| cell(&r.keys, &r.words))
         .collect();
     if roomy_help {
@@ -3386,12 +3364,10 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 .count();
             let mut lines = vec![Line::raw("")];
             if working > 0 {
-                let words = if working == 1 {
-                    "1 build is running now.".to_string()
-                } else {
-                    format!("{working} builds are running now.")
-                };
-                lines.push(Line::from(Span::styled(words, ink())));
+                lines.push(Line::from(Span::styled(
+                    format!("Working now: {working}"),
+                    ink(),
+                )));
                 lines.push(Line::raw(""));
             }
             lines.push(Line::from(sheet::act("s", "Stop agents and quit", false)));

@@ -7,7 +7,7 @@ expression: "themed(ThemeName::Terminal, Depth::TrueColor, Some(Rgb(255, 255, 25
    Work  5                                        Live    Steps    Diff    Terminal                 
                                                 Upgrade the test runner                             
    Needs you 2                                  claude sonnet · $0.31 · attempt 1                   
-   ● Fix the login redirect       Question      ✓ Plan · ✓ Approval ·  ◐ Build  · Checks · Ready    
+   ● Fix the login redirect       Question       ◐ Build · 4m 12s                                   
      3m ago                                                                                         
    ● Add CSV export                 Result        Worked · 3 steps                                  
      12m ago                                      ✓ Edited vitest.config.ts  +14 −3                 
@@ -32,19 +32,19 @@ agghhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhggagggggggggggggggggggggggggggggggggg
 agghhhhhiiiggggggggggggggggggggggggggggggggggaggjjjjjjjjiiiiiiiiiiiiiiiiiiiiiiiiiiiiigggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhgggggggggggggggggggggggggggga
 agghhhhhhhhhfffggggggggggggggggggggggggggggggaggkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkgggggggggggggggggga
-agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggllkkkkkkkllkkkkkkkkkkkeeeeeeeeekkkkkkkkkkkkkkkkkggga
-aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggmmnnnnnnnnnnnnnnnnmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggkkkkkkkkkgggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmppppppppmmmmmmmmmmmmmmgga
-aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agghhhhhhhiiiggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggqjjjjjjjjjjjjjjjjjjjjjjjjqqqqqeeeeeeeeeeggaggmmpppprrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmmmmgga
-aggqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqggaggmmpppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggshggggggggggggggggggggggggggggeeeeeeeeeeggaggmmpppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmpppppppppppppppppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmppppppppppppppppppppmmmmmmmmmmmmmgga
-agghhhhhhiiigggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agglhggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggeeeeeeeeeeeeeeeeeeggggggggggggggggggggggggggggggggga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggllmmmmmmmmmmmmmmmmlllllllllllllllllllllllllllllllgga
+aggkkkkkkkkkgggggggggggggggggggggggggggggggggaggllnnllllllllllllllllllllllloooooooollllllllllllllgga
+aggggggggggggggggggggggggggggggggggggggggggggaggllnnlllllllllllllllllllllllllllllllllllllllllllllgga
+agghhhhhhhiiiggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+aggpjjjjjjjjjjjjjjjjjjjjjjjjpppppeeeeeeeeeeggaggllooooqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqllllgga
+aggppppppppppppppppppppppppppppppppppppppppggaggllooollllllllllllllllllllllllllllllllllllllllllllgga
+aggrhggggggggggggggggggggggggggggeeeeeeeeeeggaggllooooollllllllllllllllllllllllllllllllllllllllllgga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggaggllooooooooooooooooooollllllllllllllllllllllllllllgga
+aggggggggggggggggggggggggggggggggggggggggggggaggllnnlllllllllllloooooooooooooooooooolllllllllllllgga
+agghhhhhhiiigggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+aggshggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggkkkkkkkkggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
@@ -63,12 +63,12 @@ h = fg terminal bg terminal bold
 i = fg #666666 bg #ebebeb
 j = fg #171717 bg #d4d4d4 bold
 k = fg #666666 bg terminal
-l = fg #218358 bg terminal
-m = fg terminal bg #f7f7f7
-n = fg #666666 bg #f7f7f7 bold
-o = fg #218358 bg #f7f7f7
-p = fg #666666 bg #f7f7f7
-q = fg #171717 bg #d4d4d4
-r = fg terminal bg #f7f7f7 bold
-s = fg #0d74ce bg terminal
+l = fg terminal bg #f7f7f7
+m = fg #666666 bg #f7f7f7 bold
+n = fg #218358 bg #f7f7f7
+o = fg #666666 bg #f7f7f7
+p = fg #171717 bg #d4d4d4
+q = fg terminal bg #f7f7f7 bold
+r = fg #0d74ce bg terminal
+s = fg #218358 bg terminal
 t = fg #218358 bg #e4f0eb

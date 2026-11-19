@@ -7,7 +7,7 @@ expression: styled(&buf)
  │ Work  5                                  │ │ Live · Steps · Diff · Terminal                    │ 
  │                                          │ │ Upgrade the test runner                           │ 
  │ Needs you 2                              │ │ claude sonnet · $0.31 · attempt 1                 │ 
- │ ● Fix the login redirect       Question  │ │ ✓ Plan › ✓ Approval › ◐ Build 4m › Checks › Ready │ 
+ │ ● Fix the login redirect       Question  │ │ ◐ Build · 4m 12s                                  │ 
  │   3m ago                                 │ │ Reading the test setup before switching runners.  │ 
  │ ● Add CSV export                 Result  │ │                                                   │ 
  │   12m ago                                │ │   Worked · 3 steps                                │ 
@@ -32,7 +32,7 @@ acceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeccacccccccccccccccccccccccccccccccccc
 acabbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaffffccccccccccccccccccccccccccaaaaaaaaaaaaaaaaaaaaca
 acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacabbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaca
 acabbbbbbbbbdddaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacacccccccccccccccccccccccccccccccccaaaaaaaaaaaaaaaaaca
-acabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaddddddddddacacaaacccccccaacccccccccccaaaaaaaaaacccccccccccccccccaca
+acabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaddddddddddacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
 acaccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
 acabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaddddddddacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
 acacccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaeeeeeeeeeeeeeeeeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca

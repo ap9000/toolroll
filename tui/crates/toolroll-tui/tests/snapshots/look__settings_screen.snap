@@ -10,7 +10,7 @@ expression: "text(&draw(&mut app, 110, 36))"
    Needs │                                                                                         │          
          │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
    ● Fix │                     background)                                                         │          
-     3m a│   Density           compact                                                             │y         
+     3m a│   Density           compact                                                             │› Ready   
          │   Glyphs            unicode                                                             │───────── 
    ● Add │   List side         left                                                                │          
      12m │   Notify: asks      on                                                                  │          

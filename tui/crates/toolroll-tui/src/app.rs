@@ -39,6 +39,12 @@ pub enum Focus {
     Detail,
 }
 
+enum WaitingJump {
+    Oldest,
+    Next,
+    Previous,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Live,
@@ -1211,7 +1217,9 @@ impl App {
     /// Which sheet owns navigation keys (`j`/`k`, `/`, Diff keys): narrow view binds focus to whichever column is
     /// drawn; wide view uses the explicit List vs. Detail focus (`Enter`/`Right` focuses Detail, `Esc`/`Left` List).
     pub fn effective_focus(&self) -> Focus {
-        if self.narrow {
+        if self.zoom || (!self.narrow && self.list_state == crate::viewstate::ListState::Hidden) {
+            Focus::Detail
+        } else if self.narrow {
             if self.narrow_list {
                 Focus::List
             } else {
@@ -3350,7 +3358,10 @@ impl App {
         // A terminal pane on screen and not being typed in: its keys go to the shell only once t says so, and never
         // fall through to the workbench's acts (w, n, Enter, a, r…) that a person who thinks they are typing would
         // set off. Moving, tabs, scrolling, copy, help, the palette and quit still work; anything else is refused.
-        if self.tab == Tab::Terminal && self.pane_here().is_some() {
+        if self.effective_focus() == Focus::Detail
+            && self.tab == Tab::Terminal
+            && self.pane_here().is_some()
+        {
             let action = self.prefs.settings.keymap.lookup(Scope::Global, &key);
             let layout = |a: Action| {
                 crate::keys::SPECS
@@ -3359,14 +3370,7 @@ impl App {
             };
             if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a)) {
                 if key.code == KeyCode::Esc {
-                    if self.narrow && !self.narrow_list {
-                        self.narrow_list = true;
-                        self.focus = Focus::List;
-                    } else if !self.narrow && self.focus == Focus::Detail {
-                        self.focus = Focus::List;
-                    }
-                    self.status = None;
-                    return vec![];
+                    return self.run_action(Action::FocusList);
                 }
                 let t = self.prefs.settings.keymap.key_words(Action::TakeOver);
                 self.say(
@@ -3390,18 +3394,8 @@ impl App {
         }
         match key.code {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
-            // Narrow, a task's panel showing: Esc goes back to the list.
-            KeyCode::Esc if self.narrow && !self.narrow_list => {
-                self.narrow_list = true;
-                self.focus = Focus::List;
-                self.status = None;
-                vec![]
-            }
-            // Detail focused in wide mode: Esc returns focus to the task list.
-            KeyCode::Esc if !self.narrow && self.focus == Focus::Detail => {
-                self.focus = Focus::List;
-                self.status = None;
-                vec![]
+            KeyCode::Esc if self.effective_focus() == Focus::Detail => {
+                self.run_action(Action::FocusList)
             }
             // List focused with an active text filter: Esc clears the list filter.
             KeyCode::Esc if !self.list_query.is_empty() => {
@@ -3531,8 +3525,11 @@ impl App {
                 }
             }
             Action::FocusList => {
+                self.zoom = false;
                 if self.narrow {
                     self.narrow_list = true;
+                } else if self.list_state == crate::viewstate::ListState::Hidden {
+                    self.list_state = crate::viewstate::ListState::Full;
                 }
                 self.focus = Focus::List;
                 self.status = None;
@@ -3800,14 +3797,12 @@ impl App {
                 self.mode = Mode::Palette(crate::palette::Palette::default());
                 vec![]
             }
-            Action::NextNeedsYou => self.next_needs_you(true),
-            Action::PreviousNeedsYou => self.next_needs_you(false),
+            Action::NextNeedsYou => self.jump_to_waiting(WaitingJump::Next),
+            Action::PreviousNeedsYou => self.jump_to_waiting(WaitingJump::Previous),
             Action::JumpBack => self.jump_back(),
             Action::Search
                 if focus == Focus::List
                     && !self.all_items.is_empty()
-                    && !self.zoom
-                    && self.list_state != crate::viewstate::ListState::Hidden
                     && !(self.tab == Tab::Terminal
                         && self
                             .term
@@ -3861,7 +3856,8 @@ impl App {
             }
             // Narrow (one column): b swaps between the list and the selected task's panel, and says which is drawn.
             Action::ListCycle if self.narrow => {
-                self.narrow_list = !self.narrow_list;
+                self.narrow_list = self.effective_focus() == Focus::Detail;
+                self.zoom = false;
                 self.say(
                     Tone::Said,
                     if self.narrow_list {
@@ -4362,6 +4358,7 @@ impl App {
 
     /// Select a task by id, showing everything first when the filter hides it.
     fn show_task(&mut self, id: &str) -> Vec<Effect> {
+        let previous = self.selected_id();
         if !self.items.iter().any(|i| i.id == id) && self.all_items.iter().any(|i| i.id == id) {
             self.filter = Filter::All;
             self.list_query.clear();
@@ -4372,10 +4369,10 @@ impl App {
             self.say(Tone::Refused, "That task isn't listed any more.");
             return vec![];
         };
-        if index == self.selected {
+        self.selected = index;
+        if previous.as_deref() == Some(id) {
             return vec![];
         }
-        self.selected = index;
         self.selection_changed()
     }
 
@@ -4411,7 +4408,7 @@ impl App {
         vec![]
     }
 
-    fn next_needs_you(&mut self, forward: bool) -> Vec<Effect> {
+    fn jump_to_waiting(&mut self, direction: WaitingJump) -> Vec<Effect> {
         let mut waiting: Vec<(usize, &Item)> = self
             .all_items
             .iter()
@@ -4429,23 +4426,22 @@ impl App {
         let at = here
             .as_ref()
             .and_then(|id| ids.iter().position(|w| w == id));
-        let next = match (at, forward) {
-            (Some(at), true) => (at + 1) % ids.len(),
-            (Some(at), false) => (at + ids.len() - 1) % ids.len(),
-            (None, true) => 0,
-            (None, false) => ids.len() - 1,
+        let next = match direction {
+            WaitingJump::Oldest => 0,
+            WaitingJump::Next => at.map_or(0, |i| (i + 1) % ids.len()),
+            WaitingJump::Previous => at.unwrap_or(0).checked_sub(1).unwrap_or(ids.len() - 1),
         };
         // Where this jump left from, whatever it was (a needs-you task too): jump-back returns there. The list's
         // order stays.
-        if let Some(here) = here {
+        if let Some(here) = here.filter(|id| id != &ids[next]) {
             if self.jumps.last() != Some(&here) {
                 self.jumps.push(here);
             }
             if self.jumps.len() > JUMPS_KEPT {
                 self.jumps.remove(0);
             }
+            self.jump_forward = None;
         }
-        self.jump_forward = None;
         let id = ids[next].clone();
         let fx = self.show_task(&id);
         let words = format!("{} of {} waiting on you.", next + 1, ids.len());
@@ -5488,6 +5484,10 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if !matches!(self.mode, Mode::Normal | Mode::TakeOver) {
+            self.dragging = false;
+            return vec![];
+        }
         if let Some(fx) = self.terminal_mouse(&ev) {
             return fx;
         }
@@ -5498,7 +5498,7 @@ impl App {
                     && self.needs_count > 0
                     && inside(self.areas.needs_chip)
                 {
-                    return self.next_needs_you(true);
+                    return self.jump_to_waiting(WaitingJump::Oldest);
                 }
                 // A click on a watched panel moves focus there.
                 if let Some(slot) = self
@@ -6257,6 +6257,7 @@ impl App {
         self.term = Some(Pane::opening(task.clone(), run));
         self.tab = Tab::Terminal;
         self.focus = Focus::Detail;
+        self.narrow_list = false;
         let words = format!("Opening a terminal on {}…", self.attempt_words(run));
         self.status = Some((Tone::Said, words));
         fx.push(Effect::TermOpen { task, run });
@@ -6283,7 +6284,10 @@ impl App {
                 // the terminal's hello makes it live (term_event), never while it attaches.
                 let agent = task.starts_with("agent:") && self.agents_screen.is_some();
                 if matches!(self.mode, Mode::Normal)
-                    && (agent || (self.tab == Tab::Terminal && self.pane_here().is_some()))
+                    && (agent
+                        || (self.effective_focus() == Focus::Detail
+                            && self.tab == Tab::Terminal
+                            && self.pane_here().is_some()))
                 {
                     self.shell_opening();
                 }
@@ -6508,7 +6512,7 @@ impl App {
         }
         let pane = self.term.as_mut()?;
         let a = pane.area;
-        let inside = ev.column >= a.x
+        let inside = pane.drawn && ev.column >= a.x
             && ev.row >= a.y
             && ev.column < a.x + a.width
             && ev.row < a.y + a.height;
@@ -6528,6 +6532,7 @@ impl App {
             MouseEventKind::ScrollUp => pane.scroll_by(3),
             MouseEventKind::ScrollDown => pane.scroll_by(-3),
             MouseEventKind::Down(MouseButton::Left) if self.mode == Mode::Normal && pane.live() => {
+                self.focus = Focus::Detail;
                 self.mode = Mode::TakeOver;
                 self.say(Tone::Said, TYPING);
             }

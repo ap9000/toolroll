@@ -7,7 +7,7 @@ expression: "themed(ThemeName::Dark, Depth::TrueColor, None)"
    Work  5                                        Live    Steps    Diff    Terminal                 
                                                 Upgrade the test runner                             
    Needs you 2                                  claude sonnet · $0.31 · attempt 1                   
-   ● Fix the login redirect       Question      ✓ Plan · ✓ Approval ·  ◐ Build  · Checks · Ready    
+   ● Fix the login redirect       Question       ◐ Build · 4m 12s                                   
      3m ago                                                                                         
    ● Add CSV export                 Result        Worked · 3 steps                                  
      12m ago                                      ✓ Edited vitest.config.ts  +14 −3                 
@@ -32,19 +32,19 @@ agghhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhggagggggggggggggggggggggggggggggggggg
 agghhhhhiiiggggggggggggggggggggggggggggggggggaggjjjjjjjjiiiiiiiiiiiiiiiiiiiiiiiiiiiiigggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhgggggggggggggggggggggggggggga
 agghhhhhhhhhfffggggggggggggggggggggggggggggggaggkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkgggggggggggggggggga
-agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggllkkkkkkkllkkkkkkkkkkkeeeeeeeeekkkkkkkkkkkkkkkkkggga
-aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggmmnnnnnnnnnnnnnnnnmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggkkkkkkkkkgggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmppppppppmmmmmmmmmmmmmmgga
-aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agghhhhhhhiiiggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggqjjjjjjjjjjjjjjjjjjjjjjjjqqqqqeeeeeeeeeeggaggmmpppprrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmmmmgga
-aggqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqggaggmmpppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggshggggggggggggggggggggggggggggeeeeeeeeeeggaggmmpppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmpppppppppppppppppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmppppppppppppppppppppmmmmmmmmmmmmmgga
-agghhhhhhiiigggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
-agglhggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggeeeeeeeeeeeeeeeeeeggggggggggggggggggggggggggggggggga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggllmmmmmmmmmmmmmmmmlllllllllllllllllllllllllllllllgga
+aggkkkkkkkkkgggggggggggggggggggggggggggggggggaggllnnllllllllllllllllllllllloooooooollllllllllllllgga
+aggggggggggggggggggggggggggggggggggggggggggggaggllnnlllllllllllllllllllllllllllllllllllllllllllllgga
+agghhhhhhhiiiggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+aggpjjjjjjjjjjjjjjjjjjjjjjjjpppppeeeeeeeeeeggaggllooooqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqllllgga
+aggppppppppppppppppppppppppppppppppppppppppggaggllooollllllllllllllllllllllllllllllllllllllllllllgga
+aggrhggggggggggggggggggggggggggggeeeeeeeeeeggaggllooooollllllllllllllllllllllllllllllllllllllllllgga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggaggllooooooooooooooooooollllllllllllllllllllllllllllgga
+aggggggggggggggggggggggggggggggggggggggggggggaggllnnlllllllllllloooooooooooooooooooolllllllllllllgga
+agghhhhhhiiigggggggggggggggggggggggggggggggggagglllllllllllllllllllllllllllllllllllllllllllllllllgga
+aggshggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggkkkkkkkkggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
@@ -63,12 +63,12 @@ h = fg #ededed bg #161616 bold
 i = fg #a1a1a1 bg #2a2a2a
 j = fg #ededed bg #3a3a3a bold
 k = fg #a1a1a1 bg #161616
-l = fg #3dd68c bg #161616
-m = fg #ededed bg #1c1c1c
-n = fg #a1a1a1 bg #1c1c1c bold
-o = fg #3dd68c bg #1c1c1c
-p = fg #a1a1a1 bg #1c1c1c
-q = fg #ededed bg #3a3a3a
-r = fg #ededed bg #1c1c1c bold
-s = fg #70b8ff bg #161616
+l = fg #ededed bg #1c1c1c
+m = fg #a1a1a1 bg #1c1c1c bold
+n = fg #3dd68c bg #1c1c1c
+o = fg #a1a1a1 bg #1c1c1c
+p = fg #ededed bg #3a3a3a
+q = fg #ededed bg #1c1c1c bold
+r = fg #70b8ff bg #161616
+s = fg #3dd68c bg #161616
 t = fg #3dd68c bg #1b3127

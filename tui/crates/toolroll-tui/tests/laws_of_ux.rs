@@ -260,3 +260,110 @@ fn palette_ranks_state_relevant_actions_first() {
     let list = palette::matches(&app, "");
     assert!(matches!(list.first().map(|e| &e.pick), Some(Pick::Answer(0))));
 }
+
+fn click_attention(app: &mut App) -> Vec<Effect> {
+    draw(app, 120, 30);
+    let chip = app.areas.needs_chip;
+    assert!(chip.width > 0);
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: chip.x + 1,
+        row: chip.y,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn attention_click_preserves_steering_draft_and_target() {
+    let mut app = on("t-live");
+    app.key(key('s'));
+    app.paste("Use the existing runner");
+    assert!(click_attention(&mut app).is_empty());
+    assert_eq!(app.selected_item().unwrap().id, "t-live");
+    assert_eq!(app.mode, Mode::Steer("Use the existing runner".into()));
+}
+
+#[test]
+fn attention_click_stays_on_oldest_while_next_cycles() {
+    let mut app = on("t-done");
+    assert!(click_attention(&mut app).is_empty());
+    assert_eq!(app.selected_item().unwrap().id, "t-done");
+    let fx = app.key(key('!'));
+    answer(&mut app, fx);
+    assert_eq!(app.selected_item().unwrap().id, "t-ask");
+    let fx = click_attention(&mut app);
+    answer(&mut app, fx);
+    assert_eq!(app.selected_item().unwrap().id, "t-done");
+}
+
+#[test]
+fn filtered_jump_reloads_detail_when_tasks_share_a_row_index() {
+    let mut app = on("t-live");
+    app.key(key('/'));
+    let fx = app.paste("test runner");
+    answer(&mut app, fx);
+    app.key(code(KeyCode::Enter));
+    let fx = app.key(key('@'));
+    answer(&mut app, fx);
+    assert_eq!(app.selected_item().unwrap().id, "t-ask");
+    assert_eq!(app.steps.as_ref().unwrap().task.id, "t-ask");
+}
+
+#[test]
+fn only_visible_panel_owns_navigation_and_escape_reveals_list() {
+    for layout in ["zoom", "hidden"] {
+        let mut app = on("t-live");
+        if layout == "zoom" {
+            app.key(key('z'));
+        } else {
+            app.key(key('b'));
+            app.key(key('b'));
+        }
+        draw(&mut app, 120, 30);
+        app.key(key('j'));
+        assert_eq!(app.selected_item().unwrap().id, "t-live");
+        assert_eq!(app.effective_focus(), Focus::Detail);
+        app.key(code(KeyCode::Esc));
+        draw(&mut app, 120, 30);
+        assert_eq!(app.effective_focus(), Focus::List);
+        assert!(app.areas.list.width > 0);
+    }
+}
+
+#[test]
+fn terminal_releases_list_bindings_on_escape() {
+    let mut app = on("t-live");
+    app.tab = Tab::Terminal;
+    app.focus = Focus::Detail;
+    app.term = Some(toolroll_tui::term::Pane::opening("t-live".into(), fake::LIVE_RUN));
+    draw(&mut app, 120, 30);
+    app.key(code(KeyCode::Esc));
+    app.key(key('n'));
+    assert!(matches!(app.mode, Mode::NewTask(..)));
+}
+
+#[test]
+fn compact_panel_keeps_the_live_clock_visible_as_time_passes() {
+    let mut app = on("t-live");
+    for seconds in [12, 13] {
+        let shown = draw(&mut app, 80, 24).backend().to_string();
+        assert!(shown.contains(&format!("Build · 4m {seconds}s")), "{shown}");
+        app.now += 1;
+    }
+}
+
+#[test]
+fn help_shows_custom_shortcuts_for_filters_and_settings() {
+    use toolroll_tui::keys::{Keymap, Written};
+    let mut app = on("t-live");
+    let (map, warnings) = Keymap::build(None, &[
+        (1, "filter-needs-me".into(), Written::Keys(vec!["f3".into()])),
+        (2, "next-theme".into(), Written::Keys(vec!["f4".into()])),
+    ]);
+    assert!(warnings.is_empty());
+    app.prefs.settings.keymap = map;
+    app.key(key('?'));
+    let help = draw(&mut app, 160, 64).backend().to_string();
+    assert!(help.lines().any(|row| row.contains("F3") && row.contains("Needs me")), "{help}");
+    assert!(help.lines().any(|row| row.contains("F4") && row.contains("Next theme")), "{help}");
+}

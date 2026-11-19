@@ -31,4 +31,4 @@ expression: hidden
 " │                                                                                                                    │ "
 " ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ "
 "  The list is hidden: b shows it again.                                                                                 "
-"  j/k move  ⏎ open  s steer  n new  : all actions                                                                       "
+"  j/k scroll  / search  s steer  Esc list  : all actions                                                                "

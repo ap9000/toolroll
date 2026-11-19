@@ -7,7 +7,7 @@ expression: shown
 "│ Live · Steps · Diff · Terminal         3 of 5 · Esc list │"
 "│ Upgrade the test runner                                  │"
 "│ claude sonnet · $0.31 · attempt 1                        │"
-"│ ✓ Plan › ✓ Approval › ◐ Build 4m › Checks › Ready        │"
+"│ ✓ Plan › ✓ Approval › ◐ Build · 4m 12s › Checks › Ready  │"
 "│   Started.                                               │"
 "│ Reading the test setup before switching runners.         │"
 "│                                                          │"

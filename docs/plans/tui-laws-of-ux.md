@@ -8,7 +8,7 @@ This document records the UX rationale, concrete changes, and verification steps
 - **Laws applied:** *Law of Prägnanz*, *Occam's Razor*, *Goal-Gradient Effect*, *Von Restorff Effect*.
 - **Problem:** On a live build, `"Building"` previously appeared 4 times simultaneously (list badge, right title badge, `Building now` in provenance, and `Build ◐ 4m` on the strip), while every row in a single-project view repeated the top bar's project name.
 - **Change:**
-  - Upgraded `strip()` into a structured, visual pipeline: completed steps read quietly (`✓ Plan`), the active stage is highlighted in its Signal role (`◐ Build · 4m 12s` running wash, solid-ink `● Ready` / `● Approval` chip when waiting on a person, vermilion `✕ Build` on failure, neutral fill on hold/retry wait), and upcoming steps stay muted. Progressive degradation fits wide (`──` + exact `4m 12s`), medium (`›` + `4m`), and tight (`·`) widths.
+  - Upgraded `strip()` into a structured, visual pipeline: completed steps read quietly (`✓ Plan`), the active stage is highlighted in its Signal role (`◐ Build · 4m 12s` running wash, solid-ink `● Ready` / `● Approval` chip when waiting on a person, vermilion `✕ Build` on failure, neutral fill on hold/retry wait), and upcoming steps stay muted. Smaller panels use shorter separators, then show the active stage and its clock when the whole chain no longer fits.
   - Omitted the duplicate title-line status badge whenever the pipeline already carries the active stage (while keeping mid-build `Question` chips visible on the title line).
   - Omitted duplicate `"Building now"` and duplicate live clock from `facts_line()` while the pipeline displays them, leaving crisp provenance (`claude sonnet · $0.31 · attempt 1`).
   - Omitted repeated project names from list rows when every listed item already belongs to the top bar's active project.
@@ -30,14 +30,14 @@ This document records the UX rationale, concrete changes, and verification steps
 - **Problem:** Top-bar layout flags (`ZOOM`, `NARROW`, `RAIL`, `LIST HIDDEN`) used solid-ink `sheet::chip()`, competing directly with `N need you`.
 - **Change:**
   - Demoted top-bar mode flags to neutral fill badges (`sheet::badge(m, Role::Fill)`), reserving solid ink exclusively for what needs a person.
-  - Recorded `app.areas.needs_chip` and made clicking `N need you` jump straight to the oldest item waiting on you (`next_needs_you(true)`).
+  - Recorded `app.areas.needs_chip` and made clicking `N need you` jump straight to the oldest item waiting on you.
 
 ### D. Context-ranked Command Palette, Chunked Help, and Peak-End Clarity (`palette.rs`, `view.rs`)
 - **Laws applied:** *Hick's Law*, *Choice Overload*, *Miller's Law*, *Chunking*, *Peak-End Rule*.
 - **Change:**
   - Added `context_rank()` in `palette.rs`: keeps every applicable action reachable via search (preserving palette-to-key parity) while surfacing state-relevant actions first (`Answer` choices on a Question, `Accept`/`Send back` on Ready, `Steer`/`Pause`/`Stop` on Building).
   - Grouped the `?` Help overlay into **Navigate & layout**, **Work & decisions**, and **In Diff** while staying within 30 rows.
-  - Added explicit reading progress (`Read X/Y · ↓ N more lines`) on `seen_end`-gated approval/send-back dialogs, active-build counts in the `q` Quit dialog, and kept `Typing · Ctrl-] back` visible on the Terminal header whenever room allows or `key_bar` is off.
+  - Added explicit reading progress (`Read X/Y · ↓ N more lines`) on `seen_end`-gated approval/send-back dialogs, counts of working items in the `q` Quit dialog, and kept `Typing · Ctrl-] back` visible on the Terminal header whenever room allows or `key_bar` is off.
 
 ## 2. Simplicity Pass (`AGENTS.md`)
 - Removed 3× repeated `"Building"` labels in the active task header and per-row repeated project names in single-project views.

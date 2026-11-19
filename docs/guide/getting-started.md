@@ -156,7 +156,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | Key | Action |
 |---|---|
 | `j` / `k`, Down / Up | Move through the list (when List is focused) or scroll / move lines (when the task panel is focused) |
-| Left / Right | Focus the task list / focus the task panel |
+| Left / Right | Focus the task list / focus the task panel. Focusing the list reveals it when hidden or zoomed |
 | Enter | Open and focus the changes for a result, otherwise its live output |
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
 | `n` | New task (in focused Diff, next note instead) |
@@ -176,7 +176,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | `=` | Even the splits and restore the usual list width |
 | `b` | Cycle the list: full, slim status rail, hidden |
 | `z` | Zoom the focused panel; press again to return |
-| `!` / `@` | Next / previous thing that needs you, oldest first (or click the top bar's "need you" chip) |
+| `!` / `@` | Cycle through waiting items, oldest first. Click the "need you" chip to go directly to the oldest |
 | `'` | Return to where you were before jumping |
 | `/` | Filter the task list live (when List is focused) or search the focused pane (when Detail is focused) |
 | Ctrl-E | Open the focused pane's text in your editor |
