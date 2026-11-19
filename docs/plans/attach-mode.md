@@ -4,7 +4,7 @@ Add an opt-in interactive Claude runtime whose PTY belongs to the engine. The th
 
 Interactive threads have **no turn counting, turn limits or cost display**. They use the owner’s Claude subscription. Every authority check remains: the owner’s current sign-in and removal epoch, approved level, network and fence, revocation, and a live launch. A launch-scoped interactive session replaces the requirement for a running structured turn.
 
-Codex builds every slice. A Claude agent reviews each security slice before merge. Restricted clones can build and run isolated contract tests; the lead runs the explicitly identified PTY, localhost and real-fence checks outside that sandbox.
+Codex builds every slice. A separate Codex session reviews each security slice before merge. Restricted clones can build and run isolated contract tests; the lead runs the explicitly identified PTY, localhost and real-fence checks outside that sandbox.
 
 This plan was prepared as a read-only revision based on `PLAN-V1.md` and the checkout identifying itself as **0.9.114**, schema **172**. That planning pass changed no implementation files, ran no tests, deployed nothing and inspected no live runtime. Branch overlaps below retain v1’s supplied coordination constraints; their unmerged contents have not been verified.
 
@@ -332,7 +332,9 @@ Native Claude consent is additional consent inside the approved Full boundary. I
 
 ## 8. Reviewable implementation slices
 
-**Codex builds every slice. Claude reviews every S slice before merge**, including the final diff and its security evidence. Codex fixes findings; a changed security diff returns for review. Claude review is not a new product stage and grants no release or deployment authority.
+**Codex builds every slice. A separate Codex session reviews every S slice before merge**, including the final diff and its security evidence. The reviewer must not be the builder of that candidate. Codex fixes findings; a changed security diff returns for review. Codex review is not a new product stage and grants no release or deployment authority.
+
+Owner update (2026-11-18): use Codex for implementation, independent security review, verification and follow-up while Claude is unavailable. This replaces the earlier Claude-review requirement for pending and future slices; previous review outcomes retain their original attribution. Required evidence, approvals and release gates remain in force. This changes the development workflow only; the interactive Claude runtime described in this plan keeps its existing scope.
 
 Each slice must be mergeable with production interactive launch disabled. Dependencies are explicit; fixtures must not grant authority that the eventual integration lacks.
 
@@ -426,7 +428,7 @@ Each handoff states:
 - Exact candidate and covered base.
 - Checks actually passed.
 - Lead-only checks still pending.
-- Claude security-review outcome.
+- Independent Codex security-review outcome (or the original reviewer attribution for a review already completed).
 - Concrete simplicity findings and before/after evidence.
 
 Before live work, verify deployed UI, worker and resolved CLI identity. Follow normal update, drain, backup, compatibility, approval and health checks. A source merge or passing build is not deployment. Use the unchanged approved machine verification command once at the final gate; changed candidates or failed gates require fresh evidence.
@@ -439,7 +441,7 @@ Before live work, verify deployed UI, worker and resolved CLI identity. Follow n
 | Runtime default | **Decided** | Stream-json remains default; interactive selected at creation. |
 | Interactive turns and cost | **Decided** | No turn counting, turn limits, spend enforcement or cost display. Optional silent usage records only. |
 | Relay authority | **Decided** | Launch-scoped interactive session replaces running-turn identity; current sign-in, epoch, level, network/fence, revocation and live-launch checks remain. |
-| Implementation and review | **Decided** | Codex builds every slice; Claude reviews every security slice before merge. |
+| Implementation and review | **Decided** | Codex builds every slice; a separate Codex session reviews every security slice before merge while Claude is unavailable. |
 | Who may attach | **Decided** | Thread owner through a proven local workbench session or password-proved owner browser session, wherever admitted transport permits. |
 | Passwordless browser links | **Decided in this plan** | Insufficient for browser attach. Direct local-workbench authority remains the explicit exception. |
 | Machine/API-token/lead callers | **Decided** | No terminal viewing or input authority. |
@@ -471,5 +473,5 @@ the raw VT parser renders the text after the cancelling ESC as plain cells, whil
 through ST. Neither boundary emits host controls; no Rust runtime behavior changed.
 
 Lead evidence remains: native PTY/resize and process-exit journeys with the stand-in, later live/snapshot transport
-integration, real-fence proof where applicable, and the required Claude security review before merge.
+integration, real-fence proof where applicable, and the required independent security review before merge (Codex while Claude is unavailable).
 No product screen changed; desktop/phone product journeys belong to later UI slices.
