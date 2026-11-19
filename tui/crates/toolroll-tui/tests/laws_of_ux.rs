@@ -367,3 +367,49 @@ fn help_shows_custom_shortcuts_for_filters_and_settings() {
     assert!(help.lines().any(|row| row.contains("F3") && row.contains("Needs me")), "{help}");
     assert!(help.lines().any(|row| row.contains("F4") && row.contains("Next theme")), "{help}");
 }
+
+fn left_click(area: ratatui::layout::Rect) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn click_the_field_to_steer_and_send_to_the_displayed_attempt() {
+    use toolroll_tui::app::ComposerClick;
+    let mut app = on("t-live");
+    draw(&mut app, 80, 24);
+    let (field, run, hit) = app.areas.steer_targets[0];
+    assert_eq!(hit, ComposerClick::Action(Action::Steer));
+    assert!(app.mouse(left_click(field)).is_empty());
+    assert_eq!(app.mode, Mode::Steer(String::new()));
+    app.paste("Check the navigation");
+    draw(&mut app, 160, 40);
+    let (button, _, _) = app.areas.steer_targets.iter().find(|(_, _, hit)| *hit == ComposerClick::Send).copied().unwrap();
+    let effects = app.mouse(left_click(button));
+    assert!(matches!(effects.as_slice(), [Effect::Act { path, fields, .. }]
+        if path.ends_with("/steer") && fields.contains(&("note".into(), "Check the navigation".into()))
+            && fields.contains(&("run".into(), run.to_string()))));
+}
+
+#[test]
+fn only_a_visible_live_stage_animates_and_reduced_motion_keeps_the_clock() {
+    let mut app = on("t-live");
+    app.spinner_frame = 1;
+    let shown = draw(&mut app, 80, 24).backend().to_string();
+    assert!(app.areas.spinner_visible && shown.contains("◓ Build · 4m 12s"), "{shown}");
+    app.prefs.settings.reduced_motion = true;
+    app.now += 1;
+    let shown = draw(&mut app, 80, 24).backend().to_string();
+    assert!(!app.areas.spinner_visible && shown.contains("◐ Build · 4m 13s"), "{shown}");
+    app.prefs.settings.reduced_motion = false;
+    app.key(key('?'));
+    draw(&mut app, 80, 24);
+    assert!(!app.areas.spinner_visible);
+    app = on("t-done");
+    draw(&mut app, 80, 24);
+    assert!(app.areas.steer_targets.is_empty() && !app.areas.spinner_visible);
+}

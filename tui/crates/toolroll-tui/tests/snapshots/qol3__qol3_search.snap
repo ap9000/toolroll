@@ -27,7 +27,7 @@ expression: shown
 " │                                            │ │ ↓ 1 newer lines · End follows                                       │ "
 " │                                            │ │                                                                     │ "
 " │                                            │ │ ╭─────────────────────────────────────────────────────────────────╮ │ "
-" │                                            │ │ │ Steer the agent: a note (it g…  [Steer  s] [Pause  p] [Stop  x] │ │ "
+" │                                            │ │ │ Message the agent (it goes to…  [Steer  s] [Pause  p] [Stop  x] │ │ "
 " │                                            │ │ ╰─────────────────────────────────────────────────────────────────╯ │ "
 " ╰────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────────────╯ "
 "  Search: NPM  1 of 1  n next · N previous · ⏎ done · Esc leaves                                                        "

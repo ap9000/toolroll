@@ -163,7 +163,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
 | `s` / `a` / `x` / `X` on a thread | Reply to it / Ship its work / stop its agent's turn / end it (asks first) |
 | `x` / `r` on a thread that is shipping | Stop the Ship for good / send it back with a note |
-| `s` | Send the running agent a note |
+| `s` | Focus the running agent’s message field. You can also click the field, type, and press Enter to send. |
 | `p` | Pause the build; press again to resume |
 | `x` | Stop a build or its retries; resume retries on a task you held |
 | `X` | Cancel the task |

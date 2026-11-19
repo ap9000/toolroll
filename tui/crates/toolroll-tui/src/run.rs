@@ -587,6 +587,8 @@ async fn event_loop(
         pending.clear();
     }
     let mut events = EventStream::new();
+    let mut animation = tokio::time::interval(Duration::from_millis(150));
+    animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frames = Samples::default();
@@ -747,6 +749,10 @@ async fn event_loop(
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
                 dirty = app.highlight_pending;
                 pending.extend(app.term_resize());
+            }
+            _ = animation.tick(), if app.areas.spinner_visible => {
+                app.spinner_frame = (app.spinner_frame + 1) % 4;
+                dirty = true;
             }
             _ = tick.tick() => {
                 for k in late.flush(Instant::now()) {

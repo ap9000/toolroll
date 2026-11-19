@@ -907,9 +907,18 @@ pub enum Msg {
 }
 
 /// Where things were drawn last frame (for the mouse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerClick {
+    Action(Action),
+    Send,
+    Cancel,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
     pub list: Rect,
+    pub steer_targets: Vec<(Rect, i64, ComposerClick)>,
+    pub spinner_visible: bool,
     /// The list's screen rows and the item each shows (None: a heading).
     pub rows: Vec<(u16, Option<usize>)>,
     pub tabs: Vec<(u16, u16, Tab)>,
@@ -1088,6 +1097,7 @@ pub struct App {
     pub line_cache: Option<LineCache>,
     /// Seconds since the epoch, for elapsed times (the loop sets it; tests fix it).
     pub now: i64,
+    pub spinner_frame: usize,
     /// The Terminal tab's terminal (T4): the selected task's take-over, when one is open.
     pub term: Option<Pane>,
     /// The builds (task, build) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
@@ -1200,6 +1210,7 @@ impl App {
             areas: Areas::default(),
             line_cache: None,
             now: 0,
+            spinner_frame: 0,
             term: None,
             confirmed: HashSet::new(),
             take_over_wanted: None,
@@ -5489,6 +5500,24 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.tab == Tab::Live {
+            if let Some(&(_, run, target)) = self.areas.steer_targets.iter().find(|(r, _, _)| inside(*r)) {
+                if self.steps_here().and_then(|s| s.live_run) != Some(run) {
+                    return vec![];
+                }
+                match (target, &self.mode) {
+                    (ComposerClick::Action(action), Mode::Normal) => {
+                        self.focus = Focus::Detail;
+                        return self.run_action(action);
+                    }
+                    (ComposerClick::Send | ComposerClick::Cancel, Mode::Steer(_)) => {
+                        let key = if target == ComposerClick::Send { KeyCode::Enter } else { KeyCode::Esc };
+                        return self.key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                    _ => return vec![],
+                }
+            }
+        }
         if !matches!(self.mode, Mode::Normal | Mode::TakeOver) {
             self.dragging = false;
             return vec![];
