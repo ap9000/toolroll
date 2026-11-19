@@ -184,6 +184,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | End / `G` | Follow the newest output |
 | `y` | Copy a hunk or terminal output to the terminal's scrollback |
 | `A` | Open Agents |
+| `M` | Choose model assignments for new tasks |
 | `w` | Open Toolroll in the browser |
 | `1`–`9` | Answer the agent's question |
 | Esc | Return focus to the list, clear a filter/search, or close a dialog |
@@ -313,9 +314,12 @@ runs. Toolroll never runs `curl | bash` installers. For agents that only
 offer those installers, copy the command and run it yourself if you trust
 it. The screen also lets you copy sign-in commands.
 
-The Models section chooses the default agent and the agents and models
-for planning, building and review. Read the before-and-after confirmation
-before saving. These are the same saved choices as Settings → Models.
+From Work, press `M` or find **Models for new tasks** in the command palette.
+Select a role and press Enter. Press `/` to find a model by provider or name,
+use the arrows to select it, and press Enter to preview the change. Enter
+again saves it. The default-agent row applies a preset across roles.
+These installation defaults apply to newly filed tasks. Settings → Models
+in the browser also offers per-project overrides and task-size tiers.
 Changing models here requires the operator on a solo install; otherwise
 open Settings → Models in the browser with `w`.
 

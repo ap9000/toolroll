@@ -18,7 +18,7 @@ expression: shown
 " ││ b              List: full, rail, hidden                 w              Open Toolroll in your browser            │ │ "
 " ││ z              Zoom the focused panel                   ?              These keys                               │ │ "
 " ││ ⏎              Open & focus changes, else live output   q              Quit                                     │ │ "
-" ││ s              Steer: send the running agent a note     A              Agents: add, sign in, choose models      │ │ "
+" ││ s              Steer: send the running agent a note     A/M            Agents / model assignments               │ │ "
 " ││ p              Pause the build, or ask for a plan                                                               │ │ "
 " ││ In Diff                                                                                                         │ │ "
 " ││ j/k            Next / previous line                     c              A note on the line or hunk               │ │ "

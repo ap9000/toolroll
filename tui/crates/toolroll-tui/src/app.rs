@@ -3334,6 +3334,10 @@ impl App {
                 grow(&mut p.query);
                 p.selected = 0;
             }
+            Mode::PickModel(p) if p.filter.is_some() => {
+                grow(p.filter.as_mut().unwrap());
+                p.selected = 0;
+            }
             Mode::ListFilter(q) => {
                 let mut next = q.clone();
                 grow(&mut next);
@@ -4007,6 +4011,7 @@ impl App {
                 vec![]
             }
             Action::Agents => crate::agents::open(self),
+            Action::Models => crate::agents::open_models(self),
             Action::LineDown => {
                 self.move_cursor(1);
                 vec![]

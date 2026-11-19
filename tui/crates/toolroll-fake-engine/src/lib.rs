@@ -1078,6 +1078,65 @@ async fn act(
             let to = format!("/settings/models?problem={}", words.replace(' ', "+"));
             return (StatusCode::SEE_OTHER, [("location", to)]).into_response();
         }
+        let last = st.acts.last().unwrap();
+        if last.field("digest") != st.models["digest"].as_str() {
+            return (
+                StatusCode::SEE_OTHER,
+                [(
+                    "location",
+                    "/settings/models?problem=Models+changed.+Choose+again.",
+                )],
+            )
+                .into_response();
+        }
+        let mut next = st.models.clone();
+        for role in next["roles"].as_array_mut().unwrap() {
+            let key = role["key"].as_str().unwrap();
+            if let Some(value) = last.field(key) {
+                if key == "review" && value == "clear" {
+                    role["current"] = json!("");
+                    role["words"] = json!("Follows the planner");
+                } else {
+                    let choice = role["choices"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|group| {
+                            group["models"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(move |model| (group, model))
+                        })
+                        .find(|(group, model)| {
+                            value.split_once('|')
+                                == group["provider"].as_str().zip(model["value"].as_str())
+                        });
+                    let Some((group, model)) = choice else {
+                        return (
+                            StatusCode::SEE_OTHER,
+                            [(
+                                "location",
+                                "/settings/models?problem=Choose+a+listed+model.",
+                            )],
+                        )
+                            .into_response();
+                    };
+                    let words = format!(
+                        "{} · {}",
+                        group["label"].as_str().unwrap(),
+                        model["label"].as_str().unwrap()
+                    );
+                    role["current"] = json!(value);
+                    role["words"] = json!(words);
+                }
+            }
+        }
+        if let Some((provider, _)) = last.field("build").and_then(|v| v.split_once('|')) {
+            next["defaultAgent"] = json!(provider);
+        }
+        next["digest"] = json!(format!("{:064x}", st.acts.len()));
+        st.models = next;
         return (
             StatusCode::SEE_OTHER,
             [("location", "/settings/models?said=Models+saved.")],

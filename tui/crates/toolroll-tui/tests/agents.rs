@@ -235,7 +235,10 @@ fn refused_sign_in_keeps_the_reason_by_the_command_and_closes_the_empty_terminal
     app.status = None;
     for (w, h) in [(120, 34), (80, 24)] {
         let shown = screen(&mut app, w, h);
-        assert!(shown.contains("Sign-in terminal could not open."), "{shown}");
+        assert!(
+            shown.contains("Sign-in terminal could not open."),
+            "{shown}"
+        );
         assert!(shown.contains("/opt/homebrew/bin"), "{shown}");
         assert!(!shown.contains("Ctrl-] goes back"), "{shown}");
     }
@@ -328,6 +331,37 @@ fn y_copies_every_command_to_the_scrollback() {
         .iter()
         .any(|l| l == "Check:    toolroll agents check opencode --model <model>"));
     assert_eq!(app.mode, Mode::Copied);
+}
+
+#[test]
+fn work_shortcut_shows_models_at_compact_size_and_filters_the_builder_catalog() {
+    let mut app = open(fake::fixture("agents.json"));
+    app.key(code(KeyCode::Esc));
+    assert!(app.key(key('M')).contains(&Effect::FetchModels));
+    app.update(Msg::Models(Ok(parse(fake::fixture("models.json")))));
+    let shown = screen(&mut app, 80, 24);
+    assert!(
+        shown.contains("Planner") && shown.contains("Builder for routine tasks"),
+        "{shown}"
+    );
+    app.key(code(KeyCode::Down));
+    app.key(code(KeyCode::Enter));
+    app.key(key('/'));
+    app.paste("no such model");
+    app.key(code(KeyCode::Enter));
+    assert!(screen(&mut app, 80, 24).contains("No matching models"));
+    app.key(code(KeyCode::Esc));
+    app.key(code(KeyCode::Enter));
+    app.key(key('/'));
+    app.paste("codex sol");
+    assert!(screen(&mut app, 80, 24).contains("GPT-6 Sol"));
+    app.key(code(KeyCode::Enter));
+    let shown = screen(&mut app, 80, 24);
+    assert!(shown.contains("Builder for routine tasks"), "{shown}");
+    let fx = app.key(code(KeyCode::Enter));
+    assert!(matches!(fx.as_slice(), [Effect::Act { fields, .. }]
+        if fields.contains(&("build".into(), "codex|gpt-6-sol".into()))
+            && !fields.iter().any(|(k, _)| k == "plan" || k == "review")));
 }
 
 #[test]
