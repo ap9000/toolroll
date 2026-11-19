@@ -3411,13 +3411,23 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     if matches!(app.mode, Mode::ChatCompose(_)) {
         out.push(("Enter".into(), "send"));
         out.push(("Shift-Enter".into(), "newline"));
-        out.push(("Tab".into(), "select"));
+        out.push(("Tab".into(), "choices"));
         out.push(("PgUp/PgDn".into(), "scroll"));
         out.push(("Esc".into(), "browse"));
     } else if app.chat_focused() {
+        if !app.chat.numbered_choices.is_empty() {
+            out.push((format!("1–{}", app.chat.numbered_choices.len()), "select"));
+        }
+        let action = match app.chat.current_hit() {
+            Some(crate::chat::ChatHit::ConfirmProposal(_)) => "review",
+            Some(crate::chat::ChatHit::DismissProposal(_)) => "dismiss",
+            Some(crate::chat::ChatHit::AnswerAsk(_)) => "send",
+            Some(crate::chat::ChatHit::RemoveQueued(_)) => "remove",
+            _ => "open",
+        };
+        out.push(("Enter".into(), action));
+        out.push(("↑/↓".into(), "choose"));
         out.push(("e".into(), "tools"));
-        out.push(("[/]".into(), "select"));
-        out.push(("Enter".into(), "act"));
         if app.chat_split_active() {
             out.push(("o".into(), "peek"));
             out.push(("D".into(), "undock"));

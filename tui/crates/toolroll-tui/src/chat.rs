@@ -35,6 +35,15 @@ pub enum ChatHit {
     },
     AnswerAsk(String),
     RemoveQueued(i64),
+    ManageProjects,
+}
+
+fn link_hit(label: &str, href: &str, task: Option<&String>, tab: &Option<String>) -> Option<ChatHit> {
+    match task {
+        Some(task) => Some(ChatHit::PeekTask { task: task.clone(), tab: tab.clone(), label: label.to_owned() }),
+        None if href == "/projects" => Some(ChatHit::ManageProjects),
+        None => None,
+    }
 }
 
 /// Pinned state for `Mode::ConfirmProposal`: every line shown to the person is frozen at open time, and a live refresh
@@ -84,6 +93,8 @@ pub struct LeadChatState {
     pub provider_problem: Option<String>,
     /// Clickable hitboxes captured during the last draw.
     pub hits: Vec<(Rect, ChatHit)>,
+    pub numbered_choices: Vec<ChatHit>,
+    pub reveal_selection: bool,
     /// Ordered selectable items from the latest state (kept in sync with `data`).
     pub items: Vec<ChatHit>,
     /// Clickable composer strip at the bottom of the Lead Chat sheet.
@@ -169,26 +180,17 @@ impl LeadChatState {
                     if !card.data && card.state == "pending" {
                         if let Some(LeadCardPrimary::Confirm { .. }) = &card.primary {
                             items.push(ChatHit::ConfirmProposal(card.id));
-                        } else if let Some(LeadCardPrimary::Link {
-                            label, task, tab, ..
-                        }) = &card.primary
-                        {
-                            if let Some(task) = task {
-                                items.push(ChatHit::PeekTask {
-                                    task: task.clone(),
-                                    tab: tab.clone(),
-                                    label: label.clone(),
-                                });
+                        } else if let Some(LeadCardPrimary::Link { label, href, task, tab }) = &card.primary {
+                            if let Some(hit) = link_hit(label, href, task.as_ref(), tab) {
+                                items.push(hit);
                             }
+                        }
+                        if card.dismissable {
+                            items.push(ChatHit::DismissProposal(card.id));
                         }
                     }
                     for link in &card.links {
-                        if let Some(task) = &link.task {
-                            let hit = ChatHit::PeekTask {
-                                task: task.clone(),
-                                tab: link.tab.clone(),
-                                label: link.label.clone(),
-                            };
+                        if let Some(hit) = link_hit(&link.label, &link.href, link.task.as_ref(), &link.tab) {
                             if !items.contains(&hit) {
                                 items.push(hit);
                             }
@@ -245,12 +247,14 @@ impl LeadChatState {
 
     pub fn select_next_hit(&mut self) {
         if !self.items.is_empty() {
+            self.reveal_selection = true;
             self.selected_hit = (self.selected_hit + 1) % self.items.len();
         }
     }
 
     pub fn select_prev_hit(&mut self) {
         if !self.items.is_empty() {
+            self.reveal_selection = true;
             self.selected_hit = if self.selected_hit == 0 {
                 self.items.len() - 1
             } else {
@@ -313,16 +317,18 @@ impl LeadChatState {
 struct ChatRow {
     line: Line<'static>,
     hit: Option<ChatHit>,
+    choice: bool,
 }
 
 impl ChatRow {
     fn plain(line: Line<'static>) -> Self {
-        Self { line, hit: None }
+        Self { line, hit: None, choice: false }
     }
     fn clickable(line: Line<'static>, hit: ChatHit) -> Self {
         Self {
             line,
             hit: Some(hit),
+            choice: false,
         }
     }
 }
@@ -345,10 +351,11 @@ const STARTER_PROMPTS: &[(&str, &str)] = &[
 
 /// Render the central Lead chat sheet into `area`.
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
+    app.chat.hits.clear();
+    app.chat.numbered_choices.clear();
     if area.width < 12 || area.height < 8 {
         return;
     }
-    app.chat.hits.clear();
     let w = usize::from(area.width);
     let m = marks();
     let typing = matches!(app.mode, Mode::ChatCompose(_));
@@ -526,6 +533,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
                 }
             }
             for card in &msg.cards {
+                rows.push(ChatRow::plain(Line::raw("")));
                 push_card(&mut rows, card, w, active_hit.as_ref());
             }
             if let Some(ask) = &msg.ask {
@@ -541,15 +549,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
                 } else if ask.open {
                     for opt in &ask.options {
                         let hit = ChatHit::AnswerAsk(opt.clone());
-                        let is_sel = active_hit.as_ref() == Some(&hit);
-                        let style = if is_sel { selected() } else { ink() };
-                        rows.push(ChatRow::clickable(
-                            Line::from(Span::styled(
-                                fit(&format!("  [→ {}]", clean(opt)), w),
-                                style,
-                            )),
-                            hit,
-                        ));
+                        push_choice(&mut rows, &clean(opt), hit, w, active_hit.as_ref());
                     }
                 }
             }
@@ -633,6 +633,14 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
     } else {
         app.chat.scroll = app.chat.scroll.min(max_scroll);
     }
+    if std::mem::take(&mut app.chat.reveal_selection) {
+        if let Some(target) = active_hit.as_ref().and_then(|hit| rows.iter().position(|r| r.hit.as_ref() == Some(hit))) {
+            if target < app.chat.scroll || target >= app.chat.scroll + view_h {
+                app.chat.scroll = target.saturating_sub(view_h / 2).min(max_scroll);
+                app.chat.follow = app.chat.scroll == max_scroll;
+            }
+        }
+    }
     let start = app.chat.scroll;
     let visible: Vec<Line<'static>> = rows
         .iter()
@@ -645,13 +653,20 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
                     Rect {
                         x: stream_area.x,
                         y: stream_area.y + i as u16,
-                        width: stream_area.width,
+                        width: if row.choice { row.line.width().min(w) as u16 } else { stream_area.width },
                         height: 1,
                     },
                     hit.clone(),
                 ));
             }
-            row.line.clone()
+            let mut line = row.line.clone();
+            if row.choice && !typing && app.chat.numbered_choices.len() < 9 {
+                if let Some(hit) = row.hit.as_ref().filter(|hit| !app.chat.numbered_choices.contains(hit)) {
+                    app.chat.numbered_choices.push(hit.clone());
+                    line.spans[1].content = format!(" {} ", app.chat.numbered_choices.len()).into();
+                }
+            }
+            line
         })
         .collect();
     f.render_widget(Paragraph::new(visible), stream_area);
@@ -807,6 +822,13 @@ fn draw_chatbox(
             Span::styled(label, selected()),
             Span::styled("─╯", border_style),
         ])
+    } else if typing && !app.chat.hits.is_empty() && inner_w >= 20 {
+        let hint = " Tab for choices ";
+        Line::from(vec![
+            Span::styled(format!("╰{}", "─".repeat(inner_w - width(hint) - 1)), border_style),
+            Span::styled(hint, dim()),
+            Span::styled("─╯", border_style),
+        ])
     } else {
         Line::from(Span::styled(format!("╰{}╯", "─".repeat(inner_w)), border_style))
     };
@@ -913,7 +935,7 @@ fn push_card(rows: &mut Vec<ChatRow>, card: &LeadCard, w: usize, active_hit: Opt
                 }
             }
         }
-        push_links(rows, &card.links, inner_w, active_hit);
+        push_links(rows, &card.links, w, active_hit, None);
         return;
     }
 
@@ -943,22 +965,18 @@ fn push_card(rows: &mut Vec<ChatRow>, card: &LeadCard, w: usize, active_hit: Opt
                 dim(),
             ),
         ])));
-        push_links(rows, &card.links, inner_w, active_hit);
+        push_links(rows, &card.links, w, active_hit, None);
         return;
     }
 
-    // Pending actionable proposal card: wears the one solid-ink "Needs you" signal when confirmable
-    let mut header = vec![Span::styled("│ ", line())];
-    if matches!(card.primary, Some(LeadCardPrimary::Confirm { .. })) {
-        header.push(sheet::chip(&format!("{} Needs you", m.needs)));
-        header.push(Span::styled(" ", dim()));
+    // A control with a matching title and destination needs only one row.
+    let link_only = matches!(&card.primary, Some(LeadCardPrimary::Link { label, .. }) if label == &card.label && card.lines.is_empty() && card.note.is_none());
+    if !link_only {
+        rows.push(ChatRow::plain(Line::from(vec![
+            Span::styled("│ ", line()),
+            Span::styled(fit(&clean(&card.label), inner_w), ink().add_modifier(Modifier::BOLD)),
+        ])));
     }
-    header.push(Span::styled(
-        fit(&clean(&card.label), inner_w.saturating_sub(14).max(8)),
-        ink().add_modifier(Modifier::BOLD),
-    ));
-    rows.push(ChatRow::plain(Line::from(header)));
-
     for (idx, l) in card.lines.iter().enumerate() {
         let style = if idx == 0 {
             ink().add_modifier(Modifier::BOLD)
@@ -982,92 +1000,60 @@ fn push_card(rows: &mut Vec<ChatRow>, card: &LeadCard, w: usize, active_hit: Opt
             ])));
         }
     }
+    if !link_only {
+        rows.push(ChatRow::plain(Line::from(Span::styled("│", line()))));
+    }
+    let mut primary_href = None;
     match &card.primary {
-        Some(LeadCardPrimary::Confirm {
-            label,
-            irreversible,
-            ..
-        }) => {
-            let hit = ChatHit::ConfirmProposal(card.id);
-            let is_sel = active_hit == Some(&hit);
-            let mut spans = vec![Span::styled("│ ", line())];
-            let btn = format!("[Enter {}]", clean(label));
-            spans.push(Span::styled(
-                btn,
-                if is_sel {
-                    selected()
-                } else {
-                    ink().add_modifier(Modifier::BOLD)
-                },
-            ));
+        Some(LeadCardPrimary::Confirm { label, irreversible, .. }) => {
             if *irreversible {
-                spans.push(Span::styled(" ", dim()));
-                spans.push(sheet::badge("Irreversible", Role::Failed));
+                rows.push(ChatRow::plain(Line::from(sheet::badge("Irreversible", Role::Failed))));
             }
-            if card.dismissable {
-                spans.push(Span::styled("  [x Dismiss]", dim()));
-            }
-            rows.push(ChatRow::clickable(Line::from(spans), hit));
+            let review = if card.kind == "unhold" { "Review and resume".into() } else { format!("Review · {}", clean(label)) };
+            push_choice(rows, &review, ChatHit::ConfirmProposal(card.id), w, active_hit);
         }
-        Some(LeadCardPrimary::Link {
-            label, task, tab, ..
-        }) => {
-            if let Some(task) = task {
-                let hit = ChatHit::PeekTask {
-                    task: task.clone(),
-                    tab: tab.clone(),
-                    label: label.clone(),
-                };
-                let is_sel = active_hit == Some(&hit);
-                rows.push(ChatRow::clickable(
-                    Line::from(vec![
-                        Span::styled("│ ", line()),
-                        Span::styled(
-                            fit(&format!("[→ {}]", clean(label)), inner_w),
-                            if is_sel { selected() } else { ink() },
-                        ),
-                    ]),
-                    hit,
-                ));
+        Some(LeadCardPrimary::Link { label, task, tab, href }) => {
+            if let Some(hit) = link_hit(label, href, task.as_ref(), tab) {
+                let words = if hit == ChatHit::ManageProjects { "Manage projects (browser)".into() } else { clean(label) };
+                push_choice(rows, &words, hit, w, active_hit);
+                primary_href = Some(href.as_str());
+            } else {
+                rows.push(ChatRow::plain(Line::from(Span::styled(fit(&format!("{} (web chat)", clean(label)), w), dim()))));
             }
         }
         None => {}
     }
-    push_links(rows, &card.links, inner_w, active_hit);
+    if card.dismissable {
+        push_choice(rows, "Dismiss proposal", ChatHit::DismissProposal(card.id), w, active_hit);
+    }
+    push_links(rows, &card.links, w, active_hit, primary_href);
 }
 
-fn push_links(
-    rows: &mut Vec<ChatRow>,
-    links: &[toolroll_api::LeadLink],
-    inner_w: usize,
-    active_hit: Option<&ChatHit>,
-) {
+fn push_choice(rows: &mut Vec<ChatRow>, label: &str, hit: ChatHit, w: usize, active: Option<&ChatHit>) {
+    let focused = active == Some(&hit);
+    let fill = if focused { selected() } else { crate::theme::raised() };
+    let label_style = if matches!(hit, ChatHit::ConfirmProposal(_)) { fill.add_modifier(Modifier::BOLD) } else { fill };
+    for (index, text) in wrap(label, w.saturating_sub(7).max(1)).into_iter().enumerate() {
+        let pad = w.min(34).saturating_sub(6 + width(&text)).max(1);
+        let row = Line::from(vec![
+            Span::styled(if focused { "› " } else { "│ " }, if focused { ink() } else { line() }),
+            Span::styled(if index == 0 { " · " } else { "   " }, fill.add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {text}{}", " ".repeat(pad)), label_style),
+        ]);
+        rows.push(ChatRow { line: row, hit: Some(hit.clone()), choice: true });
+    }
+}
+
+fn push_links(rows: &mut Vec<ChatRow>, links: &[toolroll_api::LeadLink], w: usize, active: Option<&ChatHit>, skip_href: Option<&str>) {
     for link in links {
-        let Some(task) = &link.task else {
-            continue;
-        };
-        let hit = ChatHit::PeekTask {
-            task: task.clone(),
-            tab: link.tab.clone(),
-            label: link.label.clone(),
-        };
-        let is_sel = active_hit == Some(&hit);
-        let tab_hint = match link.tab.as_deref() {
-            Some("diff") => " (Diff)",
-            Some("steps") => " (Steps)",
-            Some("live") => " (Live)",
-            _ => "",
-        };
-        rows.push(ChatRow::clickable(
-            Line::from(vec![
-                Span::styled("│ ", line()),
-                Span::styled(
-                    fit(&format!("[→ {}{tab_hint}]", clean(&link.label)), inner_w),
-                    if is_sel { selected() } else { running() },
-                ),
-            ]),
-            hit,
-        ));
+        if Some(link.href.as_str()) == skip_href { continue; }
+        if let Some(hit) = link_hit(&link.label, &link.href, link.task.as_ref(), &link.tab) {
+            let suffix = match link.tab.as_deref() {
+                Some("diff") => " (Diff)", Some("steps") => " (Steps)", Some("live") => " (Live)",
+                _ if hit == ChatHit::ManageProjects => " (browser)", _ => "",
+            };
+            push_choice(rows, &format!("{}{suffix}", clean(&link.label)), hit, w, active);
+        }
     }
 }
 

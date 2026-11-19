@@ -300,6 +300,10 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     openBrowser: async page => {
       // An already-running console may predate this terminal's named sign-in landing.
       // Open the existing settings form on the proven console with the browser's normal sign-in.
+      if (page === "projects") {
+        await seams.openBrowser(new URL("/projects", url).href);
+        return "Opened Projects in your browser.";
+      }
       if (page === "lead-providers") {
         await seams.openBrowser(new URL("/settings/lead#lead-config", url).href);
         return "Opened Lead settings in your browser.";

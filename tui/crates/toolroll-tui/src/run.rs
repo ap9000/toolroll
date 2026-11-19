@@ -374,7 +374,7 @@ impl Loop {
                     }
                 }
                 None => {
-                    let path = if page == "lead-providers" { "/settings/lead#lead-config" } else { "" };
+                    let path = match page { "lead-providers" => "/settings/lead#lead-config", "projects" => "/projects", _ => "" };
                     let words = format!("Open {}{path} in your browser.", self.client.origin());
                     app.status = Some((crate::app::Tone::Said, words));
                 }

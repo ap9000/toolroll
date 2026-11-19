@@ -589,3 +589,57 @@ fn click_message_field_type_and_submit_without_a_shortcut() {
     assert!(matches!(&fx[..], [Effect::ChatSend { message, .. }] if message == "inspect"));
     assert!(click(&mut app, send).is_empty());
 }
+
+fn resume_conversation() -> App {
+    let mut app = loaded_app();
+    app.key(key('C'));
+    let mut data = fake::scenario_lead_chat();
+    let reply = &mut data["messages"].as_array_mut().unwrap().last_mut().unwrap();
+    reply["text"] = json!("The homepage redesign is paused. I can resume it when you’re ready.");
+    reply["activity"] = json!(null);
+    reply["ask"] = json!(null);
+    reply["cards"] = json!([
+        {"id":102,"kind":"unhold","label":"Resume work","state":"pending","data":false,
+         "lines":["Release homepage-nameplate from its hold","Project: alekseypelletier.com"],"card":null,
+         "said":null,"note":null,"primary":{"kind":"confirm","label":"Release hold","irreversible":false,"native":false},
+         "dismissable":true,"links":[{"label":"Peek homepage-nameplate","task":"homepage-nameplate","tab":null,"href":"/t/homepage-nameplate"}]},
+        {"id":103,"kind":"control","label":"Manage projects","state":"pending","data":false,"lines":[],"card":null,
+         "said":null,"note":null,"primary":{"kind":"link","label":"Manage projects","href":"/projects","task":null,"tab":null},
+         "dismissable":false,"links":[{"label":"Manage projects","href":"/projects","task":null,"tab":null}]}
+    ]);
+    data["queued"] = json!([]);
+    data["busy"] = json!(false);
+    app.update(Msg::LeadChat(Ok(parse(data))));
+    app.chat.follow_end();
+    app
+}
+
+#[test]
+fn chat_choices_match_their_mouse_targets_and_keep_numbers_in_drafts() {
+    for width in [48, 144] {
+        let mut app = resume_conversation();
+        render(&mut app, width, 34);
+        app.key(key('2'));
+        assert!(matches!(&app.mode, Mode::ChatCompose(text) if text == "2"));
+        app.key(code(KeyCode::Tab));
+        let shown = render(&mut app, width, 34);
+        assert_eq!(shown.matches("Manage projects (browser)").count(), 1, "{shown}");
+        let choices = app.chat.numbered_choices.clone();
+        let digit = |hit: &ChatHit| char::from_digit(1 + choices.iter().position(|h| h == hit).unwrap() as u32, 10).unwrap();
+        app.key(key(digit(&ChatHit::ManageProjects)));
+        assert_eq!(app.key(code(KeyCode::Enter)), vec![Effect::OpenPage("projects")]);
+        assert_eq!(app.chat.draft, "2");
+        app.key(key(digit(&ChatHit::ConfirmProposal(102))));
+        app.key(code(KeyCode::Down));
+        assert_eq!(app.chat.current_hit(), Some(&ChatHit::DismissProposal(102)));
+        app.key(code(KeyCode::Up));
+        assert!(app.key(code(KeyCode::Enter)).is_empty());
+        assert!(matches!(app.mode, Mode::ConfirmProposal(_)));
+        app.key(code(KeyCode::Esc));
+        render(&mut app, width, 34);
+        let rect = app.chat.hits.iter().find(|(_, hit)| *hit == ChatHit::DismissProposal(102)).unwrap().0;
+        let fx = app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 5, row: rect.y, modifiers: KeyModifiers::NONE });
+        assert_eq!(fx, vec![Effect::ProposalAct { id: 102, op: "dismiss", confirm_yes: false }]);
+    }
+}

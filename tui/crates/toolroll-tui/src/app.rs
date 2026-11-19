@@ -1536,6 +1536,7 @@ impl App {
             crate::chat::ChatHit::PeekTask { task, tab, .. } => {
                 self.peek_task(&task, tab.as_deref())
             }
+            crate::chat::ChatHit::ManageProjects => vec![Effect::OpenPage("projects")],
             crate::chat::ChatHit::AnswerAsk(option) => self.send_chat_message(option),
             crate::chat::ChatHit::RemoveQueued(id) => {
                 self.say(Tone::Said, "Removing queued message…");
@@ -3396,12 +3397,17 @@ impl App {
                     vec![]
                 }
                 KeyCode::Tab if !self.chat.items.is_empty() => {
-                    self.chat.selected_hit = 0;
+                    self.chat.selected_hit = self.chat.hits.first()
+                        .and_then(|(_, hit)| self.chat.items.iter().position(|item| item == hit)).unwrap_or(0);
+                    self.chat.reveal_selection = true;
+                    self.chat.draft = text;
                     self.mode = Mode::Normal;
                     vec![]
                 }
                 KeyCode::BackTab if !self.chat.items.is_empty() => {
                     self.chat.selected_hit = self.chat.items.len() - 1;
+                    self.chat.reveal_selection = true;
+                    self.chat.draft = text;
                     self.mode = Mode::Normal;
                     vec![]
                 }
@@ -4165,6 +4171,23 @@ impl App {
         // When Central Lead chat holds Detail focus, handle its stream-specific keys before global task shortcuts.
         if self.chat_focused() {
             match key.code {
+                KeyCode::Char(digit @ '1'..='9') if key.modifiers.is_empty() => {
+                    let index = (digit as u8 - b'1') as usize;
+                    if let Some(hit) = self.chat.numbered_choices.get(index) {
+                        if let Some(at) = self.chat.items.iter().position(|item| item == hit) {
+                            self.chat.selected_hit = at;
+                        }
+                        return vec![];
+                    }
+                }
+                KeyCode::Down if key.modifiers.is_empty() && !self.chat.items.is_empty() => {
+                    self.chat.select_next_hit();
+                    return vec![];
+                }
+                KeyCode::Up if key.modifiers.is_empty() && !self.chat.items.is_empty() => {
+                    self.chat.select_prev_hit();
+                    return vec![];
+                }
                 KeyCode::Char('i')
                     if !key
                         .modifiers

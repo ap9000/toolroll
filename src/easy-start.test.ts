@@ -141,10 +141,11 @@ describe("which invocations are an easy start", () => {
   test("Lead provider recovery opens the existing settings form on the proven console", async () => {
     const { seams, calls } = scripted({ proofs: [LIVE], tui: async session => {
       expect(await session.openBrowser("lead-providers")).toBe("Opened Lead settings in your browser.");
+      expect(await session.openBrowser("projects")).toBe("Opened Projects in your browser.");
       return "leave";
     } });
     expect(await runEasyStart("start", bare, seams)).toBe(0);
-    expect(calls).toEqual(["tui", `browser ${new URL("/settings/lead#lead-config", LIVE.url).href}`]);
+    expect(calls).toEqual(["tui", `browser ${new URL("/settings/lead#lead-config", LIVE.url).href}`, `browser ${new URL("/projects", LIVE.url).href}`]);
   });
 
   test("cli.ts: at a person's terminal, bare `toolroll` is the easy start", async () => {

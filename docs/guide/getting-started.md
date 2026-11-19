@@ -170,6 +170,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
 | `n` | New task (in focused Diff, next note instead) |
 | `C` | Central Lead chat (open / focus the Lead conversation shared with `/chat`; also pinned at the top of the Work rail) |
+| `Tab` in Message Lead | Browse the choices in the conversation. Click a choice, or select its visible number and press Enter. Up and Down move between choices. |
 | `F2` in Lead | Check membership sign-ins, switch Lead to Codex or Claude, or connect a provider. A failed provider reply opens the same dialog. Send the draft again when ready. |
 | `D` | Dock Central Lead chat beside the Peeked Task panel (`o` switches focus between Chat and Peek; task links inside Lead cards jump the Peek panel straight to that task's Diff / Steps / Live) |
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
