@@ -176,7 +176,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
         messages: [],
       });
     }
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = enabled.billing === "subscription" && (found === null || found.ceilingDigest !== principal.ceilingDigest);
     const ceilingStale = !notStarted && found !== null && found.ceilingDigest !== principal.ceilingDigest;
     const session = notStarted
@@ -194,7 +194,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       ? "Project access changed. Start a new conversation in the browser to continue."
       : !canSend
         ? "Start a Lead conversation in the browser first."
-        : rows.failure ?? null;
+        : notStarted ? null : rows.failure ?? null;
     return sendChecked(response, 200, "leadChat", leadChatOf({
       room,
       session,

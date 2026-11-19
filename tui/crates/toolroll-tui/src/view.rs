@@ -474,6 +474,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     app.areas.lead_row = Rect::default();
     app.areas.chat_area = Rect::default();
     app.areas.peek_area = Rect::default();
+    app.areas.agents_refresh = Rect::default();
     sheet::paint(f.buffer_mut(), area, ground());
     if area.height < 8 || area.width < 34 {
         f.render_widget(Paragraph::new("Make the window larger."), area);

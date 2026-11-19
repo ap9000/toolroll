@@ -474,7 +474,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   let subscriptionAnswers: (LeadProviderAnswer | SubscriptionStep)[];
   /** What the scripted subscription runner was handed (package 2): the
    * exact history — with its task context — the provider would see. */
-  let subscriptionRequests: { history: { role: string; text?: string }[] }[];
+  let subscriptionRequests: { provider: string; history: { role: string; text?: string }[] }[];
   let clockNow: Date;
   let admittedRepos: string[];
   /** Each request body the scripted provider was sent (a tool's result rides the next one). */
@@ -557,7 +557,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
         return verb === "read" ? { ok: true, body: { settings: { theme: "dark" }, colors: {}, themes: { built_in: ["dark"], saved: [] } } } : { ok: true, body: { changed: ["theme → light"] } };
       },
       subscriptionChatRunner: async request => {
-        subscriptionRequests.push(request as unknown as { history: { role: string; text?: string }[] });
+        subscriptionRequests.push(request as unknown as { provider: string; history: { role: string; text?: string }[] });
         const next = subscriptionAnswers.shift();
         if (next === undefined) throw new Error("the subscription script ran out");
         if (typeof next === "function") return next(request) as never;
@@ -1819,6 +1819,31 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     await visitAll();
     expect(counts()).toEqual(started);
     expect(subscriptionRequests).toHaveLength(1);
+  });
+
+  test("switching memberships keeps the thread and admits the next send under the new provider", async () => {
+    const config = { model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
+    store.setChatConfig({ ...config, provider: "claude-subscription" }, "alex", T0);
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    const send = (message: string, request: string, session: number) =>
+      fetch(url("/chat"), { method: "POST", headers: { cookie, accept: "application/json", "x-toolroll-client": "terminal" },
+        body: new URLSearchParams({ csrf, message, request: request.repeat(32), "request-session": String(session) }), redirect: "manual" });
+    const answer = { text: "Ready.", calls: [], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null };
+    subscriptionAnswers.push(answer);
+    expect((await send("Hello", "a", 0)).status).toBe(202);
+    await settle();
+    const original = store.activeLeadSession("alex")!;
+    store.setChatConfig({ ...config, provider: "codex-subscription" }, "alex", T0);
+    const read = () => fetch(url("/engine/chat"), { headers: { cookie } }).then(res => res.json());
+    expect(await read()).toMatchObject({ canSend: true, session: 0, problem: null });
+    expect((await send("Stale screen", "b", original.id)).status).toBe(409);
+    expect(store.activeLeadSession("alex")?.id).toBe(original.id);
+    subscriptionAnswers.push(answer);
+    expect((await send("Hello again", "c", 0)).status).toBe(202);
+    await settle();
+    expect(subscriptionRequests.map(req => req.provider)).toEqual(["claude-subscription", "codex-subscription"]);
+    expect(store.activeLeadSession("alex")?.id).not.toBe(original.id);
+    expect(await read()).toMatchObject({ messages: [ { text: "Hello" }, { text: "Ready." }, { text: "Hello again" }, { text: "Ready." } ] });
   });
 
   test("the first send starts exactly one conversation, and a retry or double submit of it starts nothing more", async () => {

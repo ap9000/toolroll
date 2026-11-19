@@ -19891,11 +19891,12 @@ export class Store {
   }
 
   /** The live session — explicitly ended or still active. Exhaustion is the caller's arithmetic. */
-  activeLeadSession(approver: string): LeadSession | null {
+  activeLeadSession(approver: string, credentialKey?: string): LeadSession | null {
     const row = this.db
       .prepare("SELECT * FROM lead_session WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=lead_session.id) ORDER BY id DESC LIMIT 1")
       .get(approver);
-    return row === undefined ? null : readLeadSession(row);
+    if (row === undefined || (credentialKey !== undefined && row["credential_key"] !== credentialKey)) return null;
+    return readLeadSession(row);
   }
 
   getLeadSession(id: number): LeadSession | null {

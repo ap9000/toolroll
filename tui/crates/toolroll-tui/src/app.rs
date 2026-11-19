@@ -1045,6 +1045,7 @@ pub struct Areas {
     pub split_x: u16,
     /// The top bar's "N need you" chip: clicking it jumps to the oldest item waiting on you.
     pub needs_chip: Rect,
+    pub agents_refresh: Rect,
     /// The pinned `Lead` row at the top of the Work rail (clickable to open/focus Lead chat).
     pub lead_row: Rect,
     /// Where the Lead chat sheet was drawn last frame.
@@ -1499,7 +1500,7 @@ impl App {
         }
         let session = data.session;
         let project = data.project.clone();
-        let request = self.chat.next_request_id(self.now);
+        let request = self.token(32);
         self.chat.sending = true;
         self.chat.draft.clear();
         self.chat.optimistic_sent = Some(trimmed.clone());
@@ -1956,6 +1957,12 @@ impl App {
                     }
                     // Only an ended session matters here: the lines are a first-run nicety, never a reason to stop.
                     Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+                    Err(e) if self.agents_screen.as_ref().is_some_and(|s| s.checking) => {
+                        if let Some(s) = self.agents_screen.as_mut() {
+                            s.checking = false;
+                        }
+                        self.say(Tone::Refused, format!("Agent check failed. {e}"));
+                    }
                     Err(_) => {}
                 }
                 vec![]
@@ -2329,7 +2336,7 @@ impl App {
                             if queued {
                                 "Queued for Lead."
                             } else {
-                                "Sent to Lead."
+                                "Submitted to Lead."
                             },
                         );
                         self.chat.loading = true;
@@ -2339,7 +2346,7 @@ impl App {
                         crate::chat_providers::restore_submission(self);
                         self.chat.optimistic_sent = None;
                         self.say(Tone::Refused, words);
-                        vec![]
+                        vec![Effect::FetchLeadChat]
                     }
                     Err(e) => {
                         crate::chat_providers::restore_submission(self);
@@ -6444,6 +6451,12 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if self.agents_screen.is_some() && self.mode == Mode::Normal
+            && ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && inside(self.areas.agents_refresh)
+        {
+            return crate::agents::check_again(self);
+        }
         if matches!(self.mode, Mode::LeadProviders(_)) {
             if ev.kind == MouseEventKind::Down(MouseButton::Left) {
                 if let Some((_, code)) = self.areas.lead_provider_controls.iter().find(|(r, _)| inside(*r)) {

@@ -103,10 +103,10 @@ pub fn groups(read: &AgentsRead) -> Vec<(&'static str, Vec<&AgentRow>)> {
             0
         } else if a.state == "not-installed" {
             3
-        } else if a.state == "signed-in" {
-            2
-        } else {
+        } else if a.state == "signed-out" {
             1
+        } else {
+            2
         };
         out[at].1.push(a);
     }
@@ -215,6 +215,7 @@ pub fn close(app: &mut App) -> Vec<Effect> {
 pub fn check_again(app: &mut App) -> Vec<Effect> {
     if let Some(s) = app.agents_screen.as_mut() {
         s.checking = true;
+        s.outcome = None;
     }
     app.say(Tone::Said, "Looking for this computer's agents again…");
     vec![Effect::CheckAgents]
@@ -241,7 +242,6 @@ pub fn on_agents(app: &mut App) {
     if let Some(s) = app.agents_screen.as_mut() {
         if s.checking {
             s.checking = false;
-            // A sign-in or install that just failed keeps its words on the status line too.
             if s.outcome.is_none() {
                 app.say(Tone::Said, "Agents checked.");
             }
@@ -742,6 +742,9 @@ pub fn ended(app: &mut App, code: Option<i64>, signal: Option<i64>) {
     let key = if kind == "install" { "i" } else { "s" };
     let words = match (code, signal) {
         (Some(0), _) => None,
+        (Some(127), _) if kind == "sign-in" => Some(format!(
+            "{command} exited with code 127. Make sure the agent and its helpers are on Toolroll's trusted PATH, then choose Check again."
+        )),
         (Some(c), _) => Some(format!(
             "{command} exited with an error (code {c}). Try again with {key}."
         )),
@@ -995,6 +998,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let again = sheet::button("Check again", "r", false);
     let pad = w.saturating_sub(sheet::spans_width(&head) + width(&again.content));
     head.push(Span::raw(" ".repeat(pad)));
+    let start = sheet::spans_width(&head).min(w);
+    app.areas.agents_refresh = Rect {
+        x: area.x + start as u16,
+        y: area.y,
+        width: width(&again.content).min(w - start) as u16,
+        height: 1,
+    };
     head.push(again);
     f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..area });
     let Some(read) = app.agents.clone() else {
@@ -1139,7 +1149,7 @@ fn draw_agent(f: &mut Frame, app: &mut App, a: &AgentRow, area: Rect) {
         command(&mut lines, "Install", c, act);
     }
     if let Some(c) = &a.setup.sign_in {
-        let wants = a.state == "signed-out" || a.state == "unknown";
+        let wants = a.state == "signed-out";
         let label = if a.ready { "Sign in again" } else { "Sign in" };
         let act = (a.setup.can_sign_in && a.state != "not-installed")
             .then(|| sheet::button(label, "s", wants));

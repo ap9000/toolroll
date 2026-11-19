@@ -82,8 +82,6 @@ pub struct LeadChatState {
     pub switching_provider: bool,
     pub checked_providers: Option<toolroll_api::AgentsRead>,
     pub provider_problem: Option<String>,
-    /// Monotonic counter for 32-hex `request` ids.
-    pub next_seq: u64,
     /// Clickable hitboxes captured during the last draw.
     pub hits: Vec<(Rect, ChatHit)>,
     /// Ordered selectable items from the latest state (kept in sync with `data`).
@@ -125,11 +123,6 @@ impl LeadChatState {
 
     pub fn pending_proposals(&self) -> i64 {
         self.data.as_ref().map(|d| d.pending_proposals).unwrap_or(0)
-    }
-
-    pub fn next_request_id(&mut self, now: i64) -> String {
-        self.next_seq = self.next_seq.wrapping_add(1);
-        format!("{:016x}{:016x}", now as u64, self.next_seq)
     }
 
     pub fn apply_data(&mut self, chat: LeadChat) {
