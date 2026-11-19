@@ -358,8 +358,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
     app.chat.hits.clear();
     let w = usize::from(area.width);
     let m = marks();
-    let active_hit = app.chat.current_hit().cloned();
     let typing = matches!(app.mode, Mode::ChatCompose(_));
+    let active_hit = if typing { None } else { app.chat.current_hit().cloned() };
 
     // ---- Header (2 rows) ----
     let lead_name = app.chat.lead_name();
@@ -416,24 +416,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
 
     f.render_widget(Paragraph::new(Line::from(providers)), app.areas.lead_providers_button);
 
-    let hint = if typing {
-        "Enter send · Shift-Enter newline · Esc browse history · PgUp/PgDn scroll"
-    } else if docked {
-        "Type or i to chat · e tools · [/] select · Enter act · o peek · D undock"
-    } else {
-        "Type or i to chat · e tools · [/] select · Enter act · D dock beside task"
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(fit(hint, w), dim()))),
-        Rect {
-            y: area.y + 1,
-            height: 1,
-            ..area
-        },
-    );
-
-    // ---- Layout: header (2) + rule (1) + stream (flex) + bordered chatbox (3..6) ----
-    let rule_y = area.y + 2;
+    let rule_y = area.y + 1;
     f.render_widget(
         Paragraph::new(Line::from(Span::styled("─".repeat(w), line()))),
         Rect {
@@ -451,7 +434,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
     let visible_draft_lines = wrapped_draft.len().clamp(1, 4) as u16;
     let composer_h = (visible_draft_lines + 2).min(area.height.saturating_sub(4)).max(3);
     let stream_y = rule_y + 1;
-    let stream_h = area.height.saturating_sub(3 + composer_h);
+    let stream_h = area.height.saturating_sub(2 + composer_h);
     let stream_area = Rect {
         x: area.x,
         y: stream_y,
@@ -705,7 +688,7 @@ fn wrap_draft_lines(draft: &str, max_w: usize) -> Vec<String> {
 
 fn draw_chatbox(
     f: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: Rect,
     lead_name: &str,
     typing: bool,
@@ -725,12 +708,10 @@ fn draw_chatbox(
     let busy = app.chat.is_busy();
 
     // Top border: ╭─ Message Lead ───────────────────────╮
-    let title = if typing {
-        format!(" Message {lead_name} ")
-    } else if !can_send {
+    let title = if !can_send {
         " Read-only ".to_string()
     } else {
-        format!(" Chat with {lead_name} ")
+        format!(" Message {lead_name} ")
     };
     let title_fit = fit(&title, inner_w.saturating_sub(2));
     let top_fill = inner_w.saturating_sub(1 + width(&title_fit));
@@ -765,7 +746,7 @@ fn draw_chatbox(
             let placeholder = if app.chat.sending {
                 "Sending to Lead…"
             } else if !can_send {
-                "Start a Lead session in the browser (w)"
+                "Start a Lead session in the browser"
             } else if busy {
                 "Lead is working — type to queue a follow-up…"
             } else {
@@ -823,24 +804,19 @@ fn draw_chatbox(
         }
     }
 
-    // Bottom border with right-aligned action cue: ╰─────────────── Enter send · Esc browse ─╯
-    let foot = if typing {
-        " Enter send · Esc browse "
-    } else if can_send {
-        " Type to message · Enter act "
+    let can_submit = can_send && !app.chat.sending && !app.chat.draft.trim().is_empty();
+    let bottom = if can_submit {
+        let label = if busy { " Queue " } else { " Send " };
+        let fill = inner_w - width(label) - 1;
+        app.areas.lead_send = Rect::new(area.x + 1 + fill as u16, area.bottom() - 1, width(label) as u16, 1);
+        Line::from(vec![
+            Span::styled(format!("╰{}", "─".repeat(fill)), border_style),
+            Span::styled(label, selected()),
+            Span::styled("─╯", border_style),
+        ])
     } else {
-        " w open browser "
+        Line::from(Span::styled(format!("╰{}╯", "─".repeat(inner_w)), border_style))
     };
-    let foot_fit = fit(foot, inner_w.saturating_sub(2));
-    let bot_fill = inner_w.saturating_sub(1 + width(&foot_fit));
-    let bottom = Line::from(vec![
-        Span::styled(format!("╰{}", "─".repeat(bot_fill)), border_style),
-        Span::styled(
-            foot_fit,
-            if typing { ink() } else { dim() },
-        ),
-        Span::styled("─╯", border_style),
-    ]);
     box_lines.push(bottom);
 
     f.render_widget(Paragraph::new(box_lines), area);

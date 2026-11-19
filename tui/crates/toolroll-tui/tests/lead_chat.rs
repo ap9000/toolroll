@@ -236,7 +236,10 @@ fn proposal_confirmation_requires_drawn_dialog_seen_end_and_irreversible_arming(
     answer(&mut app, fx);
     let _ = render(&mut app, 120, 34);
 
-    // Default selected item is the pending proposal (#102). Pressing Enter opens ConfirmProposal (never auto-confirms!).
+    // Enter in an empty field does nothing. Leave the composer to act on the transcript.
+    assert!(app.key(code(KeyCode::Enter)).is_empty());
+    assert!(matches!(app.mode, Mode::ChatCompose(_)));
+    app.key(code(KeyCode::Esc));
     assert_eq!(app.chat.current_hit(), Some(&ChatHit::ConfirmProposal(102)));
     let fx = app.key(code(KeyCode::Enter));
     assert!(fx.is_empty(), "Enter opens confirm dialog, never sends directly");
@@ -556,4 +559,33 @@ fn a_missing_membership_opens_the_correct_agent_setup() {
     let fx = app.key(key('1'));
     assert!(fx.contains(&Effect::FetchModels));
     assert_eq!(app.agents_screen.as_ref().unwrap().agent.as_deref(), Some("codex"));
+}
+
+#[test]
+fn click_message_field_type_and_submit_without_a_shortcut() {
+    let mut app = loaded_app();
+    app.key(key('C'));
+    app.key(code(KeyCode::Esc));
+    let click = |app: &mut App, area: ratatui::layout::Rect| app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE,
+    });
+    for w in [48, 120] {
+        let screen = render(&mut app, w, 28);
+        assert!(!screen.contains("i to chat") && !screen.contains("chatbox"));
+        assert_eq!(app.areas.lead_send.width, 0);
+    }
+    let field = app.chat.composer_area;
+    click(&mut app, field);
+    app.key(key('i'));
+    app.paste("nspect");
+    app.key(code(KeyCode::Tab));
+    assert_eq!(app.mode, Mode::Normal);
+    app.key(code(KeyCode::BackTab));
+    assert_eq!(app.mode, Mode::ChatCompose("inspect".into()));
+    render(&mut app, 48, 28);
+    let send = app.areas.lead_send;
+    assert!(send.width > 0);
+    let fx = click(&mut app, send);
+    assert!(matches!(&fx[..], [Effect::ChatSend { message, .. }] if message == "inspect"));
+    assert!(click(&mut app, send).is_empty());
 }

@@ -1025,6 +1025,7 @@ pub struct StepNavigation {
 pub struct Areas {
     pub builder_button: Option<(Rect, String)>,
     pub lead_providers_button: Rect,
+    pub lead_send: Rect,
     pub lead_provider_controls: Vec<(Rect, KeyCode)>,
     pub builder_controls: Vec<(Rect, BuilderControl)>,
     pub list: Rect,
@@ -3358,12 +3359,6 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if text.trim().is_empty() {
-                        if let Some(hit) = self.chat.current_hit().cloned() {
-                            self.chat.draft.clear();
-                            self.mode = Mode::Normal;
-                            return self.activate_chat_hit(hit);
-                        }
-                        self.mode = Mode::ChatCompose(text);
                         return vec![];
                     }
                     self.chat.draft = text.clone();
@@ -3393,14 +3388,14 @@ impl App {
                     self.mode = Mode::ChatCompose(text);
                     vec![]
                 }
-                KeyCode::Tab if text.is_empty() => {
-                    self.chat.select_next_hit();
-                    self.mode = Mode::ChatCompose(text);
+                KeyCode::Tab if !self.chat.items.is_empty() => {
+                    self.chat.selected_hit = 0;
+                    self.mode = Mode::Normal;
                     vec![]
                 }
-                KeyCode::BackTab if text.is_empty() => {
-                    self.chat.select_prev_hit();
-                    self.mode = Mode::ChatCompose(text);
+                KeyCode::BackTab if !self.chat.items.is_empty() => {
+                    self.chat.selected_hit = self.chat.items.len() - 1;
+                    self.mode = Mode::Normal;
                     vec![]
                 }
                 KeyCode::Backspace => {
@@ -4115,8 +4110,11 @@ impl App {
                 grow(&mut next);
                 return self.apply_list_query(next, true);
             }
+            Mode::ChatCompose(t) => {
+                grow(t);
+                self.chat.draft = t.clone();
+            }
             Mode::Steer(t)
-            | Mode::ChatCompose(t)
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
             | Mode::ThreadReply(_, t)
@@ -4176,11 +4174,18 @@ impl App {
                     self.chat.tools_expanded = !self.chat.tools_expanded;
                     return vec![];
                 }
-                KeyCode::Char(']') => {
+                KeyCode::Tab | KeyCode::BackTab if self.chat.data.as_ref().is_some_and(|d| d.can_send)
+                    && (self.chat.items.is_empty() || (key.code == KeyCode::Tab && self.chat.selected_hit + 1 >= self.chat.items.len())
+                        || (key.code == KeyCode::BackTab && self.chat.selected_hit == 0)) =>
+                {
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                    return vec![];
+                }
+                KeyCode::Char(']') | KeyCode::Tab => {
                     self.chat.select_next_hit();
                     return vec![];
                 }
-                KeyCode::Char('[') => {
+                KeyCode::Char('[') | KeyCode::BackTab => {
                     self.chat.select_prev_hit();
                     return vec![];
                 }
@@ -4338,7 +4343,7 @@ impl App {
                 if let Some(hit) = self.chat.current_hit().cloned() {
                     self.activate_chat_hit(hit)
                 } else {
-                    self.mode = Mode::ChatCompose(String::new());
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
                     vec![]
                 }
             }
@@ -6629,7 +6634,12 @@ impl App {
                     if inside(self.areas.lead_providers_button) {
                         return crate::chat_providers::open_providers(self);
                     }
+                    if inside(self.areas.lead_send) {
+                        self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        return self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    }
                     if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
+                        if self.chat.data.as_ref().is_some_and(|d| !d.can_send) { return vec![]; }
                         if !matches!(self.mode, Mode::ChatCompose(_)) {
                             self.mode = Mode::ChatCompose(self.chat.draft.clone());
                         }

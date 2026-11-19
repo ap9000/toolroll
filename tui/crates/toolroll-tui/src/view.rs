@@ -419,6 +419,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.areas.builder_button = None;
     app.areas.builder_controls.clear();
     app.areas.lead_providers_button = Rect::default();
+    app.areas.lead_send = Rect::default();
     app.areas.lead_provider_controls.clear();
     app.areas.approval_dialog = Rect::default();
     app.areas.approval_controls.clear();
@@ -3413,7 +3414,6 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         out.push(("PgUp/PgDn".into(), "scroll"));
         out.push(("Esc".into(), "browse"));
     } else if app.chat_focused() {
-        out.push(("i".into(), "chatbox"));
         out.push(("e".into(), "tools"));
         out.push(("[/]".into(), "select"));
         out.push(("Enter".into(), "act"));
