@@ -183,7 +183,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* The composer (direction A, made light): one row in a rounded box (a quiet chip for where it goes, the words growing
    with what is typed, a round send arrow) and, under it while empty and in use, the hint. */
 .so-composer-area { position: relative; }
-.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: 14px; padding: 7px 7px 7px 14px; margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
+.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: 14px; padding: 7px 7px 7px 14px; margin: 0; background: var(--so-paper); box-shadow: var(--so-pill-shadow); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
 .so-composer-area form[data-workspace-composer]:focus-within { border-color: var(--so-input-line); box-shadow: 0 0 0 3px var(--so-signal-soft); }
 .so-composer-row { display: flex; align-items: flex-end; gap: 8px; }
 .so-composer-row > .so-composer-chip { flex: none; align-self: center; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; border: 1px solid var(--so-line); border-radius: var(--so-radius-full); color: var(--so-neutral-ink); font-size: 12px; }
@@ -1003,7 +1003,7 @@ details.result-request-open > summary::marker { content: ""; }
   /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */
   .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail) { display: flex; position: relative; }
   .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail)::after { content: ""; position: absolute; inset: 0; background: var(--so-overlay); }
-  .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; z-index: 30; width: auto; height: auto; overflow: auto; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgb(0 0 0 / .12); }
+  .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; z-index: 30; width: auto; height: auto; overflow: auto; border-radius: 16px 16px 0 0; box-shadow: none; }
   .so-supporting-panel--detail .so-work-panel-header { padding-top: 10px; }
   /* The sheet's grab handle, as the mockup draws it. */
   .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail::before { content: ""; display: block; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 2px; background: var(--so-input-line); }
