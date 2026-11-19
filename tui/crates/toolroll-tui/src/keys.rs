@@ -118,6 +118,7 @@ actions! {
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];
     Settings = "settings", Global, Setting, "Settings in use", [];
+    TaskBuilder = "change-task-builder", Global, Act, "Change builder for this task", ["m"];
     Models = "models", Global, Setting, "Models for new tasks: change role assignments", ["M"];
     Agents = "agents", Global, Act, "Agents: add one, sign in, choose models", ["A"];
     LineDown = "line-down", Diff, Diff, "Next line", ["j", "down"];

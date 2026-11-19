@@ -8,7 +8,7 @@ expression: shown
 " │ Work  5                                    │ │ Live · Steps · Diff · Terminal                                      │ "
 " │                                            │ │                                                                     │ "
 " │ Needs you 1                                │ │ Rename the config loader                                            │ "
-" │ ● Add a subtract function          Failed  │ │ claude sonnet · Waiting to retry · 40s · after attempt 3            │ "
+" │ ● Add a subtract function          Failed  │ │ [Change builder  m] Waiting to retry · 40s · after attempt 3        │ "
 " │   1m ago                                   │ │                                                                     │ "
 " │                                            │ │ ◐ Build · Waiting to retry ── – Checks ──  ● Ready                  │ "
 " │ Up next 2           ╭ Cancel task ───────────────────────────────────────────────────────────╮─────────────────────┤ "

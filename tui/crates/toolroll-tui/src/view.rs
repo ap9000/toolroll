@@ -300,6 +300,17 @@ fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
         .trim()
         .to_string()
     });
+    let agent = agent.map(|name| {
+        if !card.runs.is_empty()
+            && steps.live_run.is_none()
+            && steps.review.is_none()
+            && !matches!(steps.task.state.as_str(), "done" | "cancelled")
+        {
+            format!("Last build: {name}")
+        } else {
+            name
+        }
+    });
     if let Some(agent) = &agent {
         parts.push(agent.clone());
     }
@@ -392,6 +403,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
     app.areas.links.clear();
     app.areas.steps.clear();
+    app.areas.builder_button = None;
+    app.areas.builder_controls.clear();
     app.areas.approval_dialog = Rect::default();
     app.areas.approval_controls.clear();
     app.areas.steer_targets.clear();
@@ -1258,11 +1271,34 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         title_spans.push(badge);
     }
     let mut head_lines = vec![Line::from(title_spans)];
-    match app.steps.as_ref().and_then(|s| facts_line(app, s, w)) {
-        Some(l) => head_lines.push(fit_line(l, w)),
-        None if app.approval_waiting() => head_lines.push(Line::raw("")),
-        None => head_lines.push(Line::from(Span::styled(fit(&item.detail, w), dim()))),
+    let builder_task = app.builder_task();
+    let button = sheet::button("Change builder", &key_name(app, Action::TaskBuilder), false);
+    let available = if builder_task.is_some() {
+        w.saturating_sub(button.width() + 1)
+    } else {
+        w
+    };
+    let mut facts = app
+        .steps
+        .as_ref()
+        .and_then(|s| facts_line(app, s, available))
+        .unwrap_or_else(|| {
+            if app.approval_waiting() {
+                Line::raw("")
+            } else {
+                Line::from(Span::styled(fit(&item.detail, available), dim()))
+            }
+        });
+    if let Some(task) = builder_task.filter(|_| head.height >= 2) {
+        let mut row = vec![button, Span::raw(" ")];
+        row.extend(facts.spans);
+        facts = Line::from(row);
+        app.areas.builder_button = Some((
+            Rect::new(head.x, head.y + 1, facts.width().min(w) as u16, 1),
+            task,
+        ));
     }
+    head_lines.push(fit_line(facts, w));
     if let Some(steps) = &app.steps {
         if roomy {
             head_lines.push(Line::raw(""));
@@ -3611,6 +3647,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
+        Mode::TaskBuilder { .. } => return draw_task_builder(f, app, area),
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
         Mode::Settings => (
@@ -4188,6 +4225,105 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let r = centered(area, w + 2, lines.len() as u16 + 2);
     let block = dialog(f, r, title);
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+fn draw_task_builder(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::app::BuilderControl;
+    let Mode::TaskBuilder { task, form, index } = &app.mode else {
+        return;
+    };
+    let width = area.width.saturating_sub(2).min(82);
+    let height = area.height.saturating_sub(2).min(22);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = dialog(f, rect, " Change task builder ");
+    let inner = block.inner(rect);
+    let w = usize::from(inner.width);
+    let mut lines = vec![
+        Line::from(Span::styled(fit(&clean(task), w), dim())),
+        Line::raw(""),
+    ];
+    let Some(form) = form else {
+        lines.push(Line::raw("Reading this task’s configured builders…"));
+        f.render_widget(Paragraph::new(lines).block(block), rect);
+        return;
+    };
+    let name = |value: &str| clean(&value.replace('|', " · "));
+    let choice = form.choices.get(*index);
+    let changed = choice.is_some() && choice != form.current.as_ref();
+    let summary = choice
+        .map(|v| format!("Next builder: {}", name(v)))
+        .unwrap_or_default();
+    let mut foot: Vec<Line> = wrap(&summary, w.max(1))
+        .into_iter()
+        .map(Line::raw)
+        .collect();
+    foot.extend(
+        wrap("Changing the builder requires a new approval.", w.max(1))
+            .into_iter()
+            .map(|s| Line::from(Span::styled(s, dim()))),
+    );
+    let rows = usize::from(inner.height).saturating_sub(lines.len() + foot.len() + 3);
+    if rows == 0 || w < 22 {
+        app.drawn_dialog = None;
+        f.render_widget(
+            Paragraph::new("Enlarge the terminal to choose a builder. Esc goes back.").block(block),
+            rect,
+        );
+        return;
+    }
+    let start = index.saturating_sub(rows - 1);
+    for (i, value) in form.choices.iter().enumerate().skip(start).take(rows) {
+        let current = if form.current.as_ref() == Some(value) {
+            " · current"
+        } else {
+            ""
+        };
+        let text = format!(
+            "{} {}{}",
+            if i == *index { ">" } else { " " },
+            name(value),
+            current
+        );
+        let style = if i == *index { selected() } else { ink() };
+        let row = Rect::new(inner.x, inner.y + lines.len() as u16, inner.width, 1);
+        app.areas
+            .builder_controls
+            .push((row, BuilderControl::Choose(i)));
+        lines.push(sheet::band(
+            Line::from(Span::styled(fit(&text, w), style)),
+            w,
+            style,
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.append(&mut foot);
+    lines.push(Line::raw(""));
+    let save = sheet::button("Use builder", "Enter", true);
+    let back = sheet::button("Back", "Esc", false);
+    let y = inner.y + lines.len() as u16;
+    let mut buttons = vec![];
+    if changed {
+        app.areas.builder_controls.push((
+            Rect::new(inner.x, y, save.width() as u16, 1),
+            BuilderControl::Save,
+        ));
+        buttons.extend([save, Span::raw(" ")]);
+    }
+    let x = inner.x + sheet::spans_width(&buttons) as u16;
+    if x + back.width() as u16 <= inner.right() {
+        app.areas.builder_controls.push((
+            Rect::new(x, y, back.width() as u16, 1),
+            BuilderControl::Back,
+        ));
+        buttons.push(back);
+    }
+    lines.push(Line::from(buttons));
+    f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 /// A dialog's sheet over the screen: what is behind it fades (the scrim), and the dialog is paper with a rounded

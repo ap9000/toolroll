@@ -508,3 +508,51 @@ fn a_stage_in_another_panel_opens_on_that_task_after_its_steps_arrive() {
     assert_eq!(app.items[app.selected].id, link.task);
     assert_eq!(app.tab, Tab::Diff);
 }
+
+#[test]
+fn change_builder_on_an_existing_task_by_mouse_only_changes_its_build_route() {
+    use toolroll_tui::app::BuilderControl;
+    let mut app = on("t-rate");
+    let s = app.steps.as_mut().unwrap();
+    s.live_run = None;
+    s.review = None;
+    s.task.state = "queued".into();
+    draw(&mut app, 100, 28);
+    let (button, task) = app.areas.builder_button.clone().unwrap();
+    let fx = app.mouse(left_click(button));
+    assert!(matches!(fx.as_slice(), [Effect::FetchTaskBuilder {task: t, ..}] if t == &task));
+    app.update(Msg::TaskBuilder(
+        task.clone(),
+        Ok(toolroll_api::TaskBuilder {
+            digest: "a".repeat(32),
+            current: Some("claude|opus".into()),
+            choices: vec!["claude|opus".into(), "codex|sol".into()],
+        }),
+    ));
+    draw(&mut app, 48, 24);
+    assert!(!app
+        .areas
+        .builder_controls
+        .iter()
+        .any(|(_, c)| matches!(c, BuilderControl::Save)));
+    let (row, _) = *app
+        .areas
+        .builder_controls
+        .iter()
+        .find(|(_, c)| matches!(c, BuilderControl::Choose(1)))
+        .unwrap();
+    assert!(app.mouse(left_click(row)).is_empty());
+    let screen = draw(&mut app, 48, 24).backend().to_string();
+    assert!(screen.contains("Next builder: codex · sol"), "{screen}");
+    let (save, _) = *app
+        .areas
+        .builder_controls
+        .iter()
+        .find(|(_, c)| matches!(c, BuilderControl::Save))
+        .unwrap();
+    let fx = app.mouse(left_click(save));
+    assert!(matches!(fx.as_slice(), [Effect::Act {path,fields,..}]
+        if path == &format!("/t/{task}/route") && fields.contains(&("phase".into(),"build".into()))
+        && fields.contains(&("agent".into(),"codex|sol".into())) && fields.contains(&("sawDigest".into(),"a".repeat(32)))));
+    assert_eq!(app.mode, Mode::Normal);
+}

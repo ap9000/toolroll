@@ -391,6 +391,10 @@ impl Loop {
             Effect::TermOpen { task, run } => {
                 drop(tokio::spawn(open_terminal(client, tx, task, run)));
             }
+            Effect::FetchTaskBuilder { root, task } => drop(tokio::spawn(async move {
+                let result = client.task_builder(&root, &task).await;
+                let _ = tx.send(Msg::TaskBuilder(task, result));
+            })),
             Effect::FetchModels => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Models(client.models().await));
             })),

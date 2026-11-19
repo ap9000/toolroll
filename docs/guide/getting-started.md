@@ -323,6 +323,11 @@ runs. Toolroll never runs `curl | bash` installers. For agents that only
 offer those installers, copy the command and run it yourself if you trust
 it. The screen also lets you copy sign-in commands.
 
+For an existing idle task, click **Change builder** beside its model in Work, or press
+`m`. Select a configured model and choose **Use builder**. Review the updated
+approval before resuming a held task. The model in the previous attempt stays in
+its history. The picker shows configured choices; provider quota can change.
+
 From Work, press `M` or find **Models for new tasks** in the command palette.
 Select a role and press Enter. Press `/` to find a model by provider or name,
 use the arrows to select it, and press Enter to preview the change. Enter

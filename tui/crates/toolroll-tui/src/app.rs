@@ -323,6 +323,11 @@ pub const UNDRAWN: &str = "Make the window bigger to see this first.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
+    TaskBuilder {
+        task: String,
+        form: Option<toolroll_api::TaskBuilder>,
+        index: usize,
+    },
     Normal,
     Steer(String),
     Note(NoteKind, String),
@@ -808,6 +813,10 @@ pub enum Effect {
     TermDetach(String),
     /// The installation's models (GET /engine/models), for the Agents screen.
     FetchModels,
+    FetchTaskBuilder {
+        root: String,
+        task: String,
+    },
     /// Look for this computer's agents again (POST /engine/agents/check), then the agents read.
     CheckAgents,
     /// An agent's own sign-in, or its confirmed install (`confirm`: the exact command shown), in a pane: started by
@@ -871,6 +880,7 @@ pub struct ContextAsk {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Msg {
+    TaskBuilder(String, Result<toolroll_api::TaskBuilder, ApiError>),
     Work(Result<WorkRows, ApiError>),
     Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
@@ -912,6 +922,13 @@ pub enum ComposerClick {
     Action(Action),
     Send,
     Cancel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BuilderControl {
+    Choose(usize),
+    Save,
+    Back,
 }
 
 /// A click follows the destination that was drawn, even if a refresh races the mouse event.
@@ -969,6 +986,8 @@ pub struct StepNavigation {
 
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
+    pub builder_button: Option<(Rect, String)>,
+    pub builder_controls: Vec<(Rect, BuilderControl)>,
     pub list: Rect,
     pub steps: Vec<(Rect, Tab, StepLink)>,
     pub approval_dialog: Rect,
@@ -1985,6 +2004,35 @@ impl App {
             Msg::Tick => self.tick(),
             Msg::TermOpened { task, run, result } => self.term_opened(task, run, result),
             Msg::Term(id, event) => self.term_event(id, event),
+            Msg::TaskBuilder(task, read) => {
+                if !matches!(&self.mode, Mode::TaskBuilder { task: asked, form: None, .. } if asked == &task)
+                {
+                    return vec![];
+                }
+                match read {
+                    Ok(form) if self.builder_task().as_deref() == Some(task.as_str()) => {
+                        let index = form
+                            .choices
+                            .iter()
+                            .position(|v| Some(v) == form.current.as_ref())
+                            .unwrap_or(0);
+                        self.mode = Mode::TaskBuilder {
+                            task,
+                            form: Some(form),
+                            index,
+                        };
+                    }
+                    Ok(_) => {
+                        self.mode = Mode::Normal;
+                        self.say(Tone::Refused, TASK_CHANGED);
+                    }
+                    Err(e) => {
+                        self.mode = Mode::Normal;
+                        return self.failed(e);
+                    }
+                }
+                vec![]
+            }
             Msg::Models(read) => crate::agents::on_models(self, read),
         }
     }
@@ -2599,6 +2647,9 @@ impl App {
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
         self.step_nav = StepNavigation::default();
+        if matches!(self.mode, Mode::TaskBuilder { .. }) {
+            self.mode = Mode::Normal;
+        }
         // Opened: no longer unread (a thread: its news seen, so it moves on to Recent once nothing else waits).
         if let Some(id) = self.selected_id() {
             self.unread.remove(&id);
@@ -2688,6 +2739,16 @@ impl App {
         }
         self.selected = index;
         self.selection_changed()
+    }
+
+    pub fn builder_task(&self) -> Option<String> {
+        self.steps_here()
+            .filter(|s| {
+                s.live_run.is_none()
+                    && s.review.is_none()
+                    && !matches!(s.task.state.as_str(), "cancelled" | "done")
+            })
+            .map(|s| s.task.id.clone())
     }
 
     fn open_step(&mut self, link: &StepLink) -> Vec<Effect> {
@@ -2800,6 +2861,51 @@ impl App {
                     },
                 );
                 vec![Effect::ResumeScreen]
+            }
+            Mode::TaskBuilder { task, form, index } => {
+                if key.code == KeyCode::Esc {
+                    self.mode = Mode::Normal;
+                    return vec![];
+                }
+                let Some(form) = form else { return vec![] };
+                if self.builder_task().as_deref() != Some(task.as_str()) {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Refused, TASK_CHANGED);
+                    return vec![];
+                }
+                let last = form.choices.len().saturating_sub(1);
+                let index = match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => index.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => (index + 1).min(last),
+                    KeyCode::Enter => {
+                        let Some(value) = form
+                            .choices
+                            .get(index)
+                            .filter(|v| Some(*v) != form.current.as_ref())
+                        else {
+                            return vec![];
+                        };
+                        let path = format!("/t/{}/route", toolroll_api::client::encode(&task));
+                        self.mode = Mode::Normal;
+                        self.say(Tone::Said, "Changing this task’s builder…");
+                        return self.act(
+                            path,
+                            vec![
+                                ("sawDigest", form.digest),
+                                ("phase", "build".into()),
+                                ("agent", value.clone()),
+                            ],
+                            "Builder changed. Review the updated plan before resuming.".into(),
+                        );
+                    }
+                    _ => return vec![],
+                };
+                self.mode = Mode::TaskBuilder {
+                    task,
+                    form: Some(form),
+                    index,
+                };
+                vec![]
             }
             Mode::Help => {
                 self.mode = if key.code == KeyCode::Char('s') {
@@ -4175,6 +4281,22 @@ impl App {
                 vec![]
             }
             Action::Agents => crate::agents::open(self),
+            Action::TaskBuilder => {
+                let Some(task) = self.builder_task() else {
+                    self.say(
+                        Tone::Refused,
+                        "Select an idle task with a plan to change its builder.",
+                    );
+                    return vec![];
+                };
+                let root = self.steps_here().unwrap().task.root.clone();
+                self.mode = Mode::TaskBuilder {
+                    task: task.clone(),
+                    form: None,
+                    index: 0,
+                };
+                vec![Effect::FetchTaskBuilder { root, task }]
+            }
             Action::Models => crate::agents::open_models(self),
             Action::LineDown => {
                 self.move_cursor(1);
@@ -4649,6 +4771,9 @@ impl App {
     /// was seen are left out (they change as it is read); Accept's "notes go with it" is part of it.
     pub fn dialog_key(&self) -> Option<String> {
         match &self.mode {
+            Mode::TaskBuilder { task, form, index } => {
+                Some(format!("TaskBuilder {task} {form:?} {index}"))
+            }
             Mode::Normal
             | Mode::Steer(_)
             | Mode::Note(..)
@@ -5662,6 +5787,46 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if matches!(self.mode, Mode::TaskBuilder { .. }) {
+            let code = match ev.kind {
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::Down(MouseButton::Left) => match self
+                    .areas
+                    .builder_controls
+                    .iter()
+                    .find(|(r, _)| inside(*r))
+                    .map(|(_, c)| *c)
+                {
+                    Some(BuilderControl::Choose(i)) => {
+                        if let Mode::TaskBuilder { index, .. } = &mut self.mode {
+                            *index = i;
+                        }
+                        None
+                    }
+                    Some(BuilderControl::Save) => Some(KeyCode::Enter),
+                    Some(BuilderControl::Back) => Some(KeyCode::Esc),
+                    None => None,
+                },
+                _ => None,
+            };
+            return code.map_or_else(Vec::new, |code| {
+                self.key(KeyEvent::new(code, KeyModifiers::NONE))
+            });
+        }
+        if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some((_, task)) = self
+                .areas
+                .builder_button
+                .as_ref()
+                .filter(|(r, _)| inside(*r))
+            {
+                if self.builder_task().as_ref() == Some(task) {
+                    return self.run_action(Action::TaskBuilder);
+                }
+                return vec![];
+            }
+        }
         if matches!(self.mode, Mode::Approve { .. }) && inside(self.areas.approval_dialog) {
             let key = match ev.kind {
                 MouseEventKind::ScrollDown => Some(KeyCode::Down),

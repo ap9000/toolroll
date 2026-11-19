@@ -61,6 +61,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
             let held = !live && app.held_here().is_some();
             let queued = !live && app.queued_here();
             match a {
+                Action::TaskBuilder if held && app.builder_task().is_some() => 315,
                 Action::Accept if review || approval => 320,
                 Action::SendBack if review || retry => 310,
                 Action::Retry if retry => 310,
