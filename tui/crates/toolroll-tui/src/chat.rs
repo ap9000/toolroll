@@ -72,6 +72,10 @@ pub struct LeadChatState {
     pub selected_hit: usize,
     /// True while a `POST /chat` request is in flight.
     pub sending: bool,
+    /// Persistent composer draft (preserved when leaving typing mode to inspect tasks or scroll).
+    pub draft: String,
+    /// Optimistically displayed operator message immediately after hitting Enter, cleared once synced from server.
+    pub optimistic_sent: Option<String>,
     /// Monotonic counter for 32-hex `request` ids.
     pub next_seq: u64,
     /// Clickable hitboxes captured during the last draw.
@@ -107,7 +111,10 @@ impl LeadChatState {
 
     pub fn is_busy(&self) -> bool {
         self.data.as_ref().is_some_and(|d| d.busy)
-            || self.live_turn.as_ref().is_some_and(|t| !t.done)
+            || self
+                .live_turn
+                .as_ref()
+                .is_some_and(|t| !t.done && !t.is_idle())
     }
 
     pub fn pending_proposals(&self) -> i64 {
@@ -121,8 +128,20 @@ impl LeadChatState {
 
     pub fn apply_data(&mut self, chat: LeadChat) {
         let was_empty = self.data.is_none();
-        if !chat.busy && self.live_turn.as_ref().is_some_and(|t| t.done) {
+        if !chat.busy && self.live_turn.as_ref().is_some_and(|t| t.done || t.is_idle()) {
             self.live_turn = None;
+        }
+        if let Some(opt) = &self.optimistic_sent {
+            if chat
+                .messages
+                .iter()
+                .rev()
+                .take(4)
+                .any(|m| m.role == "operator" && m.text.trim() == opt.trim())
+                || chat.queued.iter().any(|q| q.text.trim() == opt.trim())
+            {
+                self.optimistic_sent = None;
+            }
         }
         self.data = Some(chat);
         self.loaded = true;
@@ -132,6 +151,10 @@ impl LeadChatState {
     }
 
     pub fn apply_turn(&mut self, turn: LiveTurn) {
+        if turn.is_idle() {
+            self.live_turn = None;
+            return;
+        }
         self.live_turn = Some(turn);
         if self.follow {
             self.scroll = usize::MAX;
@@ -184,6 +207,11 @@ impl LeadChatState {
             for q in &chat.queued {
                 if q.status == "queued" {
                     items.push(ChatHit::RemoveQueued(q.id));
+                }
+            }
+            if chat.messages.is_empty() && chat.can_send {
+                for (_, prompt) in STARTER_PROMPTS {
+                    items.push(ChatHit::AnswerAsk((*prompt).to_string()));
                 }
             }
         }
@@ -300,15 +328,32 @@ impl ChatRow {
     }
 }
 
+/// Quick-start prompts offered in an empty Lead conversation (matching `/chat` starters).
+const STARTER_PROMPTS: &[(&str, &str)] = &[
+    (
+        "Brief me on what needs attention",
+        "Brief me on what needs my attention, what is building, and the highest-leverage next action across every project.",
+    ),
+    (
+        "Walk me through open decisions",
+        "Walk me through the open decisions, their options, and what you recommend I inspect first.",
+    ),
+    (
+        "Help me start a new task",
+        "Help me define a new task. Ask only about choices that materially change the result; otherwise use your judgment and sensible reversible defaults.",
+    ),
+];
+
 /// Render the central Lead chat sheet into `area`.
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
-    if area.width < 12 || area.height < 6 {
+    if area.width < 12 || area.height < 8 {
         return;
     }
     app.chat.hits.clear();
     let w = usize::from(area.width);
     let m = marks();
     let active_hit = app.chat.current_hit().cloned();
+    let typing = matches!(app.mode, Mode::ChatCompose(_));
 
     // ---- Header (2 rows) ----
     let lead_name = app.chat.lead_name();
@@ -333,7 +378,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
             .chat
             .live_turn
             .as_ref()
-            .filter(|t| !t.done && !t.status.trim().is_empty())
+            .filter(|t| !t.done && !t.is_idle() && !t.status.trim().is_empty())
             .map(|t| clean(&t.status))
             .unwrap_or_else(|| "Working…".into());
         let mark = crate::view::live_mark(app);
@@ -357,10 +402,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
         Rect { height: 1, ..area },
     );
 
-    let hint = if docked {
-        "s message · e tools · [/] select · Enter act · o peek · D undock"
+    let hint = if typing {
+        "Enter send · Shift-Enter newline · Esc browse history · PgUp/PgDn scroll"
+    } else if docked {
+        "Type or i to chat · e tools · [/] select · Enter act · o peek · D undock"
     } else {
-        "s message · e tools · [/] select · Enter act · D dock beside task"
+        "Type or i to chat · e tools · [/] select · Enter act · D dock beside task"
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(fit(hint, w), dim()))),
@@ -371,7 +418,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
         },
     );
 
-    // ---- Layout: header (2) + rule (1) + stream (flex) + composer (2) ----
+    // ---- Layout: header (2) + rule (1) + stream (flex) + bordered chatbox (3..6) ----
     let rule_y = area.y + 2;
     f.render_widget(
         Paragraph::new(Line::from(Span::styled("─".repeat(w), line()))),
@@ -381,7 +428,14 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
             ..area
         },
     );
-    let composer_h = 2u16;
+    let draft_text: &str = match &app.mode {
+        Mode::ChatCompose(s) => s.as_str(),
+        _ => app.chat.draft.as_str(),
+    };
+    let box_inner_w = w.saturating_sub(6).max(10);
+    let wrapped_draft = wrap_draft_lines(draft_text, box_inner_w);
+    let visible_draft_lines = wrapped_draft.len().clamp(1, 4) as u16;
+    let composer_h = (visible_draft_lines + 2).min(area.height.saturating_sub(4)).max(3);
     let stream_y = rule_y + 1;
     let stream_h = area.height.saturating_sub(3 + composer_h);
     let stream_area = Rect {
@@ -413,18 +467,40 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
             }
             rows.push(ChatRow::plain(Line::raw("")));
         }
-        if chat.messages.is_empty() && app.chat.live_turn.is_none() {
+        if chat.messages.is_empty()
+            && app.chat.optimistic_sent.is_none()
+            && app.chat.live_turn.as_ref().is_none_or(|t| t.done || t.is_idle())
+        {
+            rows.push(ChatRow::plain(Line::raw("")));
             rows.push(ChatRow::plain(Line::from(Span::styled(
-                "What do you want to get done?",
+                format!("◆ {lead_name} — central agent across all projects"),
                 ink().add_modifier(Modifier::BOLD),
             ))));
             rows.push(ChatRow::plain(Line::from(Span::styled(
                 fit(
-                    "Press s to message the central Lead across all projects.",
+                    "Ask about any task, review diffs, file new work, or steer running builds.",
                     w,
                 ),
                 dim(),
             ))));
+            rows.push(ChatRow::plain(Line::raw("")));
+            if chat.can_send {
+                rows.push(ChatRow::plain(Line::from(Span::styled(
+                    "Try asking:",
+                    dim(),
+                ))));
+                for (label, prompt) in STARTER_PROMPTS {
+                    let hit = ChatHit::AnswerAsk((*prompt).to_string());
+                    let is_sel = active_hit.as_ref() == Some(&hit);
+                    rows.push(ChatRow::clickable(
+                        Line::from(Span::styled(
+                            fit(&format!("  [→ {label}]"), w),
+                            if is_sel { selected() } else { running() },
+                        )),
+                        hit,
+                    ));
+                }
+            }
         }
         for msg in &chat.messages {
             if msg.role == "operator" {
@@ -489,9 +565,31 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
             }
             rows.push(ChatRow::plain(Line::raw("")));
         }
-        // Live streaming turn at bottom
-        if let Some(turn) = app.chat.live_turn.clone().filter(|t| !t.done) {
+        // Optimistic sent message immediately shown until server echoes it in GET /engine/chat
+        if let Some(opt) = app.chat.optimistic_sent.clone() {
+            let text = clean(&opt);
+            for (i, wrapped) in wrap(&text, w.saturating_sub(2).max(10))
+                .into_iter()
+                .enumerate()
+            {
+                let prefix = if i == 0 { "› " } else { "  " };
+                rows.push(ChatRow::plain(Line::from(vec![
+                    Span::styled(prefix, dim()),
+                    Span::styled(wrapped, ink().add_modifier(Modifier::BOLD)),
+                ])));
+            }
+            rows.push(ChatRow::plain(Line::raw("")));
+        }
+        // Live streaming turn at bottom (only when genuinely active, never for `state: "idle"`)
+        if let Some(turn) = app.chat.live_turn.clone().filter(|t| !t.done && !t.is_idle()) {
             push_live_turn(&mut rows, app, &turn, w);
+            rows.push(ChatRow::plain(Line::raw("")));
+        } else if chat.busy {
+            let mark = crate::view::live_mark(app);
+            rows.push(ChatRow::plain(Line::from(vec![
+                Span::styled(format!("{mark} "), running()),
+                Span::styled("Thinking…", running()),
+            ])));
             rows.push(ChatRow::plain(Line::raw("")));
         }
         // Queued follow-up messages
@@ -568,44 +666,170 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
         .collect();
     f.render_widget(Paragraph::new(visible), stream_area);
 
-    // ---- Composer strip (2 rows) ----
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled("─".repeat(w), line()))),
-        Rect {
-            height: 1,
-            ..composer_area
-        },
-    );
-    let input_rect = Rect {
-        y: composer_area.y + 1,
-        height: 1,
-        ..composer_area
-    };
-    let composer_line = match &app.mode {
-        Mode::ChatCompose(draft) => {
-            let shown = fit(&clean(draft), w.saturating_sub(18).max(8));
-            Line::from(vec![
-                Span::styled("› ", ink().add_modifier(Modifier::BOLD)),
-                Span::styled(shown, ink()),
-                Span::styled("▏", ink()),
-                Span::styled("  Enter send · Esc", dim()),
-            ])
+    // ---- Real Rounded Bordered Chatbox ----
+    draw_chatbox(f, app, composer_area, &lead_name, typing, &wrapped_draft);
+}
+
+fn wrap_draft_lines(draft: &str, max_w: usize) -> Vec<String> {
+    if draft.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    for raw in draft.split('\n') {
+        let cleaned = clean(raw);
+        if cleaned.is_empty() {
+            out.push(String::new());
+        } else {
+            out.extend(wrap(&cleaned, max_w));
         }
-        _ => {
-            let can_send = app.chat.data.as_ref().is_none_or(|d| d.can_send);
-            let prompt = if app.chat.sending {
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+fn draw_chatbox(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    lead_name: &str,
+    typing: bool,
+    wrapped: &[String],
+) {
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+    let w = usize::from(area.width);
+    let inner_w = w.saturating_sub(2);
+    let border_style = if typing {
+        ink().add_modifier(Modifier::BOLD)
+    } else {
+        line()
+    };
+    let can_send = app.chat.data.as_ref().is_none_or(|d| d.can_send);
+    let busy = app.chat.is_busy();
+
+    // Top border: ╭─ Message Lead ───────────────────────╮
+    let title = if typing {
+        format!(" Message {lead_name} ")
+    } else if !can_send {
+        " Read-only ".to_string()
+    } else {
+        format!(" Chat with {lead_name} ")
+    };
+    let title_fit = fit(&title, inner_w.saturating_sub(2));
+    let top_fill = inner_w.saturating_sub(1 + width(&title_fit));
+    let top = Line::from(vec![
+        Span::styled("╭─", border_style),
+        Span::styled(
+            title_fit,
+            if typing {
+                ink().add_modifier(Modifier::BOLD)
+            } else {
+                dim()
+            },
+        ),
+        Span::styled(format!("{}╮", "─".repeat(top_fill)), border_style),
+    ]);
+
+    // Body rows (1..=4 lines)
+    let body_h = usize::from(area.height.saturating_sub(2)).max(1);
+    let skip = wrapped.len().saturating_sub(body_h);
+    let shown = &wrapped[skip..];
+    let has_text = !(wrapped.len() == 1 && wrapped[0].is_empty());
+
+    let mut box_lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height));
+    box_lines.push(top);
+
+    for row in 0..body_h {
+        let is_first = row == 0 && skip == 0;
+        let is_last = row + 1 == shown.len();
+        let prompt = if is_first { " › " } else { "   " };
+        let text_w = inner_w.saturating_sub(4);
+        if !has_text && row == 0 {
+            let placeholder = if app.chat.sending {
                 "Sending to Lead…"
             } else if !can_send {
-                "Read-only — start a Lead session in the browser (w)"
-            } else if app.chat.is_busy() {
-                "› Lead is working — press s to queue a follow-up…"
+                "Start a Lead session in the browser (w)"
+            } else if busy {
+                "Lead is working — type to queue a follow-up…"
             } else {
-                "› Message Lead across all projects…  (s to type)"
+                "Ask Lead anything across all projects…"
             };
-            Line::from(Span::styled(fit(prompt, w), dim()))
+            let shown_p = fit(placeholder, text_w.saturating_sub(usize::from(typing)));
+            let cursor_w = usize::from(typing);
+            let pad = text_w.saturating_sub(width(&shown_p) + cursor_w);
+            let mut spans = vec![
+                Span::styled("│", border_style),
+                Span::styled(
+                    prompt,
+                    if typing {
+                        ink().add_modifier(Modifier::BOLD)
+                    } else {
+                        dim()
+                    },
+                ),
+            ];
+            if typing {
+                spans.push(Span::styled("▏", ink()));
+            }
+            spans.push(Span::styled(shown_p, dim()));
+            spans.push(Span::styled(format!("{} ", " ".repeat(pad)), dim()));
+            spans.push(Span::styled("│", border_style));
+            box_lines.push(Line::from(spans));
+        } else if let Some(line_str) = shown.get(row) {
+            let cursor_w = usize::from(typing && is_last);
+            let fit_s = fit(line_str, text_w.saturating_sub(cursor_w));
+            let pad = text_w.saturating_sub(width(&fit_s) + cursor_w);
+            let mut spans = vec![
+                Span::styled("│", border_style),
+                Span::styled(
+                    prompt,
+                    if typing {
+                        ink().add_modifier(Modifier::BOLD)
+                    } else {
+                        dim()
+                    },
+                ),
+                Span::styled(fit_s, ink()),
+            ];
+            if typing && is_last {
+                spans.push(Span::styled("▏", ink()));
+            }
+            spans.push(Span::styled(format!("{} ", " ".repeat(pad)), dim()));
+            spans.push(Span::styled("│", border_style));
+            box_lines.push(Line::from(spans));
+        } else {
+            box_lines.push(Line::from(vec![
+                Span::styled("│", border_style),
+                Span::raw(" ".repeat(inner_w)),
+                Span::styled("│", border_style),
+            ]));
         }
+    }
+
+    // Bottom border with right-aligned action cue: ╰─────────────── Enter send · Esc browse ─╯
+    let foot = if typing {
+        " Enter send · Esc browse "
+    } else if can_send {
+        " Type to message · Enter act "
+    } else {
+        " w open browser "
     };
-    f.render_widget(Paragraph::new(composer_line), input_rect);
+    let foot_fit = fit(foot, inner_w.saturating_sub(2));
+    let bot_fill = inner_w.saturating_sub(1 + width(&foot_fit));
+    let bottom = Line::from(vec![
+        Span::styled(format!("╰{}", "─".repeat(bot_fill)), border_style),
+        Span::styled(
+            foot_fit,
+            if typing { ink() } else { dim() },
+        ),
+        Span::styled("─╯", border_style),
+    ]);
+    box_lines.push(bottom);
+
+    f.render_widget(Paragraph::new(box_lines), area);
 }
 
 fn push_live_turn(rows: &mut Vec<ChatRow>, app: &App, turn: &LiveTurn, w: usize) {

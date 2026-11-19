@@ -3404,8 +3404,14 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         }
     };
     let mut out: Vec<(String, &'static str)> = vec![];
-    if app.chat_focused() {
-        out.push(("s".into(), "message"));
+    if matches!(app.mode, Mode::ChatCompose(_)) {
+        out.push(("Enter".into(), "send"));
+        out.push(("Shift-Enter".into(), "newline"));
+        out.push(("Tab".into(), "select"));
+        out.push(("PgUp/PgDn".into(), "scroll"));
+        out.push(("Esc".into(), "browse"));
+    } else if app.chat_focused() {
+        out.push(("i".into(), "chatbox"));
         out.push(("e".into(), "tools"));
         out.push(("[/]".into(), "select"));
         out.push(("Enter".into(), "act"));

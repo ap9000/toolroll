@@ -1086,5 +1086,15 @@ mod tests {
         assert_eq!(turn.text, "Checking t-done");
         assert_eq!(turn.steps.len(), 1);
         assert_eq!(turn.steps[0].tool_calls[0].label, "read tasks");
+        assert!(!turn.is_idle());
+
+        let idle = SseEvent {
+            event: "turn".into(),
+            data: r#"{"room":"chat","state":"idle"}"#.into(),
+        };
+        let Some(LiveSignal::Turn { turn: idle_turn, .. }) = signal_of(&idle) else {
+            panic!("expected idle LiveSignal::Turn");
+        };
+        assert!(idle_turn.is_idle());
     }
 }

@@ -1393,13 +1393,16 @@ impl App {
                 || (!self.chat_split_active() && self.chat_open))
     }
 
-    /// Open and focus Central Lead chat (fetching it if not yet loaded).
+    /// Open and focus Central Lead chat (fetching it if not yet loaded) and focus the chatbox for immediate typing.
     pub fn open_lead_chat(&mut self) -> Vec<Effect> {
         self.chat_open = true;
         self.chat_focus = crate::chat::ChatFocus::Chat;
         self.focus = Focus::Detail;
         self.narrow_list = false;
         self.status = None;
+        if self.chat.data.as_ref().is_none_or(|d| d.can_send) {
+            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+        }
         let mut fx = Vec::new();
         if !self.chat.loaded && !self.chat.loading {
             self.chat.loading = true;
@@ -1485,6 +1488,9 @@ impl App {
         let project = data.project.clone();
         let request = self.chat.next_request_id(self.now);
         self.chat.sending = true;
+        self.chat.draft.clear();
+        self.chat.optimistic_sent = Some(trimmed.clone());
+        self.chat.follow_end();
         self.say(Tone::Said, "Sending to Lead…");
         vec![Effect::ChatSend {
             message: trimmed,
@@ -2282,10 +2288,14 @@ impl App {
                         vec![Effect::FetchLeadChat, Effect::Watch(self.rooms())]
                     }
                     Ok(ChatSendOutcome::Refused(words)) => {
+                        self.chat.optimistic_sent = None;
                         self.say(Tone::Refused, words);
                         vec![]
                     }
-                    Err(e) => self.failed(e),
+                    Err(e) => {
+                        self.chat.optimistic_sent = None;
+                        self.failed(e)
+                    }
                 }
             }
             Msg::ProposalActed { result, .. } => match result {
@@ -2742,7 +2752,14 @@ impl App {
 
     fn signal(&mut self, signal: LiveSignal) -> Vec<Effect> {
         match signal {
-            LiveSignal::Change(room) if room == "workspace" => self.fetch_work(),
+            LiveSignal::Change(room) if room == "workspace" => {
+                let mut fx = self.fetch_work();
+                if self.chat.loaded && (self.chat.optimistic_sent.is_some() || self.chat.is_busy()) {
+                    self.chat.loading = true;
+                    fx.push(Effect::FetchLeadChat);
+                }
+                fx
+            }
             LiveSignal::Change(room) if room == self.chat.room() || room.starts_with("chat") => {
                 self.chat.loading = true;
                 vec![Effect::FetchLeadChat]
@@ -2751,8 +2768,12 @@ impl App {
                 if room == self.chat.room() || room.starts_with("chat") =>
             {
                 let finished = turn.done;
+                let idle = turn.is_idle();
                 self.chat.apply_turn(turn);
                 if finished {
+                    self.chat.loading = true;
+                    vec![Effect::FetchLeadChat]
+                } else if !idle && self.chat.optimistic_sent.is_some() {
                     self.chat.loading = true;
                     vec![Effect::FetchLeadChat]
                 } else {
@@ -3258,15 +3279,80 @@ impl App {
             }
             Mode::ChatCompose(mut text) => match key.code {
                 KeyCode::Esc => {
+                    self.chat.draft = text;
                     self.mode = Mode::Normal;
                     vec![]
                 }
+                KeyCode::Enter
+                    if key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                {
+                    if text.chars().count() < 10_000 {
+                        text.push('\n');
+                    }
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if text.chars().count() < 10_000 {
+                        text.push('\n');
+                    }
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
                 KeyCode::Enter => {
-                    self.mode = Mode::Normal;
-                    self.send_chat_message(text)
+                    if text.trim().is_empty() {
+                        if let Some(hit) = self.chat.current_hit().cloned() {
+                            self.chat.draft.clear();
+                            self.mode = Mode::Normal;
+                            return self.activate_chat_hit(hit);
+                        }
+                        self.mode = Mode::ChatCompose(text);
+                        return vec![];
+                    }
+                    let fx = self.send_chat_message(text);
+                    // Stay ready in the chatbox for the next message!
+                    self.mode = Mode::ChatCompose(String::new());
+                    fx
+                }
+                KeyCode::PageUp => {
+                    let page = self.chat.view_height.saturating_sub(2).max(6);
+                    self.chat.scroll_up(page);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::PageDown => {
+                    let page = self.chat.view_height.saturating_sub(2).max(6);
+                    self.chat.scroll_down(page);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Up if text.is_empty() => {
+                    self.chat.scroll_up(1);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Down if text.is_empty() => {
+                    self.chat.scroll_down(1);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Tab if text.is_empty() => {
+                    self.chat.select_next_hit();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::BackTab if text.is_empty() => {
+                    self.chat.select_prev_hit();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
                 }
                 KeyCode::Backspace => {
                     text.pop();
+                    self.chat.draft = text.clone();
                     self.mode = Mode::ChatCompose(text);
                     vec![]
                 }
@@ -3279,6 +3365,7 @@ impl App {
                     if text.chars().count() < 10_000 {
                         text.push(c);
                     }
+                    self.chat.draft = text.clone();
                     self.mode = Mode::ChatCompose(text);
                     vec![]
                 }
@@ -4025,7 +4112,7 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.mode = Mode::ChatCompose(String::new());
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
                     return vec![];
                 }
                 KeyCode::Char('e')
@@ -4203,7 +4290,7 @@ impl App {
                 }
             }
             Action::Steer if chat_here => {
-                self.mode = Mode::ChatCompose(String::new());
+                self.mode = Mode::ChatCompose(self.chat.draft.clone());
                 vec![]
             }
             Action::Stop if chat_here => {
@@ -6397,7 +6484,7 @@ impl App {
                 }
             }
         }
-        if !matches!(self.mode, Mode::Normal | Mode::TakeOver) {
+        if !matches!(self.mode, Mode::Normal | Mode::TakeOver | Mode::ChatCompose(_)) {
             self.dragging = false;
             return vec![];
         }
@@ -6461,6 +6548,9 @@ impl App {
                     if self.areas.lead_row.width > 0 && inside(self.areas.lead_row) {
                         return self.open_lead_chat();
                     }
+                    if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                        self.chat.draft = draft;
+                    }
                     self.focus = Focus::List;
                     if let Some((_, Some(index))) =
                         self.areas.rows.iter().find(|(row, _)| *row == y).cloned()
@@ -6476,7 +6566,9 @@ impl App {
                     self.focus = Focus::Detail;
                     self.chat_focus = crate::chat::ChatFocus::Chat;
                     if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
-                        self.mode = Mode::ChatCompose(String::new());
+                        if !matches!(self.mode, Mode::ChatCompose(_)) {
+                            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        }
                         return vec![];
                     }
                     if let Some((_, hit)) = self
@@ -6486,6 +6578,9 @@ impl App {
                         .find(|(r, _)| inside(*r))
                         .cloned()
                     {
+                        if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                            self.chat.draft = draft;
+                        }
                         if let Some(idx) = self.chat.items.iter().position(|x| x == &hit) {
                             self.chat.selected_hit = idx;
                         }
@@ -6494,6 +6589,9 @@ impl App {
                     return vec![];
                 }
                 if self.areas.peek_area.width > 0 && inside(self.areas.peek_area) {
+                    if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                        self.chat.draft = draft;
+                    }
                     self.focus = Focus::Detail;
                     self.chat_focus = crate::chat::ChatFocus::Peek;
                     return vec![];

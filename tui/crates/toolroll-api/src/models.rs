@@ -1141,9 +1141,12 @@ pub struct LeadChat {
 }
 
 /// A live reply snapshot carried on `GET /live?room=chat` as `event: turn`.
+/// When no turn is running, the server sends `{"room":"chat","state":"idle"}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveTurn {
+    #[serde(default)]
+    pub state: Option<String>,
     #[serde(default)]
     pub steps: Vec<LiveTurnStep>,
     #[serde(default)]
@@ -1156,6 +1159,18 @@ pub struct LiveTurn {
     pub done: bool,
     #[serde(default)]
     pub ok: bool,
+}
+
+impl LiveTurn {
+    /// True when the server sent `{"state":"idle"}` (no active turn).
+    pub fn is_idle(&self) -> bool {
+        self.state.as_deref() == Some("idle")
+            || (!self.done
+                && self.phase.is_empty()
+                && self.status.is_empty()
+                && self.text.is_empty()
+                && self.steps.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

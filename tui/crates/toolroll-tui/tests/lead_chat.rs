@@ -114,7 +114,26 @@ fn lead_chat_renders_pinned_rail_cards_and_passes_drawn_pairs_contrast() {
     assert!(bottom_screen.contains("New task"), "{bottom_screen}");
     assert!(bottom_screen.contains("Add coupon edge-case tests"), "{bottom_screen}");
     assert!(bottom_screen.contains("Queued:"), "{bottom_screen}");
-    assert!(bottom_screen.contains("Message Lead across all projects"), "{bottom_screen}");
+    assert!(bottom_screen.contains("Message Lead"), "{bottom_screen}");
+    assert!(bottom_screen.contains("Ask Lead anything across all projects"), "{bottom_screen}");
+
+    // Receiving `state: "idle"` from `/live?room=chat` must NEVER show "Thinking…" or busy state!
+    let fx = app.update(Msg::Signal(LiveSignal::Turn {
+        room: "chat".into(),
+        turn: LiveTurn {
+            state: Some("idle".into()),
+            steps: vec![],
+            phase: String::new(),
+            status: String::new(),
+            text: String::new(),
+            done: false,
+            ok: false,
+        },
+    }));
+    assert!(fx.is_empty());
+    assert!(!app.chat.is_busy());
+    let idle_screen = render(&mut app, 120, 42);
+    assert!(!idle_screen.contains("Thinking…"), "idle turn must not show Thinking:\n{idle_screen}");
 
     // Every cell drawn across Light, Dark, HighContrast and ASCII fallback obeys theme::DRAWN_PAIRS.
     app.chat_docked = true;
@@ -135,6 +154,7 @@ fn live_turn_streams_status_collapsible_tools_and_partial_text() {
     answer(&mut app, fx);
 
     let turn = LiveTurn {
+        state: None,
         steps: vec![LiveTurnStep {
             tools: vec!["read tasks".into(), "inspect diff".into()],
             tool_calls: vec![
@@ -170,7 +190,8 @@ fn live_turn_streams_status_collapsible_tools_and_partial_text() {
     assert!(collapsed.contains("Reviewing t-done now"), "{collapsed}");
     assert!(!collapsed.contains("5 tasks"), "tools start collapsed:\n{collapsed}");
 
-    // Press `e` to expand tool steps
+    // Press Esc to exit chatbox typing into browse mode, then `e` to expand tool steps
+    app.key(code(KeyCode::Esc));
     app.key(key('e'));
     let expanded = render(&mut app, 120, 36);
     assert!(expanded.contains("read tasks · 5 tasks"), "{expanded}");
@@ -180,16 +201,13 @@ fn live_turn_streams_status_collapsible_tools_and_partial_text() {
     let fx = app.update(Msg::Signal(LiveSignal::Turn {
         room: "chat".into(),
         turn: LiveTurn {
+            state: None,
+            steps: vec![],
+            phase: "done".into(),
+            status: String::new(),
+            text: String::new(),
             done: true,
             ok: true,
-            ..LiveTurn {
-                steps: vec![],
-                phase: "done".into(),
-                status: String::new(),
-                text: String::new(),
-                done: true,
-                ok: true,
-            }
         },
     }));
     assert!(
@@ -256,11 +274,31 @@ fn proposal_confirmation_requires_drawn_dialog_seen_end_and_irreversible_arming(
 #[test]
 fn composer_sends_and_dismiss_acts_cleanly() {
     let mut app = loaded_app();
+    // Opening Lead chat immediately focuses the chatbox so typing works right away!
     let fx = app.key(key('C'));
     answer(&mut app, fx);
+    assert!(matches!(app.mode, Mode::ChatCompose(_)));
     let _ = render(&mut app, 120, 34);
 
-    // Dismissing selected proposal with `x`
+    // Typing directly sends on Enter and stays in the chatbox ready for follow-ups.
+    for ch in "Check tests".chars() {
+        app.key(key(ch));
+    }
+    let fx = app.key(code(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::ChatCompose(ref s) if s.is_empty()));
+    assert_eq!(app.chat.optimistic_sent.as_deref(), Some("Check tests"));
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            Effect::ChatSend { message, request, session: Some(7), .. }
+            if message == "Check tests" && request.len() == 32
+        )),
+        "expected ChatSend effect: {fx:?}"
+    );
+
+    // Esc leaves typing mode to browse; `x` dismisses the selected pending proposal.
+    app.key(code(KeyCode::Esc));
+    assert_eq!(app.mode, Mode::Normal);
     let fx = app.key(key('x'));
     assert_eq!(
         fx,
@@ -269,23 +307,6 @@ fn composer_sends_and_dismiss_acts_cleanly() {
             op: "dismiss",
             confirm_yes: false,
         }]
-    );
-
-    // Composing a message with `s`
-    app.key(key('s'));
-    assert!(matches!(app.mode, Mode::ChatCompose(_)));
-    for ch in "Check tests".chars() {
-        app.key(key(ch));
-    }
-    let fx = app.key(code(KeyCode::Enter));
-    assert_eq!(app.mode, Mode::Normal);
-    assert!(
-        fx.iter().any(|e| matches!(
-            e,
-            Effect::ChatSend { message, request, session: Some(7), .. }
-            if message == "Check tests" && request.len() == 32
-        )),
-        "expected ChatSend effect: {fx:?}"
     );
 }
 
@@ -324,7 +345,7 @@ fn slice_3_docked_chat_and_peek_inspector_with_task_link_jump() {
 
     let peeked = render(&mut app, 160, 40);
     assert!(peeked.contains("Add CSV export"), "{peeked}");
-    assert!(peeked.contains("Fleet status") || peeked.contains("Message Lead"), "{peeked}");
+    assert!(peeked.contains("Chat with Lead") || peeked.contains("Message Lead"), "{peeked}");
 
     // `o` toggles focus smoothly back to Lead Chat!
     app.key(key('o'));
@@ -345,10 +366,11 @@ fn slice_3_docked_chat_and_peek_inspector_with_task_link_jump() {
     });
     assert!(app.chat_focused());
 
-    // Narrow viewport degrades cleanly to single-column Lead chat, and Esc returns to the task list.
+    // Narrow viewport degrades cleanly to single-column Lead chat, and Esc exits typing then returns to the task list.
     let narrow_chat = render(&mut app, 58, 26);
     assert!(!app.chat_split_active());
     assert!(narrow_chat.contains("Lead"), "{narrow_chat}");
+    app.key(code(KeyCode::Esc));
     app.key(code(KeyCode::Esc));
     assert!(app.narrow_list);
 }
