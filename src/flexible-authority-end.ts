@@ -110,6 +110,8 @@ export function endThreadAuthorityFor(store: Writer, input: { person: string; ca
   const hadSignIn = input.signInsEnded !== true && (retired > 0 || handle.prepare("SELECT 1 AS hit FROM flexible_sign_in WHERE person = ? UNION ALL SELECT 1 AS hit FROM flexible_sign_in_epoch WHERE person = ? LIMIT 1")
     .get(input.person, input.person) !== undefined);
   if (hadSignIn) handle.prepare("INSERT INTO flexible_sign_in_epoch (person, epoch) VALUES (?, 1) ON CONFLICT (person) DO UPDATE SET epoch = epoch + 1").run(input.person);
+  handle.prepare("UPDATE flexible_interactive_session SET state = 'ended', ended_at = ?, end_reason = ? WHERE owner = ? AND state <> 'ended'")
+    .run(input.at, input.cause, input.person);
   let interrupted = 0, withdrawn = 0;
   const cut: string[] = [];
   for (const turn of handle.prepare("SELECT * FROM thread_turn WHERE owner = ? AND status IN ('admitted', 'running') ORDER BY admitted_at, id").all(input.person)) {

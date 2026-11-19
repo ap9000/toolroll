@@ -247,7 +247,9 @@ describe("the switch can't become an override", () => {
     expect(own).not.toMatch(/process\.|import\s(?!type)|require\(|globalThis/);
     expect([...own.matchAll(/(?:FROM|INTO)\s+(\w+)/g)].map(match => match[1])).toEqual(["flexible_setting", "flexible_setting", "flexible_setting"]);
     const naming = product.filter(one => /flexible_setting\b/.test(code(one.text))).map(one => one.path).sort();
-    expect(naming).toEqual([join("src", "flexible-available.ts"), join("src", "flexible-setting-schema.ts"), join("src", "store.ts")].sort());
+    expect(naming).toEqual([join("src", "flexible-available.ts"), join("src", "flexible-setting-schema.ts"), join("src", "flexible-interactive-schema.ts"), join("src", "store.ts")].sort());
+    // v175 observes the switch only to end interactive authority; it never writes or overrides the switch.
+    expect(code(readFileSync("src/flexible-interactive-schema.ts", "utf8"))).not.toMatch(/(?:UPDATE|INSERT INTO|DELETE FROM) flexible_setting/);
     for (const one of product) {
       expect(one.text, one.path).not.toMatch(/process\.env(?:\[["'`]|\.)[A-Z_]*FLEXIBLE/i);
       expect(one.text, one.path).not.toMatch(/vi\.mock\(["'][^"']*flexible-available/);
@@ -286,7 +288,7 @@ describe("the switch can't become an override", () => {
     };
     decided("src/flexible.ts", ["enableFlexible", "flexibleDelegationAtUse"],
       ["flexibleSettingsView", "flexibleCeilingAllows", "flexibleTermsJson", "flexibleDigestOf", "flexibleTermsFromJson", "flexibleNarrowerOrEqual", "flexibleTermsWords", "flexibleNetworkOf", "flexibleTwoPerson", "flexibleStanding",
-        "proposedFlexibleTerms", "lowerFlexible", "turnFlexibleOff", "endLapsedFlexible"]);
+        "proposedFlexibleTerms", "lowerFlexible", "turnFlexibleOff", "endLapsedFlexible", "flexibleRuntime", "recordFlexibleRuntime"]);
     decided("src/flexible-thread.ts", ["prepareFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile"],
       ["flexibleThreadPaths", "flexibleThread", "removeFlexibleThread", "threadCredentialPaths", "flexibleThreadEnv", "withFlexibleThreadLock", "flexibleFenceDigest", "stopFlexibleThreadAgent", "flexibleProjectKnown"]);
     expect(readFileSync("src/flexible-turns.ts", "utf8")).toMatch(/const before = flexibleInstallationCaps\(store\);\n[^\n]*\n {4}if \(!flexibleAvailable\(store\) && !\(tighter\(/);
@@ -298,7 +300,7 @@ describe("the switch can't become an override", () => {
     // Saving your own sign-in starts something new (its transaction A checks the switch first, and again inside);
     // removing, retiring, tidying, a restore's reset and every read never do, so off can always clean up.
     decided("src/flexible-sign-in.ts", ["stageFlexibleSignIn"], ["setupTokenFromPaste", "placeFlexibleSignIn", "activateFlexibleSignIn", "saveFlexibleSignIn", "removeFlexibleSignIn", "resetFlexibleSignInsForRestore",
-      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn", "threadsStatusNote", "signInHoldsFor", "signInEpochOf"]);
+      "tidyFlexibleSignIns", "flexibleSignInStatus", "flexibleSignInBilling", "signInForTurn", "signInStandsAt", "statusCheck", "signInCheckWords", "checkSignInToken", "recheckFlexibleSignIn", "threadsStatusNote", "signInHoldsFor", "signInEpochOf", "signInForInteractiveStands"]);
     // Any answer reaching an agent continues its turn, so none goes while off (a decline included: the switch's stop
     // withdraws every open request instead).
     decided("src/flexible-answers.ts", ["recordFlexibleRequest", "decideFlexibleAnswer", "sendFlexibleAnswer"],
@@ -367,6 +369,9 @@ describe("the switch can't become an override", () => {
   });
 
   test("the thread engine's modules are reached only through their own doors", () => {
+    // Slice 1's activation and runtime selection remain internal: no product caller, flag or route may reach them.
+    for (const one of product) expect(code(one.text), one.path).not.toMatch(/from ["'][^"']*\/flexible-interactive\.js["']/);
+    for (const one of product.filter(one => one.path !== join("src", "flexible.ts"))) expect(code(one.text), one.path).not.toMatch(/\brecordFlexibleRuntime\(/);
     const engine = (...names: string[]) => (file: { path: string }) => !names.map(name => join("src", name)).includes(file.path);
     for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
     for (const one of product.filter(engine("flexible-agents.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
@@ -377,7 +382,7 @@ describe("the switch can't become an override", () => {
     // and its own thread commands (list, show, end, remove, ship: threads-everyday S8).
     expect([...readFileSync("src/operate.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-session\.js"/g)].map(match => match[1]!.trim())).toEqual(["closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport"]);
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
-    for (const one of product.filter(engine("flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
+    for (const one of product.filter(engine("flexible-start.ts", "flexible-interactive.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
     for (const one of product.filter(engine("flexible-ship.ts"))) {
       const named = [...one.text.matchAll(/import \{([^}]*)\} from "\.\.?\/flexible-ship\.js"/g)].flatMap(match => match[1]!.split(",").map(name => name.trim()).filter(Boolean));

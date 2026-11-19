@@ -473,3 +473,17 @@ export function flexibleSettingsView(store: Store, repo: string, viewer: { name:
   return { repo, standing, canChange: viewer.canChange,
     proposal: proposed.ok ? { terms: proposed.terms, digest: proposed.digest } : { problem: proposed.message.replace(/ Nothing changed\.$/, "") } };
 }
+
+/** Runtime is chosen only while creating a thread; missing legacy records mean stream-json. */
+export type FlexibleRuntime = "stream-json" | "interactive";
+export function flexibleRuntime(store: Pick<Store, "handle">, thread: string): FlexibleRuntime {
+  const row = store.handle.prepare("SELECT runtime FROM flexible_thread_runtime WHERE thread = ?").get(thread);
+  if (row === undefined) return "stream-json";
+  if (row["runtime"] !== "stream-json" && row["runtime"] !== "interactive") throw new Error("unreadable thread runtime");
+  return row["runtime"];
+}
+/** Internal creation seam. No product entry point selects interactive in slice 1. */
+export function recordFlexibleRuntime(store: Store, thread: string, runtime: FlexibleRuntime): void {
+  const changed = store.handle.prepare("UPDATE flexible_thread_runtime SET runtime = ?, chosen = 1 WHERE thread = ?").run(runtime, thread);
+  if (Number(changed.changes) !== 1) throw new Error("missing thread runtime");
+}

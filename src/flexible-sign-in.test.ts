@@ -19,9 +19,10 @@ import { activateFlexibleSignIn, flexibleSignInBilling, flexibleSignInStatus, re
   SIGN_IN_STAGE_MS, type StagedSignIn } from "./flexible-sign-in.js";
 import { onlineCopy, restoreDatabase } from "./backup.js";
 import { V172_ADDED_COLUMNS, V172_TABLES } from "./flexible-sign-in-schema.js";
-import { standInToken } from "../test/flexible-sign-in-kit.js";
+import { standInSignIn, standInToken } from "../test/flexible-sign-in-kit.js";
+import { recordFlexibleRuntime } from "./flexible.js";
 import { flexibleReadiness } from "./flexible-start.js";
-import { signInEpochOf, threadsStatusNote } from "./flexible-sign-in.js";
+import { signInEpochOf, signInForInteractiveStands, threadsStatusNote } from "./flexible-sign-in.js";
 import { PASSWORDLESS_ACTION } from "./passwordless.js";
 
 // Two names forced into one address slot (tool-secret-store.ts signInAddress), only where a test asks. The setup file
@@ -485,4 +486,37 @@ describe("readiness", () => {
     setFlexibleSetting(store, false, "alex", NOW);
     expect(threadsStatusNote(store, "alex")).toContain("Threads are off");
   });
+});
+
+test("a nonexistent interactive authority cannot obtain sign-in standing", () => {
+  const isolated = openStore(":memory:");
+  try { expect(signInForInteractiveStands(isolated, "f".repeat(32))).toBe(false); } finally { isolated.close(); }
+});
+
+test("interactive sign-in standing uses the owner, account generation and removal epoch, never a turn", () => {
+  const thread = "a".repeat(32), session = "b".repeat(32);
+  store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state)
+    VALUES (?, '/fixture', ?, ?, '/fixture/thread', 'alex', ?, 'preparing')`)
+    .run(thread, "1".repeat(40), `refs/toolroll/threads/${thread}/base`, NOW.toISOString());
+  recordFlexibleRuntime(store, thread, "interactive");
+  store.handle.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ?").run(thread);
+  store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, state, started_at)
+    VALUES (?, ?, 'claude', 'full', 'ffffffffffffffffffffffffffffffff', 'fixture', 'fixture', 'dddddddddddddddddddddddddddddddd', 'spawning', ?)`)
+    .run("c".repeat(32), thread, NOW.toISOString());
+  // Prepared metadata only: this grants no launch or dispatch authority. Activation has its own custody and terms checks.
+  store.handle.prepare(`INSERT INTO flexible_interactive_session
+    (id, thread, launch, holder, owner, account_generation, runtime, provider, billing, terms_id, terms_digest, start_key, message, level, model,
+     helper_models, fence_digest, network_digest, sign_in_epoch, state, prepared_at)
+    VALUES (?, ?, ?, 'fixture', 'alex', ?, 'interactive', 'claude', 'subscription', 1, 'dddddddddddddddddddddddddddddddd', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'Inspect the parser', 'full',
+      'claude-sonnet-4-5', '[]', 'ffffffffffffffffffffffffffffffff', '99999999999999999999999999999999', 0, 'prepared', ?)`)
+    .run(session, thread, "c".repeat(32), accountGeneration(), NOW.toISOString());
+  expect(signInForInteractiveStands(store, session)).toBe(false);
+  standInSignIn(store, state, "alex");
+  expect(signInForInteractiveStands(store, session)).toBe(true);
+  standInSignIn(store, state, "alex");
+  expect(signInForInteractiveStands(store, session)).toBe(true);
+  removeFlexibleSignIn(store, { person: "alex", by: "alex", now: NOW });
+  standInSignIn(store, state, "alex");
+  expect(signInForInteractiveStands(store, session)).toBe(false);
+  expect(store.handle.prepare("SELECT count(*) AS n FROM thread_turn").get()?.["n"]).toBe(0);
 });
