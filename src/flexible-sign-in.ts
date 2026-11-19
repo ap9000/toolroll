@@ -546,3 +546,13 @@ export function signInEpochOf(store: Store, person: string): number {
 function raiseSignInEpoch(store: Store, person: string): void {
   store.handle.prepare("INSERT INTO flexible_sign_in_epoch (person, epoch) VALUES (?, 1) ON CONFLICT (person) DO UPDATE SET epoch = epoch + 1").run(person);
 }
+
+/** Metadata-only interactive check, inside the caller's activation transaction. No secret or installation fallback. */
+export function signInForInteractiveStands(store: Store, sessionId: string): boolean {
+  const session = store.handle.prepare("SELECT * FROM flexible_interactive_session WHERE id = ? AND state IN ('prepared', 'active')").get(sessionId);
+  if (session === undefined || session["provider"] !== "claude" || session["billing"] !== "subscription") return false;
+  const thread = store.handle.prepare("SELECT created_by FROM flexible_thread WHERE id = ?").get(session["thread"]);
+  if (thread === undefined || thread["created_by"] !== session["owner"] || signInEpochOf(store, String(session["owner"])) !== session["sign_in_epoch"]) return false;
+  const billing = flexibleSignInBilling(store, { name: String(session["owner"]), generation: Number(session["account_generation"]) });
+  return billing.ok && billing.billing === "subscription";
+}

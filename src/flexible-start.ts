@@ -17,8 +17,9 @@
  */
 import { createHash } from "node:crypto";
 import { flexibleAvailable } from "./flexible-available.js";
-import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
+import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms, type FlexibleRuntime } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
+import { FLEXIBLE_RELAY_UPSTREAMS } from "./flexible-relay-upstreams.js";
 import { flexibleSignInBilling, flexibleSignInStatus } from "./flexible-sign-in.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
@@ -45,7 +46,7 @@ const refuse = (reason: Exclude<FlexibleStartRefusal["reason"], "terms-lapsed">)
 
 /** The card, and what it binds: the project's live terms digest (what the turn's admission names), the thread's
  * network and its digest (what the first launch is held to), the model, the level, and `summary.key`. */
-export type FlexibleStartCard = { summary: ApprovalSummary; digest: string; network: string; model: string; level: "full"; billing: "subscription" | "api-key"; terms: FlexibleTerms };
+export type FlexibleStartCard = { summary: ApprovalSummary; termsId: number; digest: string; network: string; model: string; level: "full"; billing: "subscription" | "api-key"; runtime: FlexibleRuntime; helperModels: string[]; terms: FlexibleTerms };
 
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -61,8 +62,12 @@ export const FLEXIBLE_UNKNOWN_COST_WORDS = "If Toolroll can't measure what a tur
  * Flexible terms, its network, the person's account), or why no thread can start there. Pure apart from those reads:
  * the same records, person, model and message give the same card, and so the same key.
  */
-export function flexibleStartCard(store: Store, input: { repo: string; by: { name: string; generation: number }; model: string | null; message: string }): { ok: true; card: FlexibleStartCard } | FlexibleStartRefusal {
+export function flexibleStartCard(store: Store, input: { repo: string; by: { name: string; generation: number }; model: string | null; message: string; runtime?: FlexibleRuntime; helperModels?: string[] }): { ok: true; card: FlexibleStartCard } | FlexibleStartRefusal {
   if (!flexibleAvailable(store)) return refuse("not-available");
+  const helperModels = [...new Set(input.helperModels ?? [])].sort();
+  if (helperModels.some(model => !FLEXIBLE_RELAY_UPSTREAMS.claude.helperModels.test(model))) return refuse("invalid-request");
+  const runtime = input.runtime ?? "stream-json";
+  if (runtime !== "stream-json" && runtime !== "interactive") return refuse("invalid-request");
   const model = input.model === null || input.model === "" ? FLEXIBLE_DEFAULT_MODEL : input.model;
   if (typeof input.repo !== "string" || input.repo === "" || typeof model !== "string" || !RELAY_MODEL.test(model) || typeof input.message !== "string"
     || typeof input.by?.name !== "string" || !Number.isSafeInteger(input.by.generation)) return refuse("invalid-request");
@@ -79,6 +84,7 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const credential = flexibleSignInBilling(store, input.by);
   if (!credential.ok) return refuse(credential.reason);
   const billing = credential.billing;
+  if (runtime === "interactive" && billing !== "subscription") return refuse("invalid-request");
   const signedIn = flexibleSignInStatus(store, input.by.name);
   const savedOn = signedIn.state === "none" ? null : signedIn.savedAt.slice(0, 10);
   const open = network.mode === "open";
@@ -102,6 +108,12 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
     { label: "Ship", words: FLEXIBLE_SHIP_WORDS, fields: ["flexible.ship"] },
     { label: "Terms", words: `this project's Flexible terms, turned on by ${terms.signer}`, lines: [`They last until someone turns them off or lowers them, or ${terms.signer}'s account or access changes.`], fields: ["flexible.terms"] },
   ];
+  if (runtime === "interactive") {
+    decisions.splice(decisions.findIndex(row => row.label === "Limits"), 1);
+    decisions.push({ label: "Concurrent agents", words: `${plural(caps.liveThreads, "thread")} at once in this project`, fields: ["flexible.caps"] });
+    decisions.push({ label: "Runtime", words: "Interactive Claude, using your subscription; no turn or cost limits", lines: helperModels.length === 0 ? [] : [`Permitted helper models: ${helperModels.join(", ")}`], fields: ["flexible.agent"] });
+    decisions.find(row => row.label === "Agent")!.lines = ["Your Claude subscription powers this interactive session. Your sign-in stays with Toolroll."];
+  }
   const warnings: SummaryNote[] = [
     { words: "The agent can read this repository's whole history, not just the commit it starts from.", fields: ["flexible.repository"] },
     { words: "Anything it reads can end up in what it writes: its messages and its commits. Toolroll checks for secrets before Ship, but that isn't a guarantee.", fields: ["flexible.network"] },
@@ -111,10 +123,10 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   // generation, the model, the message), under its own kind: a key minted here means nothing to any other approval.
   const digestOfMessage = createHash("sha256").update(input.message, "utf8").digest("hex");
   const networkDigest = flexibleNetworkDigest(network);
-  const key = createHash("sha256").update(JSON.stringify({ v: 1, kind: "standing-orders:flexible-start", digest: standing.digest, repo: input.repo, by: input.by, model, level: "full", billing,
+  const key = createHash("sha256").update(JSON.stringify({ v: 1, kind: "standing-orders:flexible-start", termsId: standing.id, digest: standing.digest, repo: input.repo, by: input.by, runtime, helperModels, model, level: "full", billing,
     network: networkDigest, message: digestOfMessage, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
   const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", usualSummary: "", key };
-  return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", billing, terms } };
+  return { ok: true, card: { summary, termsId: standing.id, digest: standing.digest, network: networkDigest, model, level: "full", billing, runtime, helperModels, terms } };
 }
 
 /** The first thing a person still needs before a thread can start in a project, in this order: threads on (an
