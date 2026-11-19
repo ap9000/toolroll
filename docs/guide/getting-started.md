@@ -155,10 +155,11 @@ This is a local layout action; use the terminal palette to reach it from chat.
 
 | Key | Action |
 |---|---|
-| `j` / `k`, Down / Up | Next / previous item in the list |
-| Enter | Open the changes for a result, otherwise its live output |
+| `j` / `k`, Down / Up | Move through the list (when List is focused) or scroll / move lines (when the task panel is focused) |
+| Left / Right | Focus the task list / focus the task panel |
+| Enter | Open and focus the changes for a result, otherwise its live output |
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
-| `n` | New task (in Diff, next note instead) |
+| `n` | New task (in focused Diff, next note instead) |
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
 | `s` / `a` / `x` / `X` on a thread | Reply to it / Ship its work / stop its agent's turn / end it (asks first) |
 | `x` / `r` on a thread that is shipping | Stop the Ship for good / send it back with a note |
@@ -175,9 +176,9 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | `=` | Even the splits and restore the usual list width |
 | `b` | Cycle the list: full, slim status rail, hidden |
 | `z` | Zoom the focused panel; press again to return |
-| `!` / `@` | Next / previous thing that needs you, oldest first |
+| `!` / `@` | Next / previous thing that needs you, oldest first (or click the top bar's "need you" chip) |
 | `'` | Return to where you were before jumping |
-| `/` | Search the focused pane |
+| `/` | Filter the task list live (when List is focused) or search the focused pane (when Detail is focused) |
 | Ctrl-E | Open the focused pane's text in your editor |
 | Page Up / `u`, Page Down / `d` | Scroll up / down |
 | End / `G` | Follow the newest output |
@@ -185,7 +186,7 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | `A` | Open Agents |
 | `w` | Open Toolroll in the browser |
 | `1`–`9` | Answer the agent's question |
-| Esc | Cancel, close, or go back |
+| Esc | Return focus to the list, clear a filter/search, or close a dialog |
 | `q` / Ctrl-C | Quit |
 
 In Diff, `j` / `k` move by line, `[` / `]` by hunk, and `{` / `}` by file.

@@ -199,8 +199,9 @@ fn a_running_build_counts_from_its_own_start() {
     select(&mut app, "t-live");
     app.update(Msg::Steps("t-live".into(), Ok(parse(s))));
     let shown = screen(&mut app, 160, 34);
+    // Live build clock lives on the pipeline strip ("Build · 40s") with attempt 2 in provenance (no 4× duplication).
     assert!(
-        shown.contains("Building now · 40s ·") && shown.contains("attempt 2"),
+        shown.contains("Build · 40s") && shown.contains("attempt 2"),
         "{shown}"
     );
     assert!(!shown.contains("1h 04m"), "{shown}");

@@ -32,6 +32,13 @@ pub const ANSWER_TOO_LONG: &str =
 /// Records kept per run (the newest); older ones are dropped from memory, never written anywhere.
 pub const RECORDS_KEPT: usize = 20_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    #[default]
+    List,
+    Detail,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Live,
@@ -441,6 +448,8 @@ pub enum Mode {
     Copied,
     /// Searching the focused pane (search.rs): its query and where it is among the matches.
     Search(crate::search::Search),
+    /// Filtering the task list live (`/` while the list has focus).
+    ListFilter(String),
     Help,
     /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
     Settings,
@@ -701,6 +710,8 @@ pub const TERMINAL_PANE_KEYS: &[Action] = &[
     Action::TakeOver,
     Action::MoveDown,
     Action::MoveUp,
+    Action::FocusList,
+    Action::FocusDetail,
     Action::NextTab,
     Action::PreviousTab,
     Action::ScrollUp,
@@ -902,6 +913,8 @@ pub struct Areas {
     /// The list and panels together (for the divider's drag, whichever side the list is on).
     pub body: Rect,
     pub split_x: u16,
+    /// The top bar's "N need you" chip: clicking it jumps to the oldest item waiting on you.
+    pub needs_chip: Rect,
     /// The links drawn this frame (only ours: link.rs), written clickable after it.
     pub links: Vec<crate::link::LinkArea>,
 }
@@ -928,6 +941,9 @@ pub struct App {
     restore_diff: Option<(String, usize, usize)>,
     pub selected: usize,
     pub loaded: bool,
+    pub focus: Focus,
+    /// Live text filter on the task list (`/` while List is focused); empty shows every filtered row.
+    pub list_query: String,
     pub tab: Tab,
     pub mode: Mode,
     pub steps: Option<StepCards>,
@@ -1098,6 +1114,8 @@ impl App {
             restore_diff: None,
             selected: 0,
             loaded: false,
+            focus: Focus::List,
+            list_query: String::new(),
             tab: Tab::Live,
             mode: Mode::Normal,
             steps: None,
@@ -1188,6 +1206,20 @@ impl App {
 
     pub fn selected_item(&self) -> Option<&Item> {
         self.items.get(self.selected)
+    }
+
+    /// Which sheet owns navigation keys (`j`/`k`, `/`, Diff keys): narrow view binds focus to whichever column is
+    /// drawn; wide view uses the explicit List vs. Detail focus (`Enter`/`Right` focuses Detail, `Esc`/`Left` List).
+    pub fn effective_focus(&self) -> Focus {
+        if self.narrow {
+            if self.narrow_list {
+                Focus::List
+            } else {
+                Focus::Detail
+            }
+        } else {
+            self.focus
+        }
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -3188,6 +3220,7 @@ impl App {
             Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
             Mode::Search(s) => self.search_key(key, s),
+            Mode::ListFilter(q) => self.list_filter_key(key, q),
             Mode::TakeOver | Mode::ShellOpening => vec![],
             Mode::ConfirmInstall { .. }
             | Mode::PickModel(_)
@@ -3293,6 +3326,11 @@ impl App {
                 grow(&mut p.query);
                 p.selected = 0;
             }
+            Mode::ListFilter(q) => {
+                let mut next = q.clone();
+                grow(&mut next);
+                return self.apply_list_query(next, true);
+            }
             Mode::Steer(t)
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
@@ -3321,6 +3359,12 @@ impl App {
             };
             if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a)) {
                 if key.code == KeyCode::Esc {
+                    if self.narrow && !self.narrow_list {
+                        self.narrow_list = true;
+                        self.focus = Focus::List;
+                    } else if !self.narrow && self.focus == Focus::Detail {
+                        self.focus = Focus::List;
+                    }
                     self.status = None;
                     return vec![];
                 }
@@ -3332,8 +3376,11 @@ impl App {
                 return vec![];
             }
         }
-        // The Diff tab's keys are a task result's; a thread's panel has no Diff (its own keys come below).
-        if self.tab == Tab::Diff && self.thread_selected().is_none() {
+        // The Diff tab's keys apply only when the Detail panel is focused (never stealing j/k or n from the task list).
+        if self.effective_focus() == Focus::Detail
+            && self.tab == Tab::Diff
+            && self.thread_selected().is_none()
+        {
             if let Some(action) = self.prefs.settings.keymap.lookup(Scope::Diff, &key) {
                 return self.run_action(action);
             }
@@ -3346,8 +3393,20 @@ impl App {
             // Narrow, a task's panel showing: Esc goes back to the list.
             KeyCode::Esc if self.narrow && !self.narrow_list => {
                 self.narrow_list = true;
+                self.focus = Focus::List;
                 self.status = None;
                 vec![]
+            }
+            // Detail focused in wide mode: Esc returns focus to the task list.
+            KeyCode::Esc if !self.narrow && self.focus == Focus::Detail => {
+                self.focus = Focus::List;
+                self.status = None;
+                vec![]
+            }
+            // List focused with an active text filter: Esc clears the list filter.
+            KeyCode::Esc if !self.list_query.is_empty() => {
+                self.status = None;
+                self.apply_list_query(String::new(), false)
             }
             KeyCode::Esc => {
                 self.status = None;
@@ -3433,25 +3492,77 @@ impl App {
     /// ways keep the same pins and confirms.
     pub fn run_action(&mut self, action: Action) -> Vec<Effect> {
         let item = self.selected_item().cloned();
+        let focus = self.effective_focus();
         let diff_here = self.tab == Tab::Diff && self.thread_selected().is_none();
         // (An agent's sign-in pane is never the Terminal tab's, and never copied.)
         let terminal_here =
             self.tab == Tab::Terminal && self.term.as_ref().is_some_and(|p| !p.sensitive);
         match action {
-            Action::MoveDown => self.select(self.selected + 1),
-            Action::MoveUp => self.select(self.selected.saturating_sub(1)),
-            // Narrow, the list showing: Enter opens the selected task's panel.
+            Action::MoveDown => {
+                if focus == Focus::Detail {
+                    if diff_here {
+                        self.move_cursor(1);
+                    } else if terminal_here {
+                        if let Some(pane) = self.term.as_mut() {
+                            pane.scroll_by(-1);
+                        }
+                    } else {
+                        self.scroll_by(-1);
+                    }
+                    vec![]
+                } else {
+                    self.select(self.selected + 1)
+                }
+            }
+            Action::MoveUp => {
+                if focus == Focus::Detail {
+                    if diff_here {
+                        self.move_cursor(-1);
+                    } else if terminal_here {
+                        if let Some(pane) = self.term.as_mut() {
+                            pane.scroll_by(1);
+                        }
+                    } else {
+                        self.scroll_by(1);
+                    }
+                    vec![]
+                } else {
+                    self.select(self.selected.saturating_sub(1))
+                }
+            }
+            Action::FocusList => {
+                if self.narrow {
+                    self.narrow_list = true;
+                }
+                self.focus = Focus::List;
+                self.status = None;
+                vec![]
+            }
+            Action::FocusDetail => {
+                if self.narrow {
+                    self.narrow_list = false;
+                }
+                self.focus = Focus::Detail;
+                self.status = None;
+                vec![]
+            }
+            // Narrow, the list showing: Enter opens the selected task's panel and focuses it.
             Action::Open if self.narrow && self.narrow_list => {
                 self.narrow_list = false;
+                self.focus = Focus::Detail;
                 self.status = None;
                 vec![]
             }
             Action::Open => {
-                // On a hidden-lines marker in Diff: show them.
-                if diff_here && matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. })) {
+                // On a hidden-lines marker in Diff (when focused): show them.
+                if focus == Focus::Detail
+                    && diff_here
+                    && matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. }))
+                {
                     return self.expand(true);
                 }
-                // Open: the tab that answers what it asks.
+                // Open: the tab that answers what it asks, and move focus into the panel.
+                self.focus = Focus::Detail;
                 let tab = match item
                     .as_ref()
                     .and_then(|i| i.need.as_ref())
@@ -3620,6 +3731,7 @@ impl App {
                 {
                     self.say(Tone::Said, SHOW_CHANGES_FIRST);
                     self.tab = Tab::Diff;
+                    self.focus = Focus::Detail;
                     return vec![self.ask_diff(pin.task)];
                 }
                 if let Err(why) = self.diff_agrees(&pin) {
@@ -3691,6 +3803,20 @@ impl App {
             Action::NextNeedsYou => self.next_needs_you(true),
             Action::PreviousNeedsYou => self.next_needs_you(false),
             Action::JumpBack => self.jump_back(),
+            Action::Search
+                if focus == Focus::List
+                    && !self.all_items.is_empty()
+                    && !self.zoom
+                    && self.list_state != crate::viewstate::ListState::Hidden
+                    && !(self.tab == Tab::Terminal
+                        && self
+                            .term
+                            .as_ref()
+                            .is_some_and(|p| p.sensitive || p.task.starts_with("agent:"))) =>
+            {
+                self.mode = Mode::ListFilter(self.list_query.clone());
+                vec![]
+            }
             Action::Search => match crate::search::pane_text(self) {
                 Some(_) => {
                     self.mode = Mode::Search(crate::search::Search {
@@ -3989,6 +4115,61 @@ impl App {
         );
     }
 
+    /// Live list filter (`/` while List is focused): typing narrows the Work list immediately, Up/Down move through
+    /// matches, Enter keeps the filter and focuses the selected task, and Esc clears it.
+    fn list_filter_key(&mut self, key: KeyEvent, mut q: String) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = None;
+                return self.apply_list_query(String::new(), false);
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                if !self.items.is_empty() {
+                    return self.run_action(Action::Open);
+                }
+                return vec![];
+            }
+            KeyCode::Down => return self.select(self.selected + 1),
+            KeyCode::Char('n') if ctrl => return self.select(self.selected + 1),
+            KeyCode::Up => return self.select(self.selected.saturating_sub(1)),
+            KeyCode::Char('p') if ctrl => return self.select(self.selected.saturating_sub(1)),
+            KeyCode::Backspace => {
+                q.pop();
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+            }
+            KeyCode::Char(c) if !ctrl && !c.is_control() => {
+                if q.chars().count() < crate::search::MAX_QUERY {
+                    q.push(c);
+                }
+            }
+            _ => {}
+        }
+        self.apply_list_query(q, true)
+    }
+
+    fn apply_list_query(&mut self, query: String, stay_in_mode: bool) -> Vec<Effect> {
+        let before = self.selected_id();
+        self.list_query = query.clone();
+        if stay_in_mode {
+            self.mode = Mode::ListFilter(query);
+        }
+        self.items = self.filtered();
+        self.selected = before
+            .as_ref()
+            .and_then(|id| self.items.iter().position(|i| &i.id == id))
+            .unwrap_or(0)
+            .min(self.items.len().saturating_sub(1));
+        if self.selected_id() != before {
+            return self.selection_changed();
+        }
+        vec![]
+    }
+
     /// A key while searching (search.rs): typing builds the query; Enter keeps it and n / N step through the matches;
     /// Esc leaves. Only these keys, while it is open.
     fn search_key(&mut self, key: KeyEvent, mut s: crate::search::Search) -> Vec<Effect> {
@@ -4116,7 +4297,7 @@ impl App {
         vec![]
     }
 
-    /// The rows the filter keeps.
+    /// The rows the filter (and any live `/` list query) keeps.
     fn filtered(&self) -> Vec<Item> {
         let name = self.project.as_deref().map(|p| {
             std::path::Path::new(p)
@@ -4128,9 +4309,25 @@ impl App {
             (Some(n), Some(p)) => Some((n.as_str(), p.as_str())),
             _ => None,
         };
+        let q = self.list_query.trim();
         self.all_items
             .iter()
-            .filter(|i| self.filter.keeps(i, here))
+            .filter(|i| {
+                if !self.filter.keeps(i, here) {
+                    return false;
+                }
+                if q.is_empty() {
+                    return true;
+                }
+                let hay = format!(
+                    "{} {} {} {}",
+                    i.title,
+                    i.word,
+                    i.project.as_deref().unwrap_or(""),
+                    i.detail
+                );
+                crate::palette::score(q, &hay).is_some()
+            })
             .cloned()
             .collect()
     }
@@ -4167,6 +4364,7 @@ impl App {
     fn show_task(&mut self, id: &str) -> Vec<Effect> {
         if !self.items.iter().any(|i| i.id == id) && self.all_items.iter().any(|i| i.id == id) {
             self.filter = Filter::All;
+            self.list_query.clear();
             self.items = self.filtered();
             self.say(Tone::Said, "Showing everything: the filter hid it.");
         }
@@ -4294,6 +4492,7 @@ impl App {
             | Mode::Palette(_)
             | Mode::PickModel(_)
             | Mode::Search(_)
+            | Mode::ListFilter(_)
             | Mode::Help
             | Mode::Copied
             | Mode::ThreadNext(_)
@@ -5294,6 +5493,13 @@ impl App {
         }
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Clicking the top bar's "N need you" chip jumps straight to the oldest waiting item (Fitts's Law).
+                if self.areas.needs_chip.width > 0
+                    && self.needs_count > 0
+                    && inside(self.areas.needs_chip)
+                {
+                    return self.next_needs_you(true);
+                }
                 // A click on a watched panel moves focus there.
                 if let Some(slot) = self
                     .panes
@@ -5302,6 +5508,7 @@ impl App {
                     .position(|r| inside(*r))
                     .filter(|s| *s != self.panes.focus)
                 {
+                    self.focus = Focus::Detail;
                     return self.focus_pane(slot);
                 }
                 if x.abs_diff(self.areas.split_x) <= 1
@@ -5334,14 +5541,20 @@ impl App {
                     .find(|(from, to, _)| y == self.areas.right.y && x >= *from && x < *to)
                     .copied()
                 {
+                    self.focus = Focus::Detail;
                     return self.set_tab(tab);
                 }
                 if inside(self.areas.list) {
+                    self.focus = Focus::List;
                     if let Some((_, Some(index))) =
                         self.areas.rows.iter().find(|(row, _)| *row == y).cloned()
                     {
                         return self.select(index);
                     }
+                    return vec![];
+                }
+                if inside(self.areas.right) {
+                    self.focus = Focus::Detail;
                 }
                 vec![]
             }
@@ -5985,6 +6198,7 @@ impl App {
             return vec![];
         };
         self.tab = Tab::Terminal;
+        self.focus = Focus::Detail;
         if let Some(pane) = self.pane_here() {
             match pane.link {
                 Link::Live => {
@@ -6042,6 +6256,7 @@ impl App {
         let mut fx = self.drop_term();
         self.term = Some(Pane::opening(task.clone(), run));
         self.tab = Tab::Terminal;
+        self.focus = Focus::Detail;
         let words = format!("Opening a terminal on {}…", self.attempt_words(run));
         self.status = Some((Tone::Said, words));
         fx.push(Effect::TermOpen { task, run });

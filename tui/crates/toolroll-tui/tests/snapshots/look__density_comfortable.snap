@@ -3,26 +3,26 @@ source: crates/toolroll-tui/tests/look.rs
 expression: shown
 ---
  Toolroll   shop   $1.84 today · plan 62%                                ◐ 2 working    2 need you  
-                                                                                                    
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                                                         
    Work  5                                        Live    Steps    Diff    Terminal                 
-                                                Upgrade the test runner   Building                  
-   Needs you 2                                  $0.31 · Building now · 4m 12s · attempt 1           
-   ● Fix the login redirect       Question      Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready   
-     shop · 3m ago                                                                                  
+                                                Upgrade the test runner                             
+   Needs you 2                                  claude sonnet · $0.31 · attempt 1                   
+   ● Fix the login redirect       Question      ✓ Plan · ✓ Approval ·  ◐ Build  · Checks · Ready    
+     3m ago                                                                                         
      The agent asked a question.                  Worked · 3 steps                                  
    ● Add CSV export                 Result        ✓ Edited vitest.config.ts  +14 −3                 
-     shop · 12m ago                               ✓ Asked a helper: Check the CSV export edge       
+     12m ago                                      ✓ Asked a helper: Check the CSV export edge       
      Ready for you to check.                        cases                                           
                                                     ┌ Helper: Check the CSV export edge cases       
    Working 2                                        │  Empty rows export as a header line only.     
    ◐ Upgrade the test runner      Building          │· Read src/export.ts                           
-     shop · 2m ago                                  └ Helper finished                               
+     2m ago                                         └ Helper finished                               
      An agent is working on it.                   ✓ Ran npm test  212 passed (3.1 s)                
    ◐ Rate-limit middleware        Planning                                                          
-     shop · 7m ago                                                                                  
+     7m ago                                                                                         
      An agent is planning it.                   Tests pass on the new runner. Removing the old      
                                                 config next.                                        
    Recent 1                                                                                         
                                                                                                     
                                                                                                     
-   j/k  move   ⏎  open   s  steer   n  new   :  all actions
+   j/k  move   ⏎  open   /  filter   s  steer   n  new   :  all actions

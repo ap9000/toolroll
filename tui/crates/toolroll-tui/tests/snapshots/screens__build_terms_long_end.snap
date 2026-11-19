@@ -31,4 +31,4 @@ expression: end
 " ││ Enter  Build                                                                                 ││ "
 " ╰│ p  Plan it first   w  Review in the browser                                                  │╯ "
 "  ╰──────────────────────────────────────────────────────────────────────────────────────────────╯  "
-"  j/k move  ⏎ open  s steer  n new  : all actions                                                   "
+"  j/k move  ⏎ open  / filter  n new  : all actions                                                  "

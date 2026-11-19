@@ -336,6 +336,7 @@ fn stale_context_answers_are_dropped() {
     let mut app = review_app(no_accept_facts());
     to_line(&mut app, 7);
     let ask = context_ask(&app.key(key('E')));
+    app.key(code(KeyCode::Esc));
     app.tab = Tab::Live;
     app.key(key('k'));
     app.update(Msg::Context(ask.clone(), Ok(answer(&ask, 0))));

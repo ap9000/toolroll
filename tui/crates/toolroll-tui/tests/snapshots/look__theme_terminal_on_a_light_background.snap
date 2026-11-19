@@ -3,54 +3,54 @@ source: crates/toolroll-tui/tests/look.rs
 expression: "themed(ThemeName::Terminal, Depth::TrueColor, Some(Rgb(255, 255, 255)))"
 ---
  Toolroll   shop   $1.84 today · plan 62%                                ◐ 2 working    2 need you  
-                                                                                                    
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                                                         
    Work  5                                        Live    Steps    Diff    Terminal                 
-                                                Upgrade the test runner   Building                  
-   Needs you 2                                  $0.31 · Building now · 4m 12s · attempt 1           
-   ● Fix the login redirect       Question      Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready   
-     shop · 3m ago                                                                                  
+                                                Upgrade the test runner                             
+   Needs you 2                                  claude sonnet · $0.31 · attempt 1                   
+   ● Fix the login redirect       Question      ✓ Plan · ✓ Approval ·  ◐ Build  · Checks · Ready    
+     3m ago                                                                                         
    ● Add CSV export                 Result        Worked · 3 steps                                  
-     shop · 12m ago                               ✓ Edited vitest.config.ts  +14 −3                 
+     12m ago                                      ✓ Edited vitest.config.ts  +14 −3                 
                                                   ✓ Asked a helper: Check the CSV export edge       
    Working 2                                        cases                                           
    ◐ Upgrade the test runner      Building          ┌ Helper: Check the CSV export edge cases       
-     shop · 2m ago                                  │  Empty rows export as a header line only.     
+     2m ago                                         │  Empty rows export as a header line only.     
    ◐ Rate-limit middleware        Planning          │· Read src/export.ts                           
-     shop · 7m ago                                  └ Helper finished                               
+     7m ago                                         └ Helper finished                               
                                                   ✓ Ran npm test  212 passed (3.1 s)                
    Recent 1                                                                                         
    ✓ Bump dependencies            Complete                                                          
-     shop · 3h ago                              Tests pass on the new runner. Removing the old      
+     3h ago                                     Tests pass on the new runner. Removing the old      
                                                 config next.                                        
                                                                                                     
                                                                                                     
                                                                                                     
-   j/k  move   ⏎  open   s  steer   n  new   :  all actions                                         
+   j/k  move   ⏎  open   /  filter   s  steer   n  new   :  all actions                             
 
 abbbbbbbbaaccccccaaddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
-aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agghhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 agghhhhhiiiggggggggggggggggggggggggggggggggggaggjjjjjjjjiiiiiiiiiiiiiiiiiiiiiiiiiiiiigggggggggggggga
-aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhggeeeeeeeeeegggggggggggggggga
-agghhhhhhhhhfffggggggggggggggggggggggggggggggaggkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkgggggggggga
-agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggggggglkkkggggggggglkkkggggggmkkkkkkkkkkkkkkkkkkkkgga
-aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggnnoooooooooooooooonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggkkkkkkkkkkkkkkkkggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnqqqqqqqqnnnnnnnnnnnnnngga
-aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-agghhhhhhhiiiggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggrjjjjjjjjjjjjjjjjjjjjjjjjrrrrreeeeeeeeeeggaggnnqqqqsssssssssssssssssssssssssssssssssssssssnnnngga
-aggrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggmhggggggggggggggggggggggggggggeeeeeeeeeeggaggnnqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnqqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnngga
-agghhhhhhiiigggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhgggggggggggggggggggggggggggga
+agghhhhhhhhhfffggggggggggggggggggggggggggggggaggkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkgggggggggggggggggga
+agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggllkkkkkkkllkkkkkkkkkkkeeeeeeeeekkkkkkkkkkkkkkkkkggga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggmmnnnnnnnnnnnnnnnnmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+aggkkkkkkkkkgggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmppppppppmmmmmmmmmmmmmmgga
+aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+agghhhhhhhiiiggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+aggqjjjjjjjjjjjjjjjjjjjjjjjjqqqqqeeeeeeeeeeggaggmmpppprrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmmmmgga
+aggqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqggaggmmpppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+aggshggggggggggggggggggggggggggggeeeeeeeeeeggaggmmpppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggaggmmpppppppppppppppppppmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
+aggggggggggggggggggggggggggggggggggggggggggggaggmmoommmmmmmmmmmmppppppppppppppppppppmmmmmmmmmmmmmgga
+agghhhhhhiiigggggggggggggggggggggggggggggggggaggmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmgga
 agglhggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
-aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggkkkkkkkkggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aacccccdddddaacccdddddaacccddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aacccccdddddaacccdddddaacccdddddddaacccddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = fg terminal bg #ededed
 b = fg terminal bg #ededed bold
@@ -64,11 +64,11 @@ i = fg #666666 bg #ebebeb
 j = fg #171717 bg #d4d4d4 bold
 k = fg #666666 bg terminal
 l = fg #218358 bg terminal
-m = fg #0d74ce bg terminal
-n = fg terminal bg #f7f7f7
-o = fg #666666 bg #f7f7f7 bold
-p = fg #218358 bg #f7f7f7
-q = fg #666666 bg #f7f7f7
-r = fg #171717 bg #d4d4d4
-s = fg terminal bg #f7f7f7 bold
+m = fg terminal bg #f7f7f7
+n = fg #666666 bg #f7f7f7 bold
+o = fg #218358 bg #f7f7f7
+p = fg #666666 bg #f7f7f7
+q = fg #171717 bg #d4d4d4
+r = fg terminal bg #f7f7f7 bold
+s = fg #0d74ce bg terminal
 t = fg #218358 bg #e4f0eb

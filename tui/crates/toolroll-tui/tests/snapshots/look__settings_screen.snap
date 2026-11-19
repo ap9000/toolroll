@@ -4,29 +4,29 @@ expression: "text(&draw(&mut app, 110, 36))"
 ---
  Toolroll   shop   $1.84 today · plan 62%                                          ◐ 2 working    2 need you  
                                                                                                               
-         ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
+   ━━━━━━╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
    Work  │ File  /home/me/.config/toolroll/tui.toml                                                │          
          │       read                                                                              │          
    Needs │                                                                                         │          
-         │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │tempt 1   
+         │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
    ● Fix │                     background)                                                         │          
-     shop│   Density           compact                                                             │─ Ready   
+     3m a│   Density           compact                                                             │y         
          │   Glyphs            unicode                                                             │───────── 
    ● Add │   List side         left                                                                │          
-     shop│   Notify: asks      on                                                                  │          
+     12m │   Notify: asks      on                                                                  │          
          │   Notify: finished  off                                                                 │          
    Workin│   Notify: failed    on                                                                  │          
          │                                                                                         │          
    ◐ Upgr│   Colour            full colour                                                         │          
-     shop│   Key bar           on                                                                  │s         
+     2m a│   Key bar           on                                                                  │s         
          │   Costs             shown                                                               │          
    ◐ Rate│   Columns           step                                                                │          
-     shop│   Keys              default preset                                                      │          
+     7m a│   Keys              default preset                                                      │          
          │   Bell              on                                                                  │          
    Recent│   Reduced motion    off                                                                 │          
          │   Delivered         desktop notifications (OSC 9)                                       │          
    ✓ Bump│   Agent threads     not known yet (beta). Change it in the browser or with `toolroll    │          
-     shop│                     config set flexible on`                                             │fig       
+     3h a│                     config set flexible on`                                             │fig       
          │                                                                                         │          
          │ Not used                                                                                │          
          │   tui.toml: Line 3: themes isn't a setting, so it was ignored.                          │          
@@ -37,4 +37,4 @@ expression: "text(&draw(&mut app, 110, 36))"
          ╰─────────────────────────────────────────────────────────────────────────────────────────╯──────╯   
                                                                                                               
                                                                                                               
-   j/k  move   ⏎  open   s  steer   n  new   :  all actions
+   j/k  move   ⏎  open   /  filter   n  new   :  all actions

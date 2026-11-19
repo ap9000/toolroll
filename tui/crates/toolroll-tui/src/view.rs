@@ -2,7 +2,7 @@
 //!
 //! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
 //! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
-use crate::app::{App, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::app::{App, Focus, Item, Mode, NoteKind, Section, Tab, Tone};
 use crate::keys::Action;
 use crate::review::{self, Checks, Kind, Note, Row};
 use crate::settings::{Column, Density};
@@ -121,50 +121,104 @@ pub fn short_duration(secs: i64) -> String {
     }
 }
 
-/// The step strip in a panel's header, "Plan ✓ · Build ◐ 4m · Checks · Review (codex)": the chain's steps from the
-/// task's step cards (a "Just code" chain has no Plan or Approval), the running one's time ticking with the clock.
-pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
-    // Joined by rules when there's room ("Plan ✓ ─── Build ◐ 4m"), else by dots.
-    let ruled = step_line_with(app, steps, true, " ─── ");
-    if ruled.width() <= w {
-        return ruled;
-    }
-    let full = step_line_with(app, steps, true, " · ");
-    if full.width() <= w {
-        return full;
-    }
-    fit_line(step_line_with(app, steps, false, " · "), w)
+/// Whether the pipeline strip already carries the task's active stage (live, needs you, failed, or waiting/held),
+/// so the header doesn't repeat the same status badge on the title line.
+fn pipeline_carries_stage(steps: &StepCards) -> bool {
+    chain_cards(steps).into_iter().any(|c| {
+        matches!(c.mark.as_str(), "live" | "needs" | "stuck") || build_wait(steps, c).is_some()
+    })
 }
 
-fn step_line_with(app: &App, steps: &StepCards, times: bool, join: &str) -> Line<'static> {
+/// The pipeline strip in a panel's header: completed steps quiet (`✓ Plan`), the active stage highlighted as a pill
+/// (`◐ Build · 4m 12s`, solid ink `● Ready` when waiting on you, red `✕ Build` on failure), upcoming steps muted.
+/// Serves as both the canonical state home (Prägnanz) and proximity to completion (Goal-Gradient).
+pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
+    let wide = step_line_with(app, steps, ClockMode::Exact, " ── ");
+    if wide.width() <= w {
+        return wide;
+    }
+    let medium = step_line_with(app, steps, ClockMode::Short, " › ");
+    if medium.width() <= w {
+        return medium;
+    }
+    fit_line(step_line_with(app, steps, ClockMode::None, " · "), w)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClockMode {
+    Exact,
+    Short,
+    None,
+}
+
+fn step_line_with(
+    app: &App,
+    steps: &StepCards,
+    clock: ClockMode,
+    join: &str,
+) -> Line<'static> {
+    let m = marks();
     let mut spans = vec![];
-    for (i, card) in chain_cards(steps).into_iter().enumerate() {
+    let cards = chain_cards(steps);
+    for (i, card) in cards.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(
-                join.to_string(),
-                if join == " · " { dim() } else { line() },
-            ));
+            let prev_done = cards[i - 1].mark == "done";
+            let sep_style = if join == " ── " && prev_done {
+                line()
+            } else {
+                dim()
+            };
+            spans.push(Span::styled(join.to_string(), sep_style));
         }
-        let (mark, style) = mark_of(card);
         let label = step_label(card);
-        if card.mark == "todo" || card.mark == "wait" {
-            spans.push(Span::styled(label, dim()));
+        let wait = build_wait(steps, card);
+        if let Some(wait_words) = wait {
+            let mark = if wait_words == "On hold" {
+                m.paused
+            } else {
+                m.running
+            };
+            let text = match clock {
+                ClockMode::Exact | ClockMode::Short => format!("{mark} {label} · {wait_words}"),
+                ClockMode::None => format!("{mark} {label}"),
+            };
+            spans.push(sheet::badge(&text, crate::theme::Role::Fill));
             continue;
         }
-        spans.push(Span::raw(format!("{label} ")));
-        spans.push(Span::styled(mark.to_string(), style));
-        if card.mark == "live" && times {
-            // This build's own time (not the first build's).
-            if let Some(start) = card
-                .latest_started_at
-                .as_deref()
-                .or(card.started_at.as_deref())
-                .and_then(epoch)
-            {
-                spans.push(Span::styled(
-                    format!(" {}", short_duration(app.now - start)),
-                    dim(),
+        match card.mark.as_str() {
+            "done" => {
+                spans.push(Span::styled(format!("{} ", m.passed), passed()));
+                spans.push(Span::styled(label, dim()));
+            }
+            "live" => {
+                let elapsed = card
+                    .latest_started_at
+                    .as_deref()
+                    .or(card.started_at.as_deref())
+                    .and_then(epoch)
+                    .map(|start| match clock {
+                        ClockMode::Exact => format!(" · {}", duration(app.now - start)),
+                        ClockMode::Short => format!(" {}", short_duration(app.now - start)),
+                        ClockMode::None => String::new(),
+                    })
+                    .unwrap_or_default();
+                let text = format!("{} {label}{elapsed}", m.running);
+                spans.push(sheet::badge(&text, crate::theme::Role::Running));
+            }
+            "needs" => {
+                spans.push(sheet::chip(&format!("{} {label}", m.needs)));
+            }
+            "stuck" => {
+                spans.push(sheet::badge(
+                    &format!("{} {label}", m.failed),
+                    crate::theme::Role::Failed,
                 ));
+            }
+            "skipped" => {
+                spans.push(Span::styled(format!("{} {label}", m.skipped), dim()));
+            }
+            _ => {
+                spans.push(Span::styled(label, dim()));
             }
         }
     }
@@ -195,9 +249,9 @@ fn upper_first(s: &str) -> String {
     }
 }
 
-/// "claude sonnet · Building now · 4m 12s · $0.31 · attempt 2"; waiting, "Waiting to retry · 21s · after attempt 2".
-/// Short of room (`w` cells), its cost comes first and the model's name goes first: "$0.31 · Building now · 4m 12s ·
-/// attempt 2".
+/// Provenance metadata under the title: while the build is live (the pipeline strip already shows "Build · 4m 12s"),
+/// omit the duplicate status and clock so each fact has one home: "claude sonnet · attempt 1 · $0.31".
+/// When waiting or finished, include the relevant state/duration. Short of room, cost stays first and model drops first.
 fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
     let card = steps
         .cards
@@ -218,13 +272,16 @@ fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
         parts.push(agent.clone());
     }
     let wait = build_wait(steps, card);
+    let live_in_strip = card.mark == "live" && card.in_chain && wait.is_none();
     if let Some(words) = wait {
         parts.push(words.to_string());
-    } else if !card.sentence.is_empty() {
+    } else if !live_in_strip && !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
-    if let Some(secs) = build_clock(app, steps, card) {
-        parts.push(duration(secs));
+    if !live_in_strip {
+        if let Some(secs) = build_clock(app, steps, card) {
+            parts.push(duration(secs));
+        }
     }
     let cost = card
         .cost_usd
@@ -317,6 +374,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | Mode::Steer(_)
             | Mode::NewTask(..)
             | Mode::Note(..)
+            | Mode::ListFilter(_)
     );
     if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
         pane.drawn = false;
@@ -444,13 +502,21 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_overlay(f, app, area);
         return;
     }
+    let alone = app.zoom || narrow;
+    let focus = app.effective_focus();
     match list_state {
         crate::viewstate::ListState::Full => {
             let list = sheet::sheet(f.buffer_mut(), left);
+            if focus == Focus::List && !alone {
+                sheet::focus_bar(f.buffer_mut(), left);
+            }
             draw_list(f, app, list);
         }
         crate::viewstate::ListState::Rail => {
             let list = sheet::sheet(f.buffer_mut(), left);
+            if focus == Focus::List && !alone {
+                sheet::focus_bar(f.buffer_mut(), left);
+            }
             draw_rail(f, app, list);
         }
         crate::viewstate::ListState::Hidden => {
@@ -460,7 +526,6 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     }
     // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
     // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
-    let alone = app.zoom || narrow;
     let layout = if alone {
         crate::panes::Layout::Focused
     } else {
@@ -478,9 +543,12 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
                 crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
             }
-            // With several panels, the focused one is outlined in ink, heavy (reads without colour too).
+            // With several panels, the focused one is outlined in ink, heavy (reads without colour too);
+            // with one panel beside the list, a crisp top accent bar shows when Detail holds keyboard focus.
             if several {
                 sheet::outline_focus(f.buffer_mut(), *place);
+            } else if focus == Focus::Detail && !alone && list_state != crate::viewstate::ListState::Hidden {
+                sheet::focus_bar(f.buffer_mut(), *place);
             }
         } else {
             crate::panes::draw_watch(f, app, slot, inner);
@@ -571,7 +639,8 @@ pub enum TopItem {
 
 /// The top bar, on the ground: Toolroll, the project and the cost line on the left; what's working, what's set aside,
 /// unread tasks and what needs you on the right. Short of room, items are kept in TopItem's order, the same everywhere.
-fn draw_top(f: &mut Frame, app: &App, area: Rect) {
+fn draw_top(f: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.needs_chip = Rect::default();
     let needs = if !app.loaded {
         Span::styled("Reading…", dim())
     } else if app.needs_count == 0 {
@@ -581,6 +650,7 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     } else {
         sheet::chip(&format!("{} need you", app.needs_count))
     };
+    let needs_w = width(&needs.content) as u16;
     let working = app
         .all_items
         .iter()
@@ -614,14 +684,14 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
             true,
         ));
     }
-    // What is set aside, said where it can't be missed: zoomed, narrow, the list as a rail or hidden.
+    // What is set aside, shown quietly as neutral pills so solid ink stays reserved for "Needs you" (One Signal Rule).
     let narrow = f.area().width < NARROW_WIDTH;
     let mut marks_on: Vec<Span<'static>> = vec![];
     let mut mark = |m: &str| {
         if !marks_on.is_empty() {
             marks_on.push(Span::raw("  "));
         }
-        marks_on.push(sheet::chip(m));
+        marks_on.push(sheet::badge(m, crate::theme::Role::Fill));
     };
     if app.zoom {
         mark("ZOOM");
@@ -685,6 +755,14 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         width: right_w.min(area.width),
         ..area
     };
+    if app.loaded && app.needs_count > 0 && needs_w <= r.width {
+        app.areas.needs_chip = Rect {
+            x: r.right().saturating_sub(needs_w),
+            y: r.y,
+            width: needs_w,
+            height: 1,
+        };
+    }
     f.render_widget(Paragraph::new(Line::from(right)), r);
 }
 
@@ -707,12 +785,35 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     app.areas.rows.clear();
     let w = area.width as usize;
     let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
-    // The sheet's head: "Work 5".
+    // The sheet's head: "Work 5" (bold ink when List holds focus, muted when Detail holds focus).
+    let list_focused = app.effective_focus() == Focus::List;
     if area.height >= 6 {
         lines.push((
             Line::from(vec![
-                Span::styled("Work ", ink()),
+                Span::styled("Work ", if list_focused { ink() } else { dim() }),
                 sheet::count(app.items.len(), false),
+            ]),
+            None,
+        ));
+        lines.push((Line::raw(""), None));
+    }
+    // Live `/` list filter, shown inline at the top of the list.
+    if let Mode::ListFilter(q) = &app.mode {
+        let shown = fit(&clean(q), w.saturating_sub(4));
+        lines.push((
+            Line::from(vec![
+                Span::styled("/ ", ink()),
+                Span::raw(shown),
+                Span::styled("▏", ink()),
+            ]),
+            None,
+        ));
+        lines.push((Line::raw(""), None));
+    } else if !app.list_query.is_empty() {
+        lines.push((
+            Line::from(vec![
+                Span::styled("Filter: ", dim()),
+                Span::styled(fit(&clean(&app.list_query), w.saturating_sub(8)), ink()),
             ]),
             None,
         ));
@@ -732,11 +833,20 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     if app.loaded && app.items.is_empty() {
         let words = if app.all_items.is_empty() {
             "Nothing yet."
+        } else if !app.list_query.is_empty() {
+            "No matching tasks. Esc clears filter."
         } else {
             "Nothing here. : changes the filter."
         };
         lines.push((Line::from(Span::styled(words, dim())), None));
     }
+    // Hide the repeated project name on rows when every listed task belongs to the top bar's active project.
+    let single_project = !app.project_name.is_empty()
+        && !app.items.is_empty()
+        && app
+            .items
+            .iter()
+            .all(|i| i.project.as_deref().map(clean).as_deref() == Some(app.project_name.as_str()));
     let cols = columns(app);
     let comfortable = app.prefs.settings.density == Density::Comfortable;
     // Each row is a card of two lines (three when comfortable); a blank line between cards when they all fit.
@@ -774,7 +884,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push((Line::raw(""), None));
         }
         let here = index == app.selected;
-        for l in card_lines(app, item, here, w, &cols, comfortable) {
+        for l in card_lines(app, item, here, w, &cols, comfortable, single_project) {
             lines.push((l, Some(index)));
         }
     }
@@ -822,6 +932,7 @@ fn card_lines(
     w: usize,
     cols: &[(Column, usize)],
     comfortable: bool,
+    single_project: bool,
 ) -> Vec<Line<'static>> {
     let (mark, mark_style, role) = look_of(item);
     // The step column is the badge; the others sit before it.
@@ -873,8 +984,10 @@ fn card_lines(
         first.push(b);
     }
     let mut meta: Vec<String> = vec![];
-    if let Some(p) = item.project.as_deref().filter(|p| !p.is_empty()) {
-        meta.push(clean(p));
+    if !single_project {
+        if let Some(p) = item.project.as_deref().filter(|p| !p.is_empty()) {
+            meta.push(clean(p));
+        }
     }
     if !item.age.is_empty() {
         meta.push(item.age.clone());
@@ -1036,19 +1149,9 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         x += lw;
         spans.push(Span::styled(shown, style));
     }
-    // Narrow (one column): where this task is in the list, and the way back to it.
+    // Narrow (one column): where this task is in the list, and the universal Esc route back to it.
     if app.narrow && !app.items.is_empty() {
-        let back = key_name(app, Action::ListCycle);
-        let at = format!(
-            "{} of {}{}",
-            app.selected + 1,
-            app.items.len(),
-            if back.is_empty() {
-                String::new()
-            } else {
-                format!(" · {back} list")
-            }
-        );
+        let at = format!("{} of {} · Esc list", app.selected + 1, app.items.len());
         let used = sheet::spans_width(&spans);
         let room = (tabs.width as usize).saturating_sub(used);
         if room > width(&at) + 1 {
@@ -1087,13 +1190,17 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         }
         return;
     };
-    // Head: the task (a link to its page in the console, ours: link.rs) and its badge, what's running it, its steps.
-    let badge = match look_of(&item).2 {
+    // Head: the task (a link to its page in the console, ours: link.rs), provenance facts, and the pipeline strip.
+    // Give each fact one home (Prägnanz): when the pipeline strip already carries the active stage and there is no
+    // mid-build Question chip to surface, omit the duplicate status badge beside the title.
+    let show_title_badge = item.question().is_some()
+        || !app.steps.as_ref().is_some_and(pipeline_carries_stage);
+    let badge = show_title_badge.then(|| match look_of(&item).2 {
         None => sheet::chip(&fit(&item.word, 14)),
         Some(role) => sheet::badge(&fit(&item.word, 14), role),
-    };
-    let badge_w = width(&badge.content);
-    let title = fit(&item.title, w.saturating_sub(badge_w + 2));
+    });
+    let badge_w = badge.as_ref().map(|b| width(&b.content) + 2).unwrap_or(0);
+    let title = fit(&item.title, w.saturating_sub(badge_w));
     if item.is_task {
         if let Some(url) = app
             .origin
@@ -1108,11 +1215,12 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             });
         }
     }
-    let mut head_lines = vec![Line::from(vec![
-        Span::styled(title, ink()),
-        Span::raw("  "),
-        badge,
-    ])];
+    let mut title_spans = vec![Span::styled(title, ink())];
+    if let Some(badge) = badge {
+        title_spans.push(Span::raw("  "));
+        title_spans.push(badge);
+    }
+    let mut head_lines = vec![Line::from(title_spans)];
     match app.steps.as_ref().and_then(|s| facts_line(app, s, w)) {
         Some(l) => head_lines.push(fit_line(l, w)),
         None => head_lines.push(Line::from(Span::styled(fit(&item.detail, w), dim()))),
@@ -2786,6 +2894,20 @@ fn half_spans(
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Filtering the task list live (`/` while List is focused).
+    if let Mode::ListFilter(q) = &app.mode {
+        let count = format!("  {} of {}", app.items.len(), app.all_items.len());
+        let keys = "  ⏎ open · Esc clear";
+        let line = Line::from(vec![
+            Span::styled("Filter: ", ink()),
+            Span::raw(fit(&clean(q), 40)),
+            Span::styled("▏", ink()),
+            Span::styled(count, ink()),
+            Span::styled(keys, dim()),
+        ]);
+        f.render_widget(Paragraph::new(fit_line(line, area.width as usize)), area);
+        return;
+    }
     // Searching: the query, where it is among the matches, and its keys.
     if let Mode::Search(s) = &app.mode {
         let found = if s.query.is_empty() {
@@ -2844,12 +2966,14 @@ fn keys_name(app: &App, actions: &[Action]) -> String {
         .join("/")
 }
 
-/// The key bar: the five keys that matter most where the person is, then the palette, which has every other.
+/// The key bar: the high-frequency keys that matter most for the focused sheet (List vs. Detail) and task state,
+/// always ending with the palette. Avoids duplicating actions already shown on the live composer directly above.
 fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     use Action::*;
     if app.agents_screen.is_some() {
         return crate::agents::bar_keys(app);
     }
+    let focus = app.effective_focus();
     // Only the acts this task's state allows: steer while it builds, accept and send back while a result waits,
     // retry once it failed (r, the same key as send back).
     let review = app.review_waiting();
@@ -2860,8 +2984,12 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let plan = !live && app.plan_pins().is_some();
     let waiting = !live && app.queued_here();
     let held = !live && app.held_here().is_some();
+    let composer_visible = app.tab == Tab::Live
+        && live
+        && app.areas.right.height >= 22
+        && app.selected_item().is_some_and(|i| i.is_task && !i.thread && i.question().is_none());
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
-        if live {
+        if live && !composer_visible {
             v.push((&[Steer], "steer"));
         }
         if review {
@@ -2886,65 +3014,87 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[Pause], "plan"));
         }
     };
-    let five: Vec<(&[Action], &'static str)> = match app.tab {
-        _ if app.items.is_empty() => vec![
-            (&[NewTask], "new task"),
-            (&[Agents], "agents"),
-            (&[Help], "keys"),
-        ],
-        Tab::Diff if app.thread_selected().is_none() => {
-            let mut v: Vec<(&[Action], &str)> =
-                vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
-            if review {
-                v.push((&[Accept], "accept"));
-                v.push((&[SendBack], "send back"));
-            } else if approval {
-                v.push((&[Accept], "approve"));
+    let mut out: Vec<(String, &'static str)> = vec![];
+    if app.items.is_empty() && app.list_query.is_empty() {
+        for (a, what) in [
+            (&[NewTask][..], "new task"),
+            (&[Agents][..], "agents"),
+            (&[Help][..], "keys"),
+        ] {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
             }
-            v.push((&[PreviousFile, NextFile], "file"));
-            v
         }
-        Tab::Terminal
-            if app
-                .pane_here()
-                .is_some_and(|p| p.link == crate::term::Link::Live) =>
+    } else if focus == Focus::Detail {
+        let mut five: Vec<(&[Action], &'static str)> = match app.tab {
+            Tab::Diff if app.thread_selected().is_none() => {
+                let mut v: Vec<(&[Action], &str)> =
+                    vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
+                if review {
+                    v.push((&[Accept], "accept"));
+                    v.push((&[SendBack], "send back"));
+                } else if approval {
+                    v.push((&[Accept], "approve"));
+                }
+                v.push((&[PreviousFile, NextFile], "file"));
+                v
+            }
+            Tab::Terminal
+                if app
+                    .pane_here()
+                    .is_some_and(|p| p.link == crate::term::Link::Live) =>
+            {
+                vec![
+                    (&[TakeOver], "type in it"),
+                    (&[ScrollUp, ScrollDown], "scroll"),
+                    (&[Copy], "copy"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
+            Tab::Terminal if app.pane_here().is_some() => {
+                vec![(&[TakeOver], "Open build shell"), (&[NextTab], "next tab")]
+            }
+            _ => {
+                let mut v: Vec<(&[Action], &str)> = vec![
+                    (&[MoveDown, MoveUp], "scroll"),
+                    (&[Search], "search"),
+                ];
+                acts(&mut v);
+                if app.panes.layout.count() > 1 {
+                    v.push((&[NextPane], "next panel"));
+                }
+                v
+            }
+        };
+        for (a, what) in five.drain(..) {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
+            }
+        }
+        out.push(("Esc".to_string(), "list"));
+    } else {
+        let mut five: Vec<(&[Action], &'static str)> =
+            vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
+        if !app.all_items.is_empty()
+            && !app.zoom
+            && app.list_state != crate::viewstate::ListState::Hidden
         {
-            vec![
-                (&[TakeOver], "type in it"),
-                (&[ScrollUp, ScrollDown], "scroll"),
-                (&[Copy], "copy"),
-                (&[MoveDown, MoveUp], "task"),
-                (&[NextTab], "next tab"),
-            ]
+            five.push((&[Search], "filter"));
         }
-        Tab::Terminal if app.pane_here().is_some() => vec![
-            (&[TakeOver], "Open build shell"),
-            (&[MoveDown, MoveUp], "task"),
-            (&[NextTab], "next tab"),
-        ],
-        _ if app.panes.layout.count() > 1 => {
-            let mut v: Vec<(&[Action], &str)> = vec![
-                (&[MoveDown, MoveUp], "move"),
-                (&[NextPane], "next panel"),
-                (&[Open], "open"),
-            ];
-            acts(&mut v);
-            v.push((&[NewTask], "new"));
-            v
+        if app.panes.layout.count() > 1 {
+            five.push((&[NextPane], "next panel"));
         }
-        _ => {
-            let mut v: Vec<(&[Action], &str)> =
-                vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
-            acts(&mut v);
-            v.push((&[NewTask], "new"));
-            v
+        acts(&mut five);
+        five.push((&[NewTask], "new"));
+        for (a, what) in five {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
+            }
         }
-    };
-    let mut out: Vec<(String, &'static str)> = five
-        .into_iter()
-        .map(|(a, what)| (keys_name(app, a), what))
-        .filter(|(k, _)| !k.is_empty())
-        .collect();
+    }
     let palette = key_name(app, Palette);
     if !palette.is_empty() {
         out.push((palette, "all actions"));
@@ -3068,13 +3218,39 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         out
     };
     let mut lines = vec![];
-    let global: Vec<Vec<Line<'static>>> = rows
+    // Chunk Global bindings by role (Miller's Law / Chunking) while keeping every row visible in a 30-row window.
+    let roomy_help = area.height >= 34;
+    let nav_layout: Vec<Vec<Line<'static>>> = rows
         .iter()
-        .filter(|r| r.scope == crate::keys::Scope::Global)
+        .filter(|r| {
+            r.scope == crate::keys::Scope::Global
+                && matches!(r.group, crate::keys::Group::Move | crate::keys::Group::Layout)
+        })
         .map(|r| cell(&r.keys, &r.words))
         .collect();
-    lines.extend(columns(global));
-    lines.push(Line::raw(""));
+    let work_acts: Vec<Vec<Line<'static>>> = rows
+        .iter()
+        .filter(|r| r.scope == crate::keys::Scope::Global && r.group == crate::keys::Group::Act)
+        .map(|r| cell(&r.keys, &r.words))
+        .collect();
+    if roomy_help {
+        if !nav_layout.is_empty() {
+            lines.push(Line::from(Span::styled("Navigate & layout", ink())));
+            lines.extend(columns(nav_layout));
+        }
+        if !work_acts.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled("Work & decisions", ink())));
+            lines.extend(columns(work_acts));
+        }
+        lines.push(Line::raw(""));
+    } else {
+        // Compact 30-row window: order Navigate/Layout before Work & decisions in one dense two-column grid so every
+        // binding plus the [keys] footer fits without clipping.
+        let mut combined = nav_layout;
+        combined.extend(work_acts);
+        lines.extend(columns(combined));
+    }
     lines.push(Line::from(Span::styled("In Diff", ink())));
     let diff: Vec<Vec<Line<'static>>> = rows
         .iter()
@@ -3202,19 +3378,31 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 app.threads.answered.then_some(!app.threads.off),
             ),
         ),
-        Mode::Quit => (
-            " Quit Toolroll? ",
-            vec![
-                Line::raw(""),
-                Line::from(sheet::act("s", "Stop agents and quit", false)),
-                Line::from(sheet::act(
-                    "b",
-                    "Keep agents running (reopen with `toolroll`)",
-                    false,
-                )),
-                Line::from(sheet::act("Esc", "Back", false)),
-            ],
-        ),
+        Mode::Quit => {
+            let working = app
+                .all_items
+                .iter()
+                .filter(|i| i.section == Section::Working && !i.paused)
+                .count();
+            let mut lines = vec![Line::raw("")];
+            if working > 0 {
+                let words = if working == 1 {
+                    "1 build is running now.".to_string()
+                } else {
+                    format!("{working} builds are running now.")
+                };
+                lines.push(Line::from(Span::styled(words, ink())));
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::from(sheet::act("s", "Stop agents and quit", false)));
+            lines.push(Line::from(sheet::act(
+                "b",
+                "Keep agents running (reopen with `toolroll`)",
+                false,
+            )));
+            lines.push(Line::from(sheet::act("Esc", "Back", false)));
+            (" Quit Toolroll? ", lines)
+        }
         Mode::ConfirmTakeOver { run, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
             let mut lines = vec![Line::raw("")];
@@ -3891,7 +4079,11 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::raw(""));
     if end < body.len() {
         lines.push(Line::from(Span::styled(
-            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
             ink(),
         )));
     } else {
@@ -3989,7 +4181,11 @@ fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::raw(""));
     if end < body.len() {
         lines.push(Line::from(Span::styled(
-            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
             ink(),
         )));
     } else {
@@ -4049,15 +4245,28 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     ])
     .areas(area);
     let fills = crate::theme::fills();
+    // Said plainly: a separate copy at that build, on its own branch.
+    let place = if pane.branch.is_empty() {
+        format!("separate copy at {attempt}")
+    } else {
+        format!("separate copy at {attempt} on {}", pane.branch)
+    };
+    let fits_back = w >= width(" Typing · Ctrl-] back ") + width(&place) + 3;
     let (state, style) = match &pane.link {
         crate::term::Link::Opening => ("Opening…".to_string(), dim()),
         crate::term::Link::Attaching => ("Attaching…".to_string(), dim()),
-        // The way back is on the key bar; said here only when the key bar is off.
-        crate::term::Link::Live if typing && app.prefs.settings.key_bar => {
-            ("Typing".to_string(), ink().patch(crate::theme::fill()))
-        }
-        crate::term::Link::Live if typing => (
+        // Keep the Ctrl-] escape hint visible on the terminal header whenever the key bar is off or room allows
+        // without clipping the branch name (when key_bar is on, the bottom bar already shows Ctrl-] exclusively).
+        crate::term::Link::Live if typing && !app.prefs.settings.key_bar => (
             "Typing · Ctrl-] goes back".to_string(),
+            ink().patch(crate::theme::fill()),
+        ),
+        crate::term::Link::Live if typing && fits_back => (
+            "Typing · Ctrl-] back".to_string(),
+            ink().patch(crate::theme::fill()),
+        ),
+        crate::term::Link::Live if typing => (
+            "Typing".to_string(),
             ink().patch(crate::theme::fill()),
         ),
         crate::term::Link::Live if app.prefs.settings.key_bar => (
@@ -4077,12 +4286,6 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             dim(),
         ),
         crate::term::Link::Closed(words) => (clean(words), dim()),
-    };
-    // Said plainly: a separate copy at that build, on its own branch.
-    let place = if pane.branch.is_empty() {
-        format!("separate copy at {attempt}")
-    } else {
-        format!("separate copy at {attempt} on {}", pane.branch)
     };
     // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
     let state = if fills && style.bg.is_some() {

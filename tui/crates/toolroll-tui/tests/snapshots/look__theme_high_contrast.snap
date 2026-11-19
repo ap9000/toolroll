@@ -3,54 +3,54 @@ source: crates/toolroll-tui/tests/look.rs
 expression: "themed(ThemeName::HighContrast, Depth::TrueColor, None)"
 ---
  Toolroll   shop   $1.84 today · plan 62%                                ◐ 2 working    2 need you  
- ╭──────────────────────────────────────────╮ ╭───────────────────────────────────────────────────╮ 
+ ╭─━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─╮ ╭───────────────────────────────────────────────────╮ 
  │ Work  5                                  │ │   Live    Steps    Diff    Terminal               │ 
- │                                          │ │ Upgrade the test runner   Building                │ 
- │ Needs you 2                              │ │ $0.31 · Building now · 4m 12s · attempt 1         │ 
- │ ● Fix the login redirect       Question  │ │ Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready │ 
- │   shop · 3m ago                          │ │                                                   │ 
+ │                                          │ │ Upgrade the test runner                           │ 
+ │ Needs you 2                              │ │ claude sonnet · $0.31 · attempt 1                 │ 
+ │ ● Fix the login redirect       Question  │ │ ✓ Plan · ✓ Approval ·  ◐ Build  · Checks · Ready  │ 
+ │   3m ago                                 │ │                                                   │ 
  │ ● Add CSV export                 Result  │ │   Worked · 3 steps                                │ 
- │   shop · 12m ago                         │ │   ✓ Edited vitest.config.ts  +14 −3               │ 
+ │   12m ago                                │ │   ✓ Edited vitest.config.ts  +14 −3               │ 
  │                                          │ │   ✓ Asked a helper: Check the CSV export edge     │ 
  │ Working 2                                │ │     cases                                         │ 
  │ ◐ Upgrade the test runner      Building  │ │     ┌ Helper: Check the CSV export edge cases     │ 
- │   shop · 2m ago                          │ │     │  Empty rows export as a header line only.   │ 
+ │   2m ago                                 │ │     │  Empty rows export as a header line only.   │ 
  │ ◐ Rate-limit middleware        Planning  │ │     │· Read src/export.ts                         │ 
- │   shop · 7m ago                          │ │     └ Helper finished                             │ 
+ │   7m ago                                 │ │     └ Helper finished                             │ 
  │                                          │ │   ✓ Ran npm test  212 passed (3.1 s)              │ 
  │ Recent 1                                 │ │                                                   │ 
  │ ✓ Bump dependencies            Complete  │ │                                                   │ 
- │   shop · 3h ago                          │ │ Tests pass on the new runner. Removing the old    │ 
+ │   3h ago                                 │ │ Tests pass on the new runner. Removing the old    │ 
  │                                          │ │ config next.                                      │ 
  │                                          │ │                                                   │ 
  ╰──────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯ 
                                                                                                     
-   j/k  move   ⏎  open   s  steer   n  new   :  all actions                                         
+   j/k  move   ⏎  open   /  filter   s  steer   n  new   :  all actions                             
 
 abbbbbbbbaaccccccaaddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
-aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 agabbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaiiiiiiiihhhhhhhhhhhhhhhhhhhhhhhhhhhhhaaaaaaaaaaaaaga
-agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagabbbbbbbbbbbbbbbbbbbbbbbaaeeeeeeeeeeaaaaaaaaaaaaaaaga
-agabbbbbbbbbfffaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagadddddddddddddddddddddddddddddddddddddddddaaaaaaaaaga
-agabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaffffffffffagagaaaaaajdddaaaaaaaaajdddaaaaaakddddddddddddddddddddaga
-agadddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaagagalllllllllllllllllllllllllllllllllllllllllllllllllaga
-agabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaffffffffagagallmmmmmmmmmmmmmmmmlllllllllllllllllllllllllllllllaga
-agaddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaagagallnnllllllllllllllllllllllloooooooollllllllllllllaga
-agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagallnnlllllllllllllllllllllllllllllllllllllllllllllaga
-agabbbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagalllllllllllllllllllllllllllllllllllllllllllllllllaga
-agapiiiiiiiiiiiiiiiiiiiiiiiipppppeeeeeeeeeeagagallooooqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqllllaga
-agappppppppppppppppppppppppppppppppppppppppagagallooollllllllllllllllllllllllllllllllllllllllllllaga
-agakbaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeagagallooooollllllllllllllllllllllllllllllllllllllllllaga
-agadddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaagagallooooooooooooooooooollllllllllllllllllllllllllllaga
-agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagallnnlllllllllllloooooooooooooooooooolllllllllllllaga
-agabbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagalllllllllllllllllllllllllllllllllllllllllllllllllaga
+agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagabbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaga
+agabbbbbbbbbfffaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagadddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaga
+agabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaffffffffffagagajjdddddddjjdddddddddddeeeeeeeeedddddddddddddddddaaga
+agaddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaffffffffagagakkllllllllllllllllkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agadddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkmmkkkkkkkkkkkkkkkkkkkkkkknnnnnnnnkkkkkkkkkkkkkkaga
+agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkmmkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agabbbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agaoiiiiiiiiiiiiiiiiiiiiiiiioooooeeeeeeeeeeagagakknnnnpppppppppppppppppppppppppppppppppppppppkkkkaga
+agaooooooooooooooooooooooooooooooooooooooooagagakknnnkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agaqbaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeagagakknnnnnkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agaddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakknnnnnnnnnnnnnnnnnnnkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
+agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkmmkkkkkkkkkkkknnnnnnnnnnnnnnnnnnnnkkkkkkkkkkkkkaga
+agabbbbbbhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagakkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkaga
 agajbaaaaaaaaaaaaaaaaaaaaaaaaaaaarrrrrrrrrragagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
-agadddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
+agaddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 agaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aacccccdddddaacccdddddaacccddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aacccccdddddaacccdddddaacccdddddddaacccddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = fg #ffffff bg #000000
 b = fg #ffffff bg #000000 bold
@@ -62,11 +62,11 @@ g = fg #a3a3a3 bg #000000
 h = fg #d4d4d4 bg #2e2e2e
 i = fg #000000 bg #ffffff bold
 j = fg #5ff0a8 bg #000000
-k = fg #8ec8ff bg #000000
-l = fg #ffffff bg #141414
-m = fg #d4d4d4 bg #141414 bold
-n = fg #5ff0a8 bg #141414
-o = fg #d4d4d4 bg #141414
-p = fg #000000 bg #ffffff
-q = fg #ffffff bg #141414 bold
+k = fg #ffffff bg #141414
+l = fg #d4d4d4 bg #141414 bold
+m = fg #5ff0a8 bg #141414
+n = fg #d4d4d4 bg #141414
+o = fg #000000 bg #ffffff
+p = fg #ffffff bg #141414 bold
+q = fg #8ec8ff bg #000000
 r = fg #5ff0a8 bg #0b3220

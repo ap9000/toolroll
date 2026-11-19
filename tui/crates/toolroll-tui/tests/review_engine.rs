@@ -388,8 +388,9 @@ async fn one_tasks_unreadable_steps_never_end_the_workbench() {
         );
         assert!(!shown.contains("Reading…"), "{shown}");
     }
-    // Another task reads and shows as before.
+    // Another task reads and shows as before (Esc returns focus to the list).
     app.tab = Tab::Steps;
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let fx = app.key(key('k'));
     pump(&mut app, &client, fx).await;
     let here = app.steps.as_ref().map(|s| s.task.id.clone());

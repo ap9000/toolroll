@@ -3,26 +3,26 @@ source: crates/toolroll-tui/tests/look.rs
 expression: shown
 ---
  Toolroll   shop   $1.84 today · plan 62%                                                                        ◐ 2 working    2 need you  
-                                                                                                                                            
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                                                                               
    Work  5                                                          Live    Steps    Diff    Terminal                                       
-                                                                  Upgrade the test runner   Building                                        
-   Needs you 2                                                    claude sonnet · Building now · 4m 12s · $0.31 · attempt 1                 
-   ● Fix the login redi… 3m                         Question      Plan ✓ ─── Approval ✓ ─── Build ◐ 4m ─── Checks ─── Ready                 
-     shop · 3m ago                                                Reading the test setup before switching runners.                          
+                                                                  Upgrade the test runner                                                   
+   Needs you 2                                                    claude sonnet · $0.31 · attempt 1                                         
+   ● Fix the login redi… 3m                         Question      ✓ Plan ── ✓ Approval ──  ◐ Build · 4m 12s  ── Checks ── Ready             
+     3m ago                                                       Reading the test setup before switching runners.                          
    ● Add CSV export       12m                         Result                                                                                
-     shop · 12m ago                                                                                                                         
+     12m ago                                                                                                                                
                                                                     Worked · 3 steps                                                        
    Working 2                                                        ✓ Edited vitest.config.ts  +14 −3                                       
    ◐ Upgrade the test r… 2m  claude sonnet  $0.31   Building        ✓ Asked a helper: Check the CSV export edge cases                       
-     shop · 2m ago                                                    ┌ Helper: Check the CSV export edge cases                             
+     2m ago                                                           ┌ Helper: Check the CSV export edge cases                             
    ◐ Rate-limit middlew… 7m                         Planning          │  Empty rows export as a header line only.                           
-     shop · 7m ago                                                    │· Read src/export.ts                                                 
+     7m ago                                                           │· Read src/export.ts                                                 
                                                                       └ Helper finished                                                     
    Recent 1                                                         ✓ Ran npm test  212 passed (3.1 s)                                      
    ✓ Bump dependencies   3h                         Complete                                                                                
-     shop · 3h ago                                                                                                                          
+     3h ago                                                                                                                                 
                                                                   Tests pass on the new runner. Removing the old config next.               
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-   j/k  move   ⏎  open   s  steer   n  new   :  all actions
+   j/k  move   ⏎  open   /  filter   s  steer   n  new   :  all actions

@@ -216,6 +216,7 @@ fn keys_reach_only_the_terminal_on_screen() {
     let mut app = taken_over();
     // Another task: its socket is let go of (the program runs on), and no key reaches it any more.
     app.key(ctrl(']'));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let fx = app.key(key('k'));
     assert!(fx.contains(&Effect::TermDetach(ID.into())), "{fx:?}");
     assert!(app.term.is_none());
@@ -662,6 +663,7 @@ fn t_pressed_before_the_steps_are_read_goes_on_once_they_are() {
         away.key(key('j'));
     }
     away.key(key('t'));
+    away.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     away.key(key('k'));
     away.update(Msg::Steps(
         "t-done".into(),

@@ -2,15 +2,15 @@
 source: crates/toolroll-tui/tests/qol3.rs
 expression: zoomed
 ---
-" Toolroll  · shop  $1.84 today · plan 62%                                                                                     ◐ 2 working   ZOOM    2 need you  "
+" Toolroll  · shop  $1.84 today · plan 62%                                                                                       ◐ 2 working  ZOOM   2 need you  "
 "                                                                                                                                                                "
 " ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ "
 " │ Live · Steps · Diff · Terminal                                                                                                                             │ "
 " │                                                                                                                                                            │ "
-" │ Upgrade the test runner  Building                                                                                                                          │ "
-" │ claude sonnet · Building now · 4m 12s · $0.31 · attempt 1                                                                                                  │ "
+" │ Upgrade the test runner                                                                                                                                    │ "
+" │ claude sonnet · $0.31 · attempt 1                                                                                                                          │ "
 " │                                                                                                                                                            │ "
-" │ Plan ✓ ─── Approval ✓ ─── Build ◐ 4m ─── Checks ─── Ready                                                                                                  │ "
+" │ ✓ Plan ── ✓ Approval ── ◐ Build · 4m 12s ── Checks ── Ready                                                                                                │ "
 " ├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤ "
 " │   Started.                                                                                                                                                 │ "
 " │ Reading the test setup before switching runners.                                                                                                           │ "
@@ -41,4 +41,4 @@ expression: zoomed
 " │ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │ "
 " ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ "
 "  Zoomed: this panel alone. z comes back.                                                                                                                       "
-"  j/k move  o next panel  ⏎ open  s steer  n new  : all actions                                                                                                 "
+"  j/k move  ⏎ open  o next panel  n new  : all actions                                                                                                          "

@@ -543,6 +543,8 @@ fn search_the_focused_pane() {
     let unlit = reversed(&draw(&mut app, 120, 30));
     let live = screen(&mut app, 120, 30);
     assert!(live.contains("npm test"), "{live}");
+    // Focus the detail panel first so `/` searches pane content (in List focus, `/` filters the task list).
+    app.key(code(KeyCode::Right));
     app.key(key('/'));
     assert!(matches!(app.mode, Mode::Search(_)));
     for c in "NPM".chars() {
