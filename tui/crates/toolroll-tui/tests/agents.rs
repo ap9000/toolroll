@@ -199,6 +199,8 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
         "{shown}"
     );
     insta::assert_snapshot!("agents_sign_in_pane", shown);
+    let narrow = screen(&mut app, 80, 24);
+    assert!(narrow.contains("Waiting for the browser"), "{narrow}");
     // Typing goes to the pane only (it is drawn).
     let fx = app.key(key('x'));
     assert!(
@@ -214,6 +216,32 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
     ));
     assert!(fx.contains(&Effect::CheckAgents), "{fx:?}");
     assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn refused_sign_in_keeps_the_reason_by_the_command_and_closes_the_empty_terminal() {
+    let mut app = open(fake::fixture("agents.json"));
+    select(&mut app, "codex");
+    app.key(key('s'));
+    app.update(Msg::TermOpened {
+        task: "agent:codex".into(),
+        run: 0,
+        result: Err(ApiError::Refused(
+            "Toolroll won't run `codex`: others can change /opt/homebrew/bin (group- or world-writable).".into(),
+        )),
+    });
+    assert!(app.term.is_none());
+    assert!(app.agents_screen.as_ref().unwrap().pane.is_none());
+    app.status = None;
+    for (w, h) in [(120, 34), (80, 24)] {
+        let shown = screen(&mut app, w, h);
+        assert!(shown.contains("Sign-in terminal could not open."), "{shown}");
+        assert!(shown.contains("/opt/homebrew/bin"), "{shown}");
+        assert!(!shown.contains("Ctrl-] goes back"), "{shown}");
+    }
+    let retry = app.key(key('s'));
+    assert!(matches!(retry.as_slice(), [Effect::AgentTerm { .. }]));
+    assert!(app.agents_screen.as_ref().unwrap().outcome.is_none());
 }
 
 #[test]

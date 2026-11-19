@@ -918,13 +918,19 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(2 + models_h),
         ..area
     };
+    // With one column, give an active setup attempt or its failure the space the list usually owns.
+    let agent = current(app).cloned();
+    let setup_visible = agent.as_ref().is_some_and(|a| {
+        screen.pane.iter().chain(&screen.outcome).any(|(id, _)| id == &a.id)
+    });
+    let detail_only = body.width < 90 && screen.focus == Focus::Agents && setup_visible;
     let list_w: u16 = if body.width >= 90 { 34 } else { body.width };
     let list = Rect {
         width: list_w,
         ..body
     };
     let mut lines: Vec<Line<'static>> = vec![];
-    let here = current(app).map(|a| a.id.clone());
+    let here = agent.as_ref().map(|a| &a.id);
     for (gi, (label, rows)) in groups(&read).into_iter().enumerate() {
         if gi > 0 {
             lines.push(Line::raw(""));
@@ -940,7 +946,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 _ if a.state == "not-installed" || a.state == "unknown" => dim(),
                 _ => needs_you(),
             };
-            let on = Some(&a.id) == here.as_ref();
+            let on = Some(&a.id) == here;
             let name = fit(&clean(&a.name), (list_w as usize).saturating_sub(4));
             let l = Line::from(vec![
                 Span::styled(format!("{mark} "), mark_style),
@@ -953,9 +959,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             });
         }
     }
-    f.render_widget(Paragraph::new(lines), list);
+    if !detail_only {
+        f.render_widget(Paragraph::new(lines), list);
+    }
     // The agent on screen: its status, how to add it, and its pane.
-    let detail = if list_w < body.width {
+    let detail = if detail_only {
+        body
+    } else if list_w < body.width {
         Rect {
             x: body.x + list_w + 3,
             width: body.width.saturating_sub(list_w + 3),
@@ -964,7 +974,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Rect { height: 0, ..body }
     };
-    if let Some(a) = current(app).cloned() {
+    if let Some(a) = agent {
         draw_agent(f, app, &a, detail);
     }
     if models_h > 0 {

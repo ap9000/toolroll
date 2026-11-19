@@ -6299,7 +6299,18 @@ impl App {
             // attached), and while it is on screen keys never fall through to the workbench (normal_key's gate).
             Err(e) if wanted => {
                 let words = e.to_string();
-                if let Some(pane) = self.term.as_mut() {
+                if let Some(agent) = task.strip_prefix("agent:") {
+                    self.term = None;
+                    if let Some(screen) = self.agents_screen.as_mut() {
+                        if let Some((_, kind)) = screen.pane.take() {
+                            let label = if kind == "install" { "Install" } else { "Sign-in" };
+                            screen.outcome = Some((
+                                agent.to_string(),
+                                format!("{label} terminal could not open. {}", clean(&words)),
+                            ));
+                        }
+                    }
+                } else if let Some(pane) = self.term.as_mut() {
                     pane.link = Link::Closed(clean(&words));
                 }
                 if matches!(self.mode, Mode::TakeOver | Mode::ShellOpening) {
