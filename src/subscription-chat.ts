@@ -93,6 +93,9 @@ function outputSchema(tools: readonly LeadToolSchema[]): Record<string, unknown>
 
 /** The model-visible request. Tool results are already redacted by leadView. */
 export function composeSubscriptionLeadPrompt(request: Omit<SubscriptionLeadRequest, "provider" | "model" | "timeoutMs" | "signal">): string {
+  if (request.outputSchema !== undefined) return [request.system,
+    "STRUCTURED RESPONSE PROTOCOL: Return only the JSON object required by the supplied output schema. Do not use any harness tools or inspect the computer. DATA and CONVERSATION below are the only context.",
+    `DATA:\n${request.dataDocument}`, `CONVERSATION:\n${JSON.stringify(request.history)}`].join("\n\n");
   return [
     request.system,
     "SUBSCRIPTION HARNESS PROTOCOL:",

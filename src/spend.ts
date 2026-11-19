@@ -289,12 +289,12 @@ export function spendItems(db: Database, from: string, to: string, readMode: (pr
   });
   // A subagent's own turns get no key from Toolroll (subagents.ts claudeTurnRunner): they bill as this computer's
   // Claude sign-in was seen billing when the turn ran (a plan, or a Console login, key helper or gateway).
-  for (const row of !any("subagent") ? [] : db.prepare(`SELECT t.at, t.subagent, t.model, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
+  for (const row of !any("subagent") ? [] : db.prepare(`SELECT t.at, t.subagent, t.model, t.provider, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
       WHERE t.at >= ? AND t.at < ? ORDER BY t.id`).all(from, to)) {
     const billing: Billing = row["billing"] === "api-key" ? "api-key" : "subscription";
-    const priced = priceWork(db, { provider: "claude", model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing }, lookup);
+    const priced = priceWork(db, { provider: String(row["provider"]), model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing }, lookup);
     items.push({ at: String(row["at"]), kind: "subagent", microusd: priced.microusd, source: priced.source, project: String(row["repo"]), person: null,
-      subagent: Number(row["subagent"]), provider: "claude", model: text(row["model"]),
+      subagent: Number(row["subagent"]), provider: String(row["provider"]), model: text(row["model"]),
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: billing });
   }
   // A chat turn that mirrors a project chat's turn is that turn: counted once, as the project chat's. A task's chat

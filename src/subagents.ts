@@ -245,7 +245,7 @@ export function readTurn(value: unknown, context: Pick<TurnContext, "kind" | "ca
 export type TurnRequest = { model: string; prompt: string; timeoutMs: number };
 /** v97: what the turn cost, as the CLI estimates it (a Claude plan covers it; the figure is at API prices), and its tokens. */
 export type TurnCost = { costUsd?: number; tokensIn?: number; tokensOut?: number };
-export type TurnReply = ({ ok: true; value: unknown; ms: number } & TurnCost) | ({ ok: false; said: string } & TurnCost);
+export type TurnReply = ({ ok: true; value: unknown; ms: number } & TurnCost) | ({ ok: false; said: string; backupReason?: "usage-limit" | "unavailable" } & TurnCost);
 /** Runs one turn; injectable so tests never spend a subscription turn. */
 export type TurnRunner = (request: TurnRequest) => Promise<TurnReply>;
 export const TURN_TIMEOUT_MS = 180_000;
@@ -260,12 +260,15 @@ export function claudeTurnRunner(runner: CommandRunner = run): TurnRunner {
       const result = await runner("claude", [
         "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_MODEL_SCHEMA), ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ], { cwd: dir, stdin: request.prompt, timeoutMs: request.timeoutMs, maxBuffer: 512 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true });
-      if (result.notFound) return { ok: false, said: "Claude isn't installed on this computer." };
+      if (result.notFound) return { ok: false, said: "Claude isn't installed on this computer.", backupReason: "unavailable" };
       if (result.timedOut) return { ok: false, said: "Claude took too long to decide." };
       const body = claudeJsonBody(result.stdout, 512 * 1024);
       if (result.code !== 0 || body === null || body["is_error"] === true || body["subtype"] !== "success") {
         const why = typeof body?.["subtype"] === "string" && body["subtype"] !== "success" ? ` (${String(body["subtype"]).replace(/_/g, " ").slice(0, 60)})` : result.code !== 0 ? ` (exit ${result.code})` : "";
-        return { ok: false, said: CLAUDE_SIGNED_OUT.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : `Claude couldn't decide${why}.` };
+        const backupReason = result.code !== 0 && body?.["type"] === "result" && body["is_error"] === true
+          && body["api_error_status"] === 429 && ["usage_limit_reached", "rate_limit_error"].includes(String(body["api_error"])) ? "usage-limit" as const : undefined;
+        return { ok: false, said: backupReason === "usage-limit" ? "Claude reached its usage limit." : CLAUDE_SIGNED_OUT.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : `Claude couldn't decide${why}.`,
+          ...costOf(body ?? {}), ...(backupReason === undefined ? {} : { backupReason }) };
       }
       const cost = costOf(body);
       if (body["structured_output"] !== undefined && body["structured_output"] !== null) return { ok: true, value: body["structured_output"], ms: Date.now() - started, ...cost };

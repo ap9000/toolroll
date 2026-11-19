@@ -618,8 +618,16 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       if (wrong.length > 0) throw new Error(wrong.slice(0, 3).map(one => `${one.provider} ${one.role}: ${one.error}`).join(" | "));
     }, { always: true });
     if (provider.mode === "real") await check("Live coding-agent turns use the selected provider", [], async () => {
-      const wrong = provider.journal().filter(one => one.turn && one.provider !== agentProvider);
+      const wrong = provider.journal().filter(one => one.turn && one.role !== "subagent" && one.provider !== agentProvider);
       if (wrong.length > 0) throw new Error(`Selected ${agentProvider}, but model turns used ${[...new Set(wrong.map(one => one.provider))].join(", ")}`);
+    }, { always: true });
+    if (provider.mode === "real") await check("Subagent model calls have counted provider attempts", [], async () => {
+      const calls = provider.journal().filter(one => one.turn && one.role === "subagent");
+      if (calls.length === 0) return;
+      const attempts = rows("SELECT provider, model, backup_of, pending FROM subagent_turn");
+      for (const name of ["claude", "codex"]) if (calls.filter(one => one.provider === name).length > attempts.filter(one => one.provider === name).length) throw new Error(`${name} subagent calls lack attempt records`);
+      if (attempts.some(one => one.pending === 1)) throw new Error("A subagent attempt did not settle");
+      if (attempts.some(one => one.provider === "codex" && one.backup_of === null)) throw new Error("A Codex subagent attempt lacks its primary refusal");
     }, { always: true });
     // A LIMITED residue check (isolated-env.mjs residueCheck): Claude transcript folders named after this world, its
     // repository's build cache and Toolroll's git incident log in the person's home, read-only, before and after; a

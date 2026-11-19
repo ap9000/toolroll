@@ -1275,6 +1275,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       return { ok: true, body: {
         subagents: mates.map(mate => ({
           subagent: mate.id, name: nameOf(mate), label: labelOf(mate), handle: mate.handle, project: repoIdOf(ctx.who, mate.repo), working: mate.state === "active",
+          codexBackup: { enabled: mate.codexBackupModel !== null, model: mate.codexBackupModel, settings: `/settings/lead/subagents/${mate.id}#backup`, change: "Enable or change with your password in Settings; Claude stays primary." },
           reportsTo: whoIs(mate.manager), soul: args["subagent"] === undefined ? mate.soul.slice(0, 600) : mate.soul, version: mate.version,
           worksOn: zonesOf(ctx.store, mate).map(one => ({ flow: one.flow, flowName: one.flowName, zone: one.title, how: one.kind })),
           today: summaryOf(ctx.store, mate, today.toISOString()).said,

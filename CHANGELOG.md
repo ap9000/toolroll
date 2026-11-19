@@ -6,7 +6,12 @@ tooling) go on the GitHub release, not here. Entries before 0.9.104 use the olde
 
 ## 0.9.116 — 2026-11-19
 
-Clearer recovery when a thread loses its model connection, and consistent colours across light and dark themes.
+Clearer recovery for threads and AI teammates, with consistent light and dark colours.
+
+### New
+
+- **Optional Codex backup for AI teammates.** Set its model in the teammate's Settings. Your ChatGPT sign-in
+  can answer when Claude hits its limit or isn't installed; existing tool approvals and daily limits remain.
 
 ### Changed
 

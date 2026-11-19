@@ -1836,6 +1836,29 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
   }
 });
 
+/** Enable the real world's explicitly approved Codex backup through the same Settings form a person uses. */
+async function enableSubagentBackup(id, capture = false) {
+  if (w.scripted || w.agentProvider !== "codex") return;
+  const open = async () => page.evaluate(() => { for (const detail of document.querySelectorAll("details")) detail.open = true; });
+  await page.goto(`${base}/settings/lead/subagents/${id}`); await open();
+  const form = page.locator(`form[action="/settings/lead/subagents/${id}/settings"]`);
+  await form.locator('[name="codexBackupModel"]').fill(w.agentModel);
+  if (capture) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await form.locator('[name="password"]').fill("wrong-synthetic-password");
+    await Promise.all([page.waitForNavigation(), form.locator('button:has-text("Save settings")').click()]); await open();
+    if (rows(`SELECT codex_backup_model FROM subagent WHERE id = ${id}`)[0].codex_backup_model !== null) throw new Error("A wrong password enabled the backup");
+    if (await form.locator('[name="codexBackupModel"]').inputValue() !== w.agentModel) throw new Error("The refused settings lost the model draft");
+    await form.scrollIntoViewIfNeeded(); await shot("codex-backup-phone-refused");
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)) throw new Error("Backup settings overflow on phone");
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+  await form.locator('[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), form.locator('button:has-text("Save settings")').click()]); await open();
+  if (rows(`SELECT codex_backup_model FROM subagent WHERE id = ${id}`)[0].codex_backup_model !== w.agentModel) throw new Error("The exact backup model wasn't saved");
+  if (capture) { await form.scrollIntoViewIfNeeded(); await shot("codex-backup-desktop"); await page.setViewportSize({ width: 390, height: 844 }); await form.scrollIntoViewIfNeeded(); await shot("codex-backup-phone"); await page.setViewportSize({ width: 1440, height: 900 }); }
+}
+
 // ------------------------------------------------------------------ two people on one flow
 
 await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused", [], async () => {
@@ -1853,6 +1876,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
   const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
   if (!subagentId) throw new Error(`no subagent page: ${page.url()}`);
+  await enableSubagentBackup(subagentId, true);
   const soul = await page.inputValue("#subagent-soul");
   if (!/name: Maya/.test(soul) || !/Refunds and replacements up to \$50/.test(soul)) throw new Error(`the template's soul file: ${soul.slice(0, 200)}`);
   await page.fill("#subagent-soul", soul.replace("## What you know\n", "## What you know\n- Order numbers look like #1234.\n"));
@@ -2141,14 +2165,16 @@ await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboar
 await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real coding agent turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused"], async () => {
   // The lead's own proposal is what's checked: the card it drafted (a reply without one fails quoting the reply and the
   // tools the lead called), then what confirming it saved.
-  const confirm = async (asked, what) => {
-    const card = await pendingCard(asked.reply, `${what} in the lead's reply (it called ${JSON.stringify(asked.calls.map(one => `${one.tool}${one.ok ? "" : " ✗"}`))})`);
+  const confirm = async (asked, what, title) => {
+    // A reply may contain more than one proposal; confirm the action whose exact terms this journey requested.
+    const card = asked.reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: title }).first();
+    await card.waitFor({ timeout: 20_000 });
     await card.locator("[data-card-confirm]").click();
     await until(`${what} to be confirmed`, async () => (await asked.reply.locator('[data-view="chat-card"][data-card-state="confirmed"]').count()) > 0, { timeoutMs: 30_000 });
   };
-  await confirm(await askLead("Add a sales rep subagent called Leo to this project. Just draft it, no need to ask."), "the card adding Leo");
+  await confirm(await askLead("Add a sales rep subagent called Leo to this project. Just draft it, no need to ask."), "the card adding Leo", /Add Leo/);
   if (rows("SELECT 1 FROM subagent WHERE handle = 'leo' AND state = 'active'").length !== 1) throw new Error("Leo isn't on the team");
-  await confirm(await askLead("Maya can approve refunds and replacements up to $100 on her own now. Update her rules."), "the card changing Maya's rules");
+  await confirm(await askLead("Maya can approve refunds and replacements up to $100 on her own now. Update her rules."), "the card changing Maya's rules", /Update Maya/);
   const soul = rows("SELECT soul FROM subagent WHERE handle = 'maya'")[0]?.soul ?? "";
   if (!/\$100/.test(soul) || !/name: Maya/.test(soul)) throw new Error(`Maya's soul file: ${soul.slice(0, 400)}`);
   return { maya: soul.split("## Decide on your own")[1]?.split("##")[0]?.trim().slice(0, 200) };
@@ -2208,6 +2234,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   await page.fill('form[data-new-subagent] input[name="name"]', "Rosa");
   await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
   const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
+  await enableSubagentBackup(subagentId);
   await page.selectOption('form.tool-add select[name="tool"]', "store");
   await page.fill('form.tool-add input[name="password"]', w.passwords.alex);
   await Promise.all([page.waitForNavigation(), page.click('form.tool-add button')]);
