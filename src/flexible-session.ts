@@ -1273,6 +1273,12 @@ export function flexibleThreadTitleOf(store: Store, thread: string): string {
 function endWordsOf(store: Store, turn: string, status: string): { endWords?: string } {
   if (status !== "interrupted" && status !== "unknown" && status !== "withdrawn") return {};
   const detail = store.handle.prepare("SELECT end_detail FROM thread_turn WHERE id = ?").get(turn)?.["end_detail"];
+  // An unknown outcome stays unknown. The relay's own record can explain the connection failure without
+  // trusting an agent's API-error text or changing the saved outcome, accounting or approval.
+  if (status === "unknown" && (detail === null || detail === undefined || detail === "The agent stopped with an error.")) {
+    const connection = relayFailureWords(store, turn);
+    if (connection !== null) return { endWords: connection };
+  }
   if (typeof detail !== "string" || detail.trim() === "") return {};
   const words = cleanLiveText(detail).trim().slice(0, 500);
   return words === "" ? {} : { endWords: words };
@@ -1283,16 +1289,30 @@ function endWordsOf(store: Store, turn: string, status: string): { endWords?: st
 const AGENT_API_ERROR = /\bAPI Error\b|\bInvalid API key\b|Please run \/login|Failed to authenticate|"type"\s*:\s*"error"|\b(?:authentication|permission)_error\b/;
 export const FLEXIBLE_REFUSED_LINE_WORDS = "(The agent's error message is left out: Toolroll's note on this turn says what happened.)";
 
-/** `records` with every agent text block that is a refused call's error (AGENT_API_ERROR, anywhere in it) replaced WHOLE
- * by Toolroll's own recorded explanation of the turn's end (never a line of the agent's own), when `turn`'s record says it
- * was interrupted. Decided from the record, never from the agent's text alone. */
+/** Replace whole API-error blocks only when trusted turn/relay records explain the failure. An agent's words alone
+ * never establish either a refusal or a connection failure. Saved relay diagnostics are retained separately. */
 function withoutRefusedLines(store: Store, turn: string | null, records: LiveRecord[]): LiveRecord[] {
   if (turn === null || !records.some(one => one.k === "say" && one.t.some(line => AGENT_API_ERROR.test(line)))) return records;
   const row = flexibleTurn(store, turn);
-  if (row?.status !== "interrupted") return records;
-  const words = endWordsOf(store, turn, row.status).endWords;
+  if (row === null) return records;
+  const words = row.status === "interrupted" ? endWordsOf(store, turn, row.status).endWords : relayFailureWords(store, turn) ?? undefined;
+  if (row.status !== "interrupted" && words === undefined) return records;
   const explained = words === undefined ? FLEXIBLE_REFUSED_LINE_WORDS : `Toolroll: ${words}`;
   return records.map(one => one.k !== "say" || !one.t.some(line => AGENT_API_ERROR.test(line)) ? one : { ...one, t: [explained] });
+}
+
+/** Latest model-message call only: a token-count error, an earlier failed call followed by recovery, or agent
+ * output alone cannot establish a connection failure. Raw/redacted diagnostics remain in thread_relay_call. */
+function relayFailureWords(store: Store, turn: string): string | null {
+  const call = store.handle.prepare("SELECT status, http_status FROM thread_relay_call WHERE turn = ? AND route = 'messages' ORDER BY id DESC LIMIT 1").get(turn);
+  if (call === undefined) return null;
+  const next = "Review changes, then reply to retry.";
+  if (call["status"] === "incomplete") return `Model connection lost. ${next}`;
+  if (call["status"] !== "upstream-error") return null;
+  if (call["http_status"] === null) return `Can't reach the model. ${next}`;
+  if (call["http_status"] === 429) return "Too many model requests. Review changes, then reply later.";
+  if (Number(call["http_status"]) >= 500) return `The model service failed. ${next}`;
+  return null;
 }
 
 /** The title recorded at a thread's start (flexible_thread_meta), or null. */

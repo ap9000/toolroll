@@ -860,7 +860,7 @@
     background: var(--primary); color: var(--primary-foreground);
     border: 1px solid var(--primary);
     border-radius: calc(var(--radius) - 3px); padding: .525rem; margin: .75rem 0 .125rem;
-    box-shadow: 0 10px 28px -18px rgb(255 255 255 / .5);
+    box-shadow: none;
   }
   @media (hover: hover) and (pointer: fine) { .side .new-task:hover { background: color-mix(in srgb, var(--primary) 85%, var(--background)); } }
   /* The same action link outside the sidebar reads as a real button. */
@@ -947,7 +947,7 @@
   @media (hover: hover) and (pointer: fine) { .demo-chat .demo-suggestions button:hover { color: var(--so-ink); border-color: var(--so-input-line); background: var(--so-soft); } }
   /* The composer: one card docked at the bottom, a borderless box that grows, the hint and a round send inside. */
   .demo-composer { position: sticky; bottom: 0; margin: 0; padding: .75rem 0 1rem; border: 0; border-radius: 0; box-shadow: none; background: linear-gradient(to bottom, transparent, var(--so-paper) 1.25rem); }
-  .demo-composer-card { display: flex; flex-direction: column; gap: .35rem; padding: .7rem .7rem .55rem .9rem; border: 1px solid var(--so-input-line); border-radius: 1rem; background: var(--so-paper); box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04); transition: border-color .12s var(--so-ease-out), box-shadow .12s var(--so-ease-out); }
+  .demo-composer-card { display: flex; flex-direction: column; gap: .35rem; padding: .7rem .7rem .55rem .9rem; border: 1px solid var(--so-input-line); border-radius: 1rem; background: var(--so-paper); box-shadow: var(--so-pill-shadow); transition: border-color .12s var(--so-ease-out), box-shadow .12s var(--so-ease-out); }
   .demo-composer-card:focus-within { border-color: var(--so-muted); box-shadow: 0 0 0 3px var(--so-soft); }
   .demo-chat .demo-composer textarea { width: 100%; min-height: 1.6rem; max-height: 12rem; field-sizing: content; padding: .15rem 0; border: 0; border-radius: 0; background: none; box-shadow: none; resize: none; font-size: .9375rem; line-height: 1.55; }
   .demo-chat .demo-composer textarea:focus-visible { outline: 0; }
@@ -998,7 +998,7 @@
     font-size: .72rem; font-weight: 550; text-align: center; text-decoration: none;
   }
   @media (hover: hover) and (pointer: fine) { .task-view-switch a:hover { color: var(--foreground); background: color-mix(in srgb, var(--muted) 70%, transparent); } }
-  .task-view-switch a.active { color: var(--foreground); background: var(--glass-strong); box-shadow: 0 1px 5px rgb(0 0 0 / .1); }
+  .task-view-switch a.active { color: var(--foreground); background: var(--glass-strong); box-shadow: var(--so-pill-shadow); }
   .acts-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .75rem 0 .25rem; }
   .acts-bar form.inline { margin: 0; display: inline-flex; align-items: center; gap: .375rem; }
   .acts-bar form.inline button { width: auto; }
@@ -2126,7 +2126,7 @@
   }
   @media (hover: hover) and (pointer: fine) { .chat-project-card:hover {
     border-color: var(--glass-border); background: color-mix(in srgb, var(--muted) 82%, transparent);
-    box-shadow: 0 12px 28px -24px rgb(0 0 0 / .8);
+    box-shadow: none;
   } }
   .chat-project-name { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .45rem; }
   .chat-project-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8125rem; }
@@ -2151,7 +2151,7 @@
     align-self: flex-end; max-width: min(82%, 40rem); padding: .75rem 1rem;
     border: 1px solid var(--glass-border); border-radius: 1.2rem 1.2rem .35rem 1.2rem;
     background: var(--user-message); color: var(--so-ink);
-    box-shadow: 0 10px 30px -24px rgb(0 0 0 / .9), 0 1px 0 rgb(255 255 255 / .07) inset;
+    box-shadow: none;
   }
   .thread .msg.mate {
     position: relative; align-self: stretch; padding: .75rem .5rem .75rem 3.45rem;
@@ -2278,7 +2278,7 @@
   @media (hover: hover) and (pointer: fine) { .composer textarea:hover { border: 0; box-shadow: none; } }
   .composer button {
     flex: 0 0 2.75rem; width: 2.75rem; min-height: 2.75rem; padding: 0; border-radius: 999px;
-    font-size: 0; box-shadow: 0 10px 24px -16px rgb(255 255 255 / .65);
+    font-size: 0; box-shadow: none;
   }
   .composer button::after { content: "↑"; font: 600 1.15rem/1 var(--font-sans); }
   .chat-main > details { margin-top: 1rem; background: color-mix(in srgb, var(--glass) 70%, transparent); }
@@ -2299,7 +2299,7 @@
     .chat-main { max-width: none; }
     .chat-projects { display: none; }
     .chat-workspace.projects-open::before {
-      content: ""; position: fixed; inset: 0 0 0 232px; z-index: 23; background: rgb(0 0 0 / .18);
+      content: ""; position: fixed; inset: 0 0 0 232px; z-index: 23; background: var(--so-scrim);
     }
     .chat-workspace.projects-open .chat-projects {
       display: block; position: fixed; top: 4rem; left: calc(232px + 1.25rem); z-index: 25;
@@ -2321,7 +2321,7 @@
     .chat-workspace.projects-hidden .chat-projects, .chat-projects { display: none; }
     .chat-project-toggle { display: inline-flex; min-height: 2.75rem; }
     .chat-project-close { display: grid; place-items: center; min-height: 2.75rem; min-width: 2.75rem; }
-    .chat-workspace.projects-open::before { content: ""; position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .18); }
+    .chat-workspace.projects-open::before { content: ""; position: fixed; inset: 0; z-index: 30; background: var(--so-scrim); }
     .chat-workspace.projects-open .chat-projects { display: block; position: fixed; top: 5rem; left: 1rem; right: 1rem; width: auto; max-height: calc(100dvh - 10rem); overflow-y: auto; overscroll-behavior: contain; z-index: 31; background: var(--card); }
     .chat-project-list { display: grid; gap: 0; padding: 0; }
     .chat-project-card {
@@ -2738,7 +2738,7 @@ html.so-nav-shallower::view-transition-new(so-page) { animation: so-page-shallow
     /* Board cards are panels in a frame: a hover fills them raised, never a shadow. */
     .decide-card:hover, .menu-row:hover {
      
-      box-shadow: 0 2px 8px -2px rgb(0 0 0 / .35);
+      box-shadow: none;
     }
   }
 }
