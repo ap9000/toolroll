@@ -464,6 +464,7 @@ pub enum Mode {
     ListFilter(String),
     /// Typing a message to the central Lead (`s`/`i` while Lead chat is focused).
     ChatCompose(String),
+    LeadProviders(Option<crate::chat_providers::Membership>),
     /// Confirming a Lead proposal card (pinned lines, `seen_end` gate, and explicit arming if irreversible).
     ConfirmProposal(crate::chat::ProposalPin),
     Help,
@@ -824,6 +825,8 @@ pub enum Effect {
     },
     /// Look for this computer's agents again (POST /engine/agents/check), then the agents read.
     CheckAgents,
+    CheckLeadProviders,
+    SwitchLead(crate::chat_providers::Membership),
     /// An agent's own sign-in, or its confirmed install (`confirm`: the exact command shown), in a pane: started by
     /// the console from its own command for that agent (POST /term/agent/<kind>), then attached.
     AgentTerm {
@@ -939,6 +942,8 @@ pub enum Msg {
     /// Central Lead conversation read (GET /engine/chat).
     LeadChat(Result<LeadChat, ApiError>),
     /// Central Lead message send outcome (POST /chat).
+    LeadProvidersChecked(Result<toolroll_api::AgentsRead, ApiError>),
+    LeadSwitched(crate::chat_providers::Membership, Result<toolroll_api::ActOutcome, ApiError>),
     ChatSent(Result<ChatSendOutcome, ApiError>),
     /// Central Lead proposal confirm/dismiss outcome.
     ProposalActed {
@@ -1019,6 +1024,8 @@ pub struct StepNavigation {
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
     pub builder_button: Option<(Rect, String)>,
+    pub lead_providers_button: Rect,
+    pub lead_provider_controls: Vec<(Rect, KeyCode)>,
     pub builder_controls: Vec<(Rect, BuilderControl)>,
     pub list: Rect,
     pub steps: Vec<(Rect, Tab, StepLink)>,
@@ -1409,6 +1416,7 @@ impl App {
             fx.push(Effect::FetchLeadChat);
         }
         fx.push(Effect::Watch(self.rooms()));
+        fx.extend(crate::chat_providers::offer_recovery(self));
         fx
     }
 
@@ -1471,6 +1479,10 @@ impl App {
         if trimmed.is_empty() {
             return vec![];
         }
+        if self.chat.sending {
+            self.say(Tone::Said, "Your previous message is still sending.");
+            return vec![];
+        }
         let Some(data) = &self.chat.data else {
             self.say(Tone::Refused, "Lead chat is still loading.");
             return vec![];
@@ -1490,6 +1502,7 @@ impl App {
         self.chat.sending = true;
         self.chat.draft.clear();
         self.chat.optimistic_sent = Some(trimmed.clone());
+        self.chat.last_submission = Some(trimmed.clone());
         self.chat.follow_end();
         self.say(Tone::Said, "Sending to Lead…");
         vec![Effect::ChatSend {
@@ -2263,7 +2276,9 @@ impl App {
                         }
                     }
                     self.chat.apply_data(chat);
-                    vec![Effect::Watch(self.rooms())]
+                    let mut fx = vec![Effect::Watch(self.rooms())];
+                    fx.extend(crate::chat_providers::offer_recovery(self));
+                    fx
                 }
                 Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
                 Err(e) => {
@@ -2272,6 +2287,38 @@ impl App {
                     vec![]
                 }
             },
+            Msg::LeadProvidersChecked(result) => {
+                self.chat.checking_providers = false;
+                match result {
+                    Ok(agents) => self.chat.checked_providers = Some(agents),
+                    Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+                    Err(e) => self.chat.provider_problem = Some(clean(&e.to_string())),
+                }
+                vec![]
+            }
+            Msg::LeadSwitched(plan, result) => {
+                self.chat.switching_provider = false;
+                match result {
+                    Ok(toolroll_api::ActOutcome::Done(_)) => {
+                        if matches!(self.mode, Mode::LeadProviders(_)) {
+                            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        }
+                        self.say(Tone::Said, format!("Lead uses {}. Send your message when ready.", plan.name()));
+                        vec![Effect::FetchLeadChat]
+                    }
+                    Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
+                    other => {
+                        let words = match other {
+                            Ok(toolroll_api::ActOutcome::Refused(s)) => s,
+                            Err(e) => e.to_string(),
+                            _ => "The console did not confirm the provider change.".into(),
+                        };
+                        self.chat.provider_problem = Some(clean(&words));
+                        self.say(Tone::Refused, clean(&words));
+                        vec![]
+                    }
+                }
+            }
             Msg::ChatSent(result) => {
                 self.chat.sending = false;
                 match result {
@@ -2288,11 +2335,13 @@ impl App {
                         vec![Effect::FetchLeadChat, Effect::Watch(self.rooms())]
                     }
                     Ok(ChatSendOutcome::Refused(words)) => {
+                        crate::chat_providers::restore_submission(self);
                         self.chat.optimistic_sent = None;
                         self.say(Tone::Refused, words);
                         vec![]
                     }
                     Err(e) => {
+                        crate::chat_providers::restore_submission(self);
                         self.chat.optimistic_sent = None;
                         self.failed(e)
                     }
@@ -3156,7 +3205,11 @@ impl App {
                 return vec![];
             }
         }
+        if key.code == KeyCode::F(2) && self.agents_screen.is_none() && self.chat_focused() && matches!(self.mode, Mode::Normal | Mode::ChatCompose(_)) {
+            return crate::chat_providers::open_providers(self);
+        }
         match self.mode.clone() {
+            Mode::LeadProviders(plan) => crate::chat_providers::provider_key(self, plan, key.code),
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
             Mode::Copied => {
                 self.mode = Mode::Normal;
@@ -3313,9 +3366,9 @@ impl App {
                         self.mode = Mode::ChatCompose(text);
                         return vec![];
                     }
+                    self.chat.draft = text.clone();
                     let fx = self.send_chat_message(text);
-                    // Stay ready in the chatbox for the next message!
-                    self.mode = Mode::ChatCompose(String::new());
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
                     fx
                 }
                 KeyCode::PageUp => {
@@ -6386,6 +6439,14 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if matches!(self.mode, Mode::LeadProviders(_)) {
+            if ev.kind == MouseEventKind::Down(MouseButton::Left) {
+                if let Some((_, code)) = self.areas.lead_provider_controls.iter().find(|(r, _)| inside(*r)) {
+                    return self.key(KeyEvent::new(*code, KeyModifiers::NONE));
+                }
+            }
+            return vec![];
+        }
         if matches!(self.mode, Mode::TaskBuilder { .. }) {
             let code = match ev.kind {
                 MouseEventKind::ScrollDown => Some(KeyCode::Down),
@@ -6565,6 +6626,9 @@ impl App {
                 if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) {
                     self.focus = Focus::Detail;
                     self.chat_focus = crate::chat::ChatFocus::Chat;
+                    if inside(self.areas.lead_providers_button) {
+                        return crate::chat_providers::open_providers(self);
+                    }
                     if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
                         if !matches!(self.mode, Mode::ChatCompose(_)) {
                             self.mode = Mode::ChatCompose(self.chat.draft.clone());

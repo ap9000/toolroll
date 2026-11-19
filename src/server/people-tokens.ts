@@ -51,6 +51,7 @@ const LINK_LANDINGS = Object.freeze({
   flexible: "/settings/general?section=flexible",
   "flexible-sign-in": "/settings/change/flexible-sign-in",
   project: "/settings/project",
+  "lead-providers": "/settings/lead#lead-config",
 } as const satisfies Record<import("../tui-contract.js").TuiPage, string>);
 
 export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {

@@ -734,6 +734,14 @@ impl Client {
         if session_gone(status, location.as_deref()) {
             return Err(ApiError::SessionEnded);
         }
+        if path == "/settings/lead/on" {
+            return Ok(if (300..400).contains(&status) && location.as_deref() == Some("/chat") {
+                ActOutcome::Done(done.to_string())
+            } else {
+                ActOutcome::Refused(location.as_deref().and_then(said_of).map(|(_, words)| words)
+                    .unwrap_or_else(|| "The console could not switch Lead. Check the membership sign-in or open Lead settings.".into()))
+            });
+        }
         let json = res
             .headers()
             .get("content-type")

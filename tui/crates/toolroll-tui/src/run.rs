@@ -374,7 +374,8 @@ impl Loop {
                     }
                 }
                 None => {
-                    let words = format!("Open {} in your browser.", self.client.origin());
+                    let path = if page == "lead-providers" { "/settings/lead#lead-config" } else { "" };
+                    let words = format!("Open {}{path} in your browser.", self.client.origin());
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
@@ -397,6 +398,13 @@ impl Loop {
             })),
             Effect::FetchModels => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Models(client.models().await));
+            })),
+            Effect::CheckLeadProviders => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::LeadProvidersChecked(client.agents_check().await));
+            })),
+            Effect::SwitchLead(plan) => drop(tokio::spawn(async move {
+                let result = client.act("/settings/lead/on", &[("agent", plan.id()), ("return", "/chat")], "Lead membership saved.").await;
+                let _ = tx.send(Msg::LeadSwitched(plan, result));
             })),
             Effect::FetchLeadChat => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::LeadChat(client.chat(None).await));

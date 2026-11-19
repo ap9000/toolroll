@@ -476,3 +476,84 @@ async fn end_to_end_fake_engine_chat_send_proposal_and_sse_turn() {
 
     live_task.abort();
 }
+
+#[test]
+fn provider_failure_offers_checked_memberships_and_keeps_a_retry_explicit() {
+    use toolroll_tui::chat_providers::Membership;
+    let mut app = loaded_app();
+    app.key(key('C'));
+    let mut data = app.chat.data.clone().unwrap();
+    data.problem = Some("The chat provider couldn't answer; its sign-in may have expired.".into());
+    data.busy = false;
+    data.messages.clear();
+    app.chat.last_submission = Some("What needs me?".into());
+    let effects = app.update(Msg::LeadChat(Ok(data.clone())));
+    assert!(effects.contains(&Effect::CheckLeadProviders));
+    assert_eq!(app.mode, Mode::LeadProviders(None));
+    assert_eq!(app.chat.draft, "What needs me?");
+    render(&mut app, 48, 24);
+    assert!(app.key(key('1')).is_empty());
+    assert_eq!(app.mode, Mode::LeadProviders(None));
+    let mut agents: toolroll_api::AgentsRead = parse(fake::scenario().agents);
+    agents.agents.iter_mut().find(|row| row.id == "codex").unwrap().state = "signed-in".into();
+    app.update(Msg::LeadProvidersChecked(Ok(agents)));
+    let click = |app: &mut App, key| {
+        let area = app.areas.lead_provider_controls.iter().find(|(_, k)| *k == key).unwrap().0;
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE })
+    };
+    for theme in [ThemeName::Light, ThemeName::Dark] {
+        app.prefs.theme = Theme::build(theme, Depth::TrueColor, None, &[]).0;
+        pairs::check(&mut app, 48, 24);
+        assert!(render(&mut app, 48, 24).contains("Codex membership"));
+    }
+    assert!(click(&mut app, KeyCode::Char('1')).is_empty());
+    assert_eq!(app.mode, Mode::LeadProviders(Some(Membership::Codex)));
+    let confirmed = render(&mut app, 48, 24);
+    assert!(confirmed.contains("50 turns"));
+    assert_eq!(click(&mut app, KeyCode::Enter), [Effect::SwitchLead(Membership::Codex)]);
+    assert!(app.key(code(KeyCode::Enter)).is_empty());
+    let effects = app.update(Msg::LeadSwitched(Membership::Codex, Ok(toolroll_api::ActOutcome::Done("Saved".into()))));
+    assert_eq!(effects, [Effect::FetchLeadChat]);
+    assert_eq!(app.mode, Mode::ChatCompose("What needs me?".into()));
+    assert!(!app.update(Msg::LeadChat(Ok(data))).contains(&Effect::CheckLeadProviders));
+}
+
+#[test]
+fn provider_check_is_available_without_an_error_and_never_steals_a_new_draft() {
+    let mut app = loaded_app();
+    app.key(key('C'));
+    app.key(key('H'));
+    render(&mut app, 100, 30);
+    let area = app.areas.lead_providers_button;
+    assert_eq!(app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE }), [Effect::CheckLeadProviders]);
+    let checked = render(&mut app, 100, 30);
+    assert!(checked.contains("Checking local sign-ins"));
+    app.update(Msg::LeadProvidersChecked(Err(toolroll_api::ApiError::Unreachable("Offline".into()))));
+    assert!(render(&mut app, 100, 30).contains("Offline"));
+    assert_eq!(app.key(key('r')), [Effect::CheckLeadProviders]);
+    render(&mut app, 100, 30);
+    assert_eq!(app.key(key('w')), [Effect::OpenPage("lead-providers")]);
+    app.key(code(KeyCode::Esc));
+    assert_eq!(app.mode, Mode::ChatCompose("H".into()));
+    let mut data = app.chat.data.clone().unwrap();
+    data.busy = false;
+    data.problem = Some("Confirm the cost on the Chat page.".into());
+    assert!(!app.update(Msg::LeadChat(Ok(data))).contains(&Effect::CheckLeadProviders));
+    app.chat.last_submission = Some("Earlier message".into());
+    app.update(Msg::ChatSent(Ok(ChatSendOutcome::Refused("Unavailable".into()))));
+    assert_eq!(app.mode, Mode::ChatCompose("H".into()));
+}
+
+#[test]
+fn a_missing_membership_opens_the_correct_agent_setup() {
+    let mut app = loaded_app();
+    app.key(key('C'));
+    app.key(code(KeyCode::F(2)));
+    let mut agents: toolroll_api::AgentsRead = parse(fake::scenario().agents);
+    agents.agents.iter_mut().find(|row| row.id == "codex").unwrap().state = "not-installed".into();
+    app.update(Msg::LeadProvidersChecked(Ok(agents)));
+    assert!(render(&mut app, 80, 24).contains("Codex membership · Install"));
+    let fx = app.key(key('1'));
+    assert!(fx.contains(&Effect::FetchModels));
+    assert_eq!(app.agents_screen.as_ref().unwrap().agent.as_deref(), Some("codex"));
+}

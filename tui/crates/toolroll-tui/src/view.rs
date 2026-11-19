@@ -393,7 +393,7 @@ pub fn build_clock(app: &App, steps: &StepCards, card: &StepCard) -> Option<i64>
 }
 
 /// A line cut to `w` cells with an ellipsis (ratatui would cut it silently).
-fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
+pub(crate) fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
     if line.width() <= w {
         return line;
     }
@@ -418,6 +418,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.areas.steps.clear();
     app.areas.builder_button = None;
     app.areas.builder_controls.clear();
+    app.areas.lead_providers_button = Rect::default();
+    app.areas.lead_provider_controls.clear();
     app.areas.approval_dialog = Rect::default();
     app.areas.approval_controls.clear();
     app.areas.steer_targets.clear();
@@ -3783,6 +3785,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
+        Mode::LeadProviders(_) => return crate::chat_providers::draw_providers(f, app, area),
         Mode::TaskBuilder { .. } => return draw_task_builder(f, app, area),
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),

@@ -132,7 +132,7 @@ export interface TuiSource {
 /** What only the process that opened the screen knows: whether quitting stops its agents, the browser, the ask-once. */
 /** The console pages the terminal may ask the browser to land on after its one-time sign-in, by name. The console maps
  * each name to its own fixed address (people-tokens.ts LINK_LANDINGS); nothing else is ever a landing. */
-export const TUI_PAGES = Object.freeze(["flexible", "flexible-sign-in", "project"] as const);
+export const TUI_PAGES = Object.freeze(["flexible", "flexible-sign-in", "project", "lead-providers"] as const);
 export type TuiPage = (typeof TUI_PAGES)[number];
 export const isTuiPage = (value: unknown): value is TuiPage => typeof value === "string" && (TUI_PAGES as readonly string[]).includes(value);
 

@@ -2280,10 +2280,12 @@ ${postForm("/settings/chat-approval/save", html`\
     // choice also starts the installation's models on that agent's default preset, in the same write, while nothing
     // is chosen yet (model-choices.ts fillDefaultRouting): its first task can then be planned and approved without a
     // password. A full session's choice is as before: its models are Settings → Models'.
+    const fromLeadChat = body.get("return") === "/chat";
     store.transact(() => {
-      if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+      const current = store.getChatConfig();
+      if (current?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: (fromLeadChat ? current?.dailyTurns : undefined) ?? 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
       const agent = defaultAgentOf(provider);
-      if (who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
+      if (!fromLeadChat && who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
     });
     return redirect(response, back ?? "/chat");
   }

@@ -76,6 +76,12 @@ pub struct LeadChatState {
     pub draft: String,
     /// Optimistically displayed operator message immediately after hitting Enter, cleared once synced from server.
     pub optimistic_sent: Option<String>,
+    pub last_submission: Option<String>,
+    pub seen_provider_issue: Option<(String, Option<i64>, Option<i64>, String)>,
+    pub checking_providers: bool,
+    pub switching_provider: bool,
+    pub checked_providers: Option<toolroll_api::AgentsRead>,
+    pub provider_problem: Option<String>,
     /// Monotonic counter for 32-hex `request` ids.
     pub next_seq: u64,
     /// Clickable hitboxes captured during the last draw.
@@ -393,6 +399,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
             head_spans.push(Span::styled("Loading…", dim()));
         }
     }
+    let providers = sheet::button("Providers", "F2", false);
+    let header_w = w.saturating_sub(providers.width() + 1);
+    let header = crate::view::fit_line(Line::from(head_spans), header_w);
+    let mut head_spans = header.spans;
+    let x = area.x + area.width.saturating_sub(providers.width() as u16);
+    app.areas.lead_providers_button = Rect::new(x, area.y, (area.right()-x).min(providers.width() as u16), 1);
     if docked {
         head_spans.push(Span::styled("  ", dim()));
         head_spans.push(sheet::badge("DOCKED", Role::Fill));
@@ -401,6 +413,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect, docked: bool) {
         Paragraph::new(Line::from(head_spans)),
         Rect { height: 1, ..area },
     );
+
+    f.render_widget(Paragraph::new(Line::from(providers)), app.areas.lead_providers_button);
 
     let hint = if typing {
         "Enter send · Shift-Enter newline · Esc browse history · PgUp/PgDn scroll"

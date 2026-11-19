@@ -298,6 +298,12 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     owned: () => ownedNow() !== null,
     stopped: stoppedOnItsOwn,
     openBrowser: async page => {
+      // An already-running console may predate this terminal's named sign-in landing.
+      // Open the existing settings form on the proven console with the browser's normal sign-in.
+      if (page === "lead-providers") {
+        await seams.openBrowser(new URL("/settings/lead#lead-config", url).href);
+        return "Opened Lead settings in your browser.";
+      }
       const opened = await seams.openSignedIn(page);
       return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
     },
