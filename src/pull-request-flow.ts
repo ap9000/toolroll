@@ -534,7 +534,8 @@ export async function mergePullRequest(
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();
-  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" | "recovery-held" => {
+  let reserved: "ok" | "archived" | "merging" | "deleting" | "halted" | "recovery-held";
+  try { reserved = store.transact((): typeof reserved => {
     if (fullCheckGate(store, publication.run, clock()).state === "recovery-held") return "recovery-held";
     if (input.proceed?.({ base: before.base, url: before.url, head: before.head }) === false) return "halted";
     // A Flexible result: its Ship reserved (merging) under exactly this token, in this same transaction (the armed
@@ -544,10 +545,13 @@ export async function mergePullRequest(
     if (store.handle.prepare("SELECT 1 FROM hold WHERE task_ref = ? AND owner_id LIKE 'project-delete:%' AND (until IS NULL OR until > ?)").get(publication.taskRef, clock().toISOString()) !== undefined) return "deleting";
     if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";
     const reservedAt = clock();
-    if (fullCheckGate(store, publication.run, reservedAt).state === "recovery-held") return "recovery-held";
+    if (fullCheckGate(store, publication.run, reservedAt).state === "recovery-held") throw new RecoveryHeldReservation();
     store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, reservedAt.toISOString());
     return "ok";
-  });
+  }); } catch (error) {
+    if (error instanceof RecoveryHeldReservation) return refuse("recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.");
+    throw error;
+  }
   if (reserved === "recovery-held") return refuse("recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.");
   if (reserved === "halted") return refuse("halted", "The worker is stopping or paused, so this merge waits for its next pass.");
   if (reserved === "archived") return refuse("archived", "This task is put away. Restore it before merging.");
@@ -637,3 +641,6 @@ export function newestPullRequestOf(store: Store, versions: readonly string[]): 
 
 /** Why a machine credential's merge is refused (approval policy §1.7). */
 export const MERGE_NEEDS_PERSON = "Only a person can merge. Merge it on the task page or from your paired chat.";
+
+/** Roll back only unissued callback/reservation writes when final recovery reproof refuses. */
+class RecoveryHeldReservation extends Error {}
