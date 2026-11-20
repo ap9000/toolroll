@@ -421,7 +421,7 @@ get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: 
 // The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
 get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
 // The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
-get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie"], ...free });
+get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie", "bearer"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
@@ -461,9 +461,9 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
-// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted exactly as the Live grid's reads.
+// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted as the Live grid's reads (and terminal-remote API tokens).
 // A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
-get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
+get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie", "bearer"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
 // Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.

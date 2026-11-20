@@ -21,7 +21,9 @@ import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
 import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, liveOrderAfter, type LiveBus, type LiveViewer } from "../live-bus.js";
-import { reproveRemote } from "../operate-remote.js";
+import { remoteAllows, reproveRemote } from "../operate-remote.js";
+import { verifyApproverStanding } from "../principal.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest } from "../terminal-connection.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
 import type { LeadLiveTool } from "../lead-progress.js";
@@ -289,13 +291,18 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1 || rooms.filter(one => one.room?.kind === "summary").length > 1 || rooms.filter(one => one.room?.kind === "agents-live").length > 1) return json(response, 400, { error: "room" });
 
     // Admit every room before the stream opens, with the answers each page's own stream gave.
+    const remoteTerminal = who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request);
+    const remotePrincipal = remoteTerminal ? who.principal! : null;
+    const remoteValid = (): boolean => remotePrincipal !== null && admitRemoteTerminalRequest(request, store, remotePrincipal, clock).ok;
+    const remoteAllowsRepo = (repo: string | null): boolean => remotePrincipal !== null && remoteAllows(store, remotePrincipal, repo);
     const joins: Array<(connection: LiveConnection) => void> = [];
     let refusedJoin = false;
     for (const { name, room } of rooms as Array<{ name: string; room: LiveRoom }>) {
-      if (room.kind !== "team" && who.via !== "cookie") return json(response, 403, { error: "session" });
+      const remoteRoomAllowed = room.kind === "workspace" || room.kind === "task" || room.kind === "agent" || room.kind === "chat";
+      if (room.kind !== "team" && who.via !== "cookie" && !(remoteTerminal && remoteRoomAllowed)) return json(response, 403, { error: "session" });
       if (room.kind === "workspace") {
-        const browser = who as Who & { via: "cookie" };
-        joins.push(connection => workspaceRooms.join("workspace", { name: who.name, room: name, connection, valid: sameBrowser(request, browser) }));
+        const valid = who.via === "cookie" ? sameBrowser(request, who) : remoteValid;
+        joins.push(connection => workspaceRooms.join("workspace", { name: who.name, room: name, connection, valid }));
       } else if (room.kind === "summary") {
         const browser = who as Who & { via: "cookie" };
         const scope = live.projectScopeFor(who.name);
@@ -320,25 +327,24 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           agentsLive.rooms.join(key, { name: who.name, room: name, connection, valid });
         });
       } else if (room.kind === "task") {
-        const browser = who as Who & { via: "cookie" };
         const family = familyOf(room.task);
         if (family === null || family.problem !== null) return json(response, 404, { error: "task" });
-        const repo = family.root.repo, root = family.root.id, signedIn = sameBrowser(request, browser);
-        joins.push(connection => taskRooms.join(root, { name: who.name, room: name, connection,
-          // A sign-out or a narrowed account stops it.
-          valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) }));
+        const repo = family.root.repo, root = family.root.id;
+        const valid = who.via === "cookie"
+          ? (() => { const signedIn = sameBrowser(request, who); return () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo); })()
+          : () => remoteValid() && rowVisible(liveCeiling(), repo) && remoteAllowsRepo(repo);
+        joins.push(connection => taskRooms.join(root, { name: who.name, room: name, connection, valid }));
       } else if (room.kind === "agent") {
-        const browser = who as Who & { via: "cookie" };
         const run = store.getRun(room.run);
         const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
         if (run === null || repo === null || !visible(repo) || !store.accountCanAccess(who.name, repo)) return json(response, 404, { error: "run" });
         // A repair is its build's own activity: its room is the build's.
-        const signedIn = sameBrowser(request, browser), runId = boardRunOf(store, run.id);
-        // The watch lease (agent-board.ts watchingAgent) is held by the shell's keyed POST /agents/watch on each keep-alive
-        // and released on unload (easy-start N1): this stream only reads, so a stolen cookie can't hold one to quiet pings.
+        const runId = boardRunOf(store, run.id);
+        const valid = who.via === "cookie"
+          ? (() => { const signedIn = sameBrowser(request, who); return () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo); })()
+          : () => remoteValid() && rowVisible(liveCeiling(), repo) && remoteAllowsRepo(repo);
         joins.push(connection => {
-          agentRooms.join(runId, { name: who.name, room: name, connection,
-            valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) });
+          agentRooms.join(runId, { name: who.name, room: name, connection, valid });
         });
       } else if (room.kind === "flow") {
         const browser = who as Who & { via: "cookie" };
@@ -348,25 +354,38 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         joins.push(connection => flowRooms.join(flow.id, { name: who.name, room: name, connection, card: room.card, editing: room.editing,
           valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) } satisfies FlowRoomViewer));
       } else if (room.kind === "chat") {
-        const browser = who as Who & { via: "cookie" };
-        if (who.role !== "approver") return json(response, 403, { error: "session" });
-        if (leadPrincipal(browser) === null) return json(response, 403, { error: "standing" });
+        const resolveChatPrincipal = () => {
+          if (who.via === "cookie") return who.role === "approver" ? leadPrincipal(who) : null;
+          if (remotePrincipal === null || !remoteValid()) return null;
+          const account = store.accountOf(who.name);
+          if (account === null || account.role !== "approver") return null;
+          const allowedRepos = runtime.managedRepos().filter(repo => remoteAllows(store, remotePrincipal, repo));
+          const verified = verifyApproverStanding(store, who.name, who.generation, allowedRepos);
+          return verified.ok ? verified.who : null;
+        };
+        if (who.via === "cookie" && who.role !== "approver") return json(response, 403, { error: "session" });
+        if (resolveChatPrincipal() === null) return json(response, 403, { error: "standing" });
         const focusTask = room.task === null ? null : taskChatFocus(room.task, now, who, { mintNonce: false });
         if (room.task !== null && focusTask === null) return json(response, 404, { error: "task" });
         const chatProject = focusTask !== null ? null : live.chatProjectOf(room.project === null ? [] : [room.project]);
         if (chatProject === undefined) return json(response, 404, { error: "project" });
         const scope = chatScopeOf(focusTask, chatProject);
-        const valid = (expectedThread?: number) => requestContext.run({ actor: who.name, csrf: "", returnTo: "/chat" }, () => {
-          const again = readBrowser(request, browser);
-          if (again === null || again.role !== "approver") return false;
-          const principal = leadPrincipal(again);
+        const valid = (expectedThread?: number) => requestContext.run({ actor: who.name, csrf: "", returnTo: "/chat", ...(remotePrincipal === null ? {} : { tokenProjects: remotePrincipal.projects }) }, () => {
+          let principal: ReturnType<typeof resolveChatPrincipal> = null;
+          if (who.via === "cookie") {
+            const again = readBrowser(request, who);
+            if (again === null || again.role !== "approver") return false;
+            principal = leadPrincipal(again);
+          } else {
+            principal = resolveChatPrincipal();
+          }
           if (principal === null) return false;
-          const thread = store.liveLeadThreadFor(again.name, scope);
+          const thread = store.liveLeadThreadFor(who.name, scope);
           // Even the default lead room is bound to the projects admitted when its thread opened.
           if (thread !== null && thread.ceilingDigest !== principal.ceilingDigest) return false;
           if (expectedThread !== undefined && thread?.id !== expectedThread) return false;
           if (scope.kind === "task") {
-            const focus = taskChatFocus(room.task, clock(), again, { mintNonce: false });
+            const focus = taskChatFocus(room.task, clock(), who, { mintNonce: false });
             return focus !== null && focus.id === scope.key;
           }
           return scope.kind !== "project" || live.chatProjectOf([scope.key]) === scope.key;

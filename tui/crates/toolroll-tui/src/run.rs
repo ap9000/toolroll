@@ -245,22 +245,46 @@ impl Loop {
     ) -> Option<i32> {
         let client = self.client.clone();
         let tx = self.tx.clone();
+        let remote = self.client.remote_info();
         match fx {
             Effect::OpenInEditor { name, text } => self.editor = Some((name, text)),
             Effect::FetchWork => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Work(client.work_rows().await));
             })),
-            Effect::FetchAgents => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Agents(client.agents().await));
-            })),
+            Effect::FetchAgents => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Agents(client.agents().await));
+                    }));
+                }
+            }
             Effect::FetchSteps(task) => drop(tokio::spawn(async move {
                 let r = client.steps(&task).await;
                 let _ = tx.send(Msg::Steps(task, r));
             })),
-            Effect::FetchApproval(task) => drop(tokio::spawn(async move {
-                let r = client.approval(&task).await;
-                let _ = tx.send(Msg::Approval(task, r));
-            })),
+            Effect::FetchApproval(task) => {
+                if remote.is_some() {
+                    let _ = tx.send(Msg::Approval(
+                        task.clone(),
+                        Ok(toolroll_api::ApprovalCard {
+                            version: toolroll_api::API_VERSION,
+                            task,
+                            key: None,
+                            digest: None,
+                            nonce: None,
+                            terms: vec![],
+                            problem: Some(
+                                "Remote approvals open in your browser — press w.".into(),
+                            ),
+                        }),
+                    ));
+                } else {
+                    drop(tokio::spawn(async move {
+                        let r = client.approval(&task).await;
+                        let _ = tx.send(Msg::Approval(task, r));
+                    }));
+                }
+            }
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));
@@ -273,20 +297,28 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
-            Effect::FetchThreads => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Threads(client.threads().await));
-            })),
+            Effect::FetchThreads => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Threads(client.threads().await));
+                    }));
+                }
+            }
             Effect::FetchThread {
                 thread,
                 cursor,
                 known,
                 wait,
-            } => drop(tokio::spawn(async move {
-                let r = client
-                    .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
-                    .await;
-                let _ = tx.send(Msg::Thread(thread, r));
-            })),
+            } => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let r = client
+                            .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
+                            .await;
+                        let _ = tx.send(Msg::Thread(thread, r));
+                    }));
+                }
+            }
             Effect::FetchContext(ask) => drop(tokio::spawn(async move {
                 let r = client
                     .diff_context(&ask.task, ask.run, ask.file, ask.from, ask.count)
@@ -338,6 +370,9 @@ impl Loop {
                 let _ = tx.send(Msg::Acted(client.act(&path, &pairs, &done).await));
             })),
             Effect::Watch(rooms) => {
+                if remote.as_ref().is_some_and(|r| !r.capabilities.live_stream) {
+                    return None;
+                }
                 if rooms != self.watching {
                     if let Some(h) = self.watch.take() {
                         h.abort();
@@ -421,25 +456,71 @@ impl Loop {
             }
             Effect::Exit(code) => return Some(code),
             Effect::TermOpen { task, run, program } => {
-                drop(tokio::spawn(open_terminal(client, tx, task, run, program)));
+                if remote.is_some() {
+                    let _ = tx.send(Msg::TermOpened {
+                        task,
+                        run,
+                        result: Err(ApiError::Refused(
+                            "Interactive build terminals are local-only for now.".into(),
+                        )),
+                    });
+                } else {
+                    drop(tokio::spawn(open_terminal(client, tx, task, run, program)));
+                }
             }
-            Effect::FetchTaskBuilder { root, task } => drop(tokio::spawn(async move {
-                let result = client.task_builder(&root, &task).await;
-                let _ = tx.send(Msg::TaskBuilder(task, result));
-            })),
-            Effect::FetchModels => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Models(client.models().await));
-            })),
-            Effect::CheckLeadProviders => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::LeadProvidersChecked(client.agents_check().await));
-            })),
-            Effect::SwitchLead(plan) => drop(tokio::spawn(async move {
-                let result = client.act("/settings/lead/on", &[("agent", plan.id()), ("return", "/chat")], "Lead membership saved.").await;
-                let _ = tx.send(Msg::LeadSwitched(plan, result));
-            })),
-            Effect::FetchLeadChat => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::LeadChat(client.chat(None).await));
-            })),
+            Effect::FetchTaskBuilder { root, task } => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let result = client.task_builder(&root, &task).await;
+                        let _ = tx.send(Msg::TaskBuilder(task, result));
+                    }));
+                }
+            }
+            Effect::FetchModels => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Models(client.models().await));
+                    }));
+                }
+            }
+            Effect::CheckLeadProviders => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::LeadProvidersChecked(client.agents_check().await));
+                    }));
+                }
+            }
+            Effect::SwitchLead(plan) => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let result = client.act("/settings/lead/on", &[("agent", plan.id()), ("return", "/chat")], "Lead membership saved.").await;
+                        let _ = tx.send(Msg::LeadSwitched(plan, result));
+                    }));
+                }
+            }
+            Effect::FetchLeadChat => {
+                if remote.as_ref().is_some_and(|r| !r.capabilities.lead_chat) {
+                    let _ = tx.send(Msg::LeadChat(Ok(toolroll_api::LeadChat {
+                        version: toolroll_api::API_VERSION,
+                        room: "chat".into(),
+                        session: None,
+                        lead_name: "Lead".into(),
+                        can_send: false,
+                        problem: Some(
+                            "Lead chat is unavailable for this remote account.".into(),
+                        ),
+                        project: None,
+                        busy: false,
+                        pending_proposals: 0,
+                        queued: vec![],
+                        messages: vec![],
+                    })));
+                } else {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::LeadChat(client.chat(None).await));
+                    }));
+                }
+            }
             Effect::ChatSend {
                 message,
                 request,
@@ -462,17 +543,23 @@ impl Loop {
             Effect::QueuedRemove(id) => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Acted(client.queued_remove(id).await));
             })),
-            Effect::CheckAgents => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Agents(client.agents_check().await));
-            })),
+            Effect::CheckAgents => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Agents(client.agents_check().await));
+                    }));
+                }
+            }
             Effect::AgentTerm {
                 kind,
                 agent,
                 confirm,
             } => {
-                drop(tokio::spawn(open_agent_terminal(
-                    client, tx, kind, agent, confirm,
-                )));
+                if remote.is_none() {
+                    drop(tokio::spawn(open_agent_terminal(
+                        client, tx, kind, agent, confirm,
+                    )));
+                }
             }
             Effect::TermSend { id, send } => {
                 // Only the terminal the pane shows: anything else is dropped.
@@ -610,6 +697,14 @@ async fn event_loop(
     app.utc_offset_secs = local_utc_offset();
     app.now = now_secs();
     app.origin = Some(client.origin().to_string());
+    if let Some(info) = client.remote_info() {
+        let mode = if info.capabilities.can_act() {
+            ""
+        } else {
+            " · read-only"
+        };
+        app.remote_badge = Some(format!("Remote · {} · {}{mode}", info.label, info.account));
+    }
     // Where the last run left off (state.rs): our own small file, read only when it is safe to.
     let state_path = crate::state::path(env);
     app.restore = state_path.as_deref().and_then(crate::state::load);

@@ -7,7 +7,7 @@ test.each(cases)("connection contract: $name", one => {
   expect(terminalConnectionSchema.safeParse(one.value).success).toBe(one.valid);
 });
 test("connection refusals have only the version and bounded code", () => {
-  for (const error of ["request", "unauthenticated", "credential-purpose", "workspace-unavailable", "contract-unavailable"]) {
+  for (const error of ["request", "unauthenticated", "credential-purpose", "workspace-mismatch", "recovery-changed", "workspace-unavailable", "contract-unavailable"]) {
     expect(terminalConnectionRefusalSchema.safeParse({ protocol: 1, error }).success).toBe(true);
   }
   expect(terminalConnectionRefusalSchema.safeParse({ protocol: 1, error: "request", token: "secret" }).success).toBe(false);

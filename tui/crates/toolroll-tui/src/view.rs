@@ -777,6 +777,14 @@ fn draw_top(f: &mut Frame, app: &mut App, area: Rect) {
         .count();
     // (item, spans, on the right)
     let mut items: Vec<(TopItem, Vec<Span<'static>>, bool)> = vec![];
+    if let Some(badge) = &app.remote_badge {
+        let label = fit(badge, 36);
+        items.push((
+            TopItem::Marks,
+            vec![sheet::badge(&label, crate::theme::Role::Running)],
+            false,
+        ));
+    }
     if !app.project_name.is_empty() {
         let name = fit(&app.project_name, 32);
         items.push((

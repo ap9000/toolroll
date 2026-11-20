@@ -456,6 +456,7 @@ export function defaultEasyStartSeams(options: {
           if (opened < 4 && await reopenAfterSignOut({ terminal, agent: underAgent(process.env), ask: askLineOrEof })) continue;
           return "leave";
         }
+        if (end === "central-unavailable") return "leave";
         if (end === "changed") why = "the terminal workbench changed after it was checked";
         else if (end !== "classic") return end;
         // The workbench said why on its own way out.

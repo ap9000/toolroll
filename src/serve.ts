@@ -1,4 +1,5 @@
 import { secretFolder } from "./tool-secret-store.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest, REMOTE_TUI_READ_ROUTES, sendTerminalConnectionRefusal } from "./terminal-connection.js";
 import { fallbackSettingOf } from "./fallback.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
 import { consoleFolderGate, syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
@@ -919,7 +920,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // One source charge before password proof and one account/token charge after it, including GET /login.
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal; elsewhere?: boolean } = {};
-    const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
+    const remoteTerminal = isRemoteTerminalRequest(request) && (edgeRoute?.domain === "live" || (matchedRoute?.stage === "console" && REMOTE_TUI_READ_ROUTES.has(matchedRoute.id)));
+    const who = identify(request, touch, edgeRoute?.domain === 'live' || remoteTerminal, refusedToken);
     timeline.mark("signed in");
     // Local-owner slice 0: a local owner's session presented from anywhere but this computer (another address, a
     // proxy, a tailnet or LAN name) signs in no one and changes nothing. Sign-in pages still answer (a password signs
@@ -937,6 +939,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
+    if (remoteTerminal) {
+      if (who === null || who.via !== "bearer" || who.principal === undefined) {
+        return sendTerminalConnectionRefusal(request, response, 401, "unauthenticated");
+      }
+      const remoteAdmitted = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!remoteAdmitted.ok) {
+        return sendTerminalConnectionRefusal(request, response, remoteAdmitted.status, remoteAdmitted.error);
+      }
+    }
     // A read ahead from anything but a signed-in browser session (signed out, a token): 204, never the sign-in page.
     if (purpose === 'prefetch' && who?.via !== 'cookie') {
       request.resume();
@@ -998,6 +1009,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
       // The terminal workbench's acts: refusals answered as `{ outcome, words }` (http.ts refusedInPlace), shape only.
       ...(method === "POST" && who.via === "cookie" && request.headers["x-toolroll-act"] === "in-place" && request.headers["x-toolroll-client"] === "terminal" ? { terminalAct: true } : {}),
+      ...(who.via === "bearer" && who.principal !== undefined ? { tokenProjects: who.principal.projects } : {}),
     };
     // A read ahead writes nothing, not even a slow request's record.
     if (purpose !== 'prefetch') response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
@@ -1062,6 +1074,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (who.via === 'cookie') {
             const current = identify(request, false);
             if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
+          } else if (remoteTerminal && who.via === 'bearer' && who.principal !== undefined) {
+            const recheck = admitRemoteTerminalRequest(request, store, who.principal, clock);
+            if (!recheck.ok) return sendTerminalConnectionRefusal(request, response, recheck.status, recheck.error);
             if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
           // One read of the work projection and its rows' saved facts for the whole page (work-reads.ts): this request's
@@ -1167,6 +1183,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Tasks (P1.4) says every project as scope=all; an old link's all=1 still reads so.
     if (route.id === 'tasks' && !url.searchParams.has('project') && ((url.searchParams.get('scope') === 'all' && url.searchParams.getAll('scope').length === 1)
       || (url.searchParams.get('all') === '1' && url.searchParams.getAll('all').length === 1))) project = null;
+    if (route.id === 'work.rows' && who.via === 'bearer' && isRemoteTerminalRequest(request) && !url.searchParams.has('project') && request.headers['x-standing-orders-project'] === undefined) {
+      project = null;
+    }
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;
@@ -1373,7 +1392,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * live update can never show a card the page would not. A task lens
    * keeps only that task's coordinator cards; the lead's own thread is one
    * thread regardless of lens. */
-  function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
+  function leadConversationRows(who: Who, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
     messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; staleAsk: number | null; asks: Map<number, LeadAsk>; queue: Map<number, LeadQueueRow>;
     previous: ReplacedThread | null; failure: string | null;
   } {

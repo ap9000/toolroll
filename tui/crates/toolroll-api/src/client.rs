@@ -9,6 +9,10 @@
 //!   the key in `x-toolroll-key`, the console's own Origin, and `x-toolroll-act: in-place` + `x-toolroll-client: terminal`
 //!   so a refusal comes back as its words (`{ outcome, words }`) instead of a page.
 //! - A session the console no longer holds (signed out, expired after 12 idle hours, a restart) is `SessionEnded`.
+use crate::connection::{
+    parse_connection_refusal, parse_remote_connection, ConnectionAccess, ConnectionBinding,
+    ConnectionRefusal, ConnectionRole, RemoteCapabilities,
+};
 use crate::models::*;
 use crate::sse::{SseEvent, SseParser};
 use futures_util::StreamExt;
@@ -119,11 +123,44 @@ impl fmt::Debug for Creds {
     }
 }
 
+struct RemoteCreds {
+    bearer: Zeroizing<String>,
+    workspace_id: String,
+    recovery_generation: String,
+    label: String,
+    role: ConnectionRole,
+    access: ConnectionAccess,
+    capabilities: RemoteCapabilities,
+}
+
+impl fmt::Debug for RemoteCreds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RemoteCreds { bearer: <held>, workspace: <held> }")
+    }
+}
+
+#[derive(Debug)]
+enum ClientAuth {
+    Local(Creds),
+    Remote(RemoteCreds),
+}
+
+/// Non-secret summary of an active remote connection for the TUI header and capability gating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteInfo {
+    pub origin: String,
+    pub label: String,
+    pub account: String,
+    pub role: ConnectionRole,
+    pub access: ConnectionAccess,
+    pub capabilities: RemoteCapabilities,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     origin: String,
     http: reqwest::Client,
-    creds: Arc<Creds>,
+    auth: Arc<ClientAuth>,
     pub account: String,
 }
 
@@ -179,6 +216,26 @@ pub fn encode(s: &str) -> String {
         }
     }
     out
+}
+
+fn percent_decode_simple(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Redeem the one-time link (`POST /login/once`, the code in the body): the session, in memory.
@@ -242,12 +299,95 @@ pub async fn redeem(link: &str) -> Result<Client, ApiError> {
     Ok(Client {
         origin,
         http,
-        creds: Arc::new(Creds {
+        auth: Arc::new(ClientAuth::Local(Creds {
             cookie: Zeroizing::new(format!("{}={}", r.cookie.name, value.as_str())),
             csrf,
             key,
-        }),
+        })),
         account: r.account,
+    })
+}
+
+/// Connect to a remote central Toolroll server with a person API token (`so_...`) and enrolled binding.
+/// Performs `GET /engine/connection`, verifies the workspace/recovery/account binding and engine contract digest,
+/// and holds the bearer token in zeroizing memory only.
+pub async fn connect_remote(
+    origin: &str,
+    token: &str,
+    expected: &ConnectionBinding,
+) -> Result<Client, ApiError> {
+    let origin = origin.trim().trim_end_matches('/').to_string();
+    let loopback_http = origin.starts_with("http://127.0.0.1:")
+        || origin.starts_with("http://[::1]:");
+    if !origin.starts_with("https://") && !loopback_http {
+        return Err(ApiError::Refused(
+            "Remote connections require an HTTPS origin.".into(),
+        ));
+    }
+    let http = http_client()?;
+    let bearer = Zeroizing::new(format!("Bearer {token}"));
+    let res = http
+        .get(format!("{origin}/engine/connection"))
+        .header("authorization", bearer.as_str())
+        .header("x-toolroll-client", "terminal-remote")
+        .header("accept", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+    let status = res.status().as_u16();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+    if status != 200 {
+        if let Ok(code) = parse_connection_refusal(&text) {
+            return Err(match code {
+                ConnectionRefusal::Unauthenticated | ConnectionRefusal::RecoveryChanged => {
+                    ApiError::SessionEnded
+                }
+                ConnectionRefusal::CredentialPurpose => {
+                    ApiError::Refused("Use an ordinary API token (not an MCP OAuth token).".into())
+                }
+                ConnectionRefusal::WorkspaceMismatch => {
+                    ApiError::Refused("This server is not the enrolled workspace.".into())
+                }
+                ConnectionRefusal::WorkspaceUnavailable => {
+                    ApiError::Refused("The remote workspace identity is unavailable.".into())
+                }
+                ConnectionRefusal::ContractUnavailable => {
+                    ApiError::Contract("The remote server's contract is unavailable.".into())
+                }
+                ConnectionRefusal::Request => {
+                    ApiError::Refused("The remote server refused the connection request.".into())
+                }
+            });
+        }
+        return Err(if status == 401 {
+            ApiError::SessionEnded
+        } else {
+            ApiError::Refused(format!("The remote server answered status {status}."))
+        });
+    }
+    let conn = parse_remote_connection(&text, expected).map_err(|e| match e {
+        crate::connection::ConnectionError::InvalidEngine => ApiError::Contract(e.to_string()),
+        crate::connection::ConnectionError::RecoveryChanged => ApiError::SessionEnded,
+        other => ApiError::Refused(other.to_string()),
+    })?;
+    let account = conn.account().to_string();
+    Ok(Client {
+        origin,
+        http,
+        auth: Arc::new(ClientAuth::Remote(RemoteCreds {
+            bearer,
+            workspace_id: conn.workspace_id().to_string(),
+            recovery_generation: conn.recovery_generation().to_string(),
+            label: conn.label().to_string(),
+            role: conn.role(),
+            access: conn.access(),
+            capabilities: conn.capabilities().clone(),
+        })),
+        account,
     })
 }
 
@@ -294,6 +434,33 @@ impl Client {
         &self.origin
     }
 
+    pub fn is_remote(&self) -> bool {
+        matches!(&*self.auth, ClientAuth::Remote(_))
+    }
+
+    pub fn remote_info(&self) -> Option<RemoteInfo> {
+        match &*self.auth {
+            ClientAuth::Local(_) => None,
+            ClientAuth::Remote(r) => Some(RemoteInfo {
+                origin: self.origin.clone(),
+                label: r.label.clone(),
+                account: self.account.clone(),
+                role: r.role,
+                access: r.access,
+                capabilities: r.capabilities.clone(),
+            }),
+        }
+    }
+
+    fn local_creds(&self) -> Result<&Creds, ApiError> {
+        match &*self.auth {
+            ClientAuth::Local(c) => Ok(c),
+            ClientAuth::Remote(_) => Err(ApiError::Refused(
+                "This action is only available in a local Toolroll session.".into(),
+            )),
+        }
+    }
+
     pub(crate) async fn get_json<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -303,8 +470,13 @@ impl Client {
     }
 
     /// The cookie pair and the mutation key, for the terminal socket's handshake (term.rs) only.
-    pub(crate) fn creds_for_socket(&self) -> (&str, &str) {
-        (self.creds.cookie.as_str(), self.creds.key.as_str())
+    pub(crate) fn creds_for_socket(&self) -> Result<(&str, &str), ApiError> {
+        match &*self.auth {
+            ClientAuth::Local(c) => Ok((c.cookie.as_str(), c.key.as_str())),
+            ClientAuth::Remote(_) => Err(ApiError::Refused(
+                "Interactive build terminals are local-only for now.".into(),
+            )),
+        }
     }
 
     /// A form POST like `act`, whose JSON answer the caller reads itself (any status but an ended session).
@@ -313,7 +485,8 @@ impl Client {
         path: &str,
         fields: &[(&str, &str)],
     ) -> Result<String, ApiError> {
-        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        let creds = self.local_creds()?;
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
         for (k, v) in fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -323,11 +496,11 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
+            .header("cookie", creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-key", creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(60))
@@ -371,10 +544,26 @@ impl Client {
         let mut req = self
             .http
             .get(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "application/json");
-        if keyed {
-            req = req.header("x-toolroll-key", self.creds.key.as_str());
+        match &*self.auth {
+            ClientAuth::Local(creds) => {
+                req = req.header("cookie", creds.cookie.as_str());
+                if keyed {
+                    req = req.header("x-toolroll-key", creds.key.as_str());
+                }
+            }
+            ClientAuth::Remote(remote) => {
+                if keyed {
+                    return Err(ApiError::Refused(
+                        "Approvals open in your browser — press w.".into(),
+                    ));
+                }
+                req = req
+                    .header("authorization", remote.bearer.as_str())
+                    .header("x-toolroll-client", "terminal-remote")
+                    .header("x-toolroll-workspace", remote.workspace_id.as_str())
+                    .header("x-toolroll-recovery", remote.recovery_generation.as_str());
+            }
         }
         let res = req
             .timeout(Duration::from_secs(30))
@@ -393,6 +582,14 @@ impl Client {
             .await
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;
         if status != 200 {
+            if let Ok(code) = parse_connection_refusal(&text) {
+                return Err(match code {
+                    ConnectionRefusal::Unauthenticated
+                    | ConnectionRefusal::RecoveryChanged
+                    | ConnectionRefusal::WorkspaceMismatch => ApiError::SessionEnded,
+                    other => ApiError::Refused(format!("Couldn't read {what} ({other:?}).")),
+                });
+            }
             let word = serde_json::from_str::<Refusal>(&text)
                 .map(|r| r.error)
                 .unwrap_or_else(|_| format!("status {status}"));
@@ -492,8 +689,13 @@ impl Client {
         if confirm_yes {
             fields.push(("confirm", "yes"));
         }
+        let creds = match self.local_creds() {
+            Ok(c) => c,
+            Err(ApiError::Refused(words)) => return Ok(ProposalActOutcome::Refused(words)),
+            Err(e) => return Err(e),
+        };
         let path = format!("/chat/proposal/{id}/{op}");
-        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
         for (k, v) in &fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -503,11 +705,11 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
+            .header("cookie", creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-key", creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(30))
@@ -700,14 +902,91 @@ impl Client {
         )
     }
 
-    /// One act: the browser's form POST to `path` (the form token added), answered in place.
+    /// Execute a supported remote TUI command via `POST /api/cli` using the remote API token.
+    pub async fn remote_cli(
+        &self,
+        command_name: &str,
+        argv: &[String],
+        done: &str,
+    ) -> Result<ActOutcome, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Remote CLI transport is only used in remote mode.".into(),
+                ))
+            }
+        };
+        if !remote.capabilities.can_act() {
+            return Ok(ActOutcome::Refused(
+                "This remote connection is read-only. Use an act token to make changes.".into(),
+            ));
+        }
+        if !remote.capabilities.has_command(command_name) {
+            return Ok(ActOutcome::Refused(
+                "Open this task in the browser (press w) for this action.".into(),
+            ));
+        }
+        let payload = serde_json::json!({ "argv": argv, "files": [] });
+        let res = self
+            .http
+            .post(format!("{}/api/cli", self.origin))
+            .header("authorization", remote.bearer.as_str())
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .timeout(Duration::from_secs(30))
+            .body(payload.to_string())
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        let text = res.text().await.unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let exit = v["exit"].as_i64().unwrap_or(if status < 300 { 0 } else { 1 });
+            let out = v["stdout"].as_str().unwrap_or("").trim();
+            let err = v["stderr"].as_str().unwrap_or("").trim();
+            let msg = v["message"].as_str().or_else(|| v["error"].as_str()).unwrap_or("").trim();
+            if status < 300 && exit == 0 {
+                let words = if !out.is_empty() {
+                    out.lines().next().unwrap_or(done).to_string()
+                } else {
+                    done.to_string()
+                };
+                return Ok(ActOutcome::Done(words));
+            }
+            let reason = if !err.is_empty() {
+                err.lines().next().unwrap_or(err).to_string()
+            } else if !msg.is_empty() {
+                msg.to_string()
+            } else if !out.is_empty() {
+                out.lines().next().unwrap_or(out).to_string()
+            } else {
+                format!("Remote server refused the command (status {status}).")
+            };
+            return Ok(ActOutcome::Refused(reason));
+        }
+        Ok(if status < 300 {
+            ActOutcome::Done(done.to_string())
+        } else {
+            ActOutcome::Refused(format!("Remote server answered status {status}."))
+        })
+    }
+
+    /// One act: in local mode, the browser's form POST to `path`; in remote mode, translated to `POST /api/cli`.
     pub async fn act(
         &self,
         path: &str,
         fields: &[(&str, &str)],
         done: &str,
     ) -> Result<ActOutcome, ApiError> {
-        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        if self.is_remote() {
+            return self.act_remote(path, fields, done).await;
+        }
+        let creds = self.local_creds()?;
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
         for (k, v) in fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -717,11 +996,11 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
+            .header("cookie", creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-key", creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(30))
@@ -890,6 +1169,85 @@ impl Client {
         })
     }
 
+    async fn act_remote(
+        &self,
+        path: &str,
+        fields: &[(&str, &str)],
+        done: &str,
+    ) -> Result<ActOutcome, ApiError> {
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.trim())
+                .filter(|v| !v.is_empty())
+        };
+        if path == "/tasks/add" {
+            let Some(title) = field("title") else {
+                return Ok(ActOutcome::Refused("Enter a task title.".into()));
+            };
+            let mut argv = vec!["task".into(), "add".into(), title.into()];
+            if let Some(repo) = field("repo") {
+                argv.push("--repo".into());
+                argv.push(repo.into());
+            }
+            if let Some(body) = field("body") {
+                argv.push("--body".into());
+                argv.push(body.into());
+            }
+            return self.remote_cli("task add", &argv, done).await;
+        }
+        if let Some(rest) = path.strip_prefix("/t/") {
+            if let Some((task, op)) = rest.split_once('/') {
+                let task = percent_decode_simple(task);
+                match op {
+                    "steer" => {
+                        let Some(msg) = field("message").or_else(|| field("text")) else {
+                            return Ok(ActOutcome::Refused("Enter steering notes.".into()));
+                        };
+                        let argv = vec!["task".into(), "steer".into(), task, msg.into()];
+                        return self.remote_cli("task steer", &argv, done).await;
+                    }
+                    "complete" => {
+                        let argv = vec!["task".into(), "complete".into(), task];
+                        return self.remote_cli("task complete", &argv, done).await;
+                    }
+                    "revise" => {
+                        let Some(msg) = field("feedback").or_else(|| field("message")) else {
+                            return Ok(ActOutcome::Refused("Enter revision notes.".into()));
+                        };
+                        let argv = vec!["task".into(), "revise".into(), task, msg.into()];
+                        return self.remote_cli("task revise", &argv, done).await;
+                    }
+                    "stop" | "cancel" => {
+                        let argv = vec!["task".into(), "stop".into(), task];
+                        return self.remote_cli("task stop", &argv, done).await;
+                    }
+                    "resume" => {
+                        let argv = vec!["task".into(), "resume".into(), task];
+                        return self.remote_cli("task resume", &argv, done).await;
+                    }
+                    "hold" => {
+                        let argv = vec!["task".into(), "hold".into(), task];
+                        return self.remote_cli("task hold", &argv, done).await;
+                    }
+                    "unhold" => {
+                        let argv = vec!["task".into(), "unhold".into(), task];
+                        return self.remote_cli("task unhold", &argv, done).await;
+                    }
+                    "requeue" => {
+                        let argv = vec!["task".into(), "requeue".into(), task];
+                        return self.remote_cli("task requeue", &argv, done).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(ActOutcome::Refused(
+            "Open this task in the browser (press w) for approvals and local-only actions.".into(),
+        ))
+    }
+
     /// `GET /live` for these rooms: signals until the stream ends (then `Ended`).
     pub async fn live(
         &self,
@@ -900,12 +1258,24 @@ impl Client {
             .iter()
             .map(|r| format!("room={}", encode(r)))
             .collect();
-        let res = self
+        let mut req = self
             .http
             .get(format!("{}/live?{}", self.origin, query.join("&")))
-            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "text/event-stream")
-            .header("x-toolroll-live", "1")
+            .header("x-toolroll-live", "1");
+        match &*self.auth {
+            ClientAuth::Local(creds) => {
+                req = req.header("cookie", creds.cookie.as_str());
+            }
+            ClientAuth::Remote(remote) => {
+                req = req
+                    .header("authorization", remote.bearer.as_str())
+                    .header("x-toolroll-client", "terminal-remote")
+                    .header("x-toolroll-workspace", remote.workspace_id.as_str())
+                    .header("x-toolroll-recovery", remote.recovery_generation.as_str());
+            }
+        }
+        let res = req
             .send()
             .await
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;

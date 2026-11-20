@@ -261,7 +261,7 @@ impl Client {
                 .map_err(|_| ApiError::Contract("A sign-in value can't be sent.".into()))
         };
         {
-            let creds = self.creds_for_socket();
+            let creds = self.creds_for_socket()?;
             let headers = request.headers_mut();
             headers.insert("origin", header(self.origin())?);
             headers.insert("cookie", header(creds.0)?);

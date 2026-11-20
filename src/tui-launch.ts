@@ -59,8 +59,8 @@ import { trustedBinary } from "./trusted-path.js";
 export { aclVerdictOf, trustedBinary, type AclVerdict } from "./trusted-path.js";
 import { isTuiPage, type TuiExit, type TuiSession } from "./tui-contract.js";
 
-/** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_*). */
-export const TUI_EXIT = { leave: 0, ended: 1, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
+/** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_* and bootstrap.rs). */
+export const TUI_EXIT = { leave: 0, ended: 1, stop: 40, keep: 41, classic: 42, unprotected: 43, centralUnavailable: 44 } as const;
 /** Platforms with a terminal workbench build (scripts/tui-build.mjs PLATFORMS): its optional package's name. The same
  * keys name the bundled binary's folder, dist/tui/<key>/toolroll-tui. */
 export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
@@ -281,7 +281,34 @@ export type TuiRunInput = {
  * file that was checked any more, so it was never started). */
 /** `ended`: the screen's session was signed out under it (a password set, a sign-out elsewhere, local mode turned off):
  * its cause is never claimed, only that it happened. */
-export type TuiRunEnd = TuiExit | "classic" | "changed" | "ended";
+export type TuiRunEnd = TuiExit | "classic" | "changed" | "ended" | "central-unavailable";
+
+/** Build the strict structured JSON payload written over protected FD 3 to `toolroll-tui` for central mode. */
+export function formatCentralBootstrapPayload(input: {
+  origin: string;
+  workspaceId: string;
+  recoveryGeneration: string;
+  account: string;
+  token: string;
+}): string {
+  const payload = JSON.stringify({
+    bootstrap: 1,
+    kind: "central-token",
+    connectionProtocol: 1,
+    origin: input.origin,
+    binding: {
+      kind: "enrolled-person",
+      workspaceId: input.workspaceId,
+      recoveryGeneration: input.recoveryGeneration,
+      account: input.account,
+    },
+    token: input.token,
+  });
+  if (payload.includes("\\")) {
+    throw new Error("Central bootstrap payload contains characters that require escaping.");
+  }
+  return payload;
+}
 
 /** Run the binary until it ends, signals forwarded, its asks answered. */
 export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
@@ -364,6 +391,7 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
   if (code === TUI_EXIT.stop) return "stop";
   if (code === TUI_EXIT.keep) return "keep";
   if (code === TUI_EXIT.ended) return "ended";
+  if (code === TUI_EXIT.centralUnavailable) return "central-unavailable";
   if (code === TUI_EXIT.classic || code === TUI_EXIT.unprotected || code === -1) return "classic";
   return "leave";
 }

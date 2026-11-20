@@ -38,10 +38,13 @@ fn legacy_plain_link_and_first_line_trim_behavior_are_preserved() {
 }
 
 #[test]
-fn valid_central_input_drops_the_token_and_returns_only_unavailable() {
+fn valid_central_input_yields_redacted_central_token_bootstrap() {
     let parsed = central(&fixture()).unwrap().unwrap();
-    assert!(matches!(parsed, Bootstrap::CentralUnavailable));
-    assert_eq!(format!("{parsed:?}"), "Bootstrap::CentralUnavailable");
+    assert!(matches!(parsed, Bootstrap::CentralToken(_)));
+    let shown = format!("{parsed:?}");
+    assert_eq!(shown, "Bootstrap::CentralToken(<held>)");
+    assert!(!shown.contains("so_"));
+    assert!(!shown.contains("alice"));
     let local = bootstrap::parse(LOCAL).unwrap().unwrap();
     assert!(!format!("{local:?}").contains("login/once"));
 }
@@ -269,7 +272,7 @@ mod native {
     use std::path::PathBuf;
     use std::process::{Child, Command, Output, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use toolroll_tui::bootstrap::{CENTRAL_UNAVAILABLE, EXIT_CENTRAL_UNAVAILABLE};
+    use toolroll_tui::bootstrap::EXIT_CENTRAL_UNAVAILABLE;
     use toolroll_tui::guard::READY_LINE;
 
     const BIN: &str = env!("CARGO_BIN_EXE_toolroll-tui");
@@ -363,25 +366,19 @@ mod native {
     }
 
     #[test]
-    fn actual_central_start_exits_unavailable_without_redeeming_network_or_entering_ui() {
+    fn actual_central_start_with_unreachable_origin_exits_unavailable_without_local_fallback() {
         let trap = TcpListener::bind("127.0.0.1:0").unwrap();
-        trap.set_nonblocking(true).unwrap();
+        let port = trap.local_addr().unwrap().port();
+        drop(trap);
         let mut value = fixture();
-        value["origin"] = json!(format!(
-            "https://127.0.0.1:{}",
-            trap.local_addr().unwrap().port()
-        ));
+        value["origin"] = json!(format!("https://127.0.0.1:{port}"));
         let (output, root) = run(value.to_string().as_bytes());
         assert_eq!(output.status.code(), Some(EXIT_CENTRAL_UNAVAILABLE));
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap().trim(),
-            CENTRAL_UNAVAILABLE
-        );
+        let err = String::from_utf8(output.stderr).unwrap();
+        assert!(err.contains("Couldn't connect to central workspace"), "{err}");
+        assert!(!err.contains("so_"));
+        assert!(!err.contains("classic"));
         assert!(output.stdout.is_empty());
-        assert_eq!(
-            trap.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
         assert!(!root.join("config").exists());
         assert!(!root.join("state").exists());
     }

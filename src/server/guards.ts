@@ -79,11 +79,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   }
 
   const restricted = (): boolean => {
-    const actor = requestContext.getStore()?.actor;
-    return actor !== undefined && runtime.store.accountOf(actor)?.projects !== null;
+    const facts = requestContext.getStore(), actor = facts?.actor;
+    return actor !== undefined && (runtime.store.accountOf(actor)?.projects !== null || (facts?.tokenProjects !== undefined && facts.tokenProjects !== null));
   };
   const visible = (repo: string | null): boolean => {
-    const actor = requestContext.getStore()?.actor;
+    const facts = requestContext.getStore(), actor = facts?.actor, tp = facts?.tokenProjects;
+    if (tp !== undefined && tp !== null && (repo === null || !tp.includes(repo))) return false;
     return rowVisible(runtime.liveCeiling(), repo) && (actor === undefined || runtime.store.accountCanAccess(actor, repo));
   };
   function codingProjectAllowed(repo: string): boolean { return runtime.codingProjects().includes(repo); }
@@ -91,7 +92,17 @@ export function createSharedGuards(runtime: GuardsRuntime) {
    * enumerate themselves; root ceilings enumerate the STORED repos that
    * pass the ceiling (Codex roll-up review, finding 11); unscoped = null. */
   const admissionList = (): string[] | null =>
-    restricted() ? [...(runtime.store.accountOf(requestContext.getStore()!.actor!)?.projects ?? [])].filter(visibleNow()) : runtime.unscopedMode
+    restricted()
+      ? (() => {
+        const facts = requestContext.getStore()!;
+        const accountProjects = runtime.store.accountOf(facts.actor!)?.projects ?? null;
+        const tp = facts.tokenProjects ?? null;
+        const base = tp !== null
+          ? (accountProjects === null ? [...tp] : tp.filter(repo => accountProjects.includes(repo)))
+          : [...(accountProjects ?? [])];
+        return base.filter(visibleNow());
+      })()
+      : runtime.unscopedMode
       ? null
       : [...new Set([...runtime.managedRepos(), ...(runtime.ceiling.roots.length === 0 ? [] : runtime.store.knownRepos().filter(visibleNow()))])];
   /** The task behind a resource, for the ceiling check; null = no ref (visible). */
@@ -243,6 +254,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     if (source === 'form-path' && project !== null && !visible(project)) {
       refuse(response, who, 403, "that project is outside this console's reach", "/projects"); return false;
     }
+    if (route?.id === 'engine.chat' && request.method === 'GET' && who.via === 'bearer' && who.principal !== undefined) return true;
     // Shared coordination has its own complete audience/project admission.
     // A person's open-project filter does not deny an explicitly scoped room.
     if (route?.limited === 'conversation' && request.method === 'GET' && who.via === 'cookie' && url.searchParams.get('private') !== '1' && ((!url.searchParams.has('task') && !url.searchParams.has('result')) || url.searchParams.has('conversation'))) {

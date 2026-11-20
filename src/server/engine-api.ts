@@ -43,6 +43,9 @@ import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
 import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import { leadChatOf } from "../engine-chat.js";
+import { remoteAllows } from "../operate-remote.js";
+import { verifyApproverStanding } from "../principal.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest, sendTerminalConnectionRefusal } from "../terminal-connection.js";
 import { leadNameOf } from "../lead-identity.js";
 import { NOT_STARTED_SESSION } from "./render-chat.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
@@ -70,21 +73,31 @@ export type RunLiveRead = { ok: false } | { ok: true; run: Run; window: MainWind
  * saved browser session still held (not just the cookie) and the run in view from its current row, before the read and
  * again after it, before a byte is sent; only this computer's runs have a file to read.
  */
-export function readRunLive(runtime: Pick<ServerRuntime, "identify" | "sessions" | "store" | "taskRepoOf" | "runVisible" | "options" | "evidenceRoot">,
-  request: IncomingMessage, who: Who & { via: "cookie" }, runId: number, file: "main" | "sub", cursor: string | null, key: Buffer): RunLiveRead {
+export function readRunLive(runtime: Pick<ServerRuntime, "identify" | "sessions" | "store" | "taskRepoOf" | "runVisible" | "options" | "evidenceRoot"> & { clock?: () => Date },
+  request: IncomingMessage, who: Who, runId: number, file: "main" | "sub", cursor: string | null, key: Buffer): RunLiveRead {
   const { store, options } = runtime;
+  const clock = runtime.clock ?? (() => new Date());
   const allowed = (): boolean => {
-    if (rereadBrowser(runtime, request, who) === null) return false;
-    const run = store.getRun(runId);
-    const repo = run === null ? null : runtime.taskRepoOf(run.taskRef);
-    return run !== null && repo !== null && runtime.runVisible(run) && store.accountCanAccess(who.name, repo);
+    if (who.via === "cookie") {
+      if (rereadBrowser(runtime, request, who) === null) return false;
+      const run = store.getRun(runId);
+      const repo = run === null ? null : runtime.taskRepoOf(run.taskRef);
+      return run !== null && repo !== null && runtime.runVisible(run) && store.accountCanAccess(who.name, repo);
+    }
+    if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
+      if (!admitRemoteTerminalRequest(request, store, who.principal, clock).ok) return false;
+      const run = store.getRun(runId);
+      const repo = run === null ? null : runtime.taskRepoOf(run.taskRef);
+      return run !== null && repo !== null && runtime.runVisible(run) && remoteAllows(store, who.principal, repo);
+    }
+    return false;
   };
   if (!allowed()) return { ok: false };
   const local = () => options.localRunner !== undefined && store.getRun(runId)?.runner === options.localRunner;
   if (!local()) return allowed() ? { ok: true, run: store.getRun(runId)!, window: null } : { ok: false };
   const read = { key, commands: runLiveCommands(store, runId) };
   const window = file === "sub" ? readChildWindow(runtime.evidenceRoot, runId, cursor, read) : readMainWindow(runtime.evidenceRoot, runId, cursor, read);
-  // Re-proved after the read: a narrowed account or a run gone from view gets nothing it read.
+  // Re-proved after the read: a narrowed account, revoked token, or a run gone from view gets nothing it read.
   if (!allowed() || !local()) return { ok: false };
   return { ok: true, run: store.getRun(runId)!, window };
 }
@@ -141,15 +154,22 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null, threadsStatusNote(store, who.name)));
   }
 
-  /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */
+  /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions or admitted terminal-remote API tokens). */
   async function liveRun(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
-    if (who.via !== "cookie") return refusal(response, 403, "session");
+    const remote = who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request);
+    if (who.via !== "cookie" && !remote) return refusal(response, 403, "session");
     const query = liveQueryOf(url);
     if (query === null) return refusal(response, 400, "request");
     const runId = Number(url.pathname.slice("/agents/live/run/".length));
     const read = readRunLive(runtime, request, who, runId, query.file, query.cursor, cursorKey);
-    if (!read.ok) return refusal(response, 404, "run");
+    if (!read.ok) {
+      if (remote && who.via === "bearer" && who.principal !== undefined) {
+        const check = admitRemoteTerminalRequest(request, store, who.principal, clock);
+        if (!check.ok) return sendTerminalConnectionRefusal(request, response, check.status, check.error);
+      }
+      return refusal(response, 404, "run");
+    }
     const ref = store.refForId(read.run.taskRef);
     const body: LiveSessionWindow = {
       version: ENGINE_API_VERSION,
@@ -343,11 +363,17 @@ export function createEngineHandlers(runtime: ServerRuntime) {
 
   /** GET /t/<task>/steps: the task's step cards. */
   async function taskSteps(ctx: HandlerContext): Promise<void> {
-    const { url, response, who } = ctx;
+    const { url, request, response, who } = ctx;
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     const family = familyAt(url, "steps");
     if (family === null) return refusal(response, 404, "task");
-    return sendChecked(response, 200, "stepCards", stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name }));
+    const payload = stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name });
+    if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
+      const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);
+      if (familyAt(url, "steps") === null) return refusal(response, 404, "task");
+    }
+    return sendChecked(response, 200, "stepCards", payload);
   }
 
   /** GET /t/<task>/approval: the approval waiting on the task's current version, as its page's approval form carries it
@@ -379,7 +405,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   /** GET /t/<task>/diff[?run=<id>[&file=<n>[&from=<line>&count=<n>]]]: the result's files, one file's hunks (which needs
    * the run it is of), or at most DIFF_CONTEXT_MAX lines of that file around them (which need the file). */
   async function taskDiff(ctx: HandlerContext): Promise<void> {
-    const { url, response } = ctx;
+    const { url, request, response, who } = ctx;
     const params = url.searchParams, runParam = params.get("run"), fileParam = params.get("file"), fromParam = params.get("from"), countParam = params.get("count");
     if ([...params.keys()].some(key => key !== "run" && key !== "file" && key !== "from" && key !== "count")
       || ["run", "file", "from", "count"].some(key => params.getAll(key).length > 1)
@@ -395,13 +421,25 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const results = resultRunsOf(store, family).filter(run => runtime.runVisible(run));
     const run = runParam === null ? results[0] ?? null : results.find(one => one.id === Number(runParam)) ?? null;
     if (runParam !== null && run === null) return refusal(response, 404, "run");
-    if (fileParam === null) return sendChecked(response, 200, "resultDiff", resultDiffOf(store, evidenceRoot, family.root.id, run));
+    const remoteRecheck = (): boolean => {
+      if (!(who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request))) return true;
+      const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!after.ok) { sendTerminalConnectionRefusal(request, response, after.status, after.error); return false; }
+      if (familyAt(url, "diff") === null) { refusal(response, 404, "task"); return false; }
+      return true;
+    };
+    if (fileParam === null) {
+      const payload = resultDiffOf(store, evidenceRoot, family.root.id, run);
+      return remoteRecheck() ? sendChecked(response, 200, "resultDiff", payload) : undefined;
+    }
     if (fromParam !== null && countParam !== null) {
       // The project's repository as Toolroll records it for this run (never a path the checkout names).
       const context = resultDiffContextOf(store, evidenceRoot, family.root.id, run!, Number(fileParam), Number(fromParam), Number(countParam), runtime.taskRepoOf(run!.taskRef));
+      if (!remoteRecheck()) return;
       return context === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffContext", context);
     }
     const one = resultDiffFileOf(store, evidenceRoot, family.root.id, run!, Number(fileParam));
+    if (!remoteRecheck()) return;
     return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }
 
@@ -602,14 +640,19 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
-   * `/chat` is and re-proved before and after reading. Reads nothing for a revoked or narrowed session. */
+   * `/chat` is (or for an admitted `terminal-remote` approver API token) and re-proved before and after reading. */
   async function leadChat(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now } = ctx;
-    if (who.via !== "cookie") return refusal(response, 403, "session");
+    const remote = who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request);
+    if (who.via !== "cookie" && !remote) return refusal(response, 403, "session");
     const keys = [...url.searchParams.keys()];
     const projectValues = url.searchParams.getAll("project");
     if (keys.some(k => k !== "project") || projectValues.length > 1) return refusal(response, 400, "request");
-    if (rereadBrowser(runtime, request, who) === null) return refusal(response, 403, "session");
+    const proveCaller = (): boolean => {
+      if (who.via === "cookie") return rereadBrowser(runtime, request, who) !== null;
+      return who.principal !== undefined && admitRemoteTerminalRequest(request, store, who.principal, clock).ok;
+    };
+    if (!proveCaller()) return refusal(response, 403, "session");
     let chatProject: string | null = null;
     if (projectValues.length === 1 && projectValues[0] !== "") {
       const wanted = projectValues[0]!;
@@ -619,7 +662,16 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const room = chatProject === null ? "chat" : `chat?project=${encodeURIComponent(chatProject)}`;
     const leadName = leadNameOf(store, who.name);
     const enabled = runtime.chatEnablement();
-    const principal = who.role === "approver" ? runtime.leadPrincipal(who) : null;
+    const resolvePrincipal = () => {
+      if (who.via === "cookie") return who.role === "approver" ? runtime.leadPrincipal(who) : null;
+      if (who.principal === undefined) return null;
+      const account = store.accountOf(who.name);
+      if (account === null || account.role !== "approver") return null;
+      const allowedRepos = runtime.managedRepos().filter(repo => remoteAllows(store, who.principal!, repo));
+      const verified = verifyApproverStanding(store, who.name, who.generation, allowedRepos);
+      return verified.ok ? verified.who : null;
+    };
+    const principal = resolvePrincipal();
     if (!enabled.ok || principal === null) {
       const problem = !enabled.ok ? enabled.why : "Sign in as an approver to chat with the Lead.";
       return sendChecked(response, 200, "leadChat", {
@@ -644,17 +696,23 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       : found !== null && !ceilingStale && found.approverGeneration === principal.generation
         ? found.id
         : null;
-    const canSend = session !== null;
+    const canSend = !remote && session !== null;
     const rows = runtime.leadConversationRows(who, principal, null, now, chatProject);
-    // Re-proved after reading: a revoked session or changed standing receives nothing read.
-    if (rereadBrowser(runtime, request, who) === null || runtime.leadPrincipal(who) === null) {
+    // Re-proved after reading: a revoked session/token or changed standing receives nothing read.
+    if (!proveCaller() || resolvePrincipal() === null) {
+      if (remote && who.via === "bearer" && who.principal !== undefined) {
+        const check = admitRemoteTerminalRequest(request, store, who.principal, clock);
+        if (!check.ok) return sendTerminalConnectionRefusal(request, response, check.status, check.error);
+      }
       return refusal(response, 403, "session");
     }
-    const problem = ceilingStale
-      ? "Project access changed. Start a new conversation in the browser to continue."
-      : !canSend
-        ? "Start a Lead conversation in the browser first."
-        : notStarted ? null : rows.failure ?? null;
+    const problem = remote
+      ? "Remote Lead chat is read-only here — press w to open Lead in the browser."
+      : ceilingStale
+        ? "Project access changed. Start a new conversation in the browser to continue."
+        : !canSend
+          ? "Start a Lead conversation in the browser first."
+          : notStarted ? null : rows.failure ?? null;
     return sendChecked(response, 200, "leadChat", leadChatOf({
       room,
       session,

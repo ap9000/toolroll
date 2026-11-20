@@ -1120,6 +1120,8 @@ pub struct App {
     pub panes: crate::panes::Panes,
     /// The console's origin, for its own task links (link.rs).
     pub origin: Option<String>,
+    /// Remote central workspace indicator shown in the top bar (None in local mode).
+    pub remote_badge: Option<String>,
     /// Where the last run left off, until the first work list has been read (state.rs).
     pub restore: Option<crate::state::Resume>,
     restore_scroll: Option<(String, usize)>,
@@ -1306,6 +1308,7 @@ impl App {
             spend: None,
             panes: crate::panes::Panes::default(),
             origin: None,
+            remote_badge: None,
             restore: None,
             restore_scroll: None,
             restore_diff: None,

@@ -4,6 +4,8 @@
  * existing local sign-in for --local-login.
  */
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { savedLoginFile } from './login-secrets.js';
@@ -12,6 +14,8 @@ import { envelopeJson } from './envelope.js';
 import { databasePath } from './store.js';
 import { configBase, namedPath } from './names.js';
 import { parseApiToken } from './api-tokens.js';
+import { TERMINAL_CONNECTION_PROTOCOL, terminalConnectionSchema, type TerminalConnection } from './contracts/terminal-connection.js';
+import { RECOVERY_GENERATION_PATTERN, WORKSPACE_ID_PATTERN } from './workspace-identity-schema.js';
 import { deprecationWarning } from './deprecations.js';
 import { PASSWORD_PROFILE_WARNING } from './password-bearer.js';
 
@@ -34,7 +38,14 @@ export function serviceOrigin(raw: string): string {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))) throw new UsageError('The service origin requires HTTPS except for loopback HTTP.');
   return url.origin;
 }
-type Profile = { origin: string; account: string; token: string };
+type Profile = {
+  origin: string;
+  account: string;
+  token: string;
+  workspaceId?: string;
+  recoveryGeneration?: string;
+  label?: string;
+};
 type Profiles = { version: 1; active: string; profiles: Record<string, Profile> };
 type Flags = Record<string, string | true>;
 const value = (flags: Flags, name: string): string => typeof flags[name] === 'string' ? flags[name] as string : '';
@@ -68,6 +79,9 @@ function profiles(options: ConnectOptions): Profiles | null {
     if (!record(parsed) || parsed.version !== 1 || typeof parsed.active !== 'string' || !record(parsed.profiles)) throw new Error();
     for (const [name, one] of Object.entries(parsed.profiles)) {
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !record(one) || typeof one.origin !== 'string' || serviceOrigin(one.origin) !== one.origin || typeof one.account !== 'string' || !accountValid(one.account) || typeof one.token !== 'string' || !tokenValid(one.token)) throw new Error();
+      if (one.workspaceId !== undefined && (typeof one.workspaceId !== 'string' || !WORKSPACE_ID_PATTERN.test(one.workspaceId))) throw new Error();
+      if (one.recoveryGeneration !== undefined && (typeof one.recoveryGeneration !== 'string' || !RECOVERY_GENERATION_PATTERN.test(one.recoveryGeneration))) throw new Error();
+      if (one.label !== undefined && (typeof one.label !== 'string' || one.label.length === 0 || one.label.length > 200)) throw new Error();
     }
     if (!Object.hasOwn(parsed.profiles, parsed.active)) throw new Error();
     return parsed as Profiles;
@@ -99,13 +113,85 @@ export function hasCentralProfile(options: ConnectOptions): boolean {
   try { return profiles(options) !== null; } catch { return true; }
 }
 
-export function centralProfile(options: ConnectOptions, name?: string): { name: string; origin: string; account: string; token: string; apiToken: boolean } | null {
+export function centralProfile(options: ConnectOptions, name?: string): { name: string; origin: string; account: string; token: string; apiToken: boolean; workspaceId?: string; recoveryGeneration?: string; label?: string } | null {
   const saved = profiles(options);
   if (saved === null) return null;
   const chosen = name ?? saved.active;
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(chosen) || !Object.hasOwn(saved.profiles, chosen)) throw new UsageError(`No saved connection named ${chosen}. Use connect with your API token first.`);
   const profile = saved.profiles[chosen]!;
   return { name: chosen, ...profile, apiToken: parseApiToken(profile.token) !== null };
+}
+
+/** Probe `GET /engine/connection` for a person API token and validate its workspace/account metadata. */
+export async function probeTerminalConnection(
+  profile: Pick<Profile, 'origin' | 'account' | 'token'>,
+  options: ConnectOptions = {},
+): Promise<TerminalConnection | null> {
+  if (parseApiToken(profile.token) === null) return null;
+  try {
+    const headers = {
+      authorization: `Bearer ${profile.token}`,
+      'x-toolroll-client': 'terminal-remote',
+      accept: 'application/json',
+    };
+    let payload: unknown;
+    if (options.fetch !== undefined) {
+      const response = await options.fetch(`${profile.origin}/engine/connection`, {
+        method: 'GET',
+        redirect: 'manual',
+        credentials: 'omit',
+        signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+        headers,
+      });
+      if (response.status !== 200) { await response.body?.cancel(); return null; }
+      payload = await responseBody(response);
+    } else {
+      // Use node:http(s) directly so undici's browser-style `sec-fetch-mode` header is never attached.
+      const url = new URL('/engine/connection', profile.origin);
+      const reqFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
+      payload = await new Promise<unknown>((resolve, reject) => {
+        const req = reqFn(url, { method: 'GET', headers, timeout: 15_000 }, res => {
+          if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+          const chunks: Buffer[] = [];
+          let size = 0;
+          res.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > 64 * 1024) { req.destroy(); resolve(null); return; }
+            chunks.push(chunk);
+          });
+          res.on('end', () => {
+            try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+            catch { resolve(null); }
+          });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.end();
+      });
+    }
+    const parsed = terminalConnectionSchema.safeParse(payload);
+    if (!parsed.success || parsed.data.protocol !== TERMINAL_CONNECTION_PROTOCOL) return null;
+    if (parsed.data.principal.account !== profile.account) return null;
+    return parsed.data;
+  } catch { return null; }
+}
+
+/** Persist pinned workspace/recovery identity onto an existing saved profile. */
+export function saveCentralBinding(
+  options: ConnectOptions,
+  name: string,
+  binding: { workspaceId: string; recoveryGeneration: string; label: string },
+): void {
+  const existing = centralProfile(options, name);
+  if (existing === null) throw new UsageError(`No saved connection named ${name}.`);
+  saveProfile(options, name, {
+    origin: existing.origin,
+    account: existing.account,
+    token: existing.token,
+    workspaceId: binding.workspaceId,
+    recoveryGeneration: binding.recoveryGeneration,
+    label: binding.label,
+  });
 }
 
 async function stdinSecret(): Promise<string> {
@@ -201,10 +287,19 @@ export async function maybeRunConnectCommand(argv: readonly string[], write: (li
     } else secret = (flags['token-file'] ? privateFile(value(flags, 'token-file'), 8192) : await (options.readStdin ?? stdinSecret)()).trim();
     if (!accountValid(account) || !tokenValid(secret)) throw new UsageError('Provide an account name and a valid sign-in secret from your selected source.');
     if (parseApiToken(secret) === null) stderr(PASSWORD_PROFILE_WARNING);
-    const profile = { origin, account, token: secret }, checked = await verify(profile, options);
+    const profile: Profile = { origin, account, token: secret };
+    const connection = await probeTerminalConnection(profile, options);
+    if (connection !== null) {
+      profile.workspaceId = connection.workspace.id;
+      profile.recoveryGeneration = connection.workspace.recoveryGeneration;
+      profile.label = connection.workspace.label;
+    }
+    const checked = connection !== null
+      ? { version: 1 as const, ok: true, code: 'connected', message: `Connected to ${origin} as ${account}.` }
+      : await verify(profile, options);
     if (!checked.ok) { emit(checked); return 1; }
     saveProfile(options, profileName, profile);
-    emit({ version: 1, ok: true, code: 'connected', message: `Connected to ${origin} as ${account}.`, result: { profile: profileName, origin, account } }); return 0;
+    emit({ version: 1, ok: true, code: 'connected', message: `Connected to ${origin} as ${account}.`, result: { profile: profileName, origin, account, ...(profile.workspaceId === undefined ? {} : { workspaceId: profile.workspaceId }) } }); return 0;
   } catch (error) {
     const reply: ConnectReply = { version: 1, ok: false, code: 'usage', message: error instanceof UsageError ? error.message : 'The connection could not be prepared. Check the private profile and credential files.' };
     if (json) emit(reply); else stderr(text(reply.message)); return 2;
