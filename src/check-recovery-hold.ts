@@ -1,5 +1,6 @@
-/** CH0 representation/reader only. No writer, dispatch guard, retirement or native-stop proof.
- * Recognizing an event here has ZERO effect on existing executors. Do not enable recovery from this result. */
+/** Trusted recovery-hold evidence reader, never a writer or native-stop proof.
+ * Consumer guards own their admission checks; this result grants no execution,
+ * cancellation, retry, retirement support or complete recovery readiness. */
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Store } from "./store.js";
@@ -122,8 +123,7 @@ function result(kind: ReadCheckRecoveryHolds["kind"], reason: string, refs: read
   return Object.freeze({ kind, reason, familyRefs: Object.freeze([...refs]), holds: Object.freeze([...holds]),
     runtimeProtection: false, retirementSupported: false, nativeStopProof: false });
 }
-/** Snapshot reader only. No event -> no-evidence, NEVER permission to run.
- * Existing production code does not import this function or honor this event. */
+/** Snapshot reader only. No event -> no-evidence, NEVER permission to run. */
 export function readCheckRecoveryHoldsForRun(store: Store, runId: number): ReadCheckRecoveryHolds {
   if (!whole(runId)) return result("invalid-evidence", "invalid-run-id");
   try {
@@ -131,39 +131,7 @@ export function readCheckRecoveryHoldsForRun(store: Store, runId: number): ReadC
       const run = store.handle.prepare("SELECT task_ref FROM run WHERE id = ?").get(runId);
       const seed = run !== undefined && whole(run["task_ref"]) ? refOf(store.handle.prepare("SELECT * FROM task_ref WHERE id = ?").get(run["task_ref"])) : null;
       if (seed === null) return result("invalid-evidence", "missing-run-ref");
-      const found = family(store, seed);
-      if ("problem" in found) return result("invalid-evidence", found.problem);
-      const ids = found.refs.map(r => r.id), serialized = JSON.stringify(ids), names = JSON.stringify(found.refs.map(r => r.external_id));
-      // Current run linkage may have moved since the immutable ledger event. Discover
-      // recorded task/ref scopes too, then reject the changed binding below; never
-      // let a mutable run.task_ref move make its original family's hold disappear.
-      const events = store.handle.prepare(`SELECT h.* FROM action_ledger h WHERE h.action = ? AND
-        (h.run_id IN (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))
-          OR h.task_id IN (SELECT value FROM json_each(?))
-          OR (CASE WHEN json_valid(h.detail) THEN json_extract(h.detail, '$.r') ELSE NULL END) IN (SELECT value FROM json_each(?))
-          OR EXISTS (SELECT 1 FROM action_ledger q WHERE q.id = CAST(h.outcome AS INTEGER) AND CAST(q.id AS TEXT) = h.outcome AND
-            (q.task_id IN (SELECT value FROM json_each(?)) OR q.run_id IN
-              (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))))) ORDER BY h.id`)
-        .all(CHECK_RECOVERY_HELD, serialized, names, serialized, names, serialized);
-      const holds: ReadCheckRecoveryHolds["holds"][number][] = [];
-      for (const event of events) {
-        if (typeof event["outcome"] !== "string" || !/^[1-9][0-9]*$/.test(event["outcome"])) return result("invalid-evidence", "invalid-request-id", ids);
-        const requestId = Number(event["outcome"]), detail = parseCheckHoldDetail(event["detail"]);
-        if (!whole(requestId) || detail === null || !whole(event["id"]) || event["id"] <= requestId
-          || event["source"] !== "work" || event["actor"] !== "toolroll") return result("invalid-evidence", "invalid-hold-event", ids);
-        const q = store.handle.prepare("SELECT * FROM action_ledger WHERE id = ?").get(requestId);
-        if (q === undefined || !whole(q["run_id"])) return result("invalid-evidence", "missing-request", ids);
-        const actual = { id: q["id"], repo: q["repo"], runId: q["run_id"], taskId: q["task_id"], action: q["action"], outcome: q["outcome"], detail: q["detail"] };
-        const hashed = checkRequestDigest(actual);
-        const qrun = store.handle.prepare("SELECT task_ref FROM run WHERE id = ?").get(q["run_id"]);
-        const ref = found.refs.find(r => r.id === qrun?.["task_ref"]);
-        if (hashed === null || hashed !== detail.q || ref === undefined || detail.r !== ref.id || ref.repo !== q["repo"] || ref.external_id !== q["task_id"]
-          || event["run_id"] !== q["run_id"] || event["repo"] !== q["repo"] || event["task_id"] !== q["task_id"])
-          return result("invalid-evidence", "hold-binding-mismatch", ids);
-        holds.push(Object.freeze({ event: event["id"], request: requestId, run: q["run_id"], taskRef: ref.id, repo: ref.repo,
-          recoveryGeneration: detail.g, admission: "blocked", priorExecution: "unverified" }));
-      }
-      return result(holds.length === 0 ? "no-evidence" : "held-evidence", holds.length === 0 ? "no-hold-evidence" : "recognized-only-not-enforced", ids, holds);
+      return readCheckRecoveryHoldsAtRef(store, seed.id);
     });
   } catch { return result("invalid-evidence", "unreadable-evidence"); }
 }
@@ -173,4 +141,49 @@ export function readCheckRecoveryHoldsForRun(store: Store, runId: number): ReadC
 function readSnapshot<T>(store: Store, body: () => T): T {
   store.handle.exec("SAVEPOINT ch0_check_hold_read");
   try { return body(); } finally { store.handle.exec("RELEASE SAVEPOINT ch0_check_hold_read"); }
+}
+
+/** Resolve the complete trusted family from its actual task_ref, even if every
+ * former run was rebound elsewhere. Callers cannot supply a narrowed family. */
+export function readCheckRecoveryHoldsForTaskRef(store: Store, taskRefId: number): ReadCheckRecoveryHolds {
+  if (!whole(taskRefId)) return result("invalid-evidence", "invalid-task-ref");
+  try { return readSnapshot(store, () => readCheckRecoveryHoldsAtRef(store, taskRefId)); }
+  catch { return result("invalid-evidence", "unreadable-evidence"); }
+}
+function readCheckRecoveryHoldsAtRef(store: Store, taskRefId: number): ReadCheckRecoveryHolds {
+  const seed = refOf(store.handle.prepare("SELECT * FROM task_ref WHERE id = ?").get(taskRefId));
+  if (seed === null) return result("invalid-evidence", "missing-task-ref");
+  const found = family(store, seed);
+  if ("problem" in found) return result("invalid-evidence", found.problem);
+  const ids = found.refs.map(r => r.id), serialized = JSON.stringify(ids), names = JSON.stringify(found.refs.map(r => r.external_id));
+  // Current run linkage may have moved since the immutable ledger event. Discover
+  // recorded task/ref scopes too, then reject the changed binding below; never
+  // let a mutable run.task_ref move make its original family's hold disappear.
+  const events = store.handle.prepare(`SELECT h.* FROM action_ledger h WHERE h.action = ? AND
+    (h.run_id IN (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))
+      OR h.task_id IN (SELECT value FROM json_each(?))
+      OR (CASE WHEN json_valid(h.detail) THEN json_extract(h.detail, '$.r') ELSE NULL END) IN (SELECT value FROM json_each(?))
+      OR EXISTS (SELECT 1 FROM action_ledger q WHERE q.id = CAST(h.outcome AS INTEGER) AND CAST(q.id AS TEXT) = h.outcome AND
+        (q.task_id IN (SELECT value FROM json_each(?)) OR q.run_id IN
+          (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))))) ORDER BY h.id`)
+    .all(CHECK_RECOVERY_HELD, serialized, names, serialized, names, serialized);
+  const holds: ReadCheckRecoveryHolds["holds"][number][] = [];
+  for (const event of events) {
+    if (typeof event["outcome"] !== "string" || !/^[1-9][0-9]*$/.test(event["outcome"])) return result("invalid-evidence", "invalid-request-id", ids);
+    const requestId = Number(event["outcome"]), detail = parseCheckHoldDetail(event["detail"]);
+    if (!whole(requestId) || detail === null || !whole(event["id"]) || event["id"] <= requestId
+      || event["source"] !== "work" || event["actor"] !== "toolroll") return result("invalid-evidence", "invalid-hold-event", ids);
+    const q = store.handle.prepare("SELECT * FROM action_ledger WHERE id = ?").get(requestId);
+    if (q === undefined || !whole(q["run_id"])) return result("invalid-evidence", "missing-request", ids);
+    const actual = { id: q["id"], repo: q["repo"], runId: q["run_id"], taskId: q["task_id"], action: q["action"], outcome: q["outcome"], detail: q["detail"] };
+    const hashed = checkRequestDigest(actual);
+    const qrun = store.handle.prepare("SELECT task_ref FROM run WHERE id = ?").get(q["run_id"]);
+    const ref = found.refs.find(r => r.id === qrun?.["task_ref"]);
+    if (hashed === null || hashed !== detail.q || ref === undefined || detail.r !== ref.id || ref.repo !== q["repo"] || ref.external_id !== q["task_id"]
+      || event["run_id"] !== q["run_id"] || event["repo"] !== q["repo"] || event["task_id"] !== q["task_id"])
+      return result("invalid-evidence", "hold-binding-mismatch", ids);
+    holds.push(Object.freeze({ event: event["id"], request: requestId, run: q["run_id"], taskRef: ref.id, repo: ref.repo,
+      recoveryGeneration: detail.g, admission: "blocked", priorExecution: "unverified" }));
+  }
+  return result(holds.length === 0 ? "no-evidence" : "held-evidence", holds.length === 0 ? "no-hold-evidence" : "recognized-only-not-enforced", ids, holds);
 }

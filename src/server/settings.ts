@@ -126,7 +126,7 @@ import { advancedShownNow } from "../advanced-view.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml,type ProjectSettingsView } from "../project-delete-ui.js";
 import { endHoldout,setCodeMapSwitch,type MapDoor } from "../code-map-acts.js";
-import { deleteProject,holdingsWords } from "../project-delete.js";
+import { deleteProject,holdingsWords,PROJECT_RECOVERY_DELETE_MESSAGE } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
 import { changeLearning } from "../project-learning.js";
 import { listDecisions,recordDecision,retireDecision,searchMemory } from "../project-memory.js";
@@ -994,6 +994,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if ((body.get("name") ?? "").trim() !== view.name) return back("problem", `Type ${view.name} exactly to delete it.`);
     const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, settingsSubPage("projects", `Delete ${view.name}?`, html`<p class="k-note"><a class="k-link" href="/settings/project?repo=${encodeURIComponent(repo)}">Back to ${view.name}, and delete nothing</a></p>${projectDeleteConfirmHtml(view, problem)}`),
       { chrome: chromeFor(repo, "settings"), forceSensitive: true }));
+    if (view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)) return back("problem", PROJECT_RECOVERY_DELETE_MESSAGE);
     if (view.running.length > 0) return back("problem", `Nothing was deleted: ${view.running.join(", ")}. Stop it, then try again.`);
     if (body.get("step") !== "delete") return confirm(null);
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return confirm("That password didn't match. Nothing was deleted.");

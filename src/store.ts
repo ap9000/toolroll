@@ -1,3 +1,4 @@
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
 import { verifyResultImage } from "./chat-evidence.js";
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 import { agentSaidTail } from "./agent-said.js";
@@ -2466,7 +2467,7 @@ export const BUILT_IN = "built-in";
 
 export type TaskState = "queued" | "running" | "done" | "failed" | "cancelled";
 
-type CancellationRefusal = "reason-required" | "bad-reason";
+type CancellationRefusal = "reason-required" | "bad-reason" | "recovery-held";
 type CancellationTransition = { changed: boolean; reason?: never } | { changed: false; reason: CancellationRefusal };
 
 export type Task = {
@@ -8037,6 +8038,14 @@ export class Store {
     const ref = this.db
       .prepare("SELECT id, coordinator_cid FROM task_ref WHERE backend = ? AND external_id = ?")
       .get(BUILT_IN, taskId);
+    if (replacedBy !== undefined && this.db.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) !== undefined) {
+      const successor = this.lookupRef(replacedBy);
+      // Existing tasks without their binding are damaged trusted state, not an absent prospective successor.
+      if ((ref === undefined && this.getTask(taskId) !== null) || (successor === null && this.getTask(replacedBy) !== null))
+        return { changed: false, reason: "recovery-held" };
+      const refs = [...(ref === undefined ? [] : [Number(ref["id"])]), ...(successor === null ? [] : [successor.id])];
+      if (unresolvedRecoveryCheckFamily(this, refs) !== null) return { changed: false, reason: "recovery-held" };
+    }
     const coordinator = ref?.["coordinator_cid"] != null;
     // Check the authoritative linkage and the reason in the transaction
     // that changes state. No wrapper can substitute a generic dismissal.
@@ -26679,7 +26688,7 @@ export function dropFeedbackImage(store: Store, runId: number, commentId: number
 export type TaskArchive = { taskRef: number; taskId: string; by: string; byKind: "person" | "tidy"; rule: string | null; reason: string; at: string };
 /** Who put a task away, and why: a person by name, or tidy by its rule. */
 export type ArchiveBy = { by: string; byKind: "person" | "tidy"; rule: string | null; reason: string };
-export type ArchiveRefusal = "unknown-task" | "live" | "archived" | "not-archived" | "blocked";
+export type ArchiveRefusal = "unknown-task" | "live" | "archived" | "not-archived" | "blocked" | "recovery-held";
 
 /** The put-away record of this task, or null when it is not put away. */
 export function archiveOf(store: Store, taskId: string): TaskArchive | null {
@@ -26703,6 +26712,8 @@ export function taskFamilyRefs(store: Store, taskId: string): { id: number; task
  * firing, or a person's merge between its last check and GitHub's answer). */
 export function liveFamilyAttempt(store: Store, refs: readonly number[], now: Date): string | null {
   if (refs.length === 0) return null;
+  const recovery = unresolvedRecoveryCheckFamily(store, refs);
+  if (recovery !== null) return recovery;
   const row = store.handle.prepare(`SELECT r.external_id FROM task_ref r JOIN task t ON t.id = r.external_id
     WHERE r.id IN (SELECT value FROM json_each(?)) AND (t.state = 'running'
       OR EXISTS (SELECT 1 FROM claim c WHERE c.task_ref = r.id AND c.released_at IS NULL AND c.expires_at > ?
@@ -26740,6 +26751,9 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
     if (options.expect !== undefined && [...options.expect].sort((a, b) => a - b).join(",") !== refs.join(",")) {
       return { ok: false as const, reason: "blocked" as const, message: `${taskId}'s versions changed since the list was shown.` };
     }
+    const recovery = unresolvedRecoveryCheckFamily(store, refs);
+    if (recovery !== null) return { ok: false as const, reason: "recovery-held" as const,
+      message: "This task can't be put away while earlier check execution is unverified after recovery." };
     // Already put away, every version: nothing to do. A family a person revived with a new revision puts away the rest.
     const remaining = refs.filter(ref => !refArchived(store, ref));
     if (remaining.length === 0) return { ok: false as const, reason: "archived" as const, message: `${taskId} is already put away.` };
@@ -26747,6 +26761,8 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
     if (live !== null) return { ok: false as const, reason: "live" as const, message: `${taskId} still has work going on. Stop it or let it finish, then put it away.` };
     const blocked = options.guard?.(refs) ?? null;
     if (blocked !== null) return { ok: false as const, reason: "blocked" as const, message: blocked };
+    if (unresolvedRecoveryCheckFamily(store, refs) !== null) return { ok: false as const, reason: "recovery-held" as const,
+      message: "This task can't be put away while earlier check execution is unverified after recovery." };
     const reason = by.reason.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300) || "Put away";
     const at = now.toISOString();
     const insert = store.handle.prepare("INSERT INTO task_archive (task_ref, by, by_kind, rule, reason, at) VALUES (?, ?, ?, ?, ?, ?)");
@@ -28071,6 +28087,20 @@ function checkRecoveryIndexShapeProblem(db: Database, required = true): string |
   if (row === undefined || row["type"] !== "index" || row["tbl_name"] !== "action_ledger"
     || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(V178_SCHEMA.replace(/;$/, ""))) {
     return "the action ledger action index is missing or has an unknown shape";
+  }
+  return null;
+}
+
+/** Independent unresolved-check custody: a later finish or moved run cannot clear
+ * immutable hold evidence. Never interprets a hold as an active/stopped native process. */
+function unresolvedRecoveryCheckFamily(store: Store, refs: readonly number[]): string | null {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  const covered = new Set<number>();
+  for (const ref of refs) {
+    if (covered.has(ref)) continue;
+    const evidence = readCheckRecoveryHoldsForTaskRef(store, ref);
+    if (evidence.kind !== "no-evidence") return store.externalIdFor(ref) ?? "Unknown task";
+    for (const member of evidence.familyRefs) covered.add(member);
   }
   return null;
 }

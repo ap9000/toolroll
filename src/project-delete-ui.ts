@@ -12,7 +12,7 @@ import type { ProjectNetwork } from "./egress.js";
 import type { WritesMode } from "./writes-mode.js";
 import { CHECK_ACCESS_WARNINGS, signInHostsMissing, type CheckAccess } from "./check-access.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
-import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
+import { holdingsWords, PROJECT_RECOVERY_DELETE_MESSAGE, type ProjectHoldings } from "./project-delete.js";
 import { acts, btn, codeLine, disclose, formRow, infoLine, input, note, notice, radios, settingsSection, switchInput, textarea } from "./server/kit.js";
 import { kitSectionForm } from "./settings-kit.js";
 import { flexibleSettingsHtml } from "./flexible-ui.js";
@@ -258,7 +258,8 @@ function codeMapHtml(view: ProjectSettingsView): Html {
 }
 
 export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: string | null; problem?: string | null }): Html {
-  const answer = said.problem ? notice(said.problem) : said.said ? infoLine(said.said) : "";
+  const recoveryShownBelow = view.canDelete && view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE) && said.problem === PROJECT_RECOVERY_DELETE_MESSAGE;
+  const answer = said.problem && !recoveryShownBelow ? notice(said.problem) : said.said ? infoLine(said.said) : "";
   const project = settingsSection({ id: "project", title: view.name, lead: mono(view.repo),
     body: joinHtml([
       note(`Toolroll holds ${holdingsWords(view.holdings)} for this project.`),
@@ -271,7 +272,9 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
   const settings = joinHtml([flexibleSettingsHtml(view.flexible), buildsHtml(view), accessHtml(view), networkHtml(view), advanced || (view.fallback?.setting ?? null) !== null ? fallbackHtml(view) : "",
     writesHtml(view), sandboxHtml(view), checkAccessHtml(view), advanced || view.liveView?.commands === true ? liveViewHtml(view) : "", advanced ? codeMapHtml(view) : ""]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
-  const deleteBody = view.running.length > 0
+  const deleteBody = view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)
+    ? notice(PROJECT_RECOVERY_DELETE_MESSAGE)
+    : view.running.length > 0
     ? notice(`Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.`)
     : joinHtml([note(`Removes everything Toolroll holds for ${view.name}. The repository and its own branches stay. There's no undo.`),
         postForm("/settings/project/delete", joinHtml([
