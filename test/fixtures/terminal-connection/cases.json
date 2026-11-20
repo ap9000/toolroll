@@ -1,0 +1,584 @@
+[
+  {
+    "name": "read-token-scaffold",
+    "valid": true,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "act-token-scaffold",
+    "valid": true,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "act",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "viewer-scaffold",
+    "valid": true,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "viewer",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "wrong-protocol",
+    "valid": false,
+    "value": {
+      "protocol": 2,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "uppercase-workspace",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "wrong-uuid-version",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-5aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "short-generation",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "nonhex-digest",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "wrong-engine",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 2,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "bad-date",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-02-30T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "no-millis",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "enabled-read",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": true,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "enabled-command",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [
+          "task add"
+        ],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "approval-act",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "terminal"
+      }
+    }
+  },
+  {
+    "name": "hidden-control",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice\u202e",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "unknown-nested",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll",
+        "extra": "x"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "unknown-root",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "read",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": false,
+        "stepCards": false,
+        "resultDiff": false,
+        "runLiveWindow": false,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [],
+        "approval": "browser"
+      },
+      "extra": "x"
+    }
+  }
+]

@@ -704,11 +704,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
     // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
-    "src/store.ts#enrollOwnerPassword@1173": 1,
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
     // `toolroll password reset`: the new hash for an account that already signs in with a password (eight pw).
-    "src/store.ts#resetAccountPassword@1219": 1,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#resetAccountPassword@1220": 1,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 1,
   },
   "credential_hash": {
@@ -724,13 +724,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
     // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
-    "src/store.ts#initLocalMode@1172>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1173>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
     // Eight pw: `toolroll password reset` proves the account has a password of its own (not an identity-provider-only
     // placeholder) and writes the new hash guarded by it; the sign-in footer asks only whether any password exists.
-    "src/store.ts#passwordResetRefusal@1218": 2,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#passwordResetRefusal@1219": 2,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/server/login-help.ts#anyPasswordSet@4": 1,
     // Easy-start D: the Linux update reads a runner's stored hash to authenticate its process record (never a password).
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 2,

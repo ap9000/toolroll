@@ -16,6 +16,8 @@ The first code slice is **connection metadata and identity storage scaffolding o
 
 `server/route-table.ts` declares every route. Console GET defaults admit `cookie` and `bearer` with read scope; explicitly cookie-only rows and handler checks narrow that. `routePrincipalOf` preserves a person's API token scope, while `reproveRemote` verifies account generation, current token standing and effective role. Current roles are `viewer` and `approver`; there is no third ordinary member role to invent. A viewer's nominal act token is effectively read-only. Instance operator is an existing derived authority, not a new role.
 
+Caller admission is not enough for scoped credentials: `server/guards.ts:identify(request, touch, limited = false)` currently refuses project-limited API tokens on ordinary console reads because those paths do not propagate token limits. The remote CLI/MCP (and the new metadata adapter) explicitly use limited-principal admission. Thus the existing read projections can be reused, but their complete scoped-token admission is new CW3 work; do not enable it by changing only route caller flags. A native scaffold test preserves the scoped-token `/engine/hello` refusal while checking the unrestricted existing handshake.
+
 | Existing route | Current owner / admission | Remote TUI decision |
 | --- | --- | --- |
 | `GET /engine/hello` | `engine-api.ts:hello`; existing signed-in console admission | Keep exact response and digest behavior; do not broaden local owner admission |

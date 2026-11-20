@@ -35,6 +35,7 @@ import { V172_ADDED_COLUMNS, V172_OBJECTS, V172_SCHEMA, V172_STEPS } from "./fle
 import { V173_ADDED_COLUMNS, V173_STEPS } from "./plan-problems-schema.js";
 import { V175_OBJECTS, V175_SCHEMA, V175_STEPS } from "./flexible-interactive-schema.js";
 import { V176_ADDED_COLUMNS, V176_STEPS, V176_SCHEMA, V176_OBJECTS } from "./subagent-backup-schema.js";
+import { V177_STEPS, V177_SCHEMA, V177_OBJECTS, WORKSPACE_ID_PATTERN, RECOVERY_GENERATION_PATTERN, type WorkspaceIdentity } from "./workspace-identity-schema.js";
 import { V174_OBJECTS, V174_SCHEMA, V174_STEPS } from "./flexible-everyday-schema.js";
 import { endThreadAuthorityFor } from "./flexible-authority-end.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
@@ -1279,7 +1280,7 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // launch, the sign-in epoch a turn was begun under, a thread's title and end, and a Ship's laptop consent
 // (flexible-everyday-schema.ts).
 // v175 adds saved runtimes and launch-scoped interactive authority. Existing threads retain stream-json.
-export const SCHEMA_VERSION = 176;
+export const SCHEMA_VERSION = 177;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1417,7 +1418,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1681,7 +1682,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2091,7 +2092,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6072,11 +6073,17 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
     const problem = legacyChatProblem(db);
     if (problem !== null) throw new Error(`${file}: ${problem}; refusing to move chat history it cannot name`);
   }
+  // Current identity must survive even legacy finding compatibility replay.
+  // Only genuinely older schemas may initialize it; a missing current identity never becomes a new workspace.
+  if (preflight === 177) {
+    const identityProblem = workspaceIdentityShapeProblem(db);
+    if (identityProblem !== null) throw new Error(`${file}: refusing to open — ${identityProblem}, though the schema says v${preflight}`);
+  }
   // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6590,6 +6597,17 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const backupDamaged = subagentBackupShapeProblem(db);
   if (backupDamaged !== null) throw new Error(`${file}: refusing to open — ${backupDamaged}`);
   step("subagent-backup-columns");
+  // v177: identity is created only by this admitted migration, never by a request. A resumed row is preserved.
+  db.exec(V177_SCHEMA);
+  const identityBefore = workspaceIdentityShapeProblem(db, false);
+  if (identityBefore !== null) throw new Error(`${file}: refusing to open — ${identityBefore}`);
+  if (db.prepare("SELECT singleton FROM workspace_identity").all().length === 0) {
+    db.prepare("INSERT INTO workspace_identity (singleton, workspace_id, recovery_generation, created_at) VALUES (1, ?, ?, ?)")
+      .run(randomUUID(), randomBytes(16).toString("hex"), new Date().toISOString());
+  }
+  const identityDamaged = workspaceIdentityShapeProblem(db);
+  if (identityDamaged !== null) throw new Error(`${file}: refusing to open — ${identityDamaged}`);
+  step("workspace-identity");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -24477,6 +24495,13 @@ export class Store {
     this.spendCache = null;
   }
 
+  /** Read identity only: a damaged current singleton is refused, never regenerated or treated as authority. */
+  workspaceIdentity(): WorkspaceIdentity {
+    const problem = workspaceIdentityShapeProblem(this.db);
+    if (problem !== null) throw new Error(problem);
+    const row = this.db.prepare("SELECT workspace_id, recovery_generation, created_at FROM workspace_identity WHERE singleton = 1").get()!;
+    return { id: String(row["workspace_id"]), recoveryGeneration: String(row["recovery_generation"]), createdAt: String(row["created_at"]) };
+  }
 }
 
 /** A stored count or id that must be a whole, non-negative number — a
@@ -28002,5 +28027,24 @@ function subagentBackupShapeProblem(db: Database): string | null {
     const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
     if (row === undefined || want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(want)) return `the subagent backup ${type} ${name} has an unknown shape`;
   }
+  return null;
+}
+
+/** v177 metadata must have this exact shape and one valid immutable identity. Read-only on every path. */
+function workspaceIdentityShapeProblem(db: Database, requireRow = true): string | null {
+  const statements = V177_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(Boolean);
+  for (const [type, name] of V177_OBJECTS) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    const want = statements.find(one => new RegExp(`^CREATE ${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (row === undefined || want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(want)) return `the workspace identity ${type} ${name} is missing or has an unknown shape`;
+  }
+  const rows = db.prepare("SELECT singleton, workspace_id, recovery_generation, created_at FROM workspace_identity").all();
+  if (rows.length === 0 && !requireRow) return null;
+  if (rows.length !== 1) return "the workspace identity must have exactly one row";
+  const row = rows[0]!, id = row["workspace_id"], recovery = row["recovery_generation"], at = row["created_at"];
+  if (row["singleton"] !== 1 || typeof id !== "string" || !WORKSPACE_ID_PATTERN.test(id)
+    || typeof recovery !== "string" || !RECOVERY_GENERATION_PATTERN.test(recovery)
+    || typeof at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at)
+    || !Number.isFinite(Date.parse(at)) || new Date(at).toISOString() !== at) return "the workspace identity row has invalid metadata";
   return null;
 }

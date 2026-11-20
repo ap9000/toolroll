@@ -24,7 +24,7 @@ test("v175 rows retain their data and acquire off/Claude/settled defaults; new d
   const file = v175(); const raw = new DatabaseSync(file);
   const oldMate = raw.prepare("SELECT * FROM subagent").get()!, oldTurn = raw.prepare("SELECT * FROM subagent_turn").get()!; raw.close();
   const store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(176);
+  expect(SCHEMA_VERSION).toBe(177);
   expect(store.handle.prepare("SELECT * FROM subagent").get()).toMatchObject({ ...oldMate, codex_backup_model: null, authority_generation: 0 });
   expect(store.handle.prepare("SELECT * FROM subagent_turn").get()).toMatchObject({ ...oldTurn, provider: "claude", model_reported: null, pending: 0, counted_attempt: 0, backup_of: null });
   expect(store.getSubagent(Number(oldMate["id"]))?.codexBackupModel).toBeNull(); store.close();
