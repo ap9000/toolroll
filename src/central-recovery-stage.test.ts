@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { runOperate, EXIT } from "./operate.js";
 import { Store, openStore } from "./store.js";
 import { addApprover } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
@@ -65,7 +66,7 @@ test("private copied retirement denies actual API/OAuth/code/refresh/cookie/lead
   const f = fixture(), original = hash(f.source), sourceStat = fs.statSync(f.source), h = copy(f.source);
   expect(fs.statSync(h.copyPath).ino).not.toBe(sourceStat.ino);
   const report = retireCentralRecoveryStage(h); expect(report).toMatchObject({ outcome: "retired-partial", schemaSupported: true, complete: false, recoveryReady: false });
-  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(7);
+  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(8);
   expect(report.entries.filter(e => e.status === "unsupported").length).toBeGreaterThan(0);
   expect(JSON.stringify(report)).not.toContain(f.api.hash); expect(JSON.stringify(report)).not.toContain(f.api.token);
   expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true });
@@ -284,5 +285,53 @@ test("failure after hold append rolls back ledger permissions and seals without 
   const stage = openStore(h.copyPath); expect(stage.handle.prepare("SELECT * FROM action_ledger ORDER BY id").all()).toEqual(history);
   expect(stage.handle.prepare("SELECT * FROM ledger_seal ORDER BY id").all()).toEqual(seals);
   expect(autoPublishHeld(stage, "release-tag")).toBeNull(); expect(verifyLedgerChain(stage.handle).ok).toBe(true);
+  stage.close(); expect(hash(f.source)).toBe(original);
+});
+
+
+function intakeStanding(store: Store, now: Date) {
+  const first = store.setIntakeGrant({ repo: root!, github: "synthetic/source", label: "agent-ok", reviewers: ["synthetic"], approvedBy: "synthetic" }, now);
+  store.setIntakeGrant({ repo: root!, github: "synthetic/source", label: "agent-ok", reviewers: ["synthetic"], approvedBy: "synthetic" }, now);
+  store.setIntakeGrant({ repo: join(root!, "other-project"), github: "synthetic/other", label: "other-ok", reviewers: null, approvedBy: "synthetic" }, now);
+  expect(store.establishMirror({ localTaskId: "history", backend: "github-issues", remoteRepo: "synthetic/source", remoteId: "1", provenance: "intake", intakeGrant: first.id, establishedBy: "intake" }, now).ok).toBe(true);
+  expect(store.liveIntakeGrant(root!)).not.toBeNull(); expect(store.liveIntakeGrant(join(root!, "other-project"))).not.toBeNull();
+}
+const intakeHistory = (store: Store) => ({
+  grants: store.handle.prepare("SELECT * FROM intake_grant ORDER BY id").all(),
+  mirrors: store.handle.prepare("SELECT * FROM external_mirror ORDER BY local_task_id").all(),
+  tasks: store.handle.prepare("SELECT * FROM task ORDER BY id").all(),
+  comments: store.handle.prepare("SELECT * FROM diff_comment ORDER BY id").all(),
+});
+
+test("intake fresh-command grants retire without changing prior imports; real commands refuse no-grant before external reads", async () => {
+  let history: ReturnType<typeof intakeHistory>;
+  const f = fixture((s, now) => { intakeStanding(s, now); history = intakeHistory(s); expect(s.isDemo()).toBe(false); });
+  const original = hash(f.source), h = copy(f.source), retired = retireCentralRecoveryStage(h);
+  expect(retired.entries.find(e => e.id === "intake-grant-fresh-command-admission")).toMatchObject({ status: "retired", affected: 2, remaining: 0 });
+  expect(retired.entries.find(e => e.id === "public-hooks-and-triggers")?.status).toBe("unsupported"); expect(retired).toMatchObject({ complete: false, recoveryReady: false });
+  const stage = openStore(h.copyPath), after = intakeHistory(stage);
+  expect(stage.liveIntakeGrant(root!)).toBeNull(); expect(stage.liveIntakeGrant(join(root!, "other-project"))).toBeNull();
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL").get()?.["n"]).toBe(0);
+  expect(after.grants[0]).toEqual(history!.grants[0]);
+  expect(after.grants.map(({ revoked_at: _at, revoked_by: _by, ...terms }) => terms)).toEqual(history!.grants.map(({ revoked_at: _at, revoked_by: _by, ...terms }) => terms));
+  expect(after.mirrors).toEqual(history!.mirrors); expect(after.tasks).toEqual(history!.tasks); expect(after.comments).toEqual(history!.comments); stage.close();
+  const calls: string[] = [];
+  for (const action of ["preview", "run", "pr-comments"]) {
+    const lines: string[] = [];
+    const code = await runOperate("intake", [action, "--repo", root!, "--json"], line => lines.push(line), { databaseFile: h.copyPath, now: f.now,
+      gitRunner: async file => { calls.push(file); throw Error("Unexpected external intake read"); } });
+    expect(code).toBe(EXIT.refused); expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "no-grant" });
+  }
+  expect(calls).toEqual([]); const verified = openStore(h.copyPath); expect(intakeHistory(verified).mirrors).toEqual(history!.mirrors); expect(intakeHistory(verified).tasks).toEqual(history!.tasks); verified.close();
+  expect(hash(f.source)).toBe(original);
+});
+
+test("post-intake failure restores original live grant standing and imported provenance in the private transaction", () => {
+  let history: ReturnType<typeof intakeHistory>;
+  const f = fixture((s, now) => { intakeStanding(s, now); history = intakeHistory(s); }), original = hash(f.source), h = copy(f.source);
+  vi.spyOn(Store.prototype, "dropWebSession").mockImplementation(() => { throw Error("synthetic post-intake failure"); });
+  expect(retireCentralRecoveryStage(h).outcome).toBe("failed"); vi.restoreAllMocks();
+  const stage = openStore(h.copyPath); expect(intakeHistory(stage)).toEqual(history!); expect(stage.liveIntakeGrant(root!)).not.toBeNull();
+  expect(stage.liveIntakeGrant(join(root!, "other-project"))).not.toBeNull(); expect(reproveRemote(stage, f.principal, f.now).ok).toBe(true);
   stage.close(); expect(hash(f.source)).toBe(original);
 });

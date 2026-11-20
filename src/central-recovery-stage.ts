@@ -21,6 +21,7 @@ const INVENTORY = [
   ["inbound-oauth", "mcp-oauth.ts/store.ts", "oauth_code/oauth_grant/oauth_refresh", true],
   ["publication-grant-verifier", "store.ts:revokePublicationGrant/publish.ts:permitsPublication", "publication_grant", true],
   ["release-publish-ledger-hold", "release-auto.ts:holdAutoPublish/autoPublishHeld", "action_ledger (latest held/allowed by id for nonnull task ids)", true],
+  ["intake-grant-fresh-command-admission", "store.ts:clearIntakeGrant/operate.ts:intakeCommand", "intake_grant", true],
   ["durable-browser-sessions", "server/guards.ts/session.ts", "web_session", true],
   ["local-owner-and-memory", "local-owner.ts/server/guards.ts", "local_mode/in-memory nonces and links", false],
   ["password-and-saved-login", "scope.ts/login-secrets.ts", "approver/protected login files", false],
@@ -199,9 +200,15 @@ export function retireCentralRecoveryStage(handle: RecoveryStageHandle): Recover
         JOIN (SELECT max(id) AS id FROM action_ledger WHERE task_id IS NOT NULL AND action IN (?, ?) GROUP BY task_id) latest ON latest.id = a.id
         WHERE a.action = ?`).get(PUBLISH_HELD_ACTION, PUBLISH_ALLOWED_ACTION, PUBLISH_ALLOWED_ACTION);
       if (Number(stillAllowed?.["n"]) !== 0) throw Error("Restored release permission remains allowed");
+      // Only fresh intake command admission: already-entered commands and platform hooks remain unsupported.
+      counts.set("intake-grant-fresh-command-admission", count(stage, "SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL"));
+      for (const row of stage.handle.prepare("SELECT DISTINCT repo FROM intake_grant WHERE revoked_at IS NULL").all()) {
+        if (!stage.clearIntakeGrant(String(row["repo"]), by, now)) throw Error("Intake grant retirement failed");
+      }
       const sessions = stage.webSessions(null); counts.set("durable-browser-sessions", sessions.length);
       for (const session of sessions) stage.dropWebSession(session.idHash);
-      if (count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0
+      if (count(stage, "SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL") !== 0
+        || count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0
         || count(stage, "SELECT count(*) AS n FROM coordinator_proposal WHERE state IN ('pending','confirming')") !== 0
         || count(stage, "SELECT count(*) AS n FROM credential WHERE revoked_at IS NULL") !== 0
         || count(stage, "SELECT (SELECT count(*) FROM oauth_code)+(SELECT count(*) FROM oauth_grant)+(SELECT count(*) FROM oauth_refresh)+(SELECT count(*) FROM web_session) AS n") !== 0) throw Error("Retirement postcondition failed");
