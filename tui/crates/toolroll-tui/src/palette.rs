@@ -13,6 +13,8 @@ pub enum Pick {
     Answer(usize),
     Task(String),
     Project(String),
+    /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
+    HandOff(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +110,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
         }
         Pick::Task(_) => -20,
         Pick::Project(_) => -40,
+        Pick::HandOff(_) => 60,
     }
 }
 
@@ -173,6 +176,19 @@ pub fn entries(app: &App) -> Vec<Entry> {
             key: String::new(),
             pick: Pick::Task(item.id.clone()),
         });
+    }
+    if app.selected_item().is_some_and(|i| i.is_task) && app.presence.accounts.len() > 1 {
+        for person in &app.presence.accounts {
+            if person == &app.presence.me {
+                continue;
+            }
+            out.push(Entry {
+                kind: "Team",
+                label: format!("Hand off task to {person}"),
+                key: String::new(),
+                pick: Pick::HandOff(person.clone()),
+            });
+        }
     }
     let mut projects: Vec<String> = app
         .all_items

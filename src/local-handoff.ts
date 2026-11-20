@@ -336,6 +336,20 @@ export async function handleHandoffPush(
   const outDir = join(evidenceRoot, "handoff-candidates", family.root.id);
   mkdirSync(outDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(outDir, `${candidateId}.patch`), patch, { mode: 0o600 });
+  writeFileSync(join(outDir, `${candidateId}.json`), JSON.stringify({
+    id: candidateId,
+    taskId: family.current.id,
+    rootId: family.root.id,
+    author: auth.principal.account,
+    createdAt: now.toISOString(),
+    baseCommit: baseCommit ?? null,
+    files: checked.files,
+    note,
+    patchSha256: sha256,
+    trust: "unverified",
+    promotedAt: null,
+    promotedBy: null,
+  }, null, 2), { mode: 0o600 });
   const provenance = `Local code handoff candidate ${candidateId} uploaded by ${auth.principal.account} (${checked.files.length} file${checked.files.length === 1 ? "" : "s"}, sha256:${sha256.slice(0, 12)}, unverified — requires central checks/review).${note ? ` Note: ${note}` : ""}`;
   store.recordAction({
     at: now.toISOString(),

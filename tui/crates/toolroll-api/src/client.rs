@@ -796,6 +796,59 @@ impl Client {
             .await
     }
 
+    /// Hand a task off to a teammate (`POST /api/handoff/task/<task>/assign-person`), recording `task_act`
+    /// and sending them a personal notification. Works in both local cookie and remote bearer sessions.
+    pub async fn assign_task_person(
+        &self,
+        task: &str,
+        person: &str,
+        why: &str,
+    ) -> Result<String, ApiError> {
+        let path = format!("/api/handoff/task/{}/assign-person", encode(task));
+        let body = serde_json::json!({ "person": person, "why": why }).to_string();
+        let req = match &*self.auth {
+            ClientAuth::Remote(r) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("authorization", format!("Bearer {}", r.bearer.as_str()))
+                .header("x-toolroll-client", "terminal-remote")
+                .header("x-toolroll-workspace", &r.workspace_id)
+                .header("x-toolroll-recovery", &r.recovery_generation),
+            ClientAuth::Local(c) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("cookie", c.cookie.as_str())
+                .header("origin", &self.origin)
+                .header("x-csrf-token", c.csrf.as_str())
+                .header("x-toolroll-key", c.key.as_str())
+                .header("x-toolroll-client", "terminal"),
+        };
+        let res = req
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body(body)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Hand-off refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        Ok(person.to_string())
+    }
+
     /// Trigger an out-of-band approval ping to the calling approver's paired phone/chat channels
     /// (`POST /api/handoff/task/<task>/approval-ping`). Remote API token only.
     pub async fn ping_approval(&self, task: &str) -> Result<ApprovalPingResult, ApiError> {

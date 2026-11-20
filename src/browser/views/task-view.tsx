@@ -26,6 +26,7 @@ import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask, WORKSPACE_NUDGE } from "../live-task.js";
 import { presenceSummary, useWorkspacePresence } from "../presence.js";
+import { TaskMultiplayerBar } from "../multiplayer-bar.js";
 import { cn } from "../kit/utils.js";
 import { HEADLINE_GLYPH, RetryPinFields, statusWhyLines, type RetryPins } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
@@ -1124,6 +1125,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} show={show} />
         </nav>} />
       <TaskVitals details={view.details} />
+      <TaskMultiplayerBar taskId={view.id} csrf={csrf} presence={workspacePresence} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
         text={<>{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())}>{shortWhen(view.archived.at, new Date(), viewerZone())}</time></>}

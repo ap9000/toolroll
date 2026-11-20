@@ -310,6 +310,10 @@ impl Loop {
                 let r = client.ping_approval(&task).await;
                 let _ = tx.send(Msg::ApprovalPinged(r));
             })),
+            Effect::AssignTaskPerson { task, person } => drop(tokio::spawn(async move {
+                let r = client.assign_task_person(&task, &person, "").await;
+                let _ = tx.send(Msg::TaskHandedOff(r));
+            })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));

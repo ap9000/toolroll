@@ -844,6 +844,8 @@ pub enum Effect {
     FetchApproval(String),
     /// Remote TUI out-of-band approval step-up ping (`POST /api/handoff/task/<task>/approval-ping`).
     PingApproval(String),
+    /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
+    AssignTaskPerson { task: String, person: String },
     FetchLive {
         run: i64,
         file: &'static str,
@@ -1008,6 +1010,8 @@ pub enum Msg {
     Presence(toolroll_api::PresenceSnapshot),
     /// Out-of-band remote approval ping response.
     ApprovalPinged(Result<toolroll_api::ApprovalPingResult, ApiError>),
+    /// Human task handoff response.
+    TaskHandedOff(Result<String, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -2231,6 +2235,11 @@ impl App {
                 vec![]
             }
             Msg::ApprovalPinged(Err(e)) => self.read_failed(e),
+            Msg::TaskHandedOff(Ok(person)) => {
+                self.say(Tone::Said, format!("Handed task off to {person}."));
+                vec![Effect::FetchWork]
+            }
+            Msg::TaskHandedOff(Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -4509,6 +4518,14 @@ impl App {
             Pick::Answer(n) => self.answer_key(n),
             Pick::Task(id) => self.show_task(&id),
             Pick::Project(name) => self.set_filter(Filter::Project(name)),
+            Pick::HandOff(person) => match self.selected_item().filter(|i| i.is_task) {
+                Some(item) => {
+                    let task = item.id.clone();
+                    self.say(Tone::Said, format!("Handing task off to {person}…"));
+                    vec![Effect::AssignTaskPerson { task, person }]
+                }
+                None => vec![],
+            },
         }
     }
 

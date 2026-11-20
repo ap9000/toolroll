@@ -275,6 +275,9 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.presence": { local: "allow", why: "observational read of active task viewers, terminal controllers, and task owners within the caller's visible projects" },
   "edge.approval-ping": { local: "deny", why: "ordinary person API token only for remote out-of-band approval ping" },
   "edge.remote-terminals": { local: "deny", why: "ordinary person act API token only for remote terminal relay discovery" },
+  "edge.task-handoff-person": { local: "allow", why: "hand a visible task to a project-authorized teammate (CSRF/key or pinned remote act token)" },
+  "edge.handoff-candidates": { local: "allow", why: "observational read of uploaded local code candidates for a visible task" },
+  "edge.handoff-promote": { local: "allow", why: "queue a SHA-256 verified local code candidate for central worker checks (approver CSRF/key or remote act token)" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -357,6 +360,9 @@ edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "re
 edge("remote", "edge.terminal-connection", "GET", "/engine/connection", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.handoff-pull", "GET", `^\\/api\\/handoff\\/task\\/${TASK}$`, { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one" });
 edge("remote", "edge.handoff-push", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidate" });
+edge("remote", "edge.task-handoff-person", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/assign-person$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/assign-person" });
+edge("remote", "edge.handoff-candidates", "GET", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidates$`, { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidates" });
+edge("remote", "edge.handoff-promote", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate\\/cand-[a-f0-9]{16}\\/promote$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: `/api/handoff/task/one/candidate/cand-${"a".repeat(16)}/promote` });
 edge("remote", "edge.approval-ping", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/approval-ping$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/approval-ping" });
 edge("remote", "edge.remote-terminals", "GET", "/api/handoff/terminals", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.presence", "GET", "/api/presence", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });

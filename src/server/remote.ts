@@ -1,6 +1,7 @@
 import { handleTerminalConnection } from "../terminal-connection.js";
 import { handleHandoffPull, handleHandoffPush } from "../local-handoff.js";
 import { handleApprovalPingHttp, handlePresenceHttp, handleRemoteTerminalsHttp } from "../multiplayer-presence.js";
+import { handleAssignTaskPersonHttp, handleListCandidatesHttp, handlePromoteCandidateHttp } from "../multiplayer-handoff.js";
 import { credentialProof, freshFacts, proveAccountNow, ssoNowAvailable, type FreshFacts } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
@@ -202,6 +203,9 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.terminal-connection": async ({ request, response }) => { handleTerminalConnection(request, response, { store, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.handoff-pull": async ({ request, response, url }) => { await handleHandoffPull(request, response, url, { store, evidenceRoot, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.handoff-push": async ({ request, response, url }) => { await handleHandoffPush(request, response, url, { store, evidenceRoot, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.task-handoff-person": async ({ request, response, url }) => { await handleAssignTaskPersonHttp(request, response, url, { store, evidenceRoot, clock, liveCeiling: runtime.liveCeiling, allowedHost, browserKeys: runtime.browserKeys, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.handoff-candidates": async ({ request, response, url }) => { handleListCandidatesHttp(request, response, url, { store, evidenceRoot, clock, liveCeiling: runtime.liveCeiling, allowedHost, browserKeys: runtime.browserKeys, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.handoff-promote": async ({ request, response, url }) => { await handlePromoteCandidateHttp(request, response, url, { store, evidenceRoot, clock, liveCeiling: runtime.liveCeiling, allowedHost, browserKeys: runtime.browserKeys, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.approval-ping": async ({ request, response, url }) => { handleApprovalPingHttp(request, response, url, { store, clock, liveCeiling: runtime.liveCeiling, consoleOrigin, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.remote-terminals": async ({ request, response }) => { handleRemoteTerminalsHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, terminalHost: runtime.terminalHost, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.presence": async ({ request, response }) => { handlePresenceHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, taskRooms: runtime.taskRooms, terminalHost: runtime.terminalHost, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
