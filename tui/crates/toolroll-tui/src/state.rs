@@ -158,7 +158,11 @@ pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
 
 /// Central/remote state file, isolated per `(workspace_id, account)` so remote sessions never import or overwrite
 /// legacy local task selection.
-pub fn remote_path(env: &crate::settings::Env, workspace_id: &str, account: &str) -> Option<PathBuf> {
+pub fn remote_path(
+    env: &crate::settings::Env,
+    workspace_id: &str,
+    account: &str,
+) -> Option<PathBuf> {
     let tag = remote_namespace_hash(workspace_id, account);
     path(env).map(|p| p.with_file_name(format!("tui-state-remote-{tag}.toml")))
 }

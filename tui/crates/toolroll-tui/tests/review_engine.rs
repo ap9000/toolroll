@@ -535,7 +535,9 @@ async fn send_back_then_approve_the_revision_in_the_workbench() {
 async fn click_approval_to_review_then_explicitly_start_the_build() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let click = |x, y| MouseEvent {
-        column: x, row: y, kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        kind: MouseEventKind::Down(MouseButton::Left),
         modifiers: KeyModifiers::NONE,
     };
     let (engine, client, mut app) = sent_back().await;
@@ -570,7 +572,12 @@ async fn click_approval_to_review_then_explicitly_start_the_build() {
         assert!(matches!(fx.as_slice(), [Effect::FetchApproval(_)]));
         pump(&mut app, &client, fx).await;
         let mut shown = screen(&mut app, width, 20);
-        while let Some(&(rect, _)) = app.areas.approval_controls.iter().find(|(_, k)| *k == KeyCode::PageDown) {
+        while let Some(&(rect, _)) = app
+            .areas
+            .approval_controls
+            .iter()
+            .find(|(_, k)| *k == KeyCode::PageDown)
+        {
             assert!(shown.contains("Read more"), "{shown}");
             let fx = app.mouse(click(rect.x + 1, rect.y));
             assert!(fx.is_empty());
@@ -578,8 +585,17 @@ async fn click_approval_to_review_then_explicitly_start_the_build() {
         }
         assert!(shown.contains("Approve build"), "{shown}");
         assert_eq!(engine.acts().len(), before);
-        let key = if width == 144 { KeyCode::Esc } else { KeyCode::Enter };
-        let &(rect, _) = app.areas.approval_controls.iter().find(|(_, k)| *k == key).unwrap();
+        let key = if width == 144 {
+            KeyCode::Esc
+        } else {
+            KeyCode::Enter
+        };
+        let &(rect, _) = app
+            .areas
+            .approval_controls
+            .iter()
+            .find(|(_, k)| *k == key)
+            .unwrap();
         let fx = app.mouse(click(rect.x + 1, rect.y));
         pump(&mut app, &client, fx).await;
         assert_eq!(app.mode, Mode::Normal);

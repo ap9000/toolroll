@@ -148,7 +148,10 @@ fn narrow_shows_the_list_then_the_task_with_where_you_are() {
     // The task, where it is in the list, and the universal Esc way back.
     let at = app.selected + 1;
     let n = app.items.len();
-    assert!(shown.contains(&format!("{at} of {n} · Esc list")), "{shown}");
+    assert!(
+        shown.contains(&format!("{at} of {n} · Esc list")),
+        "{shown}"
+    );
     // b: the list, across the whole column, and the toast says so.
     app.key(key('b'));
     assert!(app.narrow_list);

@@ -2,6 +2,7 @@ import { handleTerminalConnection } from "../terminal-connection.js";
 import { handleHandoffPull, handleHandoffPush } from "../local-handoff.js";
 import { handleApprovalPingHttp, handlePresenceHttp, handleRemoteTerminalsHttp } from "../multiplayer-presence.js";
 import { handleAssignTaskPersonHttp, handleListCandidatesHttp, handlePromoteCandidateHttp } from "../multiplayer-handoff.js";
+import { createDevicePairHandlers } from "../device-pair.js";
 import { credentialProof, freshFacts, proveAccountNow, ssoNowAvailable, type FreshFacts } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
@@ -178,6 +179,15 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),
   });
+  const devicePair = createDevicePairHandlers({
+    store,
+    clock,
+    allowedHost,
+    browserKeys: runtime.browserKeys,
+    identify,
+    freshFactsOf: runtime.freshFactsOf,
+    admitSource: admitPasswordSource,
+  });
   const teams = async ({ request, response }: EdgeContext): Promise<void> => {
     if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock,
       admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
@@ -209,6 +219,10 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.approval-ping": async ({ request, response, url }) => { handleApprovalPingHttp(request, response, url, { store, clock, liveCeiling: runtime.liveCeiling, consoleOrigin, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.remote-terminals": async ({ request, response }) => { handleRemoteTerminalsHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, terminalHost: runtime.terminalHost, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.presence": async ({ request, response }) => { handlePresenceHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, taskRooms: runtime.taskRooms, terminalHost: runtime.terminalHost, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.connect-pair-start": async ({ request, response }) => { await devicePair.start(request, response); },
+    "edge.connect-pair-poll": async ({ request, response }) => { await devicePair.poll(request, response); },
+    "edge.connect-pair-page": async ({ request, response, url }) => { devicePair.page(request, response, url); },
+    "edge.connect-pair-confirm": async ({ request, response, url }) => { await devicePair.confirm(request, response, url); },
     "edge.teams": teams,
   });
   return { registrations };

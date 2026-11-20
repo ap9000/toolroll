@@ -38,18 +38,17 @@ pub struct Palette {
 fn applies(app: &App, action: Action) -> bool {
     let thread = app.selected_item().is_some_and(|i| i.thread);
     match action.scope() {
-        Scope::Diff => {
-            app.effective_focus() == Focus::Detail && app.tab == Tab::Diff && !thread
-        }
+        Scope::Diff => app.effective_focus() == Focus::Detail && app.tab == Tab::Diff && !thread,
         Scope::Global => match action {
             Action::Palette => false,
             Action::FilterThisProject => app.project.is_some(),
             Action::FilterMine | Action::FilterWaitingOnTeam | Action::FilterUnassigned => {
                 app.presence.accounts.len() > 1 || !app.presence.owners.is_empty()
             }
-            Action::PingApproval => {
+            Action::PingApproval | Action::HandoffLocal => {
                 app.remote_badge.is_some() && app.selected_item().is_some_and(|i| i.is_task)
             }
+            Action::SwitchWorkspace => app.remote_badge.is_some(),
             _ => true,
         },
     }
@@ -79,7 +78,10 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 Action::Pause if live || app.plan_pins().is_some() => 300,
                 Action::Stop if live || held || queued => 290,
                 Action::Resume if held => 300,
-                Action::ThreadReply | Action::ThreadShip | Action::ThreadStop | Action::ThreadEnd
+                Action::ThreadReply
+                | Action::ThreadShip
+                | Action::ThreadStop
+                | Action::ThreadEnd
                     if thread =>
                 {
                     310

@@ -1779,7 +1779,7 @@ async function runRemoteTuiCommand(argv: readonly string[], write: Write, connec
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
-      write("toolroll --remote [--profile <name>]\n  Open the terminal workbench connected to your saved central Toolroll server.\n  Connect first with: toolroll connect <https://origin> --as <account> --token-stdin");
+      write("toolroll --remote [--profile <name>]\n  Open the terminal workbench connected to your saved central Toolroll server.\n  Connect first with: toolroll connect <https://origin> --browser");
       return 0;
     }
     if (arg === "--profile" || arg === "--tui-binary") {
@@ -1801,7 +1801,7 @@ async function runRemoteTuiCommand(argv: readonly string[], write: Write, connec
     return 2;
   }
   if (profile === null) {
-    write("No central server connected yet. Run: toolroll connect <https://origin> --as <account> --token-stdin");
+    write("No central server connected yet. Run: toolroll connect <https://origin> --browser");
     return 2;
   }
   if (!profile.apiToken) {

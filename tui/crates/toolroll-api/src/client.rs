@@ -318,8 +318,8 @@ pub async fn connect_remote(
     expected: &ConnectionBinding,
 ) -> Result<Client, ApiError> {
     let origin = origin.trim().trim_end_matches('/').to_string();
-    let loopback_http = origin.starts_with("http://127.0.0.1:")
-        || origin.starts_with("http://[::1]:");
+    let loopback_http =
+        origin.starts_with("http://127.0.0.1:") || origin.starts_with("http://[::1]:");
     if !origin.starts_with("https://") && !loopback_http {
         return Err(ApiError::Refused(
             "Remote connections require an HTTPS origin.".into(),
@@ -864,7 +864,10 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("authorization", format!("Bearer {}", remote.bearer.as_str()))
+            .header(
+                "authorization",
+                format!("Bearer {}", remote.bearer.as_str()),
+            )
             .header("x-toolroll-client", "terminal-remote")
             .header("x-toolroll-workspace", &remote.workspace_id)
             .header("x-toolroll-recovery", &remote.recovery_generation)
@@ -1061,10 +1064,16 @@ impl Client {
         }
         let text = res.text().await.unwrap_or_default();
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            let exit = v["exit"].as_i64().unwrap_or(if status < 300 { 0 } else { 1 });
+            let exit = v["exit"]
+                .as_i64()
+                .unwrap_or(if status < 300 { 0 } else { 1 });
             let out = v["stdout"].as_str().unwrap_or("").trim();
             let err = v["stderr"].as_str().unwrap_or("").trim();
-            let msg = v["message"].as_str().or_else(|| v["error"].as_str()).unwrap_or("").trim();
+            let msg = v["message"]
+                .as_str()
+                .or_else(|| v["error"].as_str())
+                .unwrap_or("")
+                .trim();
             if status < 300 && exit == 0 {
                 let words = if !out.is_empty() {
                     out.lines().next().unwrap_or(done).to_string()
@@ -1134,12 +1143,14 @@ impl Client {
             return Err(ApiError::SessionEnded);
         }
         if path == "/settings/lead/on" {
-            return Ok(if (300..400).contains(&status) && location.as_deref() == Some("/chat") {
-                ActOutcome::Done(done.to_string())
-            } else {
-                ActOutcome::Refused(location.as_deref().and_then(said_of).map(|(_, words)| words)
+            return Ok(
+                if (300..400).contains(&status) && location.as_deref() == Some("/chat") {
+                    ActOutcome::Done(done.to_string())
+                } else {
+                    ActOutcome::Refused(location.as_deref().and_then(said_of).map(|(_, words)| words)
                     .unwrap_or_else(|| "The console could not switch Lead. Check the membership sign-in or open Lead settings.".into()))
-            });
+                },
+            );
         }
         let local_refusal = res
             .headers()
@@ -1426,9 +1437,7 @@ impl Client {
 
 fn signal_of(ev: &SseEvent) -> Option<LiveSignal> {
     let parsed = || serde_json::from_str::<serde_json::Value>(&ev.data).ok();
-    let room = || {
-        parsed().and_then(|v| v["room"].as_str().map(str::to_owned))
-    };
+    let room = || parsed().and_then(|v| v["room"].as_str().map(str::to_owned));
     match ev.event.as_str() {
         "change" => room().map(LiveSignal::Change),
         "turn" => {
@@ -1558,7 +1567,11 @@ impl TaskPresence {
         if self.viewers.len() == 1 {
             parts.push(format!("{} viewing", self.viewers[0]));
         } else if self.viewers.len() > 1 {
-            parts.push(format!("{} + {} viewing", self.viewers[0], self.viewers.len() - 1));
+            parts.push(format!(
+                "{} + {} viewing",
+                self.viewers[0],
+                self.viewers.len() - 1
+            ));
         }
         if parts.is_empty() {
             None
@@ -1713,7 +1726,10 @@ mod tests {
             event: "turn".into(),
             data: r#"{"room":"chat","state":"idle"}"#.into(),
         };
-        let Some(LiveSignal::Turn { turn: idle_turn, .. }) = signal_of(&idle) else {
+        let Some(LiveSignal::Turn {
+            turn: idle_turn, ..
+        }) = signal_of(&idle)
+        else {
             panic!("expected idle LiveSignal::Turn");
         };
         assert!(idle_turn.is_idle());

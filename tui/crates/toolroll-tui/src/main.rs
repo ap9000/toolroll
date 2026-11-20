@@ -158,7 +158,9 @@ fn main() {
                         (client, None)
                     }
                     Err(toolroll_api::ApiError::SessionEnded) => {
-                        eprintln!("Remote session expired or workspace recovery changed; connect again.");
+                        eprintln!(
+                            "Remote session expired or workspace recovery changed; connect again."
+                        );
                         return EXIT_CENTRAL_UNAVAILABLE;
                     }
                     Err(e) => {

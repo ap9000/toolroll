@@ -230,10 +230,7 @@ impl Filter {
             Filter::Done => item.section == Section::Recent && item.tone == "done",
             Filter::Mine => {
                 !presence.me.is_empty()
-                    && presence
-                        .owners
-                        .get(&item.id)
-                        .and_then(|o| o.as_deref())
+                    && presence.owners.get(&item.id).and_then(|o| o.as_deref())
                         == Some(presence.me.as_str())
             }
             Filter::WaitingOnTeam => {
@@ -845,7 +842,12 @@ pub enum Effect {
     /// Remote TUI out-of-band approval step-up ping (`POST /api/handoff/task/<task>/approval-ping`).
     PingApproval(String),
     /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
-    AssignTaskPerson { task: String, person: String },
+    AssignTaskPerson {
+        task: String,
+        person: String,
+    },
+    /// Suspend the TUI, pull the selected remote task into an isolated local worktree (`toolroll handoff pull`), and resume.
+    HandoffLocal(String),
     FetchLive {
         run: i64,
         file: &'static str,
@@ -1045,7 +1047,10 @@ pub enum Msg {
     LeadChat(Result<LeadChat, ApiError>),
     /// Central Lead message send outcome (POST /chat).
     LeadProvidersChecked(Result<toolroll_api::AgentsRead, ApiError>),
-    LeadSwitched(crate::chat_providers::Membership, Result<toolroll_api::ActOutcome, ApiError>),
+    LeadSwitched(
+        crate::chat_providers::Membership,
+        Result<toolroll_api::ActOutcome, ApiError>,
+    ),
     ChatSent(Result<ChatSendOutcome, ApiError>),
     /// Central Lead proposal confirm/dismiss outcome.
     ProposalActed {
@@ -2441,9 +2446,9 @@ impl App {
                     // If a proposal confirmation dialog is open, verify the pinned proposal still matches.
                     if let Mode::ConfirmProposal(pin) = &self.mode {
                         let still = chat.messages.iter().find_map(|m| {
-                            m.cards.iter().find(|c| {
-                                c.id == pin.id && !c.data && c.state == "pending"
-                            })
+                            m.cards
+                                .iter()
+                                .find(|c| c.id == pin.id && !c.data && c.state == "pending")
                         });
                         let same = still.is_some_and(|c| {
                             c.lines.iter().map(|l| clean(l)).collect::<Vec<_>>() == pin.lines
@@ -2481,7 +2486,10 @@ impl App {
                         if matches!(self.mode, Mode::LeadProviders(_)) {
                             self.mode = Mode::ChatCompose(self.chat.draft.clone());
                         }
-                        self.say(Tone::Said, format!("Lead uses {}. Send your message when ready.", plan.name()));
+                        self.say(
+                            Tone::Said,
+                            format!("Lead uses {}. Send your message when ready.", plan.name()),
+                        );
                         vec![Effect::FetchLeadChat]
                     }
                     Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
@@ -2981,7 +2989,8 @@ impl App {
         match signal {
             LiveSignal::Change(room) if room == "workspace" => {
                 let mut fx = self.fetch_work();
-                if self.chat.loaded && (self.chat.optimistic_sent.is_some() || self.chat.is_busy()) {
+                if self.chat.loaded && (self.chat.optimistic_sent.is_some() || self.chat.is_busy())
+                {
                     self.chat.loading = true;
                     fx.push(Effect::FetchLeadChat);
                 }
@@ -3386,7 +3395,11 @@ impl App {
                 return vec![];
             }
         }
-        if key.code == KeyCode::F(2) && self.agents_screen.is_none() && self.chat_focused() && matches!(self.mode, Mode::Normal | Mode::ChatCompose(_)) {
+        if key.code == KeyCode::F(2)
+            && self.agents_screen.is_none()
+            && self.chat_focused()
+            && matches!(self.mode, Mode::Normal | Mode::ChatCompose(_))
+        {
             return crate::chat_providers::open_providers(self);
         }
         match self.mode.clone() {
@@ -3580,8 +3593,12 @@ impl App {
                     vec![]
                 }
                 KeyCode::Tab if !self.chat.items.is_empty() => {
-                    self.chat.selected_hit = self.chat.hits.first()
-                        .and_then(|(_, hit)| self.chat.items.iter().position(|item| item == hit)).unwrap_or(0);
+                    self.chat.selected_hit = self
+                        .chat
+                        .hits
+                        .first()
+                        .and_then(|(_, hit)| self.chat.items.iter().position(|item| item == hit))
+                        .unwrap_or(0);
                     self.chat.reveal_selection = true;
                     self.chat.draft = text;
                     self.mode = Mode::Normal;
@@ -4434,20 +4451,21 @@ impl App {
                     self.chat.tools_expanded = !self.chat.tools_expanded;
                     return vec![];
                 }
-                KeyCode::Tab | KeyCode::BackTab if self.chat.data.as_ref().is_some_and(|d| d.can_send)
-                    && (self.chat.items.is_empty()
-                        || (key.code == KeyCode::Tab
-                            && self.chat.selected_hit + 1 >= self.chat.items.len())
-                        || (key.code == KeyCode::BackTab
-                            && self.chat.selected_hit
-                                <= self
-                                    .chat
-                                    .hits
-                                    .first()
-                                    .and_then(|(_, hit)| {
-                                        self.chat.items.iter().position(|item| item == hit)
-                                    })
-                                    .unwrap_or(0))) =>
+                KeyCode::Tab | KeyCode::BackTab
+                    if self.chat.data.as_ref().is_some_and(|d| d.can_send)
+                        && (self.chat.items.is_empty()
+                            || (key.code == KeyCode::Tab
+                                && self.chat.selected_hit + 1 >= self.chat.items.len())
+                            || (key.code == KeyCode::BackTab
+                                && self.chat.selected_hit
+                                    <= self
+                                        .chat
+                                        .hits
+                                        .first()
+                                        .and_then(|(_, hit)| {
+                                            self.chat.items.iter().position(|item| item == hit)
+                                        })
+                                        .unwrap_or(0))) =>
                 {
                     self.mode = Mode::ChatCompose(self.chat.draft.clone());
                     return vec![];
@@ -4927,6 +4945,17 @@ impl App {
                 }
                 None => vec![],
             },
+            Action::HandoffLocal => match item.as_ref().filter(|i| i.is_task) {
+                Some(i) => vec![Effect::HandoffLocal(i.id.clone())],
+                None => vec![],
+            },
+            Action::SwitchWorkspace => {
+                self.say(
+                    Tone::Said,
+                    "Switch workspaces with `toolroll connect --list` and `toolroll --remote --profile <name>`.",
+                );
+                vec![]
+            }
             Action::Accept => {
                 let Some(pin) = self.pin_review() else {
                     return vec![];
@@ -6748,7 +6777,8 @@ impl App {
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
-        if self.agents_screen.is_some() && self.mode == Mode::Normal
+        if self.agents_screen.is_some()
+            && self.mode == Mode::Normal
             && ev.kind == MouseEventKind::Down(MouseButton::Left)
             && inside(self.areas.agents_refresh)
         {
@@ -6756,7 +6786,12 @@ impl App {
         }
         if matches!(self.mode, Mode::LeadProviders(_)) {
             if ev.kind == MouseEventKind::Down(MouseButton::Left) {
-                if let Some((_, code)) = self.areas.lead_provider_controls.iter().find(|(r, _)| inside(*r)) {
+                if let Some((_, code)) = self
+                    .areas
+                    .lead_provider_controls
+                    .iter()
+                    .find(|(r, _)| inside(*r))
+                {
                     return self.key(KeyEvent::new(*code, KeyModifiers::NONE));
                 }
             }
@@ -6809,11 +6844,17 @@ impl App {
             let key = match ev.kind {
                 MouseEventKind::ScrollDown => Some(KeyCode::Down),
                 MouseEventKind::ScrollUp => Some(KeyCode::Up),
-                MouseEventKind::Down(MouseButton::Left) => self.areas.approval_controls.iter()
-                    .find(|(rect, _)| inside(*rect)).map(|(_, key)| *key),
+                MouseEventKind::Down(MouseButton::Left) => self
+                    .areas
+                    .approval_controls
+                    .iter()
+                    .find(|(rect, _)| inside(*rect))
+                    .map(|(_, key)| *key),
                 _ => None,
             };
-            return key.map_or_else(Vec::new, |code| self.key(KeyEvent::new(code, KeyModifiers::NONE)));
+            return key.map_or_else(Vec::new, |code| {
+                self.key(KeyEvent::new(code, KeyModifiers::NONE))
+            });
         }
         if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
             if let Some((_, _, link)) = self
@@ -6846,7 +6887,9 @@ impl App {
             }
         }
         if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.tab == Tab::Live {
-            if let Some(&(_, run, target)) = self.areas.steer_targets.iter().find(|(r, _, _)| inside(*r)) {
+            if let Some(&(_, run, target)) =
+                self.areas.steer_targets.iter().find(|(r, _, _)| inside(*r))
+            {
                 if self.steps_here().and_then(|s| s.live_run) != Some(run) {
                     return vec![];
                 }
@@ -6856,14 +6899,21 @@ impl App {
                         return self.run_action(action);
                     }
                     (ComposerClick::Send | ComposerClick::Cancel, Mode::Steer(_)) => {
-                        let key = if target == ComposerClick::Send { KeyCode::Enter } else { KeyCode::Esc };
+                        let key = if target == ComposerClick::Send {
+                            KeyCode::Enter
+                        } else {
+                            KeyCode::Esc
+                        };
                         return self.key(KeyEvent::new(key, KeyModifiers::NONE));
                     }
                     _ => return vec![],
                 }
             }
         }
-        if !matches!(self.mode, Mode::Normal | Mode::TakeOver | Mode::ChatCompose(_)) {
+        if !matches!(
+            self.mode,
+            Mode::Normal | Mode::TakeOver | Mode::ChatCompose(_)
+        ) {
             self.dragging = false;
             return vec![];
         }
@@ -6927,7 +6977,9 @@ impl App {
                     if self.areas.lead_row.width > 0 && inside(self.areas.lead_row) {
                         return self.open_lead_chat();
                     }
-                    if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                    if let Mode::ChatCompose(draft) =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    {
                         self.chat.draft = draft;
                     }
                     self.focus = Focus::List;
@@ -6952,20 +7004,19 @@ impl App {
                         return self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                     }
                     if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
-                        if self.chat.data.as_ref().is_some_and(|d| !d.can_send) { return vec![]; }
+                        if self.chat.data.as_ref().is_some_and(|d| !d.can_send) {
+                            return vec![];
+                        }
                         if !matches!(self.mode, Mode::ChatCompose(_)) {
                             self.mode = Mode::ChatCompose(self.chat.draft.clone());
                         }
                         return vec![];
                     }
-                    if let Some((_, hit)) = self
-                        .chat
-                        .hits
-                        .iter()
-                        .find(|(r, _)| inside(*r))
-                        .cloned()
+                    if let Some((_, hit)) = self.chat.hits.iter().find(|(r, _)| inside(*r)).cloned()
                     {
-                        if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                        if let Mode::ChatCompose(draft) =
+                            std::mem::replace(&mut self.mode, Mode::Normal)
+                        {
                             self.chat.draft = draft;
                         }
                         if let Some(idx) = self.chat.items.iter().position(|x| x == &hit) {
@@ -6976,7 +7027,9 @@ impl App {
                     return vec![];
                 }
                 if self.areas.peek_area.width > 0 && inside(self.areas.peek_area) {
-                    if let Mode::ChatCompose(draft) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                    if let Mode::ChatCompose(draft) =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    {
                         self.chat.draft = draft;
                     }
                     self.focus = Focus::Detail;
@@ -7024,11 +7077,15 @@ impl App {
                 self.select(self.selected.saturating_sub(1))
             }
             MouseEventKind::ScrollDown if inside(self.areas.list) => self.select(self.selected + 1),
-            MouseEventKind::ScrollUp if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) => {
+            MouseEventKind::ScrollUp
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) =>
+            {
                 self.chat.scroll_up(3);
                 vec![]
             }
-            MouseEventKind::ScrollDown if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) => {
+            MouseEventKind::ScrollDown
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) =>
+            {
                 self.chat.scroll_down(3);
                 vec![]
             }
@@ -7825,7 +7882,11 @@ impl App {
                     self.term = None;
                     if let Some(screen) = self.agents_screen.as_mut() {
                         if let Some((_, kind)) = screen.pane.take() {
-                            let label = if kind == "install" { "Install" } else { "Sign-in" };
+                            let label = if kind == "install" {
+                                "Install"
+                            } else {
+                                "Sign-in"
+                            };
                             screen.outcome = Some((
                                 agent.to_string(),
                                 format!("{label} terminal could not open. {}", clean(&words)),
@@ -8069,7 +8130,8 @@ impl App {
         }
         let pane = self.term.as_mut()?;
         let a = pane.area;
-        let inside = pane.drawn && ev.column >= a.x
+        let inside = pane.drawn
+            && ev.column >= a.x
             && ev.row >= a.y
             && ev.column < a.x + a.width
             && ev.row < a.y + a.height;

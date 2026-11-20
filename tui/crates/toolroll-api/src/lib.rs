@@ -3,8 +3,8 @@ pub mod client;
 pub mod connection;
 pub mod models;
 pub mod sse;
-pub mod term;
 pub mod task_builder;
+pub mod term;
 pub use task_builder::{BuilderPicker, TaskBuilder};
 
 pub use client::{

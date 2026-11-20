@@ -956,12 +956,18 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         let mut spans = vec![
             mark_span,
             Span::styled(shown, row_style),
-            Span::styled(" ".repeat(pad + 1), if lead_active { selected() } else { dim() }),
+            Span::styled(
+                " ".repeat(pad + 1),
+                if lead_active { selected() } else { dim() },
+            ),
         ];
         if let Some(b) = badge {
             spans.push(b);
         } else {
-            spans.push(Span::styled("C", if lead_active { selected() } else { dim() }));
+            spans.push(Span::styled(
+                "C",
+                if lead_active { selected() } else { dim() },
+            ));
         }
         pinned.push(Line::from(spans));
         pinned.push(Line::raw(""));
@@ -1017,7 +1023,8 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         v.dedup();
         v.len()
     };
-    let spaced = pinned.len() + lines.len() + sections * 3 + app.items.len() * (per + 1) <= area.height as usize;
+    let spaced = pinned.len() + lines.len() + sections * 3 + app.items.len() * (per + 1)
+        <= area.height as usize;
     let mut last: Option<Section> = None;
     for (index, item) in app.items.iter().enumerate() {
         if last != Some(item.section) {
@@ -1101,7 +1108,9 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "↓ more below · j/k scroll".to_string()
         };
-        app.areas.rows.push((area.y + (pinned_n + take_n) as u16, None));
+        app.areas
+            .rows
+            .push((area.y + (pinned_n + take_n) as u16, None));
         shown.push(Line::from(Span::styled(fit(&label, w), dim())));
     }
     f.render_widget(Paragraph::new(shown), area);
@@ -1314,19 +1323,22 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let builder_task = app.builder_task();
     // The approval terms describe the saved plan. A build card describes the last run.
-    let proposed = app.steps_here().filter(|_| builder_task.is_some()).and_then(|s| {
-        let cards = s.cards.as_ref()?;
-        if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
-            return None;
-        }
-        let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
-        let row = terms
-            .rows
-            .iter()
-            .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
-            .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
-        Some(format!("Awaiting approval · {}", clean(&row.words)))
-    });
+    let proposed = app
+        .steps_here()
+        .filter(|_| builder_task.is_some())
+        .and_then(|s| {
+            let cards = s.cards.as_ref()?;
+            if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
+                return None;
+            }
+            let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
+            let row = terms
+                .rows
+                .iter()
+                .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
+                .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
+            Some(format!("Awaiting approval · {}", clean(&row.words)))
+        });
     // The head: the task with its badge, what runs it, optional proposed-builder note, its step strip, and rule.
     // Reclaim the extra blank row when no proposed-builder note exists so more task content fits above the fold.
     let has_proposed = roomy && proposed.is_some();
@@ -1458,8 +1470,8 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     // Head: the task (a link to its page in the console, ours: link.rs), provenance facts, and the pipeline strip.
     // Give each fact one home (Prägnanz): when the pipeline strip already carries the active stage and there is no
     // mid-build Question chip to surface, omit the duplicate status badge beside the title.
-    let show_title_badge = item.question().is_some()
-        || !app.steps.as_ref().is_some_and(pipeline_carries_stage);
+    let show_title_badge =
+        item.question().is_some() || !app.steps.as_ref().is_some_and(pipeline_carries_stage);
     let badge = show_title_badge.then(|| match look_of(&item).2 {
         None => sheet::chip(&fit(&item.word, 14)),
         Some(role) => sheet::badge(&fit(&item.word, 14), role),
@@ -1485,12 +1497,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         title_spans.push(Span::raw("  "));
         title_spans.push(badge);
     }
-    if let Some(presence) = app
-        .presence
-        .tasks
-        .get(&item.id)
-        .and_then(|p| p.summary())
-    {
+    if let Some(presence) = app.presence.tasks.get(&item.id).and_then(|p| p.summary()) {
         title_spans.push(Span::raw("  "));
         title_spans.push(sheet::badge(&presence, crate::theme::Role::Running));
     }
@@ -1535,7 +1542,11 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         app.areas.spinner_visible = matches!(app.mode, Mode::Normal | Mode::Steer(_))
             && !app.prefs.settings.reduced_motion
             && usize::from(head.height) > head_lines.len()
-            && steps.cards.iter().flatten().any(|c| c.in_chain && c.mark == "live");
+            && steps
+                .cards
+                .iter()
+                .flatten()
+                .any(|c| c.in_chain && c.mark == "live");
         let mark = if app.areas.spinner_visible {
             let frames = if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
                 [marks().running, "/", "-", "\\"]
@@ -1738,19 +1749,27 @@ pub(crate) fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, roomy: boo
     // The keys on the right: Enter and Esc while typing; else steer, pause, stop.
     let buttons: Vec<_> = if typing.is_some() {
         vec![
-            (ComposerClick::Send, sheet::button("Send", marks().enter, true)),
+            (
+                ComposerClick::Send,
+                sheet::button("Send", marks().enter, true),
+            ),
             (ComposerClick::Cancel, sheet::button("Cancel", "Esc", false)),
         ]
     } else {
-        [(Action::Steer, "Steer"), (Action::Pause, "Pause"), (Action::Stop, "Stop")]
-            .into_iter()
-            .filter_map(|(a, label)| {
-                let k = key_name(app, a);
-                (!k.is_empty()).then(|| (ComposerClick::Action(a), sheet::button(label, &k, false)))
-            })
-            .collect()
+        [
+            (Action::Steer, "Steer"),
+            (Action::Pause, "Pause"),
+            (Action::Stop, "Stop"),
+        ]
+        .into_iter()
+        .filter_map(|(a, label)| {
+            let k = key_name(app, a);
+            (!k.is_empty()).then(|| (ComposerClick::Action(a), sheet::button(label, &k, false)))
+        })
+        .collect()
     };
-    let keys_w = buttons.iter().map(|(_, span)| span.width()).sum::<usize>() + buttons.len().saturating_sub(1);
+    let keys_w = buttons.iter().map(|(_, span)| span.width()).sum::<usize>()
+        + buttons.len().saturating_sub(1);
     let show_keys = rows.width as usize >= keys_w + 24;
     let room_all = (rows.width as usize).saturating_sub(if show_keys { keys_w + 2 } else { 0 });
     let mut spans = vec![];
@@ -1785,15 +1804,28 @@ pub(crate) fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, roomy: boo
             ));
         }
     }
-    let live = app.steps_here().and_then(|s| s.live_run)
+    let live = app
+        .steps_here()
+        .and_then(|s| s.live_run)
         .filter(|_| matches!(app.mode, Mode::Normal | Mode::Steer(_)) && app.tab == Tab::Live);
     if let Some(run) = live.filter(|_| app.mode == Mode::Normal) {
-        let input_width = rows.width.saturating_sub(if show_keys { keys_w as u16 } else { 0 });
-        app.areas.steer_targets.push((Rect { width: input_width, ..rows }, run, ComposerClick::Action(Action::Steer)));
+        let input_width = rows
+            .width
+            .saturating_sub(if show_keys { keys_w as u16 } else { 0 });
+        app.areas.steer_targets.push((
+            Rect {
+                width: input_width,
+                ..rows
+            },
+            run,
+            ComposerClick::Action(Action::Steer),
+        ));
     }
     if show_keys {
         let used = sheet::spans_width(&spans);
-        spans.push(Span::raw(" ".repeat((rows.width as usize).saturating_sub(used + keys_w))));
+        spans.push(Span::raw(
+            " ".repeat((rows.width as usize).saturating_sub(used + keys_w)),
+        ));
         let mut x = rows.right() - keys_w as u16;
         for (i, (click, span)) in buttons.into_iter().enumerate() {
             if i > 0 {
@@ -1802,7 +1834,9 @@ pub(crate) fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, roomy: boo
             }
             let width = span.width() as u16;
             if let Some(run) = live {
-                app.areas.steer_targets.push((Rect { x, width, ..rows }, run, click));
+                app.areas
+                    .steer_targets
+                    .push((Rect { x, width, ..rows }, run, click));
             }
             spans.push(span);
             x += width;
@@ -2232,16 +2266,15 @@ fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
             app.areas.steps.push((rect, app.tab, link));
         }
     }
-    let mut rendered: Vec<Line<'static>> = lines
-        .iter()
-        .skip(offset)
-        .take(visible_h)
-        .cloned()
-        .collect();
+    let mut rendered: Vec<Line<'static>> =
+        lines.iter().skip(offset).take(visible_h).cloned().collect();
     if clipped && height >= 3 {
         let rem = lines.len().saturating_sub(offset + visible_h);
         rendered.push(Line::from(Span::styled(
-            fit(&format!("↓ {rem} more lines · j/k scroll"), usize::from(area.width)),
+            fit(
+                &format!("↓ {rem} more lines · j/k scroll"),
+                usize::from(area.width),
+            ),
             dim(),
         )));
     }
@@ -2348,7 +2381,10 @@ fn layout_steps(
         };
         let mut right = match tint {
             Some(role) => vec![sheet::badge(&format!("{outcome}{timing}"), role)],
-            None => vec![Span::styled(outcome, outcome_style), Span::styled(timing, dim())],
+            None => vec![
+                Span::styled(outcome, outcome_style),
+                Span::styled(timing, dim()),
+            ],
         };
         let mut second_line = None;
         if let Some(words) = action.filter(|_| room.hints) {
@@ -2404,7 +2440,9 @@ fn layout_steps(
             c.push(button);
         }
         let sentence = if waiting_approval && card.key == "plan" {
-            card.sentence.strip_suffix(" · shown below").unwrap_or(&card.sentence)
+            card.sentence
+                .strip_suffix(" · shown below")
+                .unwrap_or(&card.sentence)
         } else {
             &card.sentence
         };
@@ -2417,7 +2455,8 @@ fn layout_steps(
             && !active_stage(steps, card)
             && !room.whole();
         let show_details = !compact_done && (expanded || card.mark != "todo" || room.whole());
-        let repeats_status = matches!(link.destination, StepDestination::Live(_)) && sentence == "Building now";
+        let repeats_status =
+            matches!(link.destination, StepDestination::Live(_)) && sentence == "Building now";
         if show_details
             && !repeats_status
             && !sentence.is_empty()
@@ -3521,7 +3560,9 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let composer_visible = app.tab == Tab::Live
         && live
         && app.areas.right.height >= 12
-        && app.selected_item().is_some_and(|i| i.is_task && !i.thread && i.question().is_none());
+        && app
+            .selected_item()
+            .is_some_and(|i| i.is_task && !i.thread && i.question().is_none());
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
         if live && !composer_visible {
             v.push((&[Steer], "steer"));
@@ -3647,10 +3688,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                 ]
             }
             _ => {
-                let mut v: Vec<(&[Action], &str)> = vec![
-                    (&[MoveDown, MoveUp], "scroll"),
-                    (&[Search], "search"),
-                ];
+                let mut v: Vec<(&[Action], &str)> =
+                    vec![(&[MoveDown, MoveUp], "scroll"), (&[Search], "search")];
                 acts(&mut v);
                 if app.panes.layout.count() > 1 {
                     v.push((&[NextPane], "next panel"));
@@ -3812,7 +3851,10 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         .iter()
         .filter(|r| {
             r.scope == crate::keys::Scope::Global
-                && matches!(r.group, crate::keys::Group::Move | crate::keys::Group::Layout)
+                && matches!(
+                    r.group,
+                    crate::keys::Group::Move | crate::keys::Group::Layout
+                )
         })
         .map(|r| cell(&r.keys, &r.words))
         .collect();
@@ -3820,7 +3862,12 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         .iter()
         .filter(|r| {
             r.scope == crate::keys::Scope::Global
-                && matches!(r.group, crate::keys::Group::Act | crate::keys::Group::Filter | crate::keys::Group::Setting)
+                && matches!(
+                    r.group,
+                    crate::keys::Group::Act
+                        | crate::keys::Group::Filter
+                        | crate::keys::Group::Setting
+                )
         })
         .map(|r| cell(&r.keys, &r.words))
         .collect();
@@ -4072,7 +4119,11 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 picker.push(Span::styled(text, style));
             }
-            let mut lines = vec![Line::raw(""), fit_line(Line::from(picker), w), Line::raw("")];
+            let mut lines = vec![
+                Line::raw(""),
+                fit_line(Line::from(picker), w),
+                Line::raw(""),
+            ];
             lines.extend(
                 wrap(
                     &crate::app::take_over_scope_for(&app.attempt_words(*run), program, live),
@@ -4784,7 +4835,15 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         width: w,
         height: h,
     };
-    let block = dialog(f, r, if approving { " Review plan " } else { " New task " });
+    let block = dialog(
+        f,
+        r,
+        if approving {
+            " Review plan "
+        } else {
+            " New task "
+        },
+    );
     if text_w < 16 || visible < 3 {
         // Too small to show them: no in-terminal Build (or approval).
         *seen_end = false;
@@ -4887,15 +4946,34 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         if end < body.len() {
             let row = lines.len() - 1;
             let words = format!("Read more · {} lines left", body.len() - end);
-            lines[row] = add_control(row, sheet::button(&words, "Space", false), KeyCode::PageDown);
+            lines[row] = add_control(
+                row,
+                sheet::button(&words, "Space", false),
+                KeyCode::PageDown,
+            );
         }
         if *seen_end {
-            lines.push(add_control(lines.len(), sheet::button("Approve build", "Enter", true), KeyCode::Enter));
+            lines.push(add_control(
+                lines.len(),
+                sheet::button("Approve build", "Enter", true),
+                KeyCode::Enter,
+            ));
         } else {
-            lines.push(Line::from(Span::styled("Read to the end to approve.", dim())));
+            lines.push(Line::from(Span::styled(
+                "Read to the end to approve.",
+                dim(),
+            )));
         }
-        lines.push(add_control(lines.len(), sheet::button("Open in browser", "w", false), KeyCode::Char('w')));
-        lines.push(add_control(lines.len(), sheet::button("Back", "Esc", false), KeyCode::Esc));
+        lines.push(add_control(
+            lines.len(),
+            sheet::button("Open in browser", "w", false),
+            KeyCode::Char('w'),
+        ));
+        lines.push(add_control(
+            lines.len(),
+            sheet::button("Back", "Esc", false),
+            KeyCode::Esc,
+        ));
         f.render_widget(Paragraph::new(lines).block(block), r);
         return;
     }
@@ -5111,7 +5189,10 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .steps_here()
         .and_then(crate::app::shell_refusal_of)
         .filter(|_| item.is_task);
-    let live_run = app.steps_here().and_then(|s| s.live_run).filter(|_| item.is_task);
+    let live_run = app
+        .steps_here()
+        .and_then(|s| s.live_run)
+        .filter(|_| item.is_task);
     let default_agent = app
         .steps_here()
         .map(crate::app::default_agent_program)
@@ -5139,7 +5220,10 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             if let Some(agent) = worker_agent.filter(|a| !a.is_empty()) {
                 hspans.push(Span::styled(format!(" · {agent}"), ink()));
             }
-            hspans.push(Span::styled(format!(" · {}", app.attempt_words(run)), dim()));
+            hspans.push(Span::styled(
+                format!(" · {}", app.attempt_words(run)),
+                dim(),
+            ));
             let full_hint = "i live agent · s steer · p pause · x stop";
             let short_hint = "i live agent";
             let used = sheet::spans_width(&hspans);
@@ -5260,10 +5344,9 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             "Typing · Ctrl-] back".to_string(),
             ink().patch(crate::theme::fill()),
         ),
-        crate::term::Link::Live if typing => (
-            "Typing".to_string(),
-            ink().patch(crate::theme::fill()),
-        ),
+        crate::term::Link::Live if typing => {
+            ("Typing".to_string(), ink().patch(crate::theme::fill()))
+        }
         crate::term::Link::Live if app.prefs.settings.key_bar => (
             "Running".to_string(),
             crate::theme::badge(crate::theme::Role::Running),

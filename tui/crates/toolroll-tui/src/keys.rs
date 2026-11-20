@@ -121,6 +121,8 @@ actions! {
     FilterWaitingOnTeam = "filter-team", Global, Filter, "Waiting on team", [];
     FilterUnassigned = "filter-unassigned", Global, Filter, "Unassigned", [];
     PingApproval = "ping-approval", Global, Act, "Ping phone for approval", [];
+    HandoffLocal = "handoff-local", Global, Act, "Open code locally (handoff pull)", [];
+    SwitchWorkspace = "switch-workspace", Global, Setting, "Switch central workspace", [];
     NextTheme = "next-theme", Global, Setting, "Next theme, for this session", [];
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];
@@ -238,7 +240,11 @@ const PAIRS: &[(Action, Action, &str)] = &[
         Action::CancelTask,
         "Stop build or retries / cancel task",
     ),
-    (Action::MoveDown, Action::MoveUp, "Move in list / scroll panel"),
+    (
+        Action::MoveDown,
+        Action::MoveUp,
+        "Move in list / scroll panel",
+    ),
     (Action::FocusList, Action::FocusDetail, "Focus list / panel"),
     (
         Action::NextNeedsYou,

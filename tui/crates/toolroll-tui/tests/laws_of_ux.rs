@@ -196,7 +196,10 @@ fn pipeline_gives_each_fact_one_home_and_highlights_active_stage() {
     assert!(shown.contains("✓ Plan"), "{shown}");
     assert!(shown.contains("◐ Build · 4m 12s"), "{shown}");
     assert!(!shown.contains("Building now"), "{shown}");
-    assert!(shown.contains("claude sonnet · $0.31 · attempt 1"), "{shown}");
+    assert!(
+        shown.contains("claude sonnet · $0.31 · attempt 1"),
+        "{shown}"
+    );
 
     // Ready result: solid ink Ready chip on pipeline, no duplicate Result badge beside title.
     let mut app = on("t-done");
@@ -220,8 +223,12 @@ fn top_bar_mode_flags_do_not_steal_solid_ink_and_needs_chip_is_clickable() {
     let needs_x = top.find("2 need you").expect("needs chip");
 
     // Von Restorff / One Signal Rule: ZOOM is NOT reversed solid ink; "2 need you" IS.
-    assert!(!buf[(zoom_x as u16, 0)].modifier.contains(Modifier::REVERSED));
-    assert!(buf[(needs_x as u16, 0)].modifier.contains(Modifier::REVERSED));
+    assert!(!buf[(zoom_x as u16, 0)]
+        .modifier
+        .contains(Modifier::REVERSED));
+    assert!(buf[(needs_x as u16, 0)]
+        .modifier
+        .contains(Modifier::REVERSED));
 
     // Clicking the "2 need you" chip jumps straight to a waiting task (Fitts's Law).
     app.key(key('z'));
@@ -236,7 +243,10 @@ fn top_bar_mode_flags_do_not_steal_solid_ink_and_needs_chip_is_clickable() {
         modifiers: KeyModifiers::NONE,
     });
     answer(&mut app, fx);
-    assert_eq!(app.selected_item().unwrap().section, toolroll_tui::app::Section::NeedsYou);
+    assert_eq!(
+        app.selected_item().unwrap().section,
+        toolroll_tui::app::Section::NeedsYou
+    );
 }
 
 #[test]
@@ -258,7 +268,10 @@ fn palette_ranks_state_relevant_actions_first() {
     // On a waiting Question, its Answer choices rank at the very top.
     let app = on("t-ask");
     let list = palette::matches(&app, "");
-    assert!(matches!(list.first().map(|e| &e.pick), Some(Pick::Answer(0))));
+    assert!(matches!(
+        list.first().map(|e| &e.pick),
+        Some(Pick::Answer(0))
+    ));
 }
 
 fn click_attention(app: &mut App) -> Vec<Effect> {
@@ -335,7 +348,10 @@ fn terminal_releases_list_bindings_on_escape() {
     let mut app = on("t-live");
     app.tab = Tab::Terminal;
     app.focus = Focus::Detail;
-    app.term = Some(toolroll_tui::term::Pane::opening("t-live".into(), fake::LIVE_RUN));
+    app.term = Some(toolroll_tui::term::Pane::opening(
+        "t-live".into(),
+        fake::LIVE_RUN,
+    ));
     draw(&mut app, 120, 30);
     app.key(code(KeyCode::Esc));
     app.key(key('n'));
@@ -356,16 +372,31 @@ fn compact_panel_keeps_the_live_clock_visible_as_time_passes() {
 fn help_shows_custom_shortcuts_for_filters_and_settings() {
     use toolroll_tui::keys::{Keymap, Written};
     let mut app = on("t-live");
-    let (map, warnings) = Keymap::build(None, &[
-        (1, "filter-needs-me".into(), Written::Keys(vec!["f3".into()])),
-        (2, "next-theme".into(), Written::Keys(vec!["f4".into()])),
-    ]);
+    let (map, warnings) = Keymap::build(
+        None,
+        &[
+            (
+                1,
+                "filter-needs-me".into(),
+                Written::Keys(vec!["f3".into()]),
+            ),
+            (2, "next-theme".into(), Written::Keys(vec!["f4".into()])),
+        ],
+    );
     assert!(warnings.is_empty());
     app.prefs.settings.keymap = map;
     app.key(key('?'));
     let help = draw(&mut app, 160, 64).backend().to_string();
-    assert!(help.lines().any(|row| row.contains("F3") && row.contains("Needs me")), "{help}");
-    assert!(help.lines().any(|row| row.contains("F4") && row.contains("Next theme")), "{help}");
+    assert!(
+        help.lines()
+            .any(|row| row.contains("F3") && row.contains("Needs me")),
+        "{help}"
+    );
+    assert!(
+        help.lines()
+            .any(|row| row.contains("F4") && row.contains("Next theme")),
+        "{help}"
+    );
 }
 
 fn left_click(area: ratatui::layout::Rect) -> MouseEvent {
@@ -388,11 +419,19 @@ fn click_the_field_to_steer_and_send_to_the_displayed_attempt() {
     assert_eq!(app.mode, Mode::Steer(String::new()));
     app.paste("Check the navigation");
     draw(&mut app, 160, 40);
-    let (button, _, _) = app.areas.steer_targets.iter().find(|(_, _, hit)| *hit == ComposerClick::Send).copied().unwrap();
+    let (button, _, _) = app
+        .areas
+        .steer_targets
+        .iter()
+        .find(|(_, _, hit)| *hit == ComposerClick::Send)
+        .copied()
+        .unwrap();
     let effects = app.mouse(left_click(button));
-    assert!(matches!(effects.as_slice(), [Effect::Act { path, fields, .. }]
+    assert!(
+        matches!(effects.as_slice(), [Effect::Act { path, fields, .. }]
         if path.ends_with("/steer") && fields.contains(&("note".into(), "Check the navigation".into()))
-            && fields.contains(&("run".into(), run.to_string()))));
+            && fields.contains(&("run".into(), run.to_string())))
+    );
 }
 
 #[test]
@@ -400,11 +439,17 @@ fn only_a_visible_live_stage_animates_and_reduced_motion_keeps_the_clock() {
     let mut app = on("t-live");
     app.spinner_frame = 1;
     let shown = draw(&mut app, 80, 24).backend().to_string();
-    assert!(app.areas.spinner_visible && shown.contains("◓ Build · 4m 12s"), "{shown}");
+    assert!(
+        app.areas.spinner_visible && shown.contains("◓ Build · 4m 12s"),
+        "{shown}"
+    );
     app.prefs.settings.reduced_motion = true;
     app.now += 1;
     let shown = draw(&mut app, 80, 24).backend().to_string();
-    assert!(!app.areas.spinner_visible && shown.contains("◐ Build · 4m 13s"), "{shown}");
+    assert!(
+        !app.areas.spinner_visible && shown.contains("◐ Build · 4m 13s"),
+        "{shown}"
+    );
     app.prefs.settings.reduced_motion = false;
     app.key(key('?'));
     draw(&mut app, 80, 24);
@@ -500,9 +545,13 @@ fn a_stage_in_another_panel_opens_on_that_task_after_its_steps_arrive() {
     let fx = app.run_action(Action::LayoutGrid);
     answer(&mut app, fx);
     draw(&mut app, 220, 50);
-    let (rect, _, link) = app.areas.steps.iter()
+    let (rect, _, link) = app
+        .areas
+        .steps
+        .iter()
         .find(|(_, _, link)| link.task == "t-done" && link.step == "ready")
-        .expect("visible Ready stage in the watched panel").clone();
+        .expect("visible Ready stage in the watched panel")
+        .clone();
     let fx = app.mouse(left_click(rect));
     answer(&mut app, fx);
     assert_eq!(app.items[app.selected].id, link.task);

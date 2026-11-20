@@ -135,6 +135,8 @@ struct Loop {
     term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
     /// A pane's text to open in the editor: run at the top of the loop (the key reader stopped while it runs).
     editor: Option<(String, String)>,
+    /// A remote task to pull into an isolated local worktree (`toolroll handoff pull <task>`): run at the top of the loop.
+    handoff_task: Option<String>,
 }
 
 /// Take over: this session's own terminal on that task's build for `program` (the console lists only its own), else a
@@ -260,6 +262,7 @@ impl Loop {
         let remote = self.client.remote_info();
         match fx {
             Effect::OpenInEditor { name, text } => self.editor = Some((name, text)),
+            Effect::HandoffLocal(task) => self.handoff_task = Some(task),
             Effect::FetchWork => {
                 let p_client = client.clone();
                 let p_tx = tx.clone();
@@ -469,7 +472,11 @@ impl Loop {
                     }
                 }
                 None => {
-                    let path = match page { "lead-providers" => "/settings/lead#lead-config", "projects" => "/projects", _ => "" };
+                    let path = match page {
+                        "lead-providers" => "/settings/lead#lead-config",
+                        "projects" => "/projects",
+                        _ => "",
+                    };
                     let words = format!("Open {}{path} in your browser.", self.client.origin());
                     app.status = Some((crate::app::Tone::Said, words));
                 }
@@ -522,7 +529,13 @@ impl Loop {
             Effect::SwitchLead(plan) => {
                 if remote.is_none() {
                     drop(tokio::spawn(async move {
-                        let result = client.act("/settings/lead/on", &[("agent", plan.id()), ("return", "/chat")], "Lead membership saved.").await;
+                        let result = client
+                            .act(
+                                "/settings/lead/on",
+                                &[("agent", plan.id()), ("return", "/chat")],
+                                "Lead membership saved.",
+                            )
+                            .await;
                         let _ = tx.send(Msg::LeadSwitched(plan, result));
                     }));
                 }
@@ -535,9 +548,7 @@ impl Loop {
                         session: None,
                         lead_name: "Lead".into(),
                         can_send: false,
-                        problem: Some(
-                            "Lead chat is unavailable for this remote account.".into(),
-                        ),
+                        problem: Some("Lead chat is unavailable for this remote account.".into()),
                         project: None,
                         busy: false,
                         pending_proposals: 0,
@@ -700,6 +711,7 @@ async fn event_loop(
         watching: vec![],
         term: None,
         editor: None,
+        handoff_task: None,
     };
     // The launcher's answers on descriptor 4 (one JSON line each, capped): read on a thread of their own.
     if let Some(reader) = opts.control.as_ref().and_then(|c| c.try_clone().ok()) {
@@ -886,6 +898,20 @@ async fn event_loop(
         if let Some((name, text)) = lp.editor.take() {
             drop(std::mem::replace(&mut events, EventStream::new()));
             let said = edit(term, &name, &text, &export_places);
+            app.say(
+                if said.is_ok() {
+                    crate::app::Tone::Said
+                } else {
+                    crate::app::Tone::Refused
+                },
+                said.unwrap_or_else(|e| e),
+            );
+            last_frame = Some(draw(term, &mut app, &mut frames)?);
+            dirty = false;
+        }
+        if let Some(task) = lp.handoff_task.take() {
+            drop(std::mem::replace(&mut events, EventStream::new()));
+            let said = run_local_handoff(term, &task);
             app.say(
                 if said.is_ok() {
                     crate::app::Tone::Said
@@ -1138,4 +1164,92 @@ fn edit(
     _places: &[std::path::PathBuf],
 ) -> Result<String, String> {
     Err("Opening an editor isn't supported here.".into())
+}
+
+#[cfg(unix)]
+fn run_local_handoff(term: &mut Term, task: &str) -> Result<String, String> {
+    let kitty = KITTY.swap(false, Ordering::SeqCst);
+    {
+        let out = term.backend_mut();
+        if kitty {
+            let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
+        }
+        let _ = crossterm::execute!(
+            out,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+    }
+    let _ = terminal::disable_raw_mode();
+
+    let output = std::process::Command::new("toolroll")
+        .args(["handoff", "pull", task])
+        .output();
+    let result = match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if !out.status.success() {
+                let first = stderr
+                    .lines()
+                    .chain(stdout.lines())
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("toolroll handoff pull failed.");
+                Err(first.trim().to_string())
+            } else {
+                let worktree = stdout
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("cd "))
+                    .map(|p| p.trim().to_string());
+                if let Some(dir) = worktree {
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                    println!("Toolroll local handoff ready in {dir}");
+                    println!("Edit locally, run `toolroll handoff push` when ready, then `exit` to return to Toolroll.");
+                    let _ = std::process::Command::new(shell).current_dir(&dir).status();
+                    Ok(format!("Returned from local handoff ({dir})."))
+                } else {
+                    Ok(stdout
+                        .lines()
+                        .next()
+                        .unwrap_or("Local handoff finished.")
+                        .trim()
+                        .to_string())
+                }
+            }
+        }
+        Err(_) => Err("Couldn't run `toolroll handoff pull`: ensure `toolroll` is on PATH.".into()),
+    };
+
+    let _ = terminal::enable_raw_mode();
+    {
+        let out = term.backend_mut();
+        let _ = crossterm::execute!(
+            out,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        );
+        if kitty {
+            let _ = crossterm::execute!(
+                out,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+            KITTY.store(true, Ordering::SeqCst);
+        }
+    }
+    let _ = term.draw(|f| {
+        let area = f.area();
+        f.buffer_mut().set_style(
+            area,
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
+        );
+    });
+    result
+}
+
+#[cfg(not(unix))]
+fn run_local_handoff(_term: &mut Term, _task: &str) -> Result<String, String> {
+    Err("In-TUI local handoff isn't supported on this platform yet — run `toolroll handoff pull` directly.".into())
 }

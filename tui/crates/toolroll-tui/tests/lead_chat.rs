@@ -9,7 +9,10 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use toolroll_api::{ChatSendOutcome, LeadCardPrimary, LeadChat, LiveSignal, LiveTurn, LiveTurnStep, LiveTurnTool, ProposalActOutcome};
+use toolroll_api::{
+    ChatSendOutcome, LeadCardPrimary, LeadChat, LiveSignal, LiveTurn, LiveTurnStep, LiveTurnTool,
+    ProposalActOutcome,
+};
 use toolroll_fake_engine as fake;
 use toolroll_tui::app::{App, Effect, Focus, Mode, Msg, Tab};
 use toolroll_tui::chat::{ChatFocus, ChatHit};
@@ -106,16 +109,28 @@ fn lead_chat_renders_pinned_rail_cards_and_passes_drawn_pairs_contrast() {
     assert!(top_screen.contains("Fleet status"), "{top_screen}");
     assert!(top_screen.contains("Lead note:"), "{top_screen}");
     assert!(top_screen.contains("Fix checkout total"), "{top_screen}");
-    assert!(top_screen.contains("All 14 checkout tests passed."), "{top_screen}");
-    assert!(top_screen.contains("Inspect CSV export diff"), "{top_screen}");
+    assert!(
+        top_screen.contains("All 14 checkout tests passed."),
+        "{top_screen}"
+    );
+    assert!(
+        top_screen.contains("Inspect CSV export diff"),
+        "{top_screen}"
+    );
 
     app.chat.follow_end();
     let bottom_screen = render(&mut app, 120, 42);
     assert!(bottom_screen.contains("New task"), "{bottom_screen}");
-    assert!(bottom_screen.contains("Add coupon edge-case tests"), "{bottom_screen}");
+    assert!(
+        bottom_screen.contains("Add coupon edge-case tests"),
+        "{bottom_screen}"
+    );
     assert!(bottom_screen.contains("Queued:"), "{bottom_screen}");
     assert!(bottom_screen.contains("Message Lead"), "{bottom_screen}");
-    assert!(bottom_screen.contains("Ask Lead anything across all projects"), "{bottom_screen}");
+    assert!(
+        bottom_screen.contains("Ask Lead anything across all projects"),
+        "{bottom_screen}"
+    );
 
     // Receiving `state: "idle"` from `/live?room=chat` must NEVER show "Thinking…" or busy state!
     let fx = app.update(Msg::Signal(LiveSignal::Turn {
@@ -133,7 +148,10 @@ fn lead_chat_renders_pinned_rail_cards_and_passes_drawn_pairs_contrast() {
     assert!(fx.is_empty());
     assert!(!app.chat.is_busy());
     let idle_screen = render(&mut app, 120, 42);
-    assert!(!idle_screen.contains("Thinking…"), "idle turn must not show Thinking:\n{idle_screen}");
+    assert!(
+        !idle_screen.contains("Thinking…"),
+        "idle turn must not show Thinking:\n{idle_screen}"
+    );
 
     // Every cell drawn across Light, Dark, HighContrast and ASCII fallback obeys theme::DRAWN_PAIRS.
     app.chat_docked = true;
@@ -182,13 +200,19 @@ fn live_turn_streams_status_collapsible_tools_and_partial_text() {
         room: "chat".into(),
         turn,
     }));
-    assert!(fx.is_empty(), "in-progress turn does not refetch whole chat yet");
+    assert!(
+        fx.is_empty(),
+        "in-progress turn does not refetch whole chat yet"
+    );
 
     let collapsed = render(&mut app, 120, 36);
     assert!(collapsed.contains("Writing…"), "{collapsed}");
     assert!(collapsed.contains("2 tool steps"), "{collapsed}");
     assert!(collapsed.contains("Reviewing t-done now"), "{collapsed}");
-    assert!(!collapsed.contains("5 tasks"), "tools start collapsed:\n{collapsed}");
+    assert!(
+        !collapsed.contains("5 tasks"),
+        "tools start collapsed:\n{collapsed}"
+    );
 
     // Press Esc to exit chatbox typing into browse mode, then `e` to expand tool steps
     app.key(code(KeyCode::Esc));
@@ -242,7 +266,10 @@ fn proposal_confirmation_requires_drawn_dialog_seen_end_and_irreversible_arming(
     app.key(code(KeyCode::Esc));
     assert_eq!(app.chat.current_hit(), Some(&ChatHit::ConfirmProposal(102)));
     let fx = app.key(code(KeyCode::Enter));
-    assert!(fx.is_empty(), "Enter opens confirm dialog, never sends directly");
+    assert!(
+        fx.is_empty(),
+        "Enter opens confirm dialog, never sends directly"
+    );
     assert!(matches!(app.mode, Mode::ConfirmProposal(_)));
 
     // Before drawing the dialog, Enter is refused (UNDRAWN).
@@ -251,8 +278,14 @@ fn proposal_confirmation_requires_drawn_dialog_seen_end_and_irreversible_arming(
 
     // Draw the dialog: seen_end becomes true, but irreversible is not yet armed.
     let dialog_screen = render(&mut app, 120, 34);
-    assert!(dialog_screen.contains("Confirm exactly this proposal"), "{dialog_screen}");
-    assert!(dialog_screen.contains("I understand this cannot be undone"), "{dialog_screen}");
+    assert!(
+        dialog_screen.contains("Confirm exactly this proposal"),
+        "{dialog_screen}"
+    );
+    assert!(
+        dialog_screen.contains("I understand this cannot be undone"),
+        "{dialog_screen}"
+    );
 
     // Pressing Enter before arming refuses and emits nothing.
     let fx = app.key(code(KeyCode::Enter));
@@ -262,7 +295,10 @@ fn proposal_confirmation_requires_drawn_dialog_seen_end_and_irreversible_arming(
     // Arm with `a`, redraw so drawn_dialog matches armed state, then Enter emits ProposalAct with confirm_yes = true.
     app.key(key('a'));
     let armed_screen = render(&mut app, 120, 34);
-    assert!(armed_screen.contains("[x] I understand this cannot be undone"), "{armed_screen}");
+    assert!(
+        armed_screen.contains("[x] I understand this cannot be undone"),
+        "{armed_screen}"
+    );
     let fx = app.key(code(KeyCode::Enter));
     assert_eq!(
         fx,
@@ -327,7 +363,10 @@ fn slice_3_docked_chat_and_peek_inspector_with_task_link_jump() {
     assert!(app.areas.chat_area.width > 40, "chat_area should be wide");
     assert!(app.areas.peek_area.width > 40, "peek_area should be wide");
     assert!(screen.contains("DOCKED"), "{screen}");
-    assert!(screen.contains("Fix the login redirect"), "peek panel shows selected task:\n{screen}");
+    assert!(
+        screen.contains("Fix the login redirect"),
+        "peek panel shows selected task:\n{screen}"
+    );
 
     // Select the task link to `t-done` (Diff) inside the Lead card and activate it with Enter!
     let link_idx = app
@@ -348,7 +387,10 @@ fn slice_3_docked_chat_and_peek_inspector_with_task_link_jump() {
 
     let peeked = render(&mut app, 160, 40);
     assert!(peeked.contains("Add CSV export"), "{peeked}");
-    assert!(peeked.contains("Chat with Lead") || peeked.contains("Message Lead"), "{peeked}");
+    assert!(
+        peeked.contains("Chat with Lead") || peeked.contains("Message Lead"),
+        "{peeked}"
+    );
 
     // `o` toggles focus smoothly back to Lead Chat!
     app.key(key('o'));
@@ -406,7 +448,10 @@ async fn end_to_end_fake_engine_chat_send_proposal_and_sse_turn() {
         .unwrap_or(0)
         == 0
     {
-        assert!(std::time::Instant::now() < deadline, "/live did not connect");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "/live did not connect"
+        );
         tokio::task::yield_now().await;
     }
     // Keep emitting until the broadcast subscriber has registered and received the turn snapshot.
@@ -498,11 +543,27 @@ fn provider_failure_offers_checked_memberships_and_keeps_a_retry_explicit() {
     assert!(app.key(key('1')).is_empty());
     assert_eq!(app.mode, Mode::LeadProviders(None));
     let mut agents: toolroll_api::AgentsRead = parse(fake::scenario().agents);
-    agents.agents.iter_mut().find(|row| row.id == "codex").unwrap().state = "signed-in".into();
+    agents
+        .agents
+        .iter_mut()
+        .find(|row| row.id == "codex")
+        .unwrap()
+        .state = "signed-in".into();
     app.update(Msg::LeadProvidersChecked(Ok(agents)));
     let click = |app: &mut App, key| {
-        let area = app.areas.lead_provider_controls.iter().find(|(_, k)| *k == key).unwrap().0;
-        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE })
+        let area = app
+            .areas
+            .lead_provider_controls
+            .iter()
+            .find(|(_, k)| *k == key)
+            .unwrap()
+            .0;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
     };
     for theme in [ThemeName::Light, ThemeName::Dark] {
         app.prefs.theme = Theme::build(theme, Depth::TrueColor, None, &[]).0;
@@ -513,12 +574,20 @@ fn provider_failure_offers_checked_memberships_and_keeps_a_retry_explicit() {
     assert_eq!(app.mode, Mode::LeadProviders(Some(Membership::Codex)));
     let confirmed = render(&mut app, 48, 24);
     assert!(confirmed.contains("50 turns"));
-    assert_eq!(click(&mut app, KeyCode::Enter), [Effect::SwitchLead(Membership::Codex)]);
+    assert_eq!(
+        click(&mut app, KeyCode::Enter),
+        [Effect::SwitchLead(Membership::Codex)]
+    );
     assert!(app.key(code(KeyCode::Enter)).is_empty());
-    let effects = app.update(Msg::LeadSwitched(Membership::Codex, Ok(toolroll_api::ActOutcome::Done("Saved".into()))));
+    let effects = app.update(Msg::LeadSwitched(
+        Membership::Codex,
+        Ok(toolroll_api::ActOutcome::Done("Saved".into())),
+    ));
     assert_eq!(effects, [Effect::FetchLeadChat]);
     assert_eq!(app.mode, Mode::ChatCompose("What needs me?".into()));
-    assert!(!app.update(Msg::LeadChat(Ok(data))).contains(&Effect::CheckLeadProviders));
+    assert!(!app
+        .update(Msg::LeadChat(Ok(data)))
+        .contains(&Effect::CheckLeadProviders));
 }
 
 #[test]
@@ -528,10 +597,20 @@ fn provider_check_is_available_without_an_error_and_never_steals_a_new_draft() {
     app.key(key('H'));
     render(&mut app, 100, 30);
     let area = app.areas.lead_providers_button;
-    assert_eq!(app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE }), [Effect::CheckLeadProviders]);
+    assert_eq!(
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE
+        }),
+        [Effect::CheckLeadProviders]
+    );
     let checked = render(&mut app, 100, 30);
     assert!(checked.contains("Checking local sign-ins"));
-    app.update(Msg::LeadProvidersChecked(Err(toolroll_api::ApiError::Unreachable("Offline".into()))));
+    app.update(Msg::LeadProvidersChecked(Err(
+        toolroll_api::ApiError::Unreachable("Offline".into()),
+    )));
     assert!(render(&mut app, 100, 30).contains("Offline"));
     assert_eq!(app.key(key('r')), [Effect::CheckLeadProviders]);
     render(&mut app, 100, 30);
@@ -541,9 +620,13 @@ fn provider_check_is_available_without_an_error_and_never_steals_a_new_draft() {
     let mut data = app.chat.data.clone().unwrap();
     data.busy = false;
     data.problem = Some("Confirm the cost on the Chat page.".into());
-    assert!(!app.update(Msg::LeadChat(Ok(data))).contains(&Effect::CheckLeadProviders));
+    assert!(!app
+        .update(Msg::LeadChat(Ok(data)))
+        .contains(&Effect::CheckLeadProviders));
     app.chat.last_submission = Some("Earlier message".into());
-    app.update(Msg::ChatSent(Ok(ChatSendOutcome::Refused("Unavailable".into()))));
+    app.update(Msg::ChatSent(Ok(ChatSendOutcome::Refused(
+        "Unavailable".into(),
+    ))));
     assert_eq!(app.mode, Mode::ChatCompose("H".into()));
 }
 
@@ -553,12 +636,20 @@ fn a_missing_membership_opens_the_correct_agent_setup() {
     app.key(key('C'));
     app.key(code(KeyCode::F(2)));
     let mut agents: toolroll_api::AgentsRead = parse(fake::scenario().agents);
-    agents.agents.iter_mut().find(|row| row.id == "codex").unwrap().state = "not-installed".into();
+    agents
+        .agents
+        .iter_mut()
+        .find(|row| row.id == "codex")
+        .unwrap()
+        .state = "not-installed".into();
     app.update(Msg::LeadProvidersChecked(Ok(agents)));
     assert!(render(&mut app, 80, 24).contains("Codex membership · Install"));
     let fx = app.key(key('1'));
     assert!(fx.contains(&Effect::FetchModels));
-    assert_eq!(app.agents_screen.as_ref().unwrap().agent.as_deref(), Some("codex"));
+    assert_eq!(
+        app.agents_screen.as_ref().unwrap().agent.as_deref(),
+        Some("codex")
+    );
 }
 
 #[test]
@@ -566,9 +657,14 @@ fn click_message_field_type_and_submit_without_a_shortcut() {
     let mut app = loaded_app();
     app.key(key('C'));
     app.key(code(KeyCode::Esc));
-    let click = |app: &mut App, area: ratatui::layout::Rect| app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left), column: area.x, row: area.y, modifiers: KeyModifiers::NONE,
-    });
+    let click = |app: &mut App, area: ratatui::layout::Rect| {
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
     for w in [48, 120] {
         let screen = render(&mut app, w, 28);
         assert!(!screen.contains("i to chat") && !screen.contains("chatbox"));
@@ -623,11 +719,24 @@ fn chat_choices_match_their_mouse_targets_and_keep_numbers_in_drafts() {
         assert!(matches!(&app.mode, Mode::ChatCompose(text) if text == "2"));
         app.key(code(KeyCode::Tab));
         let shown = render(&mut app, width, 34);
-        assert_eq!(shown.matches("Manage projects (browser)").count(), 1, "{shown}");
+        assert_eq!(
+            shown.matches("Manage projects (browser)").count(),
+            1,
+            "{shown}"
+        );
         let choices = app.chat.numbered_choices.clone();
-        let digit = |hit: &ChatHit| char::from_digit(1 + choices.iter().position(|h| h == hit).unwrap() as u32, 10).unwrap();
+        let digit = |hit: &ChatHit| {
+            char::from_digit(
+                1 + choices.iter().position(|h| h == hit).unwrap() as u32,
+                10,
+            )
+            .unwrap()
+        };
         app.key(key(digit(&ChatHit::ManageProjects)));
-        assert_eq!(app.key(code(KeyCode::Enter)), vec![Effect::OpenPage("projects")]);
+        assert_eq!(
+            app.key(code(KeyCode::Enter)),
+            vec![Effect::OpenPage("projects")]
+        );
         assert_eq!(app.chat.draft, "2");
         app.key(key(digit(&ChatHit::ConfirmProposal(102))));
         app.key(code(KeyCode::Down));
@@ -637,10 +746,27 @@ fn chat_choices_match_their_mouse_targets_and_keep_numbers_in_drafts() {
         assert!(matches!(app.mode, Mode::ConfirmProposal(_)));
         app.key(code(KeyCode::Esc));
         render(&mut app, width, 34);
-        let rect = app.chat.hits.iter().find(|(_, hit)| *hit == ChatHit::DismissProposal(102)).unwrap().0;
-        let fx = app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 5, row: rect.y, modifiers: KeyModifiers::NONE });
-        assert_eq!(fx, vec![Effect::ProposalAct { id: 102, op: "dismiss", confirm_yes: false }]);
+        let rect = app
+            .chat
+            .hits
+            .iter()
+            .find(|(_, hit)| *hit == ChatHit::DismissProposal(102))
+            .unwrap()
+            .0;
+        let fx = app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 5,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            fx,
+            vec![Effect::ProposalAct {
+                id: 102,
+                op: "dismiss",
+                confirm_yes: false
+            }]
+        );
     }
 }
 
@@ -649,7 +775,16 @@ fn lead_chat_shows_mission_control_fleet_vitals_above_the_fold() {
     let mut app = loaded_app();
     app.key(key('C'));
     let shown = render(&mut app, 120, 28);
-    assert!(shown.contains("2 need you"), "expected needs-you telemetry in Lead header:\n{shown}");
-    assert!(shown.contains("2 working"), "expected working telemetry in Lead header:\n{shown}");
-    assert!(shown.contains("D dock task"), "expected dock hint in Lead header:\n{shown}");
+    assert!(
+        shown.contains("2 need you"),
+        "expected needs-you telemetry in Lead header:\n{shown}"
+    );
+    assert!(
+        shown.contains("2 working"),
+        "expected working telemetry in Lead header:\n{shown}"
+    );
+    assert!(
+        shown.contains("D dock task"),
+        "expected dock hint in Lead header:\n{shown}"
+    );
 }

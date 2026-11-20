@@ -278,6 +278,10 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.task-handoff-person": { local: "allow", why: "hand a visible task to a project-authorized teammate (CSRF/key or pinned remote act token)" },
   "edge.handoff-candidates": { local: "allow", why: "observational read of uploaded local code candidates for a visible task" },
   "edge.handoff-promote": { local: "allow", why: "queue a SHA-256 verified local code candidate for central worker checks (approver CSRF/key or remote act token)" },
+  "edge.connect-pair-start": { local: "deny", why: "CLI device pairing initiation; never uses a cookie" },
+  "edge.connect-pair-poll": { local: "deny", why: "CLI device pairing one-time token pickup; never uses a cookie" },
+  "edge.connect-pair-page": { local: "deny", why: "browser pairing confirmation requires a full password-authenticated session" },
+  "edge.connect-pair-confirm": { local: "deny", why: "minting an API token is a credential step-up act; refuses local-owner sessions" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -366,6 +370,10 @@ edge("remote", "edge.handoff-promote", "POST", `^\\/api\\/handoff\\/task\\/${TAS
 edge("remote", "edge.approval-ping", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/approval-ping$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/approval-ping" });
 edge("remote", "edge.remote-terminals", "GET", "/api/handoff/terminals", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.presence", "GET", "/api/presence", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.connect-pair-start", "POST", "/api/connect/pair/start");
+edge("remote", "edge.connect-pair-poll", "POST", "/api/connect/pair/poll");
+edge("remote", "edge.connect-pair-page", "GET", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { sample: "/connect/pair/ABCD-EFGH" });
+edge("remote", "edge.connect-pair-confirm", "POST", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { callers: ["cookie"], scope: "step-up", viewer: true, proof: "adapter", sample: "/connect/pair/ABCD-EFGH" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });

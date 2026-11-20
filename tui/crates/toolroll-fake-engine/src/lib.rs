@@ -1157,11 +1157,7 @@ async fn act(
     if let Some(rest) = path.strip_prefix("/chat/proposal/") {
         if let Some((id_str, op)) = rest.split_once('/') {
             if let (Ok(id), true) = (id_str.parse::<i64>(), op == "confirm" || op == "dismiss") {
-                let confirm_yes = st
-                    .acts
-                    .last()
-                    .and_then(|a| a.field("confirm"))
-                    == Some("yes");
+                let confirm_yes = st.acts.last().and_then(|a| a.field("confirm")) == Some("yes");
                 let mut found = false;
                 let mut refused: Option<String> = None;
                 let mut filed_task: Option<String> = None;
@@ -1241,7 +1237,10 @@ async fn act(
                 } else {
                     "Confirmed."
                 };
-                return json_answer(200, json!({ "ok": true, "said": said, "taskId": filed_task }));
+                return json_answer(
+                    200,
+                    json!({ "ok": true, "said": said, "taskId": filed_task }),
+                );
             }
         }
     }
@@ -1254,10 +1253,16 @@ async fn act(
                     q.retain(|item| item["id"].as_i64() != Some(id));
                     if q.len() != before {
                         let _ = s.changes.send(LiveMsg::Change("chat".into()));
-                        return json_answer(200, json!({ "ok": true, "said": "Removed. It won't be sent." }));
+                        return json_answer(
+                            200,
+                            json!({ "ok": true, "said": "Removed. It won't be sent." }),
+                        );
                     }
                 }
-                return json_answer(404, json!({ "ok": false, "said": "That message isn't waiting." }));
+                return json_answer(
+                    404,
+                    json!({ "ok": false, "said": "That message isn't waiting." }),
+                );
             }
         }
     }

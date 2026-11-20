@@ -306,7 +306,11 @@ pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
 }
 
 /// Central/remote view file, isolated per `(workspace_id, account)`.
-pub fn remote_path(env: &crate::settings::Env, workspace_id: &str, account: &str) -> Option<PathBuf> {
+pub fn remote_path(
+    env: &crate::settings::Env,
+    workspace_id: &str,
+    account: &str,
+) -> Option<PathBuf> {
     let tag = crate::state::remote_namespace_hash(workspace_id, account);
     crate::state::path(env).map(|p| p.with_file_name(format!("view-remote-{tag}.json")))
 }
@@ -499,8 +503,10 @@ mod tests {
         assert_ne!(a_alice, b_alice);
         assert_eq!(local.parent(), a_alice.parent());
         let key_local = project_key("/srv/app");
-        let key_remote_a = remote_project_key("11111111-1111-4111-8111-111111111111", "alice", "/srv/app");
-        let key_remote_b = remote_project_key("22222222-2222-4222-8222-222222222222", "alice", "/srv/app");
+        let key_remote_a =
+            remote_project_key("11111111-1111-4111-8111-111111111111", "alice", "/srv/app");
+        let key_remote_b =
+            remote_project_key("22222222-2222-4222-8222-222222222222", "alice", "/srv/app");
         assert_ne!(key_local, key_remote_a);
         assert_ne!(key_remote_a, key_remote_b);
     }

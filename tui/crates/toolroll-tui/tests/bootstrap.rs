@@ -375,7 +375,10 @@ mod native {
         let (output, root) = run(value.to_string().as_bytes());
         assert_eq!(output.status.code(), Some(EXIT_CENTRAL_UNAVAILABLE));
         let err = String::from_utf8(output.stderr).unwrap();
-        assert!(err.contains("Couldn't connect to central workspace"), "{err}");
+        assert!(
+            err.contains("Couldn't connect to central workspace"),
+            "{err}"
+        );
         assert!(!err.contains("so_"));
         assert!(!err.contains("classic"));
         assert!(output.stdout.is_empty());

@@ -3,6 +3,7 @@
  * (remote-exec.ts) and `toolroll health` sign in with it; nothing here opens the local database except to find the
  * existing local sign-in for --local-login.
  */
+import { spawn } from 'node:child_process';
 import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -22,12 +23,17 @@ import { PASSWORD_PROFILE_WARNING } from './password-bearer.js';
 export type ConnectOptions = {
   fetch?: typeof fetch; env?: NodeJS.ProcessEnv; home?: string; profileFile?: string;
   readStdin?: () => Promise<string>; stderr?: (line: string) => void; signal?: AbortSignal;
+  openBrowser?: (url: string) => void; pollIntervalMs?: number;
 };
-const HELP = `toolroll connect <HTTPS-origin> --as <account> --token-stdin
+const HELP = `toolroll connect <HTTPS-origin> --browser [--profile <name>]
+  Opens your browser to confirm an 8-character code and mint a personal API token automatically.
+toolroll connect <HTTPS-origin> --as <account> --token-stdin
   Pipe your API token (so_…, from Settings → API tokens) or use --token-file <private-file>;
   --local-login uses your existing local sign-in.
-  With an API token saved, other commands run on that server as you (--local runs here).
-  Optional: --profile <name> (saved as the active profile).`;
+toolroll connect --list
+  List saved central profiles (never prints tokens).
+toolroll connect --use <name>
+  Switch the active central profile.`;
 export class UsageError extends Error {}
 /** Credentials are never sent to a URL with embedded authority, an API path, query, fragment or an insecure remote
  * host. Fetch cannot follow redirects. */
@@ -209,8 +215,8 @@ async function responseBody(response: Response): Promise<unknown> {
 }
 type ConnectReply = { version: 1; ok: boolean; code: string; message: string; result?: unknown };
 function parse(argv: readonly string[]): { flags: Flags; positions: string[] } {
-  const allowed = new Set(['profile', 'json', 'help', 'as', 'token-stdin', 'token-file', 'local-login', 'login-file']);
-  const switches = new Set(['json', 'help', 'token-stdin', 'local-login']);
+  const allowed = new Set(['profile', 'json', 'help', 'as', 'token-stdin', 'token-file', 'local-login', 'login-file', 'browser', 'list', 'use']);
+  const switches = new Set(['json', 'help', 'token-stdin', 'local-login', 'browser', 'list']);
   const flags: Flags = {}, positions: string[] = [];
   for (let index = 1; index < argv.length; index++) {
     const arg = argv[index]!;
@@ -221,8 +227,91 @@ function parse(argv: readonly string[]): { flags: Flags; positions: string[] } {
     if (switches.has(name)) flags[name] = true;
     else { const next = argv[++index]; if (!next || next.startsWith('--')) throw new UsageError(`--${name} needs a value.`); flags[name] = next; }
   }
-  if (positions.length !== 1 && !flags.help) throw new UsageError('Name one service origin.');
+  if (positions.length !== 1 && !flags.help && !flags.list && !flags.use) throw new UsageError('Name one service origin.');
   return { flags, positions };
+}
+
+function pairPostJson(origin: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null }> {
+  const safeOrigin = serviceOrigin(origin);
+  const url = new URL(path, safeOrigin);
+  const reqFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
+  const serialized = body === undefined ? '' : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = reqFn(url, {
+      method: 'POST',
+      timeout: 15_000,
+      headers: {
+        accept: 'application/json',
+        ...(serialized === '' ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(serialized)) }),
+      },
+    }, res => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400) { res.resume(); resolve({ status, json: null }); return; }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 64 * 1024) { req.destroy(); resolve({ status, json: null }); return; }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        try { resolve({ status, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> }); }
+        catch { resolve({ status, json: null }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out.')); });
+    if (serialized !== '') req.write(serialized);
+    req.end();
+  });
+}
+
+function launchBrowserUrl(url: string): void {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.unref();
+  } catch { /* user still sees the printed URL */ }
+}
+
+async function pairViaBrowser(origin: string, stderr: (line: string) => void, options: ConnectOptions): Promise<{ account: string; token: string }> {
+  const started = await pairPostJson(origin, '/api/connect/pair/start');
+  if (started.status !== 200 || started.json === null || started.json['ok'] !== true
+    || typeof started.json['userCode'] !== 'string' || typeof started.json['pollSecret'] !== 'string'
+    || typeof started.json['verificationPath'] !== 'string') {
+    const msg = typeof started.json?.['message'] === 'string' ? started.json['message'] : `Central server refused browser pairing (status ${started.status}).`;
+    throw new UsageError(msg);
+  }
+  const userCode = started.json['userCode'];
+  const pollSecret = started.json['pollSecret'];
+  const verifyUrl = `${origin}${started.json['verificationPath']}`;
+  stderr(`Confirm code ${userCode} in your browser:`);
+  stderr(`  ${verifyUrl}`);
+  if (options.openBrowser) options.openBrowser(verifyUrl);
+  else launchBrowserUrl(verifyUrl);
+
+  const deadline = Date.now() + 5 * 60_000;
+  const intervalMs = Math.max(10, Math.min(5_000, options.pollIntervalMs ?? 1_500));
+  while (Date.now() < deadline) {
+    if (options.signal?.aborted) throw new UsageError('Browser pairing cancelled.');
+    const polled = await pairPostJson(origin, '/api/connect/pair/poll', { pollSecret });
+    if (polled.status === 200 && polled.json !== null) {
+      if (polled.json['status'] === 'approved' && typeof polled.json['account'] === 'string' && typeof polled.json['token'] === 'string') {
+        return { account: polled.json['account'], token: polled.json['token'] };
+      }
+      if (polled.json['status'] === 'pending') {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, intervalMs);
+          if (options.signal) options.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+        });
+        continue;
+      }
+    }
+    const msg = typeof polled.json?.['message'] === 'string' ? polled.json['message'] : 'Browser pairing expired or was cancelled.';
+    throw new UsageError(msg);
+  }
+  throw new UsageError('Browser pairing timed out. Run toolroll connect --browser again.');
 }
 function isMessage(one: unknown): boolean {
   return record(one) && Number.isSafeInteger(one.id) && typeof one.author === 'string' && ['operator', 'assistant'].includes(String(one.role)) && typeof one.text === 'string' && ['queued', 'running', 'answered', 'failed', 'cancelled', 'uncertain'].includes(String(one.status)) && Number.isSafeInteger(one.revision) && typeof one.createdAt === 'string' && (one.requestId === null || typeof one.requestId === 'string') && (one.turnId === null || Number.isSafeInteger(one.turnId)) && (one.error === null || typeof one.error === 'string');
@@ -273,14 +362,52 @@ export async function maybeRunConnectCommand(argv: readonly string[], write: (li
     if (argv.includes('--help')) { write(HELP); return 0; }
     const { flags, positions } = parse(argv);
     if (flags.help) { write(HELP); return 0; }
+    if (flags.list) {
+      const saved = profiles(options);
+      const list = saved === null ? [] : Object.entries(saved.profiles).map(([name, one]) => ({
+        name,
+        active: name === saved.active,
+        origin: one.origin,
+        account: one.account,
+        ...(one.label === undefined ? {} : { label: one.label }),
+        ...(one.workspaceId === undefined ? {} : { workspaceId: one.workspaceId }),
+      }));
+      if (json) {
+        write(envelopeJson({ version: 1, ok: true, code: 'ok', message: `${list.length} saved profile${list.length === 1 ? '' : 's'}.`, command: 'team connect', result: { profiles: list } }));
+      } else if (list.length === 0) {
+        write('No saved central profiles. Run: toolroll connect <https://origin> --browser');
+      } else {
+        for (const item of list) {
+          const mark = item.active ? '*' : ' ';
+          const label = item.label ? ` (${item.label})` : '';
+          write(`${mark} ${item.name}  ${item.account}@${item.origin}${label}`);
+        }
+      }
+      return 0;
+    }
+    if (flags.use) {
+      const chosen = value(flags, 'use');
+      const saved = profiles(options);
+      if (saved === null || !/^[A-Za-z0-9_-]{1,64}$/.test(chosen) || !Object.hasOwn(saved.profiles, chosen)) {
+        throw new UsageError(`No saved connection named ${chosen}. Run toolroll connect --list to see saved profiles.`);
+      }
+      saveProfile(options, chosen, saved.profiles[chosen]!);
+      emit({ version: 1, ok: true, code: 'switched', message: `Active profile switched to ${chosen} (${saved.profiles[chosen]!.origin}).`, result: { profile: chosen, origin: saved.profiles[chosen]!.origin, account: saved.profiles[chosen]!.account } });
+      return 0;
+    }
     const profileName = value(flags, 'profile') || 'default';
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(profileName)) throw new UsageError('Profile names use 1–64 letters, digits, underscores or hyphens.');
     let origin: string;
     try { origin = serviceOrigin(positions[0]!); } catch { throw new UsageError('Use an HTTPS service origin (loopback HTTP is allowed), without credentials, paths, query or fragment.'); }
-    if (['token-stdin', 'token-file', 'local-login'].filter(name => flags[name]).length !== 1) throw new UsageError('Choose one credential source: --token-stdin, --token-file or --local-login.');
+    if (['browser', 'token-stdin', 'token-file', 'local-login'].filter(name => flags[name]).length !== 1) throw new UsageError('Choose one credential source: --browser, --token-stdin, --token-file or --local-login.');
     if (flags['login-file'] && !flags['local-login']) throw new UsageError('--login-file requires --local-login.');
     let account = value(flags, 'as');
-    if (flags['local-login']) {
+    if (flags.browser) {
+      const paired = await pairViaBrowser(origin, stderr, options);
+      if (account && account !== paired.account) throw new UsageError(`Browser signed in as ${paired.account}, not ${account}.`);
+      account = paired.account;
+      secret = paired.token;
+    } else if (flags['local-login']) {
       const login = privateFile(value(flags, 'login-file') || savedLoginFile(dirname(databasePath(options.env ?? process.env, options.home ?? homedir()))), 8192).trim().split(/\s+/);
       if (login.length !== 2 || account && account !== login[0]) throw new UsageError('The local sign-in does not match the requested account.');
       account = login[0]!; secret = login[1]!;

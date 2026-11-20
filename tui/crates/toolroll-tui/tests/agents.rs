@@ -221,12 +221,18 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
 #[test]
 fn unknown_login_can_be_rechecked_in_place_after_a_launcher_failure() {
     let mut read = fake::fixture("agents.json");
-    let codex = read["agents"].as_array_mut().unwrap().iter_mut()
-        .find(|row| row["id"] == "codex").unwrap();
+    let codex = read["agents"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "codex")
+        .unwrap();
     codex["state"] = "unknown".into();
     let mut app = open(read);
     let groups = toolroll_tui::agents::groups(app.agents.as_ref().unwrap());
-    let group = groups.iter().find(|(_, rows)| rows.iter().any(|row| row.id == "codex"));
+    let group = groups
+        .iter()
+        .find(|(_, rows)| rows.iter().any(|row| row.id == "codex"));
     assert_eq!(group.map(|(name, _)| *name), Some("Needs a check"));
     select(&mut app, "codex");
     app.key(key('s'));
@@ -243,7 +249,11 @@ fn unknown_login_can_be_rechecked_in_place_after_a_launcher_failure() {
     });
     assert_eq!(effects, vec![Effect::CheckAgents]);
     let mut refreshed = app.agents.clone().unwrap();
-    let codex = refreshed.agents.iter_mut().find(|a| a.id == "codex").unwrap();
+    let codex = refreshed
+        .agents
+        .iter_mut()
+        .find(|a| a.id == "codex")
+        .unwrap();
     codex.state = "signed-in".into();
     codex.ready = true;
     app.update(Msg::Agents(Ok(refreshed)));
