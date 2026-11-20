@@ -9,7 +9,7 @@ import { addApprover, propose, approve } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
 import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD } from "./fleet-schema.js";
 import { V177_SCHEMA } from "./workspace-identity-schema.js";
-import { V178_INDEX } from "./check-recovery-index-schema.js";
+import { V178_INDEX, V178_SCHEMA } from "./check-recovery-index-schema.js";
 import { CHECK_RECOVERY_HELD } from "./check-recovery-hold.js";
 const dirs: string[] = [], now = new Date("2026-11-20T00:00:00Z");
 afterEach(() => { for (const p of dirs.splice(0)) rmSync(p, { recursive: true, force: true }); });
@@ -81,14 +81,16 @@ test("177/-177/178 reject missing, damaged or corrupt identity before epoch or c
   }
 });
 test("current178 index damage is refused before compatibility replay; poisoned177 index is never silently replaced", () => {
-  for (const [version, damage] of [[177, "variant"], [178, "missing"], [178, "variant"]] as const) {
+  for (const [version, damage] of [[177, "variant"], [-177, "variant"], [178, "missing"], [178, "variant"], [177, "ordinary"], [-177, "ordinary"], [178, "ordinary"]] as const) {
     const file = source177(); if (version === 178) openStore(file).close();
     const db = new DatabaseSync(file); staleFinding(db);
     db.exec(`DROP INDEX IF EXISTS ${V178_INDEX}`);
     if (damage === "variant") db.exec(`CREATE INDEX ${V178_INDEX} ON action_ledger(actor,id)`);
-    db.close(); const before = snapshot(file), steps: string[] = [];
+    if (damage === "ordinary") db.exec(`CREATE INDEX ${V178_INDEX} ON action_ledger(action,id)`);
+    db.prepare("UPDATE schema_version SET version=?").run(version);
+    db.close(); const originalBytes = readFileSync(file), before = snapshot(file), steps: string[] = [];
     expect(() => openStore(file, { migrationStep: step => steps.push(step) })).toThrow(/action ledger action index/);
-    expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before);
+    expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(readFileSync(file)).toEqual(originalBytes);
   }
 });
 test("-178 is impossible and never changes the source", () => {
@@ -122,4 +124,15 @@ test.each([177, -177])("valid %s source keeps legacy finding replay without chan
   const before = snapshot(file); openStore(file).close(); const after = snapshot(file);
   expect(after.version?.["version"]).toBe(178); expect(after.rows).toEqual(before.rows);
   const db = new DatabaseSync(file, { readOnly: true }); expect(String(db.prepare("SELECT sql FROM sqlite_master WHERE name='finding'").get()!["sql"])).toContain(FINDING_SOURCES); db.close();
+});
+
+
+test.each([177, -177])("exact partial index on %s resumes without changing identity/history", version => {
+  const file = source177(), raw = new DatabaseSync(file);
+  raw.exec(V178_SCHEMA); raw.prepare("UPDATE schema_version SET version=?").run(version); raw.close();
+  const before = snapshot(file); openStore(file).close(); const after = snapshot(file);
+  expect(after.version?.["version"]).toBe(178); expect(after.rows).toEqual(before.rows);
+  const db = new DatabaseSync(file, { readOnly: true });
+  expect(db.prepare("PRAGMA index_list('action_ledger')").all().find(row => row["name"] === V178_INDEX)).toMatchObject({ partial: 1, unique: 0, origin: "c" });
+  expect(db.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(V178_INDEX)?.["sql"]).toContain("WHERE action = 'checks recovery held'"); db.close();
 });

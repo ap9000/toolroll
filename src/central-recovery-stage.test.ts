@@ -423,12 +423,13 @@ test("late failure rolls back snapshot sign-in changes and epochs without custod
 });
 
 
-test("only exact178/709 is admitted; old177, missing, extra and variant indexes stay untouched", () => {
-  for (const change of ["old177", "missing", "extra", "variant"] as const) {
+test("only exact178/709 is admitted; old177, missing, extra, ordinary and variant indexes stay untouched", () => {
+  for (const change of ["old177", "missing", "extra", "ordinary", "variant"] as const) {
     const f = fixture(), raw = new DatabaseSync(f.source);
     if (change !== "extra") raw.exec("DROP INDEX action_ledger_action");
     if (change === "old177") raw.exec("UPDATE schema_version SET version = 177");
     if (change === "extra") raw.exec("CREATE INDEX unexpected_index ON action_ledger(action)");
+    if (change === "ordinary") raw.exec("CREATE INDEX action_ledger_action ON action_ledger(action,id)");
     if (change === "variant") raw.exec("CREATE INDEX action_ledger_action ON action_ledger(id) WHERE action = 'checks recovery held'");
     raw.close(); const before = hash(f.source), h = copy(f.source), copied = hash(h.copyPath);
     expect(retireCentralRecoveryStage(h)).toMatchObject({ outcome: "unsupported-schema", schemaSupported: false, complete: false, recoveryReady: false });

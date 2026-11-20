@@ -28088,6 +28088,12 @@ function checkRecoveryIndexShapeProblem(db: Database, required = true): string |
     || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(V178_SCHEMA.replace(/;$/, ""))) {
     return "the action ledger action index is missing or has an unknown shape";
   }
+  const index = db.prepare("PRAGMA index_list('action_ledger')").all().find(one => one["name"] === V178_INDEX);
+  const columns = db.prepare("PRAGMA index_xinfo('action_ledger_action')").all().filter(one => one["key"] === 1);
+  if (index?.["partial"] !== 1 || index["unique"] !== 0 || index["origin"] !== "c" || columns.length !== 2
+    || columns.some((one, i) => one["seqno"] !== i || one["name"] !== ["action", "id"][i] || one["desc"] !== 0 || one["coll"] !== "BINARY")) {
+    return "the action ledger action index is missing or has an unknown shape";
+  }
   return null;
 }
 
