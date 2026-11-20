@@ -12,9 +12,11 @@ Integration lead owns this tracker. Builders own separate named files/slices; no
 | CW0-T | TUI bootstrap/profile/actions, state flow and compatibility contract | Complete: TUI contract; stale-response refinement integrated | Committed controlling plan; coordinate CW0-S |
 | CW0-X | Project binding, candidate transport, device and custody contract | Complete: execution contract | Committed controlling plan |
 | CW0-R | Integrate contracts, resolve disagreements and independently review authority design | Complete at `f0e071c7`; three exact document hashes independently pinned | CW0-S/T/X |
-| CW1-A | Disabled server connection metadata and additive workspace identity | Assigned to `central_server_contract`; schema 177 reserved by integration lead | CW0-R |
-| CW1-B | Unreachable Rust connection contract and strict validation guards | Assigned to `central_tui_contract`; no bootstrap/network/UI enablement | CW0-R; exact schema coordinated with CW1-A |
-| CW1 | Remote-person admission, connection/capability negotiation, authorized TUI reads | Disabled scaffolds in progress; enablement blocked on credential recovery/read admission proof and new exact implementation review | CW1-A/B; recovery retirement and read-admission slices |
+| CW1-A | Disabled server connection metadata and additive workspace identity | Complete and independently reviewed at `c9c6cb36`; schema 177 | CW0-R |
+| CW1-B | Unreachable Rust connection contract and strict validation guards | Complete and independently reviewed at `c9c6cb36`; no transport/UI enablement | CW0-R; exact schema coordinated with CW1-A |
+| CW1-C | Central-only recovery enrollment and retirement safeguards | Design revision assigned; independent review rejected universal changes to never-enrolled personal restore | CW0-X; bounded policy and authority review |
+| CW1-D | Tagged TUI bootstrap and no-local-fallback guard | Assigned to `central_tui_contract`; central input remains unavailable, no network or reads | CW1-A/B |
+| CW1 | Remote-person admission, connection/capability negotiation, authorized TUI reads | Disabled foundation complete; enablement blocked on recovery, scoped read admission, launcher and native proof | CW1-A/B/C/D; new exact implementation reviews |
 | CW2 | Shared permitted task actions, idempotency, browser step-up return and reconnect | Blocked | CW1 |
 | CW3 | Exact local worktree and protected local revision candidate transfer | Blocked | CW2; reviewed identity/transfer design |
 | CW4 | Device enrollment/readiness/revocation without dispatch | Blocked | CW0-X and integrated authority review; independent of local worktree UI where practical |
@@ -36,4 +38,8 @@ The first remote TUI milestone is CW1/CW2 against existing central execution. It
 
 ## Current milestone
 
-Three Sprint 0 contracts are complete: [server](central-workspace-server-contract.md), [TUI](central-workspace-tui-contract.md), and [execution](central-workspace-execution-contract.md). An independent Codex reviewer pinned all three at `f0e071c7`, including explicit stale-response invalidation on every authority transition. The first server and Rust foundation slices are assigned to separate builders. Their implementation is not yet claimed complete, tested or reviewed. Remote read/action and laptop execution enablement remain blocked on their separate implementation, recovery, admission and native evidence gates. Review records remain under ignored `evidence/central-workspace/review/`.
+The disabled server/Rust foundation is committed and pushed as `c9c6cb36`. Independent review matched all 18 committed file hashes. Focused TS contract/migration, native localhost authorization, route/engine and tripwire checks plus final typecheck passed; Rust's 10 focused tests, check and Clippy passed. Counts overlap; no combined test total is claimed. Source guards found no findings. Original failed/environmental attempts and the repaired current-schema compatibility replay finding remain in ignored evidence.
+
+The metadata endpoint advertises no remote read, command, approval, execution or interactive capability. Existing engine digest/local redemption and restore behavior are unchanged. Actual TLS enrollment, remote TUI reads and native user journeys are not proved by this milestone.
+
+Next work is a narrow legacy-preserving TUI bootstrap/nonfallback guard and an explicitly enrolled central-recovery policy that preserves never-enrolled personal restore. The proposed recovery design requires revision/review before code enablement. Remote read/action and laptop execution remain blocked on their separate implementation, recovery, admission and native evidence gates. Review and exact commit-binding records remain under ignored `evidence/central-workspace/review/`.
