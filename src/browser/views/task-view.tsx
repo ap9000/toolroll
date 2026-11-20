@@ -25,6 +25,7 @@ import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask, WORKSPACE_NUDGE } from "../live-task.js";
+import { presenceSummary, useWorkspacePresence } from "../presence.js";
 import { cn } from "../kit/utils.js";
 import { HEADLINE_GLYPH, RetryPinFields, statusWhyLines, type RetryPins } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
@@ -1008,8 +1009,13 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
   const editPlan = approve === null ? null : () => { show({ row: "approve" }); revealTarget("plan-editor", show, true); };
+  const workspacePresence = useWorkspacePresence();
+  const terminalPresence = workspacePresence?.tasks[view.id]?.terminalController
+    ? presenceSummary({ ...workspacePresence.tasks[view.id]!, viewers: [] })
+    : null;
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono so-task-id">{view.id}</span>{view.scout && <> · research only</>}
-    {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
+    {people.length > 0 && <> · <AlsoViewing people={people} /></>}
+    {terminalPresence !== null && <> · <span data-terminal-presence="" role="status">{terminalPresence}</span></>}</>;
   const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null

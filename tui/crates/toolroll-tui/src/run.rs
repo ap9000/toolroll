@@ -248,9 +248,18 @@ impl Loop {
         let remote = self.client.remote_info();
         match fx {
             Effect::OpenInEditor { name, text } => self.editor = Some((name, text)),
-            Effect::FetchWork => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Work(client.work_rows().await));
-            })),
+            Effect::FetchWork => {
+                let p_client = client.clone();
+                let p_tx = tx.clone();
+                drop(tokio::spawn(async move {
+                    let _ = tx.send(Msg::Work(client.work_rows().await));
+                }));
+                drop(tokio::spawn(async move {
+                    if let Ok(snapshot) = p_client.presence().await {
+                        let _ = p_tx.send(Msg::Presence(snapshot));
+                    }
+                }));
+            }
             Effect::FetchAgents => {
                 if remote.is_none() {
                     drop(tokio::spawn(async move {
@@ -285,6 +294,10 @@ impl Loop {
                     }));
                 }
             }
+            Effect::PingApproval(task) => drop(tokio::spawn(async move {
+                let r = client.ping_approval(&task).await;
+                let _ = tx.send(Msg::ApprovalPinged(r));
+            })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));

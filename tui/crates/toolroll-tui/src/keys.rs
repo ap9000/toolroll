@@ -117,6 +117,10 @@ actions! {
     FilterWorking = "filter-working", Global, Filter, "Needs: working", [];
     FilterFailed = "filter-failed", Global, Filter, "Needs: failed", [];
     FilterDone = "filter-done", Global, Filter, "Needs: done", [];
+    FilterMine = "filter-mine", Global, Filter, "Assigned to me", [];
+    FilterWaitingOnTeam = "filter-team", Global, Filter, "Waiting on team", [];
+    FilterUnassigned = "filter-unassigned", Global, Filter, "Unassigned", [];
+    PingApproval = "ping-approval", Global, Act, "Ping phone for approval", [];
     NextTheme = "next-theme", Global, Setting, "Next theme, for this session", [];
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];

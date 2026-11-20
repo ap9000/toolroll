@@ -2489,6 +2489,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get hookContext() { return hookContext; },
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
+    get taskRooms() { return taskRooms; },
+    get terminalHost() { return () => terminals.host; },
   };
   const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;

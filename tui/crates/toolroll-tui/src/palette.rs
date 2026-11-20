@@ -42,6 +42,12 @@ fn applies(app: &App, action: Action) -> bool {
         Scope::Global => match action {
             Action::Palette => false,
             Action::FilterThisProject => app.project.is_some(),
+            Action::FilterMine | Action::FilterWaitingOnTeam | Action::FilterUnassigned => {
+                app.presence.accounts.len() > 1 || !app.presence.owners.is_empty()
+            }
+            Action::PingApproval => {
+                app.remote_badge.is_some() && app.selected_item().is_some_and(|i| i.is_task)
+            }
             _ => true,
         },
     }
@@ -126,7 +132,10 @@ pub fn entries(app: &App) -> Vec<Entry> {
             | Action::FilterToday
             | Action::FilterWorking
             | Action::FilterFailed
-            | Action::FilterDone => {
+            | Action::FilterDone
+            | Action::FilterMine
+            | Action::FilterWaitingOnTeam
+            | Action::FilterUnassigned => {
                 let on = app.filter.action() == Some(spec.action);
                 format!("{}{}", spec.label, if on { " (on)" } else { "" })
             }

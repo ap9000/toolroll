@@ -136,6 +136,12 @@ pub enum Filter {
     Failed,
     /// What finished.
     Done,
+    /// Tasks currently owned by / handed to the signed-in person.
+    Mine,
+    /// Tasks currently owned by / handed to a teammate.
+    WaitingOnTeam,
+    /// Tasks without a recorded human owner.
+    Unassigned,
     /// One project, picked by name in the palette (not remembered).
     Project(String),
 }
@@ -151,6 +157,9 @@ impl Filter {
             Filter::Working => "working",
             Filter::Failed => "failed",
             Filter::Done => "done",
+            Filter::Mine => "mine",
+            Filter::WaitingOnTeam => "team",
+            Filter::Unassigned => "unassigned",
         }
     }
     pub fn from_key(key: &str) -> Option<Filter> {
@@ -162,6 +171,9 @@ impl Filter {
             "working" => Filter::Working,
             "failed" => Filter::Failed,
             "done" => Filter::Done,
+            "mine" => Filter::Mine,
+            "team" => Filter::WaitingOnTeam,
+            "unassigned" => Filter::Unassigned,
             _ => return None,
         })
     }
@@ -175,6 +187,9 @@ impl Filter {
             Filter::Working => Some(Action::FilterWorking),
             Filter::Failed => Some(Action::FilterFailed),
             Filter::Done => Some(Action::FilterDone),
+            Filter::Mine => Some(Action::FilterMine),
+            Filter::WaitingOnTeam => Some(Action::FilterWaitingOnTeam),
+            Filter::Unassigned => Some(Action::FilterUnassigned),
             Filter::Project(_) => None,
         }
     }
@@ -188,11 +203,19 @@ impl Filter {
             Filter::Working => Some("Working".into()),
             Filter::Failed => Some("Failed".into()),
             Filter::Done => Some("Done".into()),
+            Filter::Mine => Some("Assigned to me".into()),
+            Filter::WaitingOnTeam => Some("Waiting on team".into()),
+            Filter::Unassigned => Some("Unassigned".into()),
             Filter::Project(p) => Some(p.clone()),
         }
     }
     /// Whether a row is shown (`here`: the terminal's project's name and path).
-    fn keeps(&self, item: &Item, here: Option<(&str, &str)>) -> bool {
+    fn keeps(
+        &self,
+        item: &Item,
+        here: Option<(&str, &str)>,
+        presence: &toolroll_api::PresenceSnapshot,
+    ) -> bool {
         match self {
             Filter::All => true,
             Filter::ThisProject => here.is_some_and(|(name, path)| {
@@ -205,6 +228,27 @@ impl Filter {
             Filter::Working => matches!(item.section, Section::Working | Section::UpNext),
             Filter::Failed => item.tone == "problem" || item.word == "Failed",
             Filter::Done => item.section == Section::Recent && item.tone == "done",
+            Filter::Mine => {
+                !presence.me.is_empty()
+                    && presence
+                        .owners
+                        .get(&item.id)
+                        .and_then(|o| o.as_deref())
+                        == Some(presence.me.as_str())
+            }
+            Filter::WaitingOnTeam => {
+                !presence.me.is_empty()
+                    && presence
+                        .owners
+                        .get(&item.id)
+                        .and_then(|o| o.as_deref())
+                        .is_some_and(|o| o != presence.me.as_str())
+            }
+            Filter::Unassigned => presence
+                .owners
+                .get(&item.id)
+                .and_then(|o| o.as_deref())
+                .is_none(),
             Filter::Project(p) => item.project.as_deref() == Some(p.as_str()),
         }
     }
@@ -798,6 +842,8 @@ pub enum Effect {
     FetchSteps(String),
     /// The approval waiting on a task (GET /t/<task>/approval), asked when the person presses Approve.
     FetchApproval(String),
+    /// Remote TUI out-of-band approval step-up ping (`POST /api/handoff/task/<task>/approval-ping`).
+    PingApproval(String),
     FetchLive {
         run: i64,
         file: &'static str,
@@ -958,6 +1004,10 @@ pub enum Msg {
     Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
     Approval(String, Result<ApprovalCard, ApiError>),
+    /// Observational workspace presence & task ownership snapshot (`GET /api/presence`).
+    Presence(toolroll_api::PresenceSnapshot),
+    /// Out-of-band remote approval ping response.
+    ApprovalPinged(Result<toolroll_api::ApprovalPingResult, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -1122,6 +1172,8 @@ pub struct App {
     pub origin: Option<String>,
     /// Remote central workspace indicator shown in the top bar (None in local mode).
     pub remote_badge: Option<String>,
+    /// Observational live presence, terminal controller, and human owner map (`GET /api/presence`).
+    pub presence: toolroll_api::PresenceSnapshot,
     /// Where the last run left off, until the first work list has been read (state.rs).
     pub restore: Option<crate::state::Resume>,
     restore_scroll: Option<(String, usize)>,
@@ -1309,6 +1361,7 @@ impl App {
             panes: crate::panes::Panes::default(),
             origin: None,
             remote_badge: None,
+            presence: toolroll_api::PresenceSnapshot::default(),
             restore: None,
             restore_scroll: None,
             restore_diff: None,
@@ -2142,6 +2195,42 @@ impl App {
             Msg::Steps(task, Err(ApiError::Contract(_))) => self.steps_unreadable(task),
             Msg::Steps(_, Err(e)) => self.read_failed(e),
             Msg::Approval(task, read) => self.approval_read(task, read),
+            Msg::Presence(snapshot) => {
+                self.presence = snapshot;
+                if matches!(
+                    self.filter,
+                    Filter::Mine | Filter::WaitingOnTeam | Filter::Unassigned
+                ) {
+                    let keep = self.selected_id();
+                    self.items = self.filtered();
+                    self.selected = keep
+                        .and_then(|id| self.items.iter().position(|i| i.id == id))
+                        .unwrap_or(0)
+                        .min(self.items.len().saturating_sub(1));
+                }
+                vec![]
+            }
+            Msg::ApprovalPinged(Ok(res)) => {
+                let target = res.url.as_deref().unwrap_or(&res.path);
+                if res.channels.is_empty() {
+                    self.say(
+                        Tone::Said,
+                        format!(
+                            "Approval link: {target} (pair Web Push or Telegram in /settings for 1-tap pings)"
+                        ),
+                    );
+                } else {
+                    self.say(
+                        Tone::Said,
+                        format!(
+                            "Sent approval ping via {} — open on your phone or browser ({target}).",
+                            res.channels.join(", ")
+                        ),
+                    );
+                }
+                vec![]
+            }
+            Msg::ApprovalPinged(Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -4803,10 +4892,24 @@ impl App {
             // A plan waiting for this person's yes: `a` reads its terms (the approval card), then asks.
             Action::Accept if self.approval_waiting() => {
                 match item.as_ref().filter(|i| i.is_task) {
+                    Some(i) if self.remote_badge.is_some() => {
+                        self.say(
+                            Tone::Said,
+                            "Approvals stay in the browser — pinging your phone with the approval link (or press w)…",
+                        );
+                        vec![Effect::PingApproval(i.id.clone())]
+                    }
                     Some(i) => vec![Effect::FetchApproval(i.id.clone())],
                     None => vec![],
                 }
             }
+            Action::PingApproval => match item.as_ref().filter(|i| i.is_task) {
+                Some(i) => {
+                    self.say(Tone::Said, "Sending approval ping to your phone…");
+                    vec![Effect::PingApproval(i.id.clone())]
+                }
+                None => vec![],
+            },
             Action::Accept => {
                 let Some(pin) = self.pin_review() else {
                     return vec![];
@@ -5079,6 +5182,9 @@ impl App {
             Action::FilterWorking => self.set_filter(Filter::Working),
             Action::FilterFailed => self.set_filter(Filter::Failed),
             Action::FilterDone => self.set_filter(Filter::Done),
+            Action::FilterMine => self.set_filter(Filter::Mine),
+            Action::FilterWaitingOnTeam => self.set_filter(Filter::WaitingOnTeam),
+            Action::FilterUnassigned => self.set_filter(Filter::Unassigned),
             Action::NextTheme => {
                 self.prefs.cycle_theme();
                 self.line_cache = None;
@@ -5432,7 +5538,7 @@ impl App {
         self.all_items
             .iter()
             .filter(|i| {
-                if !self.filter.keeps(i, here) {
+                if !self.filter.keeps(i, here, &self.presence) {
                     return false;
                 }
                 if q.is_empty() {

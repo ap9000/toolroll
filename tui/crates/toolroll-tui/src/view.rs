@@ -1485,6 +1485,15 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         title_spans.push(Span::raw("  "));
         title_spans.push(badge);
     }
+    if let Some(presence) = app
+        .presence
+        .tasks
+        .get(&item.id)
+        .and_then(|p| p.summary())
+    {
+        title_spans.push(Span::raw("  "));
+        title_spans.push(sheet::badge(&presence, crate::theme::Role::Running));
+    }
     let mut head_lines = vec![Line::from(title_spans)];
     let button = sheet::button("Change builder", &key_name(app, Action::TaskBuilder), false);
     let available = if builder_task.is_some() {

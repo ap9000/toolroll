@@ -17,6 +17,7 @@ import type { BrowserHomeAsk, BrowserHomeRow, BrowserTaskRow, BrowserTaskView, B
 import { KButton, KChip, KComposer, KCount, KDisclose, KDock, KEmpty, KGroup, KLinkButton, KLinkSeg, KNotice, KRadios, KRow, pressedByPerson } from "../kit/index.js";
 import { FormToken } from "../ui/index.js";
 import { WORKSPACE_NUDGE } from "../live-task.js";
+import { matchesTeamFilter, presenceSummary, useWorkspacePresence, type TeamFilter } from "../presence.js";
 import { keyed } from "../mutation-key.js";
 import { ACT_TIMEOUT_MS, REDRAW_HOLD_MS, selectionRead, sentence, taskViewOf } from "../act.js";
 import { HomeApproval, SELECTION_SETTLE_MS } from "./home-approval.js";
@@ -166,8 +167,18 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
   const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
   const [leaving, setLeaving] = useState<string | null>(null);
   const [said, setSaid] = useState<Said>(null);
+  const presence = useWorkspacePresence();
+  const [teamFilter, setTeamFilter] = useState<TeamFilter>("everyone");
   useEffect(() => { setGone(new Set()); }, [view]);
-  const sections = sectionsOf(view, gone);
+  const rawSections = sectionsOf(view, gone);
+  const sections = teamFilter === "everyone" || presence === null
+    ? rawSections
+    : rawSections
+        .map(section => {
+          const filtered = section.items.filter(item => matchesTeamFilter(item.id, teamFilter, presence));
+          return { ...section, items: filtered, count: filtered.length };
+        })
+        .filter(section => section.items.length > 0);
   const items = sections.flatMap(section => section.items);
   const [selected, setSelected] = useState<string | null>(() => selectedFromUrl() ?? null);
   // The drawer opens only for a row the person chose (or one a link named); a wide desk always shows the panel.
@@ -216,6 +227,15 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
         <ToolsMenu view={view.list} more={[board ? { label: "List", href: view.list.layouts.list } : { label: "Board", href: view.list.layouts.board }]} /></div>
     </header>
     {view.setup && <p className="so-work-setup" data-work-setup><a className="k-link" href={view.setup}>Finish setup</a></p>}
+    {presence !== null && presence.accounts.length > 1 && !board && (
+      <div className="so-work-team-filter" role="group" aria-label="Team filter" data-team-filter={teamFilter}
+        style={{ display: "flex", gap: "6px", alignItems: "center", padding: "0 0 8px", flexWrap: "wrap" }}>
+        {([["everyone", "Everyone"], ["mine", "Assigned to me"], ["team", "Waiting on team"], ["unassigned", "Unassigned"]] as const).map(([key, label]) => (
+          <KButton key={key} sm variant={teamFilter === key ? "primary" : "ghost"} label={label}
+            aria-pressed={teamFilter === key} onClick={() => setTeamFilter(key)} />
+        ))}
+      </div>
+    )}
     <div className={`so-triage so-work-split${shown !== null && !drawer && !oneColumn ? " has-panel" : ""}`}>
       <div className="so-tri-list so-work-list" ref={list} aria-label="Tasks" onKeyDown={event => {
         if (oneColumn || board) return;
@@ -238,7 +258,8 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
                 choose(item.id);
               }}>
               <KRow href={item.href} chip={<KChip word={item.chip.word} tone={item.chip.tone} />} title={item.title} wait={item.home !== null}
-                desc={<WithCode text={item.reason ?? item.home?.line ?? item.task?.detail ?? ""} />} meta={item.meta}
+                desc={<WithCode text={item.reason ?? item.home?.line ?? item.task?.detail ?? ""} />}
+                meta={[item.meta, presenceSummary(presence?.tasks[item.id])].filter(Boolean).join(" · ")}
                 action={item.task?.tidy?.label === "Restore" ? <RestoreAct tidy={item.task.tidy} /> : <KLinkButton sm label={item.act} href={item.href} tabIndex={-1} />} />
             </div>)}
           </section>)}

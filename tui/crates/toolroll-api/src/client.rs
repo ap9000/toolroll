@@ -777,6 +777,56 @@ impl Client {
         )
     }
 
+    /// Observational live presence, terminal controller, and human ownership snapshot (`GET /api/presence`).
+    pub async fn presence(&self) -> Result<PresenceSnapshot, ApiError> {
+        self.get::<PresenceSnapshot>("/api/presence", "workspace presence")
+            .await
+    }
+
+    /// Trigger an out-of-band approval ping to the calling approver's paired phone/chat channels
+    /// (`POST /api/handoff/task/<task>/approval-ping`). Remote API token only.
+    pub async fn ping_approval(&self, task: &str) -> Result<ApprovalPingResult, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Approval pings are only used in remote TUI sessions.".into(),
+                ));
+            }
+        };
+        let path = format!("/api/handoff/task/{}/approval-ping", encode(task));
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("authorization", format!("Bearer {}", remote.bearer.as_str()))
+            .header("x-toolroll-client", "terminal-remote")
+            .header("x-toolroll-workspace", &remote.workspace_id)
+            .header("x-toolroll-recovery", &remote.recovery_generation)
+            .header("accept", "application/json")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Approval ping refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<ApprovalPingResult>(&text).map_err(|_| {
+            ApiError::Contract("The approval ping answer isn't what this version expects.".into())
+        })
+    }
+
     pub async fn steps(&self, task: &str) -> Result<StepCards, ApiError> {
         versioned(
             self.get::<StepCards>(&format!("/t/{}/steps", encode(task)), "the task's steps")
@@ -1409,6 +1459,76 @@ fn versioned<T>(value: T, version: impl Fn(&T) -> u32) -> Result<T, ApiError> {
         ));
     }
     Ok(value)
+}
+
+/// Live presence for a single task (viewers + live terminal controller).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPresence {
+    #[serde(default)]
+    pub viewers: Vec<String>,
+    #[serde(default)]
+    pub terminal_controller: Option<String>,
+    #[serde(default)]
+    pub terminal_program: Option<String>,
+    #[serde(default)]
+    pub terminal_viewers: usize,
+}
+
+impl TaskPresence {
+    /// Short single-line summary for task headers/rows (`None` when nobody else is active).
+    pub fn summary(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(ctrl) = &self.terminal_controller {
+            let prog = match self.terminal_program.as_deref() {
+                Some("claude") => "Claude",
+                Some("codex") => "Codex",
+                Some("antigravity") => "Antigravity",
+                Some("shell") | None => "terminal",
+                Some(other) => other,
+            };
+            parts.push(format!("{ctrl} typing in {prog}"));
+        }
+        if self.viewers.len() == 1 {
+            parts.push(format!("{} viewing", self.viewers[0]));
+        } else if self.viewers.len() > 1 {
+            parts.push(format!("{} + {} viewing", self.viewers[0], self.viewers.len() - 1));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+}
+
+/// Workspace-wide observational presence & task ownership snapshot (`GET /api/presence`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceSnapshot {
+    #[serde(default)]
+    pub me: String,
+    #[serde(default)]
+    pub tasks: std::collections::HashMap<String, TaskPresence>,
+    #[serde(default)]
+    pub owners: std::collections::HashMap<String, Option<String>>,
+    #[serde(default)]
+    pub accounts: Vec<String>,
+}
+
+/// Outcome of `POST /api/handoff/task/<task>/approval-ping`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalPingResult {
+    pub task_id: String,
+    #[serde(default)]
+    pub enqueued: bool,
+    #[serde(default)]
+    pub channels: Vec<String>,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[cfg(test)]

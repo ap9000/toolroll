@@ -832,6 +832,18 @@ export class TerminalHost {
     return { controller, viewers, epoch: session.leaseEpoch };
   }
 
+  /** Read-only presence snapshot of every live (non-sensitive, non-ended) terminal session. */
+  activePresence(): Array<{ id: string; taskId: string | null; repo: string; program: TerminalProgram; controller: string | null; viewers: string[] }> {
+    const out: Array<{ id: string; taskId: string | null; repo: string; program: TerminalProgram; controller: string | null; viewers: string[] }> = [];
+    for (const session of this.sessions.values()) {
+      if (session.sensitive || session.endedAt !== null) continue;
+      const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+      const viewers = [...new Set([...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner))].sort((a, b) => a.localeCompare(b));
+      out.push({ id: session.id, taskId: session.task, repo: session.repo, program: session.program, controller, viewers });
+    }
+    return out;
+  }
+
   /** A sensitive pane's one page: what it printed so far (held in memory for this page alone), then live output; no
    * screen is ever replayed, and no second page attaches. */
   private attachOnce(session: Session, viewer: TerminalViewer): () => void {
