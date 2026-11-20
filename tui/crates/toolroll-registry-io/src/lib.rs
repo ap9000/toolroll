@@ -388,3 +388,7 @@ mod initial;
 // No stage construction code is included in the production library.
 #[cfg(test)]
 mod stage_namespace;
+
+// Native shared-reference lifetime experiments provide no production lease.
+#[cfg(test)]
+mod lease_lifetime;
