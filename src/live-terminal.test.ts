@@ -487,6 +487,31 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
       await expect(host.start(ALEX, join(repo, "sub"), "shell")).rejects.toThrow(/root of a Git project/);
     } finally { await small.stop(); }
   });
+  test("single-controller lease: first viewer controls, second observes, take-control hands over cleanly", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const controlsA: unknown[] = [];
+    const controlsB: unknown[] = [];
+    const viewerA = { actor: "alex", output: () => {}, control: (m: unknown) => { controlsA.push(m); } };
+    const viewerB = { actor: "sam", output: () => {}, control: (m: unknown) => { controlsB.push(m); } };
+    const detachA = host.attach(started.id, viewerA);
+    const detachB = host.attach(started.id, viewerB);
+    expect(host.isController(started.id, viewerA)).toBe(true);
+    expect(host.isController(started.id, viewerB)).toBe(false);
+    expect(host.controlState(started.id)).toMatchObject({ controller: "alex", viewers: ["alex", "sam"] });
+    expect(parseTerminalFrame('{"t":"take-control"}')).toEqual({ t: "take-control" });
+    expect(parseTerminalFrame('{"t":"release-control"}')).toEqual({ t: "release-control" });
+    expect(parseTerminalFrame('{"t":"take-control","extra":1}')).toBeNull();
+    expect(host.takeControl(started.id, viewerB)).toBe(true);
+    expect(host.isController(started.id, viewerA)).toBe(false);
+    expect(host.isController(started.id, viewerB)).toBe(true);
+    expect(host.controlState(started.id)).toMatchObject({ controller: "sam", viewers: ["alex", "sam"] });
+    host.releaseControl(started.id, viewerB);
+    expect(host.isController(started.id, viewerB)).toBe(false);
+    expect(host.controlState(started.id)?.controller).toBeNull();
+    detachA();
+    detachB();
+    await host.close(started.id);
+  });
 });
 
 describe("a take-over's PATH", () => {

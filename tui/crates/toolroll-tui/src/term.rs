@@ -78,6 +78,8 @@ pub struct Pane {
     /// The last frame drew this terminal on screen (view.rs sets it each frame). Nothing reaches the terminal while it
     /// isn't drawn — a window too small, another tab, a dialog over it.
     pub drawn: bool,
+    /// Single-controller lease: true while another window/viewer currently holds typing control.
+    pub is_observer: bool,
     /// Lines up into the scrollback (0: the live screen).
     pub scroll: usize,
     /// The program said it isn't reading input (typing waits until it does).
@@ -116,6 +118,7 @@ impl Pane {
             area: Rect::default(),
             branch: String::new(),
             drawn: false,
+            is_observer: false,
             scroll: 0,
             input_full: false,
             parsed: 0,

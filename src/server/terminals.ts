@@ -444,6 +444,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const reprove = () => { if (!closed && !prove()) shut(4401, "signed out"); };
     const stillProved = (): boolean => Date.now() - provedAt < REPROVE_MS || prove();
     const viewer: TerminalViewer = {
+      actor: who.name,
       output(data) {
         if (closed) return;
         if (!stillProved()) return shut(4401, "signed out");
@@ -467,6 +468,16 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const text = Array.isArray(data) ? Buffer.concat(data).toString("utf8") : Buffer.from(data as ArrayBuffer).toString("utf8");
       const frame = parseTerminalFrame(text);
       if (frame === null) return shut(1003, "not a terminal frame");
+      if (frame.t === "take-control") {
+        if (host.takeControl(terminal.id, viewer)) record("take-control", who.name, terminal);
+        return;
+      }
+      if (frame.t === "release-control") {
+        host.releaseControl(terminal.id, viewer);
+        return;
+      }
+      // Single-controller lease: observers see live output, never inject keystrokes or resize the PTY.
+      if (!host.isController(terminal.id, viewer)) return;
       if (frame.t === "resize") return host.resize(terminal.id, frame.cols, frame.rows);
       const now = Date.now();
       budget = Math.min(INPUT_BURST, budget + ((now - filledAt) / 1000) * INPUT_PER_SECOND);

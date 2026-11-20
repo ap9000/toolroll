@@ -168,6 +168,8 @@ export class ScreenMirror {
 
 /** One attached page. The host never waits on it. */
 export type TerminalViewer = {
+  /** Account name of this viewer, for single-controller presence labels. */
+  actor?: string;
   output(data: Buffer): void;
   control(message: TerminalControl): void;
   /** Bytes sent to it and not yet taken by its connection (a socket's buffered amount): the program pauses past
@@ -190,6 +192,7 @@ export const ATTACH_HOLD_BYTES = 4 * 1024 * 1024;
 export const SNAPSHOT_MAX_CHARS = 8 * 1024 * 1024;
 export type TerminalControl =
   | { t: "hello"; cols: number; rows: number; program: TerminalProgram; ended: boolean }
+  | { t: "control"; role: "controller" | "observer"; controller: string | null; viewers: string[]; epoch: number }
   | { t: "exit"; code: number | null; signal: number | null }
   /** The program isn't reading what's typed: input waits until it does. */
   | { t: "input-full" };
@@ -250,6 +253,11 @@ type Session = TerminalSummary & {
   flowTimer: NodeJS.Timeout | null;
   attaching: number;
   viewers: Set<TerminalViewer>;
+  /** Single-controller lease: the viewer gate holding typing & resize authority, plus actor labels for presence. */
+  controller: TerminalViewer | null;
+  leaseEpoch: number;
+  viewerActors: Map<TerminalViewer, string>;
+  viewerGates: Map<TerminalViewer, TerminalViewer>;
   closing: Promise<void> | null;
   exited: Promise<void>;
   /**
@@ -515,7 +523,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -588,7 +596,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
       this.sessions.set(id, session);
@@ -729,6 +737,12 @@ export class TerminalHost {
       overflow: () => viewer.overflow?.(),
     };
     session.viewers.add(gate);
+    session.viewerActors.set(gate, viewer.actor ?? session.owner);
+    session.viewerGates.set(viewer, gate);
+    if (session.controller === null) {
+      session.controller = gate;
+      session.leaseEpoch += 1;
+    }
     session.attaching += 1;
     this.flow(session);
     session.screen.snapshot(screen => {
@@ -742,8 +756,80 @@ export class TerminalHost {
       } catch { /* the viewer's own close handles it */ }
       held.length = 0;
       live = true;
+      this.broadcastControl(session);
     });
-    return () => { session.viewers.delete(gate); done(); this.flow(session); };
+    return () => {
+      session.viewers.delete(gate);
+      session.viewerActors.delete(gate);
+      session.viewerGates.delete(viewer);
+      if (session.controller === gate) {
+        session.controller = null;
+        session.leaseEpoch += 1;
+      }
+      done();
+      this.flow(session);
+      this.broadcastControl(session);
+    };
+  }
+
+  private broadcastControl(session: Session): void {
+    const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+    const viewers = [...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner);
+    for (const one of session.viewers) {
+      try {
+        one.control({
+          t: "control",
+          role: session.controller === one ? "controller" : "observer",
+          controller,
+          viewers,
+          epoch: session.leaseEpoch,
+        });
+      } catch { /* gone */ }
+    }
+  }
+
+  /** Whether this attached viewer currently holds the single-controller lease. */
+  isController(id: string, viewer: TerminalViewer): boolean {
+    const session = this.sessions.get(id);
+    if (session === undefined) return false;
+    if (session.sensitive) return session.viewers.has(viewer);
+    const gate = session.viewerGates.get(viewer);
+    return gate !== undefined && session.controller === gate;
+  }
+
+  /** Transfer the single-controller lease to this attached viewer and notify all observers. */
+  takeControl(id: string, viewer: TerminalViewer): boolean {
+    const session = this.sessions.get(id);
+    if (session === undefined || session.sensitive) return false;
+    const gate = session.viewerGates.get(viewer);
+    if (gate === undefined || !session.viewers.has(gate)) return false;
+    if (session.controller !== gate) {
+      session.controller = gate;
+      session.leaseEpoch += 1;
+      this.broadcastControl(session);
+    }
+    return true;
+  }
+
+  /** Step back from controller to observer mode and notify all viewers. */
+  releaseControl(id: string, viewer: TerminalViewer): void {
+    const session = this.sessions.get(id);
+    if (session === undefined || session.sensitive) return;
+    const gate = session.viewerGates.get(viewer);
+    if (gate !== undefined && session.controller === gate) {
+      session.controller = null;
+      session.leaseEpoch += 1;
+      this.broadcastControl(session);
+    }
+  }
+
+  /** Current controller actor and viewer list for presence/status displays. */
+  controlState(id: string): { controller: string | null; viewers: string[]; epoch: number } | null {
+    const session = this.sessions.get(id);
+    if (session === undefined) return null;
+    const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+    const viewers = [...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner);
+    return { controller, viewers, epoch: session.leaseEpoch };
   }
 
   /** A sensitive pane's one page: what it printed so far (held in memory for this page alone), then live output; no
@@ -1146,7 +1232,11 @@ export function worktreeResidents(table: ProcessTable, worktreeReal: string, ter
 }
 
 /** One client frame, read strictly; null closes the socket. */
-export type TerminalInput = { t: "in"; d: string } | { t: "resize"; cols: number; rows: number };
+export type TerminalInput =
+  | { t: "in"; d: string }
+  | { t: "resize"; cols: number; rows: number }
+  | { t: "take-control" }
+  | { t: "release-control" };
 export const MAX_FRAME_BYTES = 64 * 1024;
 
 export function parseTerminalFrame(text: string): TerminalInput | null {
@@ -1157,6 +1247,8 @@ export function parseTerminalFrame(text: string): TerminalInput | null {
   const frame = value as Record<string, unknown>;
   const keys = Object.keys(frame).sort().join(",");
   if (frame["t"] === "in" && keys === "d,t" && typeof frame["d"] === "string") return { t: "in", d: frame["d"] };
+  if (frame["t"] === "take-control" && keys === "t") return { t: "take-control" };
+  if (frame["t"] === "release-control" && keys === "t") return { t: "release-control" };
   if (frame["t"] === "resize" && keys === "cols,rows,t") {
     const cols = frame["cols"], rows = frame["rows"];
     if (Number.isSafeInteger(cols) && Number.isSafeInteger(rows) && (cols as number) >= COLS.min && (cols as number) <= COLS.max && (rows as number) >= ROWS.min && (rows as number) <= ROWS.max) {

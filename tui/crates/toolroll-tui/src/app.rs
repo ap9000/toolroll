@@ -7517,9 +7517,17 @@ impl App {
         if let Some(pane) = self.pane_here() {
             match pane.link {
                 Link::Live => {
+                    let take = if pane.is_observer {
+                        pane.id.clone().map(|id| Effect::TermSend {
+                            id,
+                            send: TermSend::TakeControl,
+                        })
+                    } else {
+                        None
+                    };
                     self.mode = Mode::TakeOver;
                     self.say(Tone::Said, TYPING);
-                    return vec![];
+                    return take.into_iter().collect();
                 }
                 Link::Opening | Link::Attaching => {
                     self.shell_opening();
@@ -7588,9 +7596,17 @@ impl App {
             if pane.program != "shell" {
                 match pane.link {
                     Link::Live => {
+                        let take = if pane.is_observer {
+                            pane.id.clone().map(|id| Effect::TermSend {
+                                id,
+                                send: TermSend::TakeControl,
+                            })
+                        } else {
+                            None
+                        };
                         self.mode = Mode::TakeOver;
                         self.say(Tone::Said, TYPING);
-                        return vec![];
+                        return take.into_iter().collect();
                     }
                     Link::Opening | Link::Attaching => {
                         self.shell_opening();
@@ -7736,6 +7752,30 @@ impl App {
                 pane.hello(cols, rows, ended);
                 if ended {
                     back = true;
+                }
+            }
+            TermEvent::Control {
+                is_controller,
+                controller,
+                viewers,
+                ..
+            } => {
+                pane.is_observer = !is_controller;
+                if !is_controller {
+                    back = true;
+                    let who = controller
+                        .as_deref()
+                        .map(|name| format!("{name} is typing"))
+                        .unwrap_or_else(|| "Nobody is typing".into());
+                    said = Some((
+                        Tone::Said,
+                        format!("Viewing ({who}) · press i to take control."),
+                    ));
+                } else if viewers.len() > 1 {
+                    said = Some((
+                        Tone::Said,
+                        format!("Typing in terminal · {} watching.", viewers.len()),
+                    ));
                 }
             }
             TermEvent::Exit { code, signal } => {

@@ -21,6 +21,7 @@ type Program = "claude" | "codex" | "antigravity" | "shell";
 type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null; task: string | null; run: number | null };
 type State = { available: boolean; problem: string | null; sessions: Session[]; projects: { path: string; name: string }[]; programs: Program[] };
 type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline" | "busy";
+type ControlState = { role: "controller" | "observer"; controller: string | null; viewers: string[]; epoch: number };
 type TaskTarget = { task: string; run: number; program: Program };
 
 const INITIAL_TARGET: TaskTarget | null = (() => {
@@ -77,7 +78,13 @@ function themeOf(): ITheme {
 }
 
 /** One live terminal: xterm on a WebSocket, refitted to its box and to the phone's keyboard. */
-function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (link: Link) => void; keys: (send: (data: string) => void) => void }) {
+function TerminalPane({ session, onLink, onControl, keys, controls }: {
+  session: Session;
+  onLink: (link: Link) => void;
+  onControl: (control: ControlState | null) => void;
+  keys: (send: (data: string) => void) => void;
+  controls: (actions: { take: () => void; release: () => void }) => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const term = new Terminal({
@@ -103,16 +110,21 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
       term.loadAddon(webgl);
     } catch { webgl = null; }
     let socket: WebSocket | null = null;
-    let stopped = false, ended = false, retry = 0, timer: number | undefined, busyTimer: number | undefined;
+    let stopped = false, ended = false, isController = true, retry = 0, timer: number | undefined, busyTimer: number | undefined;
     const send = (frame: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame)); };
-    const input = (data: string) => send({ t: "in", d: data });
+    const input = (data: string) => { if (isController) send({ t: "in", d: data }); };
     keys(input);
     const refit = () => {
       try { fit.fit(); } catch { return; }
-      send({ t: "resize", cols: term.cols, rows: term.rows });
+      if (isController) send({ t: "resize", cols: term.cols, rows: term.rows });
     };
+    controls({
+      take: () => { send({ t: "take-control" }); term.focus(); },
+      release: () => { send({ t: "release-control" }); },
+    });
     const connect = () => {
       onLink(retry === 0 ? "connecting" : "offline");
+      onControl(null);
       const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/term/${session.id}/socket`;
       const ws = new WebSocket(url, socketProtocols());
       socket = ws;
@@ -121,9 +133,16 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
       ws.onmessage = event => {
         if (firstFrame) { term.reset(); firstFrame = false; }
         if (typeof event.data !== "string") { term.write(new Uint8Array(event.data as ArrayBuffer)); return; }
-        let control: { t?: string; ended?: boolean };
+        let control: { t?: string; ended?: boolean; role?: "controller" | "observer"; controller?: string | null; viewers?: string[]; epoch?: number };
         try { control = JSON.parse(event.data) as typeof control; } catch { return; }
         if (control.t === "hello") { retry = 0; ended = control.ended === true; onLink(ended ? "ended" : "live"); if (!ended) refit(); }
+        else if (control.t === "control" && (control.role === "controller" || control.role === "observer")) {
+          const next = { role: control.role, controller: control.controller ?? null, viewers: Array.isArray(control.viewers) ? control.viewers : [], epoch: control.epoch ?? 0 };
+          const becameController = !isController && next.role === "controller";
+          isController = next.role === "controller";
+          onControl(next);
+          if (becameController && !ended) refit();
+        }
         else if (control.t === "exit") { ended = true; onLink("ended"); }
         else if (control.t === "input-full") { onLink("busy"); window.clearTimeout(busyTimer); busyTimer = window.setTimeout(() => { if (!ended) onLink("live"); }, 2500); }
       };
@@ -256,8 +275,10 @@ function App() {
   const [creating, setCreating] = useState(INITIAL === null && INITIAL_TARGET !== null);
   const [listing, setListing] = useState(INITIAL === null && INITIAL_TARGET === null);
   const [link, setLink] = useState<Link>("connecting");
+  const [control, setControl] = useState<ControlState | null>(null);
   const targetApplied = useRef(false);
   const sendRef = useRef<((data: string) => void) | null>(null);
+  const controlRef = useRef<{ take: () => void; release: () => void } | null>(null);
   const refresh = useCallback(async () => { const next = await readState(); if (next !== null) setState(next); }, []);
   useEffect(() => { void refresh(); const timer = window.setInterval(() => { void refresh(); }, 5000); return () => window.clearInterval(timer); }, [refresh]);
   useEffect(() => {
@@ -322,10 +343,22 @@ function App() {
     <header className="term-ph">
       <div><b>{PROGRAM_WORDS[current.program]} · {current.project}</b>
         <span className="term-ph-m">{current.task !== null && <><a className="k-link" href={`/t/${encodeURIComponent(current.task)}`}>{current.task}</a> · </>}<span className="k-mono">{current.branch}</span> · started {new Date(current.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
+      {current.endedAt === null && control !== null && (control.role === "observer"
+        ? <span className="term-link" role="status">
+            {control.controller ? `Viewing · ${control.controller} typing` : "Viewing · Idle"}
+            {" "}
+            <KButton sm variant="primary" label="Take control" onClick={() => controlRef.current?.take()} />
+          </span>
+        : control.viewers.length > 1
+          ? <span className="term-link term-link--live" role="status">
+              Typing · {control.viewers.length} watching{" "}
+              <KButton sm variant="ghost" label="Release" onClick={() => controlRef.current?.release()} />
+            </span>
+          : null)}
       <span className={`term-link term-link--${link}`} role="status">{LINK_WORDS[link]}</span>
       <EndControl key={current.id} session={current} onDone={refresh} />
     </header>
-    <TerminalPane key={current.id} session={current} onLink={setLink} keys={send => { sendRef.current = send; }} />
+    <TerminalPane key={current.id} session={current} onLink={setLink} onControl={setControl} keys={send => { sendRef.current = send; }} controls={actions => { controlRef.current = actions; }} />
     {current.endedAt === null ? <KeyBar sendRef={sendRef} /> : <KNote>Ended. Its branch stays; Remove takes it off this list.</KNote>}
   </section>;
 

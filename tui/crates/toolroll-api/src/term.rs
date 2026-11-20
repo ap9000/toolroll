@@ -105,6 +105,13 @@ pub enum TermEvent {
     Output(Chunk),
     /// Everything before this was the screen as it is now (sent on attach); live output follows.
     Hello { cols: u16, rows: u16, ended: bool },
+    /// Single-controller lease and observer presence update.
+    Control {
+        is_controller: bool,
+        controller: Option<String>,
+        viewers: Vec<String>,
+        epoch: u64,
+    },
     /// The program ended.
     Exit {
         code: Option<i64>,
@@ -121,6 +128,8 @@ pub enum TermEvent {
 pub enum TermSend {
     Input(String),
     Resize { cols: u16, rows: u16 },
+    TakeControl,
+    ReleaseControl,
 }
 
 /// The console's largest client frame is 64 KiB; typed input is sent in pieces whose JSON stays well under it.
@@ -161,6 +170,28 @@ pub fn control_of(text: &str) -> Option<TermEvent> {
             rows: small(&v["rows"])?,
             ended: v["ended"].as_bool().unwrap_or(false),
         }),
+        "control" => {
+            let role = v["role"].as_str()?;
+            if role != "controller" && role != "observer" {
+                return None;
+            }
+            let controller = v["controller"].as_str().map(str::to_owned);
+            let viewers = v["viewers"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|one| one.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let epoch = v["epoch"].as_u64().unwrap_or(0);
+            Some(TermEvent::Control {
+                is_controller: role == "controller",
+                controller,
+                viewers,
+                epoch,
+            })
+        }
         "exit" => Some(TermEvent::Exit {
             code: v["code"].as_i64(),
             signal: v["signal"].as_i64(),
@@ -375,6 +406,8 @@ async fn socket(
                 let frames = match out {
                     TermSend::Input(text) => input_frames(&text),
                     TermSend::Resize { cols, rows } => vec![serde_json::json!({ "t": "resize", "cols": cols, "rows": rows }).to_string()],
+                    TermSend::TakeControl => vec![serde_json::json!({ "t": "take-control" }).to_string()],
+                    TermSend::ReleaseControl => vec![serde_json::json!({ "t": "release-control" }).to_string()],
                 };
                 for frame in frames {
                     if sink.send(Message::text(frame)).await.is_err() {
