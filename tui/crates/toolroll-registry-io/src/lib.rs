@@ -249,15 +249,42 @@ fn filesystem(file: &File) -> Result<(), Failure> {
     }
     // Linux 0xef53 identifies ext-family, NOT ext4 specifically. This read-only
     // observation filter proves no mount durability or enrollment support.
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    if s.f_type == 0xef53 && s.f_flags & (libc::ST_RDONLY as libc::c_long) == 0 {
-        return Ok(());
-    }
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    if s.f_type == 0xef53 && s.f_flags & (libc::ST_RDONLY as libc::c_ulong) == 0 {
-        return Ok(());
+    #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
+    {
+        // statfs supplies the family, but its public GNU layout has no f_flags.
+        // Query POSIX mount flags separately on the SAME held descriptor.
+        let read_only = mount_is_read_only(file.as_raw_fd())?;
+        if s.f_type == 0xef53 && !read_only {
+            return Ok(());
+        }
     }
     Err(Failure::Unsupported)
+}
+
+#[cfg(any(
+    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+    test
+))]
+fn mount_is_read_only(fd: libc::c_int) -> Result<bool, Failure> {
+    let mut out = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: valid output storage. fstatvfs handles invalid fds with an error;
+    // production callers retain the File owning fd throughout the syscall.
+    if unsafe { libc::fstatvfs(fd, out.as_mut_ptr()) } != 0 {
+        return Err(Failure::Io);
+    }
+    // SAFETY: successful syscall initialized the public POSIX statvfs fields.
+    let v = unsafe { out.assume_init() };
+    Ok(v.f_flag & libc::ST_RDONLY != 0)
+}
+
+#[cfg(test)]
+#[test]
+fn descriptor_mount_flags_and_syscall_errors() {
+    // Invoking command supplies an owned isolated TMPDIR; no OS-home lookup.
+    let root = tempfile::tempdir().unwrap();
+    let file = File::open(root.path()).unwrap();
+    assert_eq!(mount_is_read_only(file.as_raw_fd()), Ok(false));
+    assert_eq!(mount_is_read_only(-1), Err(Failure::Io));
 }
 
 impl ReadAnchor {
