@@ -14,7 +14,7 @@ expression: shown
 " │   12m ago                                  │ │ Terminal · separate copy at attempt 1                               │ "
 " │                   ╭ Open build shell ─────────────────────────────────────────────────────────╮                    │ "
 " │ Working 2         │                                                                           │ext)                │ "
-" │ ◐ Upgrade the test│ [1 Shell] 2 Claude Code 3 Codex                                           │                    │ "
+" │ ◐ Upgrade the test│ [1 Shell] 2 Claude Code 3 Codex 4 Antigravity                             │                    │ "
 " │   2m ago          │                                                                           │                    │ "
 " │ ◐ Rate-limit middl│ A shell in a separate copy of this task's latest build. It does not       │ll. Ctrl-] comes    │ "
 " │   7m ago          │ control the running agent. Build: attempt 1. Your shell's startup files   │lroll.              │ "

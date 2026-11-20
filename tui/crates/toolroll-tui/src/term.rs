@@ -14,11 +14,12 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
-/// Plain display name for a console terminal program id ("shell", "claude", "codex").
+/// Plain display name for a console terminal program id ("shell", "claude", "codex", "antigravity").
 pub fn program_label(program: &str) -> &'static str {
     match program {
         "claude" => "Claude Code",
         "codex" => "Codex",
+        "antigravity" => "Antigravity",
         "shell" => "Build shell",
         _ => "Terminal",
     }

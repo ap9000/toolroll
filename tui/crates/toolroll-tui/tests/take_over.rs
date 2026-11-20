@@ -942,7 +942,7 @@ fn confirm_take_over_cycles_programs_and_tags_opened_agent_pane() {
         Mode::ConfirmTakeOver { ref program, .. } if program == "claude"
     ));
     screen(&mut app, 120, 30);
-    // Tab cycles claude -> codex -> shell.
+    // Tab cycles claude -> codex -> antigravity -> shell.
     app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert!(matches!(
         app.mode,
@@ -952,10 +952,23 @@ fn confirm_take_over_cycles_programs_and_tags_opened_agent_pane() {
     app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert!(matches!(
         app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    let agy_dialog = screen(&mut app, 120, 30);
+    assert!(agy_dialog.contains("Open Antigravity"), "{agy_dialog}");
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
         Mode::ConfirmTakeOver { ref program, .. } if program == "shell"
     ));
     screen(&mut app, 120, 30);
-    // `2` selects Claude Code, then after drawing `i` confirms and emits TermOpen with program = "claude".
+    // `4` selects Antigravity directly; `2` selects Claude Code, then after drawing `i` confirms.
+    app.key(key('4'));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    screen(&mut app, 120, 30);
     app.key(key('2'));
     screen(&mut app, 120, 30);
     let fx = app.key(key('i'));

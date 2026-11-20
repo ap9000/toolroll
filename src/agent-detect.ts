@@ -92,6 +92,7 @@ const ACP_LOGIN: Readonly<Record<AcpProviderId, LoginCheck>> = {
   goose: { kind: "file", path: (home, env) => join(xdg(env, "XDG_CONFIG_HOME", home, ".config"), "goose", "config.yaml"), how: "set up" },
   cursor: { kind: "none" },
   cline: { kind: "none" },
+  antigravity: { kind: "file", path: home => join(home, ".gemini", "oauth_creds.json"), how: "Google account" },
 };
 
 /** Every agent Toolroll supports, in preference order. */
@@ -325,6 +326,9 @@ export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.free
     note: "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit." },
   goose: { install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash", installRun: null, signIn: ACP_AGENTS.goose.signIn,
     signInRun: { binary: "goose", args: ["configure"] }, key: null, check: ACP_CHECK("goose"), note: null },
+  antigravity: { install: null, installRun: null, signIn: ACP_AGENTS.antigravity.signIn,
+    signInRun: { binary: "agy", args: ["acp", "--login"] }, key: null, check: ACP_CHECK("antigravity"),
+    note: "Uses your Google account through Antigravity ACP (`agy acp`). Run `agy install` if `agy` is not on PATH." },
 });
 
 /** An agent's setup, or null for an id Toolroll doesn't support. */

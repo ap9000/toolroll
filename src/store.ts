@@ -1276,7 +1276,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v174 adds, and changes no saved row (interactive agent threads for everyday use): a durable stop requirement per
 // launch, the sign-in epoch a turn was begun under, a thread's title and end, and a Ship's laptop consent
 // (flexible-everyday-schema.ts).
-export const SCHEMA_VERSION = 174;
+// v175 widens the provider CHECK constraints to include 'antigravity' (Antigravity ACP, `agy acp`); every saved row
+// carries over untouched and indexes are restored in place.
+export const SCHEMA_VERSION = 175;
+export const V175_STEPS = Object.freeze(["antigravity-provider"] as const);
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1414,7 +1417,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1678,7 +1681,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -3868,7 +3871,7 @@ CREATE TABLE IF NOT EXISTS mcp_idempotency (
 CREATE TABLE IF NOT EXISTS phase_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -3884,7 +3887,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -3900,7 +3903,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
 -- substitutes for it.
 CREATE TABLE IF NOT EXISTS provider_readiness (
   runner      TEXT NOT NULL REFERENCES runner(name) ON DELETE CASCADE,
-  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   state       TEXT NOT NULL CHECK (state IN ('ready','unavailable','unknown')),
   reason      TEXT NOT NULL,
   probe       TEXT NOT NULL,
@@ -6577,6 +6580,13 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const everydayDamaged = flexibleEverydayShapeProblem(db);
   if (everydayDamaged !== null) throw new Error(`${file}: refusing to open — ${everydayDamaged}`);
   step("flexible-everyday");
+  // v175: Antigravity ACP as a provider: widen provider CHECKs across routing/readiness/ACP tables, keeping every saved
+  // row and restoring indexes. Idempotent: already-widened tables are untouched.
+  widenForAntigravity(db);
+  db.exec(ACP_ATTESTATION_SCHEMA);
+  db.exec(ACP_BILLING_SCHEMA);
+  db.exec(ACP_CHECK_SCHEMA);
+  step("antigravity-provider");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7556,7 +7566,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','routine','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -7572,7 +7582,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
 export const ACP_ATTESTATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_attestation (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner              TEXT NOT NULL,
   conformance_version INTEGER NOT NULL,
   launch_json         TEXT NOT NULL,
@@ -7603,7 +7613,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provi
 export const ACP_CHECK_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_check_request (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner              TEXT NOT NULL,
   model               TEXT NOT NULL,
   conformance_version INTEGER NOT NULL,
@@ -7647,7 +7657,7 @@ export type AcpCheckRequest = {
 export const ACP_BILLING_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_billing (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner    TEXT NOT NULL,
   model     TEXT NOT NULL,
   kind      TEXT NOT NULL CHECK (kind IN ('metered','plan')),
@@ -7675,9 +7685,12 @@ export type AcpAttestation = {
   recordedBy: string;
 };
 
-/** The provider CHECK before ACP agents joined (acp-agents.ts), and after: the same list, five ids longer. */
+/** The provider CHECK before ACP agents joined (acp-agents.ts), after v125, and after v175 ('antigravity'). */
 const PROVIDERS_BEFORE_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
 const PROVIDERS_WITH_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose'))";
+const PROVIDERS_WITH_ANTIGRAVITY = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity'))";
+const ACP_PROVIDERS_BEFORE_ANTIGRAVITY = "CHECK (provider IN ('opencode','cursor','cline','qwen','goose'))";
+const ACP_PROVIDERS_WITH_ANTIGRAVITY = "CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity'))";
 /** The sign-in pause's auth mode before an ACP agent's own sign-in ('agent-login'), and after. */
 const AUTH_MODES_BEFORE_ACP = "CHECK (auth_mode IN ('subscription', 'api-key'))";
 const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login'))";
@@ -7688,19 +7701,11 @@ const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'ag
  * drops are put back by their own schema's IF NOT EXISTS, which the caller runs again after.
  */
 function widenForAcp(db: Database): void {
-  const widen = (table: string, before: string, after: string) => {
-    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-    if (row === undefined) return;
-    const stored = String(row["sql"]);
-    if (stored.includes(after)) return;
-    if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
-    const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
-    rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
-  };
-  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) widen(table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP);
-  widen("provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
-  widen("quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) {
+    widenTableCheck(db, table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP, [PROVIDERS_WITH_ACP, PROVIDERS_WITH_ANTIGRAVITY]);
+  }
+  widenTableCheck(db, "provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
+  widenTableCheck(db, "quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
 }
 
 /** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
@@ -7714,7 +7719,7 @@ function widenPhaseTierSchema(db: Database): void {
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -27912,4 +27917,25 @@ function flexibleEverydayShapeProblem(db: Database): string | null {
     if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want.replace(/;$/, "")).trim()) return `the interactive agent threads ${type} ${name} has an unknown shape`;
   }
   return null;
+}
+
+function widenTableCheck(db: Database, table: string, before: string, after: string, already: readonly string[] = [after]): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  if (row === undefined) return;
+  const stored = String(row["sql"]);
+  if (already.some(one => stored.includes(one))) return;
+  if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
+  const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
+  rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
+}
+
+/** v175: Antigravity ACP (`agy acp`) joins the provider and ACP provider CHECK constraints. */
+function widenForAntigravity(db: Database): void {
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) {
+    widenTableCheck(db, table, PROVIDERS_WITH_ACP, PROVIDERS_WITH_ANTIGRAVITY);
+  }
+  for (const table of ["acp_attestation", "acp_check_request", "acp_billing"]) {
+    widenTableCheck(db, table, ACP_PROVIDERS_BEFORE_ANTIGRAVITY, ACP_PROVIDERS_WITH_ANTIGRAVITY);
+  }
 }

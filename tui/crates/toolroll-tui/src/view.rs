@@ -4032,6 +4032,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 ("shell", "1 Shell"),
                 ("claude", "2 Claude Code"),
                 ("codex", "3 Codex"),
+                ("antigravity", "4 Antigravity"),
             ]
             .into_iter()
             .enumerate()
@@ -4074,6 +4075,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             let title = match program.as_str() {
                 "claude" => " Open Claude Code ",
                 "codex" => " Open Codex ",
+                "antigravity" => " Open Antigravity ",
                 _ => " Open build shell ",
             };
             (title, lines)

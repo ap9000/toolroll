@@ -17,7 +17,7 @@ import { termsOf } from "../design/kit.js";
 import { installKitBehavior, KActs, KApprove, KButton, KChip, KEmpty, KField, KIcon, KLinkButton, KNote, KOverlay, KRadios, KSelect } from "./kit/index.js";
 import { keyed, socketProtocols } from "./mutation-key.js";
 
-type Program = "claude" | "codex" | "shell";
+type Program = "claude" | "codex" | "antigravity" | "shell";
 type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null; task: string | null; run: number | null };
 type State = { available: boolean; problem: string | null; sessions: Session[]; projects: { path: string; name: string }[]; programs: Program[] };
 type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline" | "busy";
@@ -29,12 +29,12 @@ const INITIAL_TARGET: TaskTarget | null = (() => {
   const runRaw = q.get("run")?.trim() ?? "";
   if (task === "" || task.length > 200 || !/^[1-9][0-9]{0,14}$/.test(runRaw)) return null;
   const progRaw = q.get("program")?.trim() ?? "";
-  const program: Program = progRaw === "claude" || progRaw === "codex" || progRaw === "shell" ? progRaw : "claude";
+  const program: Program = progRaw === "claude" || progRaw === "codex" || progRaw === "antigravity" || progRaw === "shell" ? progRaw : "claude";
   return { task, run: Number(runRaw), program };
 })();
 
-const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-const PROGRAM_TEXT: Record<Program, string> = { claude: "An agent you drive by hand", codex: "An agent you drive by hand", shell: "A plain terminal" };
+const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", antigravity: "Antigravity", shell: "Shell" };
+const PROGRAM_TEXT: Record<Program, string> = { claude: "An agent you drive by hand", codex: "An agent you drive by hand", antigravity: "Gemini models via Antigravity", shell: "A plain terminal" };
 const LINK_WORDS: Record<Link, string> = {
   connecting: "Connecting…", live: "Live", ended: "Ended", behind: "Catching up…",
   "signed-out": "Signed out. Sign in again to keep typing", gone: "This terminal is gone", offline: "Reconnecting…",

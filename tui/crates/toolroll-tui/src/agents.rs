@@ -1281,6 +1281,7 @@ fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
         .map(|d| match d {
             "claude" => "Claude Code".to_string(),
             "codex" => "Codex".to_string(),
+            "antigravity" => "Antigravity".to_string(),
             other => clean(other),
         })
         .unwrap_or_else(|| "not chosen yet".into());

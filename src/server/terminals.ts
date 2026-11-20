@@ -210,24 +210,6 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     return { repo, revision, run, family };
   };
 
-  /** Plain task context for an interactive agent (`claude` / `codex`) opened on a task build. */
-  const takeOverPromptOf = (family: TaskFamily, run: Run): string => {
-    const lines = [`Task: ${family.root.title}`];
-    const goal = store.getScope(family.current.id)?.goal?.trim() ?? "";
-    if (goal !== "" && goal !== family.root.title.trim()) lines.push(`Goal: ${goal.slice(0, 400)}`);
-    if (run.finishedAt === null) {
-      lines.push("Status: background build is still running; you are on an isolated copy of its commit.");
-    } else if (run.outcome === "failed" || run.outcome === "refused") {
-      lines.push(`Last build failed: ${failedAttemptSentence(run.reason)}`);
-      const said = agentSaidOf(store, run.id);
-      if (said !== null && said.length > 0) lines.push(`Last output:\n${said.slice(-4).join("\n")}`);
-    } else if (run.headRevision !== null) {
-      lines.push("Status: inspecting saved build changes on an isolated copy of its commit.");
-    }
-    lines.push("Help inspect what happened and take it from here.");
-    return lines.join("\n").slice(0, 1200);
-  };
-
   async function start(ctx: HandlerContext): Promise<void> {
     const answer = (status: number, value: { ok: true; id: string } | { ok: false; error: string }) => checked(ctx, status, "termStarted", value);
     const refused = refusal(ctx);
@@ -236,7 +218,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const body = readForm(ctx.posted, CONSOLE_FORMS.term);
     if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return answer(400, { ok: false, error: "Submit one value for each field." });
     const program = body.get("program") ?? "";
-    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return answer(400, { ok: false, error: "Choose Claude Code, Codex or a shell." });
+    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return answer(400, { ok: false, error: "Choose Claude Code, Codex, Antigravity or a shell." });
     // A take-over names its task and build, and nothing else: no project, no folder. Either both, or neither.
     const taskField = body.get("task"), runField = body.get("run");
     if ((taskField === null) !== (runField === null)) return answer(400, { ok: false, error: "Name the task and its build." });
@@ -249,7 +231,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
         revision: found.revision,
         task: taskField,
         run: Number(runField),
-        ...(program === "shell" ? {} : { prompt: takeOverPromptOf(found.family, found.run) }),
+        ...(program === "shell" ? {} : { prompt: takeOverPromptOf(store, found.family, found.run) }),
       };
       repo = found.repo;
     } else repo = body.get("repo") ?? "";
@@ -328,7 +310,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     // Downloading software is the person's act: their yes is to exactly the command they were shown.
     if (kind === "install" && body.get("confirm") !== shown) return answer(409, { ok: false, error: "Confirm the exact install command first." });
     // The organisation's policy on running Claude Code or Codex in a person's own session holds for their sign-in too.
-    if (agentId === "claude" || agentId === "codex") {
+    if (agentId === "claude" || agentId === "codex" || agentId === "antigravity") {
       const stopped = store.sessionPolicyRefusal(agentId, null, "live terminals");
       if (stopped !== null) return answer(403, { ok: false, error: stopped });
     }
@@ -541,4 +523,22 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       return null;
     },
   };
+}
+
+/** Plain task context for an interactive agent (`claude` / `codex` / `antigravity`) opened on a task build. */
+function takeOverPromptOf(store: Store, family: TaskFamily, run: Run): string {
+  const lines = [`Task: ${family.root.title}`];
+  const goal = store.getScope(family.current.id)?.goal?.trim() ?? "";
+  if (goal !== "" && goal !== family.root.title.trim()) lines.push(`Goal: ${goal.slice(0, 400)}`);
+  if (run.finishedAt === null) {
+    lines.push("Status: background build is still running; you are on an isolated copy of its commit.");
+  } else if (run.outcome === "failed" || run.outcome === "refused") {
+    lines.push(`Last build failed: ${failedAttemptSentence(run.reason)}`);
+    const said = agentSaidOf(store, run.id);
+    if (said !== null && said.length > 0) lines.push(`Last output:\n${said.slice(-4).join("\n")}`);
+  } else if (run.headRevision !== null) {
+    lines.push("Status: inspecting saved build changes on an isolated copy of its commit.");
+  }
+  lines.push("Help inspect what happened and take it from here.");
+  return lines.join("\n").slice(0, 1200);
 }

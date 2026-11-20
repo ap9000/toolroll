@@ -113,6 +113,7 @@ export const PROVIDER_HOSTS: Readonly<Record<string, readonly string[]>> = {
   qwen: ["chat.qwen.ai", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"],
   // Goose talks to whatever model service it is set up with: a project using it adds that service's host.
   goose: [],
+  antigravity: ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com", "generativelanguage.googleapis.com", "oauth2.googleapis.com", "accounts.google.com"],
 };
 
 /** A package ecosystem a project's files name, and the registry hosts its installs read from. */

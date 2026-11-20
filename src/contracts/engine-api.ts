@@ -460,10 +460,10 @@ export const modelsReadSchema = z.object({
 export const termStateSchema = z.object({
   available: z.boolean(),
   problem: z.string().nullable(),
-  programs: z.array(z.enum(["claude", "codex", "shell"])),
+  programs: z.array(z.enum(["claude", "codex", "antigravity", "shell"])),
   projects: z.array(z.object({ path: z.string(), name: z.string() })),
   sessions: z.array(z.object({
-    id: z.string().regex(/^[0-9a-f]{32}$/), repo: z.string(), project: z.string(), program: z.enum(["claude", "codex", "shell"]), branch: z.string(),
+    id: z.string().regex(/^[0-9a-f]{32}$/), repo: z.string(), project: z.string(), program: z.enum(["claude", "codex", "antigravity", "shell"]), branch: z.string(),
     startedAt: iso, endedAt: iso.nullable(), exit: z.object({ code: z.number().int().nullable(), signal: z.number().int().nullable() }).nullable(),
     cleanup: z.enum(["clean", "uncertain"]).nullable(), task: z.string().nullable(), run: z.number().int().nullable(),
   })),

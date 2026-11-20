@@ -61,14 +61,14 @@ describe("v174", () => {
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => { steps.push(one); } });
     try {
-      expect(version(upgraded)).toBe(174);
+      expect(version(upgraded)).toBe(SCHEMA_VERSION);
       expect(steps.indexOf("plan-problems-column")).toBeGreaterThanOrEqual(0);
       expect(steps.indexOf("flexible-everyday")).toBeGreaterThan(steps.indexOf("plan-problems-column"));
       expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('run') WHERE name = 'plan_problems_json'").get()?.["n"]).toBe(1);
       for (const table of V174_TABLES) expect(upgraded.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
       expect(upgraded.lookupRef("kept")).not.toBeNull();
     } finally { upgraded.close(); }
-    expect(SCHEMA_VERSION).toBe(174);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(174);
   });
 
   test("a crash after the step resumes to the same shape", () => {

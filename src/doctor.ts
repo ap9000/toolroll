@@ -135,7 +135,7 @@ function reinstallCommand(args: readonly string[]): string | null {
   const freeform = new Set(["--runner", "--repo", "--token-file", "--pool", "--model", "--repair-model", "--plan-model"]);
   const numeric = new Set(["--max", "--turns", "--tick-every", "--bridge-every", "--reconcile-every", "--max-open-decisions"]);
   const enums: Record<string, readonly string[]> = {
-    "--provider": ["claude", "codex", "gemini", "openrouter", "opencode", "cursor", "cline", "qwen", "goose"],
+    "--provider": ["claude", "codex", "gemini", "openrouter", "opencode", "cursor", "cline", "qwen", "goose", "antigravity"],
     "--plan-provider": ["claude", "codex", "gemini", "openrouter"],
     "--containment": ["observed", "preferred", "required"],
   };

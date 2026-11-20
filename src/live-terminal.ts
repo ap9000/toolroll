@@ -17,8 +17,8 @@ import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { sleep } from "./sleep.js";
 
-export type TerminalProgram = "claude" | "codex" | "shell";
-export const TERMINAL_PROGRAMS: readonly TerminalProgram[] = ["claude", "codex", "shell"];
+export type TerminalProgram = "claude" | "codex" | "antigravity" | "shell";
+export const TERMINAL_PROGRAMS: readonly TerminalProgram[] = ["claude", "codex", "antigravity", "shell"];
 
 /** At most this many running sessions per console, and this many kept at all (ended ones count until removed). */
 export const MAX_LIVE_TERMINALS = 8;
@@ -394,10 +394,12 @@ function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv, prompt
     const file = shell !== undefined && isAbsolute(shell) && existsSync(shell) ? shell : onPath("bash", env) ?? "/bin/sh";
     return { file, args: ["-l"] };
   }
-  const file = onPath(program, env);
+  const binary = program === "antigravity" ? "agy" : program;
+  const file = onPath(binary, env);
   if (file === null) return null;
   const brief = sanitizePrompt(prompt);
   if (brief === null) return { file, args: [] };
+  if (program === "antigravity") return { file, args: ["-i", brief] };
   return { file, args: program === "claude" ? ["--", brief] : [brief] };
 }
 
@@ -456,7 +458,7 @@ export class TerminalHost {
     size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null,
     from: { revision: string; task: string; run: number; prompt?: string } | null = null): Promise<TerminalSummary> {
     if (this.stopped) throw new TerminalError("The console is stopping.");
-    if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
+    if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex, Antigravity or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
     if (this.kept() + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
     // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
@@ -465,7 +467,11 @@ export class TerminalHost {
     const baseEnv = from === null ? this.env() : program === "shell" ? takeOverEnvironment(this.env(), roots) : takeOverAgentEnvironment(this.env(), roots);
     const env = { ...baseEnv, TERM: "xterm-256color", COLORTERM: "truecolor" };
     const command = this.options.programs?.[program] ?? defaultProgram(program, env, from?.prompt);
-    if (command === null) throw new TerminalError(`${program === "claude" ? "Claude Code" : "Codex"} isn't installed on this computer (\`${program}\` is not on PATH).`);
+    if (command === null) {
+      const label = program === "claude" ? "Claude Code" : program === "codex" ? "Codex" : "Antigravity";
+      const binary = program === "antigravity" ? "agy" : program;
+      throw new TerminalError(`${label} isn't installed on this computer (\`${binary}\` is not on PATH).`);
+    }
     const id = randomBytes(16).toString("hex");
     // The slot is held, here and for the updater, before any slow work.
     this.starting += 1;

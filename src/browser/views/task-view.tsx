@@ -1098,9 +1098,14 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     ?? view.earlier?.attempts.find(a => a.runId !== null)?.runId
     ?? null;
   const terminalAgent = view.details?.find(d => d.label === "Agent" || d.label === "Builder")?.value.toLowerCase() ?? "";
+  const terminalProgram = terminalAgent.includes("antigravity") || terminalAgent.includes("gemini")
+    ? "antigravity"
+    : terminalAgent.includes("codex")
+      ? "codex"
+      : "claude";
   const terminalHref = terminalRunId === null
     ? null
-    : `/term?task=${encodeURIComponent(view.id)}&run=${terminalRunId}&program=${terminalAgent.includes("codex") ? "codex" : "claude"}`;
+    : `/term?task=${encodeURIComponent(view.id)}&run=${terminalRunId}&program=${terminalProgram}`;
   return <ResultStatusAct.Provider value={statusAct}><ResultStatusWarnings.Provider value={outcomeFirst ? statusWarnings : null}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/", "Work"]} title={view.title} meta={meta}

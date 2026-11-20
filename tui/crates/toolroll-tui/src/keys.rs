@@ -75,7 +75,7 @@ actions! {
     SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
-    TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex)", ["i"];
+    TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex / Antigravity)", ["i"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
     LeadChat = "lead-chat", Global, Act, "Central Lead chat (open / focus)", ["C"];

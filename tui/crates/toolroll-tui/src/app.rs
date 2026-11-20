@@ -534,7 +534,7 @@ pub fn take_over_scope_for(attempt: &str, program: &str, live: bool) -> String {
     }
 }
 
-/// Default interactive agent program for a task: Codex if the task's build ran on Codex, else Claude Code.
+/// Default interactive agent program for a task: matches the task's build agent (Codex, Antigravity/Gemini, else Claude Code).
 pub fn default_agent_program(steps: &StepCards) -> &'static str {
     let provider = steps
         .cards
@@ -544,15 +544,17 @@ pub fn default_agent_program(steps: &StepCards) -> &'static str {
         .map(|agent| agent.provider.as_str());
     match provider {
         Some("codex") => "codex",
+        Some("antigravity") | Some("gemini") => "antigravity",
         _ => "claude",
     }
 }
 
-/// Cycle program order in ConfirmTakeOver (`shell` -> `claude` -> `codex`).
+/// Cycle program order in ConfirmTakeOver (`shell` -> `claude` -> `codex` -> `antigravity`).
 fn cycle_program(program: &str, reverse: bool) -> &'static str {
     match (program, reverse) {
         ("shell", false) | ("codex", true) => "claude",
-        ("claude", false) | ("shell", true) => "codex",
+        ("claude", false) | ("antigravity", true) => "codex",
+        ("codex", false) | ("shell", true) => "antigravity",
         _ => "shell",
     }
 }
@@ -4116,6 +4118,14 @@ impl App {
                         task,
                         run,
                         program: "codex".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('4') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "antigravity".into(),
                     };
                     vec![]
                 }
