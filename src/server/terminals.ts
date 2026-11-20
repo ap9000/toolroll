@@ -36,11 +36,12 @@ import type { LiveBus } from "../live-bus.js";
 import { logEvent } from "../log.js";
 import { sessionStandsIn, soloNow } from "../install-mode.js";
 import { localOwnerStandsNow } from "../local-owner.js";
-import { resultRunsOf, SHELL_NO_COMMIT, SHELL_NO_RESULT } from "../engine-reads.js";
+import { SHELL_NO_COMMIT, SHELL_NO_RESULT, takeOverRevisionOf, takeOverRunsOf } from "../engine-reads.js";
+import { failedAttemptSentence } from "../needs-you.js";
 import { checkEngineResponse, type EngineResponseName } from "../contracts/engine-api.js";
 import { projectName, rowVisible } from "../project.js";
 import { transportOf, type Transport } from "../public-access.js";
-import type { Store } from "../store.js";
+import { agentSaidOf, type Run, type Store, type TaskFamily } from "../store.js";
 import { agentSetupOf } from "../agent-detect.js";
 import { excludedFolders, launchPath, resolveLaunch, statusEnvironment, type StatusTrust } from "../status-probe.js";
 import { boundedAcl } from "../trusted-path.js";
@@ -193,19 +194,20 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   }
 
   /**
-   * A take-over's build (T4): a saved result of this task, still in view, with the commit Toolroll recorded for it, and
-   * the project Toolroll records for its task. Read from the store only; the caller named only the task and the build.
+   * A take-over's build (T4): any builder/scout run of this task still in view, with the commit Toolroll recorded for
+   * it (its saved head commit, or the base commit it started from if it failed or is still running), and the project
+   * Toolroll records for its task. Read from the store only; the caller named only the task and the build.
    */
-  const takeOverOf = (taskId: string, runId: number): { repo: string; revision: string } | string => {
+  const takeOverOf = (taskId: string, runId: number): { repo: string; revision: string; run: Run; family: TaskFamily } | string => {
     const family = runtime.familyOf(taskId);
     if (family === null || family.problem !== null) return "No such task.";
-    const run = resultRunsOf(store, family).filter(one => runtime.runVisible(one)).find(one => one.id === runId) ?? null;
+    const run = takeOverRunsOf(store, family).filter(one => runtime.runVisible(one)).find(one => one.id === runId) ?? null;
     if (run === null) return SHELL_NO_RESULT;
-    const revision = run.headRevision;
-    if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return SHELL_NO_COMMIT;
+    const revision = takeOverRevisionOf(run);
+    if (revision === null) return SHELL_NO_COMMIT;
     const repo = runtime.taskRepoOf(run.taskRef);
     if (repo === null) return "This build's project isn't known here.";
-    return { repo, revision };
+    return { repo, revision, run, family };
   };
 
   async function start(ctx: HandlerContext): Promise<void> {
@@ -216,16 +218,21 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const body = readForm(ctx.posted, CONSOLE_FORMS.term);
     if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return answer(400, { ok: false, error: "Submit one value for each field." });
     const program = body.get("program") ?? "";
-    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return answer(400, { ok: false, error: "Choose Claude Code, Codex or a shell." });
+    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return answer(400, { ok: false, error: "Choose Claude Code, Codex, Antigravity or a shell." });
     // A take-over names its task and build, and nothing else: no project, no folder. Either both, or neither.
     const taskField = body.get("task"), runField = body.get("run");
     if ((taskField === null) !== (runField === null)) return answer(400, { ok: false, error: "Name the task and its build." });
-    let from: { revision: string; task: string; run: number } | null = null, repo: string;
+    let from: { revision: string; task: string; run: number; prompt?: string } | null = null, repo: string;
     if (taskField !== null && runField !== null) {
       if (body.get("repo") !== null || !/^[1-9][0-9]{0,14}$/.test(runField) || taskField === "" || taskField.length > 200) return answer(400, { ok: false, error: "Name the task and its build." });
       const found = takeOverOf(taskField, Number(runField));
       if (typeof found === "string") return answer(404, { ok: false, error: found });
-      from = { revision: found.revision, task: taskField, run: Number(runField) };
+      from = {
+        revision: found.revision,
+        task: taskField,
+        run: Number(runField),
+        ...(program === "shell" ? {} : { prompt: takeOverPromptOf(store, found.family, found.run) }),
+      };
       repo = found.repo;
     } else repo = body.get("repo") ?? "";
     if (!runtime.consoleProjects().includes(repo) || !projectAllowed(who.name, repo)) return answer(403, { ok: false, error: "Choose a project available to your account." });
@@ -303,7 +310,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     // Downloading software is the person's act: their yes is to exactly the command they were shown.
     if (kind === "install" && body.get("confirm") !== shown) return answer(409, { ok: false, error: "Confirm the exact install command first." });
     // The organisation's policy on running Claude Code or Codex in a person's own session holds for their sign-in too.
-    if (agentId === "claude" || agentId === "codex") {
+    if (agentId === "claude" || agentId === "codex" || agentId === "antigravity") {
       const stopped = store.sessionPolicyRefusal(agentId, null, "live terminals");
       if (stopped !== null) return answer(403, { ok: false, error: stopped });
     }
@@ -516,4 +523,22 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       return null;
     },
   };
+}
+
+/** Plain task context for an interactive agent (`claude` / `codex` / `antigravity`) opened on a task build. */
+function takeOverPromptOf(store: Store, family: TaskFamily, run: Run): string {
+  const lines = [`Task: ${family.root.title}`];
+  const goal = store.getScope(family.current.id)?.goal?.trim() ?? "";
+  if (goal !== "" && goal !== family.root.title.trim()) lines.push(`Goal: ${goal.slice(0, 400)}`);
+  if (run.finishedAt === null) {
+    lines.push("Status: background build is still running; you are on an isolated copy of its commit.");
+  } else if (run.outcome === "failed" || run.outcome === "refused") {
+    lines.push(`Last build failed: ${failedAttemptSentence(run.reason)}`);
+    const said = agentSaidOf(store, run.id);
+    if (said !== null && said.length > 0) lines.push(`Last output:\n${said.slice(-4).join("\n")}`);
+  } else if (run.headRevision !== null) {
+    lines.push("Status: inspecting saved build changes on an isolated copy of its commit.");
+  }
+  lines.push("Help inspect what happened and take it from here.");
+  return lines.join("\n").slice(0, 1200);
 }

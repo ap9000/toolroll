@@ -42,6 +42,9 @@ import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
 import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
+import { leadChatOf } from "../engine-chat.js";
+import { leadNameOf } from "../lead-identity.js";
+import { NOT_STARTED_SESSION } from "./render-chat.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import type { PlanContractView, RevisionView } from "./render-tasks.js";
@@ -598,6 +601,78 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started${sent.fresh ? " with a fresh agent: it doesn't remember earlier turns" : ""}.`);
   }
 
+  /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
+   * `/chat` is and re-proved before and after reading. Reads nothing for a revoked or narrowed session. */
+  async function leadChat(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response, now } = ctx;
+    if (who.via !== "cookie") return refusal(response, 403, "session");
+    const keys = [...url.searchParams.keys()];
+    const projectValues = url.searchParams.getAll("project");
+    if (keys.some(k => k !== "project") || projectValues.length > 1) return refusal(response, 400, "request");
+    if (rereadBrowser(runtime, request, who) === null) return refusal(response, 403, "session");
+    let chatProject: string | null = null;
+    if (projectValues.length === 1 && projectValues[0] !== "") {
+      const wanted = projectValues[0]!;
+      if (!runtime.visible(wanted) || !runtime.managedRepos().includes(wanted)) return refusal(response, 404, "project");
+      chatProject = wanted;
+    }
+    const room = chatProject === null ? "chat" : `chat?project=${encodeURIComponent(chatProject)}`;
+    const leadName = leadNameOf(store, who.name);
+    const enabled = runtime.chatEnablement();
+    const principal = who.role === "approver" ? runtime.leadPrincipal(who) : null;
+    if (!enabled.ok || principal === null) {
+      const problem = !enabled.ok ? enabled.why : "Sign in as an approver to chat with the Lead.";
+      return sendChecked(response, 200, "leadChat", {
+        version: ENGINE_API_VERSION,
+        room,
+        session: null,
+        leadName,
+        canSend: false,
+        problem,
+        project: chatProject,
+        busy: false,
+        pendingProposals: 0,
+        queued: [],
+        messages: [],
+      });
+    }
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
+    const notStarted = enabled.billing === "subscription" && (found === null || found.ceilingDigest !== principal.ceilingDigest);
+    const ceilingStale = !notStarted && found !== null && found.ceilingDigest !== principal.ceilingDigest;
+    const session = notStarted
+      ? NOT_STARTED_SESSION
+      : found !== null && !ceilingStale && found.approverGeneration === principal.generation
+        ? found.id
+        : null;
+    const canSend = session !== null;
+    const rows = runtime.leadConversationRows(who, principal, null, now, chatProject);
+    // Re-proved after reading: a revoked session or changed standing receives nothing read.
+    if (rereadBrowser(runtime, request, who) === null || runtime.leadPrincipal(who) === null) {
+      return refusal(response, 403, "session");
+    }
+    const problem = ceilingStale
+      ? "Project access changed. Start a new conversation in the browser to continue."
+      : !canSend
+        ? "Start a Lead conversation in the browser first."
+        : notStarted ? null : rows.failure ?? null;
+    return sendChecked(response, 200, "leadChat", leadChatOf({
+      room,
+      session,
+      leadName,
+      canSend,
+      problem,
+      project: chatProject,
+      messages: rows.messages,
+      proposals: rows.proposals,
+      decisions: rows.decisions,
+      pending: rows.pending,
+      ask: rows.ask,
+      staleAsk: rows.staleAsk,
+      asks: rows.asks,
+      queue: rows.queue,
+    }));
+  }
+
   return {
     /** The console's upkeep tick (serve.ts, every five seconds): a thread's answers past their deadlines are settled, and
      * every stop not yet verified is tried again (settleFlexibleStops): with interactive agent threads turned off (read
@@ -633,7 +708,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       try { if (host !== null) await closeFlexibleSessions(store, host); } finally { await made?.close(); }
     },
     registrations: [
-      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
+      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "engine.chat": leadChat, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),

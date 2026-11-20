@@ -63,7 +63,7 @@ export type AcpTerminal =
   | { stopReason: AcpStopReason }
   | { error: { code: number | null; message: string } };
 
-export type AcpPhase = "initialize" | "session" | "model" | "prompt" | "ended" | "failed";
+export type AcpPhase = "initialize" | "authenticate" | "session" | "model" | "prompt" | "ended" | "failed";
 
 export type AcpConversationOptions = {
   /** The working directory the session is opened in (the worktree). */
@@ -74,6 +74,8 @@ export type AcpConversationOptions = {
   model: string;
   /** The agent the attestation names; null only for the conformance probe's first look. */
   expect: { name: string; version: string } | null;
+  /** Optional ACP `authenticate` methodId to run after `initialize` and before `session/new` (e.g. `"oauth-personal"`). */
+  authMethod?: string | null;
   /** MCP servers offered to the session (http entries only). */
   mcpServers?: readonly { type: "http"; name: string; url: string; headers: readonly { name: string; value: string }[] }[];
 };
@@ -111,7 +113,7 @@ export type AcpConversation = {
   retained(): string;
 };
 
-type Pending = "initialize" | "session/new" | "model" | "prompt" | "close";
+type Pending = "initialize" | "authenticate" | "session/new" | "model" | "prompt" | "close";
 
 function bounded(text: string, cap: number): string {
   return text.length <= cap ? text : text.slice(0, cap);
@@ -460,8 +462,14 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       return { send: [], live: [] };
     }
     if (error !== null) {
-      if (errorCode === AUTH_REQUIRED) return fail("auth-required", errorText);
+      if (errorCode === AUTH_REQUIRED || purpose === "authenticate") return fail("auth-required", errorText);
       return fail(purpose === "model" ? "model-unavailable" : "protocol", `${purpose}: ${errorText}`);
+    }
+    if (purpose === "authenticate") {
+      if (result !== null && (!isRecord(result) || !meta(result))) return fail("protocol", "authenticate: the answer was not an object");
+      keep({ type: "acp.auth", methodId: options.authMethod ?? "" });
+      phase = "session";
+      return { send: [request("session/new", { cwd: options.cwd, mcpServers: options.mcpServers ?? [] }, "session/new")], live: [] };
     }
     if (!isRecord(result)) return fail("protocol", `${purpose}: the answer was not an object`);
     if (purpose === "initialize") {
@@ -477,6 +485,17 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const sessions = isRecord(capabilities) ? capabilities["sessionCapabilities"] : undefined;
       canClose = isRecord(sessions) && isRecord(sessions["close"]);
       keep({ type: "acp.agent", name: agent.name, version: agent.version });
+      const authMethod = typeof options.authMethod === "string" && options.authMethod !== "" ? options.authMethod : null;
+      if (authMethod !== null) {
+        const methods = result["authMethods"];
+        if (Array.isArray(methods) && methods.length > 0) {
+          if (!methods.some(one => isRecord(one) && one["id"] === authMethod)) {
+            return fail("auth-required", `the agent does not advertise ${authMethod} authentication`);
+          }
+          phase = "authenticate";
+          return { send: [request("authenticate", { methodId: authMethod }, "authenticate")], live: [] };
+        }
+      }
       phase = "session";
       return { send: [request("session/new", { cwd: options.cwd, mcpServers: options.mcpServers ?? [] }, "session/new")], live: [] };
     }

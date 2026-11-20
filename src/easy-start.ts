@@ -297,7 +297,25 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   const session: TuiSession = {
     owned: () => ownedNow() !== null,
     stopped: stoppedOnItsOwn,
+    openBuilderPassword: async (task, setup) => {
+      // Reuse a full browser session when available. A local session sees its sign-in action on this card.
+      const page = `/t/${encodeURIComponent(task)}`;
+      const target = new URL(setup ? "/password/set" : `${page}#agents`, url);
+      if (setup) target.searchParams.set("next", page);
+      await seams.openBrowser(target.href);
+      return "In the browser, open Agents → Change agents and save the new builder.";
+    },
     openBrowser: async page => {
+      // An already-running console may predate this terminal's named sign-in landing.
+      // Open the existing settings form on the proven console with the browser's normal sign-in.
+      if (page === "projects") {
+        await seams.openBrowser(new URL("/projects", url).href);
+        return "Opened Projects in your browser.";
+      }
+      if (page === "lead-providers") {
+        await seams.openBrowser(new URL("/settings/lead#lead-config", url).href);
+        return "Opened Lead settings in your browser.";
+      }
       const opened = await seams.openSignedIn(page);
       return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
     },

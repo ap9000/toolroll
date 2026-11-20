@@ -310,6 +310,14 @@ describe("every answer is its contract's shape", () => {
     expect(steps.approval).toEqual({ by: "alex", you: true, automatic: false });
     // Its newest build failed without a saved commit: Open build shell is refused up front, in the start's own words.
     expect(steps.shell).toEqual({ run: last.id, why: "This build has no saved commit to open a terminal on." });
+    // When a failed build recorded its base commit (as real builds do before committing), a terminal can open on it.
+    store.handle.prepare("UPDATE run SET base_revision = ? WHERE id = ?").run("b".repeat(40), last.id);
+    try {
+      const withBase = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
+      expect(withBase.shell).toEqual({ run: last.id, why: null });
+    } finally {
+      store.handle.prepare("UPDATE run SET base_revision = NULL WHERE id = ?").run(last.id);
+    }
     // Another person reads who approved, not "you".
     expect(stepCardsSchema.parse((await read("approver", "/t/t-fail/steps")).body).approval).toEqual({ by: "alex", you: false, automatic: false });
     // A task that didn't fail has neither.

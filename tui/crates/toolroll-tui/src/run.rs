@@ -137,9 +137,16 @@ struct Loop {
     editor: Option<(String, String)>,
 }
 
-/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
-/// again (it must still be this session's) before it is attached; its frames come back as messages until it closes.
-async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
+/// Take over: this session's own terminal on that task's build for `program` (the console lists only its own), else a
+/// new one; listed again (it must still be this session's) before it is attached; its frames come back as messages until
+/// it closes.
+async fn open_terminal(
+    client: Client,
+    tx: mpsc::UnboundedSender<Msg>,
+    task: String,
+    run: i64,
+    program: String,
+) {
     let fail = |e: ApiError| {
         let _ = tx.send(Msg::TermOpened {
             task: task.clone(),
@@ -154,6 +161,7 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
             .find(|one| {
                 one.task.as_deref() == Some(task.as_str())
                     && one.run == Some(run)
+                    && one.program == program
                     && one.ended_at.is_none()
             })
             .map(|one| (one.id.clone(), one.branch.clone()))
@@ -163,7 +171,7 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
         Err(e) => return fail(e),
     };
     if listed.is_none() {
-        if let Err(e) = client.term_start(&task, run, "shell").await {
+        if let Err(e) = client.term_start(&task, run, &program).await {
             return fail(e);
         }
     }
@@ -357,6 +365,29 @@ impl Loop {
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
+            Effect::OpenBuilderPassword { task, setup } => {
+                let page = format!("/t/{}", toolroll_api::client::encode(&task));
+                let door = if setup {
+                    "/password/set?next="
+                } else {
+                    "/login?return="
+                };
+                let url = format!(
+                    "{}{door}{}",
+                    self.client.origin(),
+                    toolroll_api::client::encode(&page)
+                );
+                let ask =
+                    serde_json::json!({ "want": "builder-password", "task": task, "setup": setup });
+                let opened = opts.control.as_mut().is_some_and(|control| {
+                    writeln!(control, "{ask}")
+                        .and_then(|_| control.flush())
+                        .is_ok()
+                });
+                if !opened {
+                    app.update(Msg::Said(format!("Open {url} to change the builder.")));
+                }
+            }
             Effect::OpenPage(page) => match opts.control.as_mut() {
                 Some(control) => {
                     let ask = format!(
@@ -374,7 +405,8 @@ impl Loop {
                     }
                 }
                 None => {
-                    let words = format!("Open {} in your browser.", self.client.origin());
+                    let path = match page { "lead-providers" => "/settings/lead#lead-config", "projects" => "/projects", _ => "" };
+                    let words = format!("Open {}{path} in your browser.", self.client.origin());
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
@@ -388,11 +420,47 @@ impl Loop {
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
-            Effect::TermOpen { task, run } => {
-                drop(tokio::spawn(open_terminal(client, tx, task, run)));
+            Effect::TermOpen { task, run, program } => {
+                drop(tokio::spawn(open_terminal(client, tx, task, run, program)));
             }
+            Effect::FetchTaskBuilder { root, task } => drop(tokio::spawn(async move {
+                let result = client.task_builder(&root, &task).await;
+                let _ = tx.send(Msg::TaskBuilder(task, result));
+            })),
             Effect::FetchModels => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Models(client.models().await));
+            })),
+            Effect::CheckLeadProviders => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::LeadProvidersChecked(client.agents_check().await));
+            })),
+            Effect::SwitchLead(plan) => drop(tokio::spawn(async move {
+                let result = client.act("/settings/lead/on", &[("agent", plan.id()), ("return", "/chat")], "Lead membership saved.").await;
+                let _ = tx.send(Msg::LeadSwitched(plan, result));
+            })),
+            Effect::FetchLeadChat => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::LeadChat(client.chat(None).await));
+            })),
+            Effect::ChatSend {
+                message,
+                request,
+                session,
+                project,
+            } => drop(tokio::spawn(async move {
+                let res = client
+                    .chat_send(&message, &request, session, project.as_deref())
+                    .await;
+                let _ = tx.send(Msg::ChatSent(res));
+            })),
+            Effect::ProposalAct {
+                id,
+                op,
+                confirm_yes,
+            } => drop(tokio::spawn(async move {
+                let result = client.proposal_act(id, op, confirm_yes).await;
+                let _ = tx.send(Msg::ProposalActed { id, op, result });
+            })),
+            Effect::QueuedRemove(id) => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Acted(client.queued_remove(id).await));
             })),
             Effect::CheckAgents => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Agents(client.agents_check().await));
@@ -580,13 +648,16 @@ async fn event_loop(
     let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
-    let mut pending: Vec<Effect> = vec![Effect::FetchWork];
+    let mut pending: Vec<Effect> = vec![Effect::FetchWork, Effect::FetchLeadChat];
     app.fetching_work = true;
+    app.chat.loading = true;
     if let Some((words, code)) = opts.fatal.take() {
         app.mode = crate::app::Mode::Fatal(words, code);
         pending.clear();
     }
     let mut events = EventStream::new();
+    let mut animation = tokio::time::interval(Duration::from_millis(150));
+    animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frames = Samples::default();
@@ -747,6 +818,10 @@ async fn event_loop(
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
                 dirty = app.highlight_pending;
                 pending.extend(app.term_resize());
+            }
+            _ = animation.tick(), if app.areas.spinner_visible => {
+                app.spinner_frame = (app.spinner_frame + 1) % 4;
+                dirty = true;
             }
             _ = tick.tick() => {
                 for k in late.flush(Instant::now()) {

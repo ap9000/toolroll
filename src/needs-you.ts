@@ -416,6 +416,18 @@ export function stopSuggestionOf(reason: string | null | undefined): string {
   return STOP_SUGGESTIONS[code] ?? GENERAL_SUGGESTION;
 }
 
+const OFFLINE_REGISTRY_SIGNAL = /\b(?:ENOTFOUND|EAI_AGAIN|ERR_PNPM_FETCH|registry\.npmjs\.org|registry\.yarnpkg\.com|pypi\.org|crates\.io|proxy\.golang\.org|rubygems\.org)\b|offline store|registry (?:lookup|could not be reached|unreachable)|could(?:n't| not) resolve/i;
+
+/** When a sandboxed Codex build stops because its offline shell tried to reach a package registry, give the real
+ * remedy (a project worktree setup command) instead of a generic retry prompt. */
+export function codexOfflineDependencySuggestion(options: { provider: string | null | undefined; agentSaid: readonly string[] | null | undefined; hasSetup: boolean }): string | null {
+  if (options.provider !== "codex" || !options.agentSaid || options.agentSaid.length === 0) return null;
+  if (!OFFLINE_REGISTRY_SIGNAL.test(options.agentSaid.join("\n"))) return null;
+  return options.hasSetup
+    ? "Codex runs commands offline in its sandbox. Check that the project's worktree setup command installs every dependency needed before the agent starts, then retry."
+    : "Codex runs commands offline in its sandbox, so packages can't install during a build. Set a project worktree setup command (Settings → Project or toolroll setup set) to install dependencies before the agent starts, then retry.";
+}
+
 /** A signed requirement in the middle of a sentence: its first letter lowered unless it starts a name or an acronym. */
 function inSentence(statement: string): string {
   const plain = statement.trim().replace(/[.\s]+$/, "");

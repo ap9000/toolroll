@@ -9,7 +9,7 @@
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
 import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
-import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
+import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
 import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
@@ -31,6 +31,19 @@ import { wasInterrupted } from "./run-ending.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
+
+/** Any builder or scout run a live terminal can open on (finished, failed, or still running). */
+export const isTakeOverRun = (run: Pick<Run, "role">): boolean => run.role === "builder" || run.role === "scout";
+
+const VALID_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** A recorded full git commit SHA (SHA-1 or SHA-256), or null. */
+export const validSha = (value: string | null | undefined): string | null =>
+  value !== null && value !== undefined && VALID_SHA.test(value) ? value : null;
+
+/** The commit Toolroll opens a build terminal on: the build's own saved commit when it made one, else the base commit it started from. */
+export const takeOverRevisionOf = (run: Pick<Run, "headRevision" | "baseRevision">): string | null =>
+  validSha(run.headRevision) ?? validSha(run.baseRevision);
 
 /** Approvals no person gave at the moment of approval (a check rule's own yes). */
 const AUTOMATIC = new Set(["auto-check", "auto-green"]);
@@ -122,7 +135,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     shell: shellOf(store, family,
       assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
         ? assignment.receipt.runId : builds[0]?.id ?? null),
-    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, builds) : null,
+    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, current.repo, builds) : null,
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
       if (waiting === null) return null;
@@ -151,23 +164,30 @@ export const SHELL_NO_COMMIT = "This build has no saved commit to open a termina
 /** Open build shell's build (`run`) and why it can't be opened (null: it can be, as far as the saved facts say). */
 function shellOf(store: Store, family: TaskFamily, runId: number | null): StepCards["shell"] {
   if (runId === null) return null;
-  const run = resultRunsOf(store, family).find(one => one.id === runId) ?? null;
+  const run = resultRunsOf(store, family).find(one => one.id === runId)
+    ?? takeOverRunsOf(store, family).find(one => one.id === runId)
+    ?? null;
   if (run === null) return { run: runId, why: SHELL_NO_RESULT };
-  const revision = run.headRevision;
-  if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return { run: runId, why: SHELL_NO_COMMIT };
+  if (takeOverRevisionOf(run) === null) return { run: runId, why: SHELL_NO_COMMIT };
   return { run: runId, why: null };
 }
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
  * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
-function failureOf(store: Store, taskRef: number | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+function failureOf(store: Store, taskRef: number | null, repo: string | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
   const last = latestFinishedAttempt(builds);
   // The engine's own count (claim.ts addStrike): failures since the last success or the last person's Retry, which
   // clears them (store.requeueTask resetStrikes). The words "N consecutive failures" mean exactly that.
   const failedInARow = taskRef === null ? 0
     : Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(taskRef)?.["strikes"] ?? 0);
-  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason),
-    agentSaid: last === null ? null : agentSaidOf(store, last.id) };
+  const agentSaid = last === null ? null : agentSaidOf(store, last.id);
+  const codexHint = last === null ? null : codexOfflineDependencySuggestion({
+    provider: last.provider,
+    agentSaid,
+    hasSetup: repo !== null && store.liveWorktreeSetup(repo) !== null,
+  });
+  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : (codexHint ?? stopSuggestionOf(last.reason)),
+    agentSaid };
 }
 
 /** A cancelled task's history: its builds as they ran, then Cancelled, the end (no road goes on from there). */
@@ -262,6 +282,11 @@ function runFacts(runs: readonly Run[]): Pick<StepCard, "agent" | "startedAt" | 
 /** The family's result runs, newest first: every run the Result tab can pick. */
 export function resultRunsOf(store: Store, family: TaskFamily): Run[] {
   return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isResultRun).sort((a, b) => b.id - a.id);
+}
+
+/** Every builder or scout run in the family that a live terminal can open on, newest first. */
+export function takeOverRunsOf(store: Store, family: TaskFamily): Run[] {
+  return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isTakeOverRun).sort((a, b) => b.id - a.id);
 }
 
 /** The patch cut at each file's `diff --git` line: each file's own text, in the patch's order. */

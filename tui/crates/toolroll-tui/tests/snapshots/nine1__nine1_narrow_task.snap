@@ -2,9 +2,9 @@
 source: crates/toolroll-tui/tests/nine1.rs
 expression: shown
 ---
-" Toolroll  · proj                    NARROW    1 needs you  "
+" Toolroll  · proj                     NARROW   1 needs you  "
 "╭──────────────────────────────────────────────────────────╮"
-"│ Live · Steps · Diff · Terminal           3 of 5 · b list │"
+"│ Live · Steps · Diff · Terminal         3 of 5 · Esc list │"
 "│ Add a changelog entry  Queued                            │"
 "│ Waiting for a builder.                                   │"
 "│ Reading…                                                 │"
@@ -27,4 +27,4 @@ expression: shown
 "│                                                          │"
 "╰──────────────────────────────────────────────────────────╯"
 "                                                            "
-" j/k move  ⏎ open  n new  : all actions                     "
+" j/k scroll  / search  Esc list  : all actions              "

@@ -1275,7 +1275,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
     if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
     const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);

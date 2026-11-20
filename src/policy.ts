@@ -23,7 +23,7 @@ import type { ExecutionProfile } from "./scope.js";
 
 export type PermissionLevel = "safe" | "standard" | "escalated";
 export const PERMISSION_LEVELS: readonly PermissionLevel[] = ["safe", "standard", "escalated"];
-export const POLICY_PROVIDERS = ["claude", "codex", "gemini", "openrouter", "opencode", "cursor", "cline", "qwen", "goose"] as const;
+export const POLICY_PROVIDERS = ["claude", "codex", "gemini", "openrouter", "opencode", "cursor", "cline", "qwen", "goose", "antigravity"] as const;
 export type PolicyProvider = (typeof POLICY_PROVIDERS)[number];
 
 /** The policy as saved: null lists allow everything of their kind. */
@@ -82,7 +82,7 @@ export function readPolicy(db: Database): SavedPolicy {
 
 // ---- words -------------------------------------------------------------------------------
 
-export const PROVIDER_NAMES: Record<PolicyProvider, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode", cursor: "Cursor", cline: "Cline", qwen: "Qwen Code", goose: "Goose" };
+export const PROVIDER_NAMES: Record<PolicyProvider, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode", cursor: "Cursor", cline: "Cline", qwen: "Qwen Code", goose: "Goose", antigravity: "Antigravity" };
 export const LEVEL_NAMES: Record<PermissionLevel, string> = { safe: "Safe", standard: "Standard", escalated: "Escalated" };
 export const LEVEL_HINTS: Record<PermissionLevel, string> = {
   safe: "Edits in the project only. Codex and OpenRouter can't run this low.",

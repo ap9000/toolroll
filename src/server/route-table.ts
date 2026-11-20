@@ -420,6 +420,8 @@ get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
 get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: ["cookie"], ...free });
 // The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
 get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
+// The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
+get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });

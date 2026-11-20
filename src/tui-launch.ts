@@ -329,6 +329,14 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
           continue;
         }
         // The answer goes back on the same descriptor, one line: what to say ({"said": "..."}).
+        if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["want"] === "builder-password") {
+          const { task, setup } = ask as Record<string, unknown>;
+          if (typeof task !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$/.test(task) || typeof setup !== "boolean" || !input.session.openBuilderPassword) continue;
+          void input.session.openBuilderPassword(task, setup).catch(() => "Could not open the browser.").then(said => {
+            if ("write" in asks && !child.killed && child.exitCode === null) (asks as NodeJS.WritableStream).write(`${JSON.stringify({ said })}\n`);
+          });
+          continue;
+        }
         if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["want"] === "browser") {
           // A named landing only from the fixed list (tui-contract.ts TUI_PAGES); anything else opens the console's start.
           const page = (ask as Record<string, unknown>)["page"];

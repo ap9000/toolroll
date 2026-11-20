@@ -114,7 +114,7 @@ export interface ServerRuntime {
   liveTurns: Map<number, LiveTurn>;
   /** A lead reply started on a thread: pages with that conversation open follow it (server/live.ts). */
   liveTurnStarted: (thread: number) => void;
-  leadConversationRows: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject?: string | null) => { messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>; previous: ReplacedThread | null; };
+  leadConversationRows: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject?: string | null) => { messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; staleAsk: number | null; asks: Map<number, LeadAsk>; queue: Map<number, import("../lead-queue.js").LeadQueueRow>; previous: ReplacedThread | null; failure: string | null; };
   demoLeadHere: () => DemoLead | null;
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
   team: ReturnType<typeof createTeamRuntime>;

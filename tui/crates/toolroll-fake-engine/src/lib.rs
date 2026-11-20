@@ -62,6 +62,8 @@ pub struct State {
     pub work: Value,
     /// The agents read (GET /engine/agents).
     pub agents: Value,
+    /// The central Lead chat read (GET /engine/chat).
+    pub lead_chat: Value,
     pub steps: HashMap<String, Value>,
     pub diffs: HashMap<String, Value>,
     pub diff_files: HashMap<String, Value>,
@@ -523,6 +525,7 @@ pub fn scenario() -> State {
     State {
         work: scenario_work(),
         agents: fixture("agents.json"),
+        lead_chat: scenario_lead_chat(),
         steps,
         diffs,
         diff_files,
@@ -581,16 +584,35 @@ pub fn scenario_with_threads() -> State {
     state
 }
 
+/// Default central Lead chat for the fake scenario: links into `t-done` (diff) and `t-live`.
+pub fn scenario_lead_chat() -> Value {
+    let mut c = fixture("lead-chat.json");
+    c["messages"][1]["cards"][0]["card"]["buttons"][0]["path"] = json!("/t/t-done/diff");
+    c["messages"][1]["cards"][0]["links"][0] = json!({
+        "label": "Inspect CSV export diff",
+        "href": "/t/t-done/diff",
+        "task": "t-done",
+        "tab": "diff"
+    });
+    c
+}
+
+#[derive(Clone)]
+enum LiveMsg {
+    Change(String),
+    Turn { room: String, payload: Value },
+}
+
 #[derive(Clone)]
 struct Shared {
     state: Arc<Mutex<State>>,
-    changes: broadcast::Sender<String>,
+    changes: broadcast::Sender<LiveMsg>,
 }
 
 pub struct FakeEngine {
     pub addr: SocketAddr,
     pub state: Arc<Mutex<State>>,
-    changes: broadcast::Sender<String>,
+    changes: broadcast::Sender<LiveMsg>,
 }
 
 impl FakeEngine {
@@ -608,6 +630,7 @@ impl FakeEngine {
             .route("/work/rows", get(work))
             .route("/engine/agents", get(agents))
             .route("/engine/models", get(models))
+            .route("/engine/chat", get(lead_chat))
             .route("/t/{task}/steps", get(steps))
             .route("/t/{task}/approval", get(approval))
             .route("/t/{task}/diff", get(diff))
@@ -639,7 +662,18 @@ impl FakeEngine {
 
     /// Say on `/live` that a room changed.
     pub fn change(&self, room: &str) {
-        let _ = self.changes.send(room.to_string());
+        let _ = self.changes.send(LiveMsg::Change(room.to_string()));
+    }
+
+    /// Stream a live Lead reply snapshot (`event: turn`) on `/live`.
+    pub fn emit_turn(&self, room: &str, mut payload: Value) {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("room".into(), json!(room));
+        }
+        let _ = self.changes.send(LiveMsg::Turn {
+            room: room.to_string(),
+            payload,
+        });
     }
 
     /// Append records to a run's main window and say its room changed.
@@ -743,6 +777,13 @@ async fn agents(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
         return r;
     }
     json_answer(200, s.state.lock().unwrap().agents.clone())
+}
+
+async fn lead_chat(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/engine/chat") {
+        return r;
+    }
+    json_answer(200, s.state.lock().unwrap().lead_chat.clone())
 }
 
 async fn steps(
@@ -976,16 +1017,22 @@ async fn live_stream(
     let hello = futures_util::stream::once(async {
         Ok::<Bytes, Infallible>(Bytes::from("event: hello\ndata: {\"tick\":15000}\n\n"))
     });
-    let changes = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |room| {
+    let changes = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |msg| {
         let rooms = rooms.clone();
         async move {
-            let room = room.ok()?;
-            rooms.contains(&room).then(|| {
-                Ok::<Bytes, Infallible>(Bytes::from(format!(
-                    "event: change\ndata: {{\"room\":{}}}\n\n",
-                    json!(room)
-                )))
-            })
+            match msg.ok()? {
+                LiveMsg::Change(room) => rooms.contains(&room).then(|| {
+                    Ok::<Bytes, Infallible>(Bytes::from(format!(
+                        "event: change\ndata: {{\"room\":{}}}\n\n",
+                        json!(room)
+                    )))
+                }),
+                LiveMsg::Turn { room, payload } => rooms.contains(&room).then(|| {
+                    Ok::<Bytes, Infallible>(Bytes::from(format!(
+                        "event: turn\ndata: {payload}\n\n"
+                    )))
+                }),
+            }
         }
     });
     (
@@ -1046,6 +1093,174 @@ async fn act(
     if path == "/tasks/add" || path == "/tasks/fast" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
     }
+    // Central Lead chat send (POST /chat): records the operator message and notifies room `chat`.
+    if path == "/chat" {
+        let msg = st
+            .acts
+            .last()
+            .and_then(|a| a.field("message"))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if msg.is_empty() {
+            return json_answer(
+                400,
+                json!({ "ok": false, "said": "a message is 1 to 10000 characters", "session": 7 }),
+            );
+        }
+        let busy = st.lead_chat["busy"].as_bool().unwrap_or(false);
+        let next_id = st.lead_chat["messages"]
+            .as_array()
+            .and_then(|a| a.iter().filter_map(|m| m["id"].as_i64()).max())
+            .unwrap_or(100)
+            + 1;
+        if let Some(arr) = st.lead_chat["messages"].as_array_mut() {
+            arr.push(json!({
+                "id": next_id,
+                "role": "operator",
+                "text": msg,
+                "activity": null,
+                "createdAt": AT,
+                "cards": [],
+                "ask": null,
+            }));
+            if !busy {
+                arr.push(json!({
+                    "id": next_id + 1,
+                    "role": "assistant",
+                    "text": format!("Noted: {msg}. Checking the workspace now."),
+                    "activity": "read tasks (1s)",
+                    "createdAt": AT,
+                    "cards": [],
+                    "ask": null,
+                }));
+            }
+        }
+        if busy {
+            if let Some(q) = st.lead_chat["queued"].as_array_mut() {
+                q.push(json!({
+                    "id": next_id,
+                    "text": msg,
+                    "status": "queued",
+                    "detail": "Waiting for your earlier messages…",
+                }));
+            }
+        }
+        let session = st.lead_chat["session"].as_i64().unwrap_or(7);
+        let _ = s.changes.send(LiveMsg::Change("chat".into()));
+        return json_answer(
+            202,
+            json!({ "ok": true, "queued": busy, "session": session, "task": "", "request": st.acts.last().and_then(|a| a.field("request")).unwrap_or("") }),
+        );
+    }
+    // Central Lead proposal confirm/dismiss (POST /chat/proposal/<id>/(confirm|dismiss)).
+    if let Some(rest) = path.strip_prefix("/chat/proposal/") {
+        if let Some((id_str, op)) = rest.split_once('/') {
+            if let (Ok(id), true) = (id_str.parse::<i64>(), op == "confirm" || op == "dismiss") {
+                let confirm_yes = st
+                    .acts
+                    .last()
+                    .and_then(|a| a.field("confirm"))
+                    == Some("yes");
+                let mut found = false;
+                let mut refused: Option<String> = None;
+                let mut filed_task: Option<String> = None;
+                if let Some(msgs) = st.lead_chat["messages"].as_array_mut() {
+                    for m in msgs.iter_mut() {
+                        if let Some(cards) = m["cards"].as_array_mut() {
+                            for card in cards.iter_mut() {
+                                if card["id"].as_i64() == Some(id) {
+                                    found = true;
+                                    if card["state"].as_str() != Some("pending") {
+                                        refused = Some("That card was already acted on.".into());
+                                        break;
+                                    }
+                                    if op == "confirm" {
+                                        let irrev = card["primary"]["irreversible"]
+                                            .as_bool()
+                                            .unwrap_or(false);
+                                        if irrev && !confirm_yes {
+                                            refused = Some(
+                                                "Confirm that you understand this cannot be undone."
+                                                    .into(),
+                                            );
+                                            break;
+                                        }
+                                        card["state"] = json!("confirmed");
+                                        card["primary"] = Value::Null;
+                                        card["dismissable"] = json!(false);
+                                        if card["kind"].as_str() == Some("task") {
+                                            filed_task = Some("t-new".into());
+                                            card["said"] = json!("Filed task t-new.");
+                                            card["links"] = json!([{
+                                                "label": "Open the new task",
+                                                "href": "/t/t-new",
+                                                "task": "t-new",
+                                                "tab": null
+                                            }]);
+                                        } else {
+                                            card["said"] = json!("Confirmed.");
+                                        }
+                                    } else {
+                                        card["state"] = json!("dismissed");
+                                        card["primary"] = Value::Null;
+                                        card["dismissable"] = json!(false);
+                                        card["note"] = json!("Dismissed.");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !found {
+                    return json_answer(404, json!({ "ok": false, "said": "Proposal not found." }));
+                }
+                if let Some(words) = refused {
+                    return json_answer(409, json!({ "ok": false, "said": words }));
+                }
+                // Recompute pendingProposals count.
+                let pending_count = st.lead_chat["messages"]
+                    .as_array()
+                    .map(|msgs| {
+                        msgs.iter()
+                            .flat_map(|m| m["cards"].as_array().into_iter().flatten())
+                            .filter(|c| {
+                                !c["data"].as_bool().unwrap_or(false)
+                                    && c["state"].as_str() == Some("pending")
+                                    && c["primary"]["kind"].as_str() == Some("confirm")
+                            })
+                            .count() as i64
+                    })
+                    .unwrap_or(0);
+                st.lead_chat["pendingProposals"] = json!(pending_count);
+                let _ = s.changes.send(LiveMsg::Change("chat".into()));
+                let said = if op == "dismiss" {
+                    "Dismissed."
+                } else if filed_task.is_some() {
+                    "Filed task t-new."
+                } else {
+                    "Confirmed."
+                };
+                return json_answer(200, json!({ "ok": true, "said": said, "taskId": filed_task }));
+            }
+        }
+    }
+    // Remove queued Lead message (POST /chat/queued/<id>/remove).
+    if let Some(rest) = path.strip_prefix("/chat/queued/") {
+        if let Some(id_str) = rest.strip_suffix("/remove") {
+            if let Ok(id) = id_str.parse::<i64>() {
+                if let Some(q) = st.lead_chat["queued"].as_array_mut() {
+                    let before = q.len();
+                    q.retain(|item| item["id"].as_i64() != Some(id));
+                    if q.len() != before {
+                        let _ = s.changes.send(LiveMsg::Change("chat".into()));
+                        return json_answer(200, json!({ "ok": true, "said": "Removed. It won't be sent." }));
+                    }
+                }
+                return json_answer(404, json!({ "ok": false, "said": "That message isn't waiting." }));
+            }
+        }
+    }
     // The Agents screen: looking again answers the agents read; an agent's own sign-in or install starts a terminal
     // (an install only with the exact command confirmed); a models save answers as Settings does, with a redirect.
     if path == "/engine/agents/check" {
@@ -1078,6 +1293,65 @@ async fn act(
             let to = format!("/settings/models?problem={}", words.replace(' ', "+"));
             return (StatusCode::SEE_OTHER, [("location", to)]).into_response();
         }
+        let last = st.acts.last().unwrap();
+        if last.field("digest") != st.models["digest"].as_str() {
+            return (
+                StatusCode::SEE_OTHER,
+                [(
+                    "location",
+                    "/settings/models?problem=Models+changed.+Choose+again.",
+                )],
+            )
+                .into_response();
+        }
+        let mut next = st.models.clone();
+        for role in next["roles"].as_array_mut().unwrap() {
+            let key = role["key"].as_str().unwrap();
+            if let Some(value) = last.field(key) {
+                if key == "review" && value == "clear" {
+                    role["current"] = json!("");
+                    role["words"] = json!("Follows the planner");
+                } else {
+                    let choice = role["choices"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|group| {
+                            group["models"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(move |model| (group, model))
+                        })
+                        .find(|(group, model)| {
+                            value.split_once('|')
+                                == group["provider"].as_str().zip(model["value"].as_str())
+                        });
+                    let Some((group, model)) = choice else {
+                        return (
+                            StatusCode::SEE_OTHER,
+                            [(
+                                "location",
+                                "/settings/models?problem=Choose+a+listed+model.",
+                            )],
+                        )
+                            .into_response();
+                    };
+                    let words = format!(
+                        "{} · {}",
+                        group["label"].as_str().unwrap(),
+                        model["label"].as_str().unwrap()
+                    );
+                    role["current"] = json!(value);
+                    role["words"] = json!(words);
+                }
+            }
+        }
+        if let Some((provider, _)) = last.field("build").and_then(|v| v.split_once('|')) {
+            next["defaultAgent"] = json!(provider);
+        }
+        next["digest"] = json!(format!("{:064x}", st.acts.len()));
+        st.models = next;
         return (
             StatusCode::SEE_OTHER,
             [("location", "/settings/models?said=Models+saved.")],

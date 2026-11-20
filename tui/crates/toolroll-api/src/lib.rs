@@ -4,8 +4,13 @@ pub mod connection;
 pub mod models;
 pub mod sse;
 pub mod term;
+pub mod task_builder;
+pub use task_builder::{BuilderPicker, TaskBuilder};
 
-pub use client::{check_hello, redeem, said_of, ActOutcome, ApiError, Client, LiveSignal};
+pub use client::{
+    check_hello, redeem, said_of, ActOutcome, ApiError, ChatSendOutcome, Client, LiveSignal,
+    ProposalActOutcome,
+};
 pub use connection::{
     parse_connection_refusal, parse_disabled_connection, parse_disabled_metadata, ConnectionAccess,
     ConnectionBinding, ConnectionError, ConnectionRefusal, ConnectionRole, DisabledConnection,

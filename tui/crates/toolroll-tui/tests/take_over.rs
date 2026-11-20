@@ -71,7 +71,8 @@ fn taken_over() -> App {
         fx,
         vec![Effect::TermOpen {
             task: "t-done".into(),
-            run: fake::RESULT_RUN
+            run: fake::RESULT_RUN,
+            program: "shell".into(),
         }]
     );
     assert_eq!(app.tab, Tab::Terminal);
@@ -216,6 +217,7 @@ fn keys_reach_only_the_terminal_on_screen() {
     let mut app = taken_over();
     // Another task: its socket is let go of (the program runs on), and no key reaches it any more.
     app.key(ctrl(']'));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let fx = app.key(key('k'));
     assert!(fx.contains(&Effect::TermDetach(ID.into())), "{fx:?}");
     assert!(app.term.is_none());
@@ -662,6 +664,7 @@ fn t_pressed_before_the_steps_are_read_goes_on_once_they_are() {
         away.key(key('j'));
     }
     away.key(key('t'));
+    away.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     away.key(key('k'));
     away.update(Msg::Steps(
         "t-done".into(),
@@ -889,4 +892,101 @@ fn leaving_or_losing_an_opening_shell_sends_nothing_anywhere() {
     assert!(sent(&fx).is_empty(), "{fx:?}");
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.status.as_ref().unwrap().1, SHELL_NOT_OPEN);
+}
+
+#[test]
+fn live_build_terminal_tab_shows_worker_console_and_allows_live_agent_take_over() {
+    let mut app = app_on("t-live");
+    app.tab = Tab::Terminal;
+    let shown = screen(&mut app, 120, 30);
+    // Layer 1: framed live worker console with steering composer instead of a dead-end message.
+    assert!(shown.contains("Live worker"), "{shown}");
+    assert!(shown.contains("i live agent"), "{shown}");
+    assert!(shown.contains("Message the agent"), "{shown}");
+    // Layer 2/3: `i` opens the interactive agent confirm dialog even while the build runs.
+    assert_eq!(app.key(key('i')), vec![]);
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver {
+            ref task,
+            ref program,
+            ..
+        } if task == "t-live" && program == "claude"
+    ));
+    let dialog = screen(&mut app, 120, 30);
+    assert!(dialog.contains("Open Claude Code"), "{dialog}");
+    assert!(dialog.contains("2 Claude Code"), "{dialog}");
+    assert!(dialog.contains("3 Codex"), "{dialog}");
+    // `3` switches to Codex; after the updated dialog is drawn, Enter launches `Effect::TermOpen { program: "codex" }`.
+    assert_eq!(app.key(key('3')), vec![]);
+    let codex_dialog = screen(&mut app, 120, 30);
+    assert!(codex_dialog.contains("Open Codex"), "{codex_dialog}");
+    let fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        matches!(
+            fx.as_slice(),
+            [Effect::TermOpen { task, program, .. }] if task == "t-live" && program == "codex"
+        ),
+        "{fx:?}"
+    );
+    assert_eq!(app.term.as_ref().unwrap().program, "codex");
+}
+
+#[test]
+fn confirm_take_over_cycles_programs_and_tags_opened_agent_pane() {
+    let mut app = app_on("t-done");
+    // `i` opens ConfirmTakeOver defaulting to the task's agent (claude).
+    assert_eq!(app.key(key('i')), vec![]);
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "claude"
+    ));
+    screen(&mut app, 120, 30);
+    // Tab cycles claude -> codex -> antigravity -> shell.
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "codex"
+    ));
+    screen(&mut app, 120, 30);
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    let agy_dialog = screen(&mut app, 120, 30);
+    assert!(agy_dialog.contains("Open Antigravity"), "{agy_dialog}");
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "shell"
+    ));
+    screen(&mut app, 120, 30);
+    // `4` selects Antigravity directly; `2` selects Claude Code, then after drawing `i` confirms.
+    app.key(key('4'));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    screen(&mut app, 120, 30);
+    app.key(key('2'));
+    screen(&mut app, 120, 30);
+    let fx = app.key(key('i'));
+    assert_eq!(
+        fx,
+        vec![Effect::TermOpen {
+            task: "t-done".into(),
+            run: fake::RESULT_RUN,
+            program: "claude".into(),
+        }]
+    );
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: fake::RESULT_RUN,
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
+    });
+    hello(&mut app);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Claude Code"), "{shown}");
+    assert!(shown.contains("Typing"), "{shown}");
 }

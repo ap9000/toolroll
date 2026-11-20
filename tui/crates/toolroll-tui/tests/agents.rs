@@ -3,7 +3,7 @@
 //! an install without its confirm, a models change without its confirm, a sign-in that isn't the agent's own.
 #[path = "common/pairs.rs"]
 mod pairs;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
@@ -199,6 +199,8 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
         "{shown}"
     );
     insta::assert_snapshot!("agents_sign_in_pane", shown);
+    let narrow = screen(&mut app, 80, 24);
+    assert!(narrow.contains("Waiting for the browser"), "{narrow}");
     // Typing goes to the pane only (it is drawn).
     let fx = app.key(key('x'));
     assert!(
@@ -214,6 +216,68 @@ fn sign_in_opens_the_agents_own_sign_in_and_looks_again_when_it_ends() {
     ));
     assert!(fx.contains(&Effect::CheckAgents), "{fx:?}");
     assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn unknown_login_can_be_rechecked_in_place_after_a_launcher_failure() {
+    let mut read = fake::fixture("agents.json");
+    let codex = read["agents"].as_array_mut().unwrap().iter_mut()
+        .find(|row| row["id"] == "codex").unwrap();
+    codex["state"] = "unknown".into();
+    let mut app = open(read);
+    let groups = toolroll_tui::agents::groups(app.agents.as_ref().unwrap());
+    let group = groups.iter().find(|(_, rows)| rows.iter().any(|row| row.id == "codex"));
+    assert_eq!(group.map(|(name, _)| *name), Some("Needs a check"));
+    select(&mut app, "codex");
+    app.key(key('s'));
+    toolroll_tui::agents::ended(&mut app, Some(127), None);
+    let shown = screen(&mut app, 120, 34);
+    assert!(shown.contains("trusted PATH"), "{shown}");
+    let button = app.areas.agents_refresh;
+    assert!(button.width > 0);
+    let effects = app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: button.x + button.width - 1,
+        row: button.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(effects, vec![Effect::CheckAgents]);
+    let mut refreshed = app.agents.clone().unwrap();
+    let codex = refreshed.agents.iter_mut().find(|a| a.id == "codex").unwrap();
+    codex.state = "signed-in".into();
+    codex.ready = true;
+    app.update(Msg::Agents(Ok(refreshed)));
+    assert!(toolroll_tui::agents::current(&app).unwrap().ready);
+    assert!(app.agents_screen.as_ref().unwrap().outcome.is_none());
+}
+
+#[test]
+fn refused_sign_in_keeps_the_reason_by_the_command_and_closes_the_empty_terminal() {
+    let mut app = open(fake::fixture("agents.json"));
+    select(&mut app, "codex");
+    app.key(key('s'));
+    app.update(Msg::TermOpened {
+        task: "agent:codex".into(),
+        run: 0,
+        result: Err(ApiError::Refused(
+            "Toolroll won't run `codex`: others can change /opt/homebrew/bin (group- or world-writable).".into(),
+        )),
+    });
+    assert!(app.term.is_none());
+    assert!(app.agents_screen.as_ref().unwrap().pane.is_none());
+    app.status = None;
+    for (w, h) in [(120, 34), (80, 24)] {
+        let shown = screen(&mut app, w, h);
+        assert!(
+            shown.contains("Sign-in terminal could not open."),
+            "{shown}"
+        );
+        assert!(shown.contains("/opt/homebrew/bin"), "{shown}");
+        assert!(!shown.contains("Ctrl-] goes back"), "{shown}");
+    }
+    let retry = app.key(key('s'));
+    assert!(matches!(retry.as_slice(), [Effect::AgentTerm { .. }]));
+    assert!(app.agents_screen.as_ref().unwrap().outcome.is_none());
 }
 
 #[test]
@@ -300,6 +364,37 @@ fn y_copies_every_command_to_the_scrollback() {
         .iter()
         .any(|l| l == "Check:    toolroll agents check opencode --model <model>"));
     assert_eq!(app.mode, Mode::Copied);
+}
+
+#[test]
+fn work_shortcut_shows_models_at_compact_size_and_filters_the_builder_catalog() {
+    let mut app = open(fake::fixture("agents.json"));
+    app.key(code(KeyCode::Esc));
+    assert!(app.key(key('M')).contains(&Effect::FetchModels));
+    app.update(Msg::Models(Ok(parse(fake::fixture("models.json")))));
+    let shown = screen(&mut app, 80, 24);
+    assert!(
+        shown.contains("Planner") && shown.contains("Builder for routine tasks"),
+        "{shown}"
+    );
+    app.key(code(KeyCode::Down));
+    app.key(code(KeyCode::Enter));
+    app.key(key('/'));
+    app.paste("no such model");
+    app.key(code(KeyCode::Enter));
+    assert!(screen(&mut app, 80, 24).contains("No matching models"));
+    app.key(code(KeyCode::Esc));
+    app.key(code(KeyCode::Enter));
+    app.key(key('/'));
+    app.paste("codex sol");
+    assert!(screen(&mut app, 80, 24).contains("GPT-6 Sol"));
+    app.key(code(KeyCode::Enter));
+    let shown = screen(&mut app, 80, 24);
+    assert!(shown.contains("Builder for routine tasks"), "{shown}");
+    let fx = app.key(code(KeyCode::Enter));
+    assert!(matches!(fx.as_slice(), [Effect::Act { fields, .. }]
+        if fields.contains(&("build".into(), "codex|gpt-6-sol".into()))
+            && !fields.iter().any(|(k, _)| k == "plan" || k == "review")));
 }
 
 #[test]

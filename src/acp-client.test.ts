@@ -414,3 +414,74 @@ describe("the schema, as it is written", () => {
   });
 });
 
+describe("ACP authenticate handshake (Antigravity oauth-personal)", () => {
+  const AGY_INIT = {
+    protocolVersion: 1,
+    agentInfo: { name: "Antigravity ACP Server", version: "1.5.12" },
+    agentCapabilities: { loadSession: true, auth: { logout: {} }, sessionCapabilities: { close: {} } },
+    authMethods: [
+      { id: "oauth-personal", name: "Log in with Google", description: "Log in with your Google account" },
+      { id: "gemini-api-key", name: "Gemini API key" },
+    ],
+  };
+
+  test("sends authenticate(oauth-personal) before session/new and completes model selection + prompt", () => {
+    const conversation = createAcpConversation({
+      cwd: "<work>", prompt: "fix it", model: "gemini-4-neon",
+      expect: { name: "Antigravity ACP Server", version: "1.5.12" },
+      authMethod: "oauth-personal",
+    });
+    const [init] = sent(conversation.start());
+    expect(init).toMatchObject({ method: "initialize" });
+
+    const afterInit = conversation.receive(answer(init!.id, AGY_INIT));
+    expect(conversation.phase()).toBe("authenticate");
+    const [auth] = sent(afterInit.send);
+    expect(auth).toMatchObject({ method: "authenticate", params: { methodId: "oauth-personal" } });
+
+    const afterAuth = conversation.receive(answer(auth!.id, { _meta: { antigravity: { tier: { name: "Google AI Pro" } } } }));
+    expect(conversation.phase()).toBe("session");
+    const [open] = sent(afterAuth.send);
+    expect(open).toMatchObject({ method: "session/new", params: { cwd: "<work>", mcpServers: [] } });
+
+    const modelOption = { id: "model", name: "Model", category: "model", type: "select", currentValue: "gemini-4-neon", options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }] };
+    const afterNew = conversation.receive(answer(open!.id, { sessionId: "s-agy-1", configOptions: [modelOption] }));
+    const [pick] = sent(afterNew.send);
+    expect(pick).toMatchObject({ method: "session/set_config_option", params: { sessionId: "s-agy-1", configId: "model", value: "gemini-4-neon" } });
+
+    const afterModel = conversation.receive(answer(pick!.id, { configOptions: [modelOption] }));
+    const [prompt] = sent(afterModel.send);
+    expect(prompt).toMatchObject({ method: "session/prompt", params: { sessionId: "s-agy-1" } });
+
+    conversation.receive(answer(prompt!.id, { stopReason: "end_turn" }));
+    expect(conversation.phase()).toBe("ended");
+    expect(acpParse(conversation.retained())).toMatchObject({
+      initObserved: true, promptConsumed: true, sessionId: "s-agy-1",
+      agent: { name: "Antigravity ACP Server", version: "1.5.12" },
+    });
+  });
+
+  test("authenticate failure or missing advertised method fails cleanly with auth-required", () => {
+    const failed = createAcpConversation({ cwd: "<work>", prompt: "x", model: "gemini-4-neon", expect: null, authMethod: "oauth-personal" });
+    const [init1] = sent(failed.start());
+    const [auth1] = sent(failed.receive(answer(init1!.id, AGY_INIT)).send);
+    failed.receive(JSON.stringify({ jsonrpc: "2.0", id: auth1!.id, error: { code: -32000, message: "Authentication required" } }));
+    expect(failed.failure()).toMatchObject({ kind: "auth-required" });
+    expect(acpParse(failed.retained())).toMatchObject({ terminal: { failed: true, code: "auth-required" } });
+
+    const missing = createAcpConversation({ cwd: "<work>", prompt: "x", model: "gemini-4-neon", expect: null, authMethod: "oauth-business" });
+    const [init2] = sent(missing.start());
+    missing.receive(answer(init2!.id, AGY_INIT));
+    expect(missing.failure()).toMatchObject({ kind: "auth-required" });
+  });
+
+  test("authenticate accepting a null result still proceeds to session/new", () => {
+    const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model: "gemini-4-neon", expect: null, authMethod: "oauth-personal" });
+    const [init] = sent(conversation.start());
+    const [auth] = sent(conversation.receive(answer(init!.id, AGY_INIT)).send);
+    const afterAuth = conversation.receive(answer(auth!.id, null));
+    expect(conversation.phase()).toBe("session");
+    expect(sent(afterAuth.send)[0]).toMatchObject({ method: "session/new" });
+  });
+});
+

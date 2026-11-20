@@ -456,7 +456,8 @@ async function dispatch(
   }
   // Easy start (A): bare `toolroll` (or with --web / --project-root) at a person's terminal — no --json, not under a
   // coding agent — starts this computer's Toolroll and opens the terminal UI. Anything else keeps its behaviour below.
-  if (first !== "scan" && first !== "--json" && easyStartArgs(argv) !== null) {
+  const startArgs = easyStartArgs(argv);
+  if (startArgs !== null) {
     const terminal = mainOptions.easyStart?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
     const agent = terminal && (mainOptions.easyStart?.underAgent ?? underAgent(process.env));
     if (easyStartApplies(argv, { stdin: terminal, stdout: terminal, agent })) {
@@ -466,10 +467,16 @@ async function dispatch(
         databaseFile, write, build: (await import("./monitoring.js")).packageVersion(),
         ...(mainOptions.operate === undefined ? {} : { operate: mainOptions.operate }),
         admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
-        ...(easyStartArgs(argv)!.screenReader === true ? { screenReader: true } : {}),
-        ...(easyStartArgs(argv)!.tuiBinary === undefined ? {} : { tuiBinary: easyStartArgs(argv)!.tuiBinary }),
+        ...(startArgs.screenReader === true ? { screenReader: true } : {}),
+        ...(startArgs.tuiBinary === undefined ? {} : { tuiBinary: startArgs.tuiBinary }),
       });
-      return easy.runEasyStart("start", easyStartArgs(argv)!, { ...seams, ...mainOptions.easyStart?.seams });
+      return easy.runEasyStart("start", startArgs, { ...seams, ...mainOptions.easyStart?.seams });
+    }
+    if (startArgs.tuiBinary !== undefined) {
+      write(agent
+        ? "Toolroll detected a coding-agent session. Open the workbench launcher yourself from a fresh terminal session."
+        : "The workbench needs interactive input and output. Run the launcher in a terminal window.");
+      return USAGE_EXIT;
     }
   }
   // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.

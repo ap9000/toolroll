@@ -85,11 +85,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
   async function mateStatus(ctx: HandlerContext): Promise<void> {
     const { url, response, now } = ctx;
     const who = browserCaller(ctx.who);
-    const found = store.activeLeadSession(who.name);
+    const enabled = chatEnablement();
+    const found = enabled.ok ? store.activeLeadSession(who.name, enabled.credentialKey) : null;
     const principal = leadPrincipal(who);
     // Quiet page visits: a membership conversation not started yet is still a page to keep current (its task's
     // progress and approval); it reads as session 0, and nothing here starts it.
-    const enabled = chatEnablement();
     const notStarted = principal !== null && enabled.ok && enabled.billing === "subscription" && (found === null || found.ceilingDigest !== principal.ceilingDigest);
     const session = notStarted ? null : found;
     if (principal === null || (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation))) {
@@ -261,7 +261,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The mate (mate arc §5): while a mate session is live, /chat IS the
     // thread — the same rows the CLI reads. Without one, fleet chat as
     // before, plus the card that mints a session.
-    const leadSession = enabled.ok && who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    const leadSession = enabled.ok && who.role === "approver" ? store.activeLeadSession(who.name, enabled.credentialKey) : null;
     const principal = enabled.ok && who.role === "approver" ? leadPrincipal(who) : null;
     // Chat opens ready to talk (2026-09-23): an approver in good standing
     // needs no second password to start their own conversation. Quiet page
@@ -879,13 +879,14 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // A live mate session: the message is a mate turn — no password, the
     // session's ceremony already covered it (§1); the engine refuses on
     // its own terms and the thread shows why.
-    let leadSession = who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    let leadSession = who.role === "approver" ? store.activeLeadSession(who.name, enabled.credentialKey) : null;
     // Quiet page visits: a membership conversation starts with its first message, never with a page view. A page
     // shown before one existed binds its sends to session 0; that send starts it (the same approver standing a visit
     // used to need), and a retry or double submit of the same request lands in the conversation it started.
     let startedHere = false;
     const binding = body.getAll("request-session");
     const unbound = binding.length === 0 || (binding.length === 1 && binding[0] === String(NOT_STARTED_SESSION));
+    if (!unbound && leadSession === null && store.activeLeadSession(who.name) !== null) return said(409, "The Lead conversation changed. Reload and send your message again.");
     if (who.role === "approver" && enabled.billing === "subscription" && unbound) {
       const principal = leadPrincipal(who);
       if (principal === null) return wantsJson ? said(403, "Your sign-in changed. Sign in again.") : refuse(response, who, 403, "Your sign-in changed. Sign in again.", back);
@@ -908,7 +909,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         const scope = chatScopeOf(focusTask, chatProject);
         // The start and its record are one write: a retry finds it, and never starts a second conversation.
         const started = startLeadConversation(who, principal, enabled, 0, false, now, scope, sentRequest ?? undefined);
-        leadSession = store.activeLeadSession(who.name);
+        leadSession = store.activeLeadSession(who.name, enabled.credentialKey);
         if (leadSession === null || leadSession.id !== started) return said(409, "This conversation changed. Reload it before sending your message.");
         startedHere = true;
       }
@@ -953,15 +954,19 @@ export function createChatHandlers(runtime: ServerRuntime) {
       // Partials are shaped as the final reply is: for this message, with this console's own addresses.
       const liveShape: ShapeOptions = { asked: message, appOrigin: requestContext.getStore()?.appOrigins ?? null };
       const ended = (ok: boolean) => { if (onProgress !== undefined) endLiveTurn(opened.thread.id, ok, onProgress); };
+      // JSON senders keep the draft until admission or queueing. Admission happens before the model runs.
+      type Admission = { refused: string } | { queued: boolean };
+      const { promise: admission, resolve: finishAdmission } = deferredAdmission<Admission>();
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
       void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
-        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); }, onProgress: event => onProgress?.(event), channel: "console", requestId,
+        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); finishAdmission({ queued: false }); }, onProgress: event => onProgress?.(event), channel: "console", requestId,
         // The workbench's look is this computer's person's own: a browser session from this computer, signed in as
         // this computer's local owner, or as the one person of a single-person install (view-tools.ts).
         ...(viewAllowed(request, who) ? { view: viewRunner } : {}), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // Lost a race to another turn of this person's between deciding and admission: it waits instead of being refused.
           if (!outcome.ok && "refused" in outcome && (outcome.refused === "concurrent" || outcome.refused === "backlog") && queueIt().kind === "queued") {
+            finishAdmission({ queued: true });
             ended(false);
             return;
           }
@@ -969,15 +974,21 @@ export function createChatHandlers(runtime: ServerRuntime) {
           // that ended failed is said from its saved row (leadConversationRows `failure`), which a restart keeps; only a
           // refusal before any turn existed is said from memory.
           if (!outcome.ok && !("saved" in outcome && outcome.saved === true) && !("turn" in outcome)) noteLead(who.session.csrf, null, outcome.message);
+          finishAdmission(outcome.ok ? { queued: false } : { refused: outcome.message });
           ended(outcome.ok);
         })
-        .catch(() => { noteLead(who.session.csrf, null, "the turn failed unexpectedly"); ended(false); })
+        .catch(() => { finishAdmission({ refused: "Lead could not start this message. Try again." }); noteLead(who.session.csrf, null, "the turn failed unexpectedly"); ended(false); })
         // A personal turn ended: the next waiting message (this person's or anyone's) may start now.
         .finally(() => runtime.personalQueue.kick());
-      // Accepted for the engine, not received: the receipt is written by
-      // the turn's own admission, and the status poll is where the page
-      // learns of it — the same road as after a native send.
-      if (wantsJson) return respond(response, 202, "application/json", JSON.stringify({ ok: true, session: leadSession.id, task: focusTask?.id ?? "", ...(chatProject === null ? {} : { project: chatProject }), request: requestId }));
+      if (wantsJson) {
+        // Browser clients poll their request receipt. The TUI treats this response as its acknowledgement.
+        const terminal = request.headers["x-toolroll-client"] === "terminal";
+        const result = terminal ? await admission : { queued: false };
+        if ("refused" in result) return said(409, result.refused, leadSession.id);
+        if (terminal && !store.leadRequestReceived(leadSession.id, requestId)) return said(409, "Lead did not receive the message. Send it again.", leadSession.id);
+        return respond(response, 202, "application/json", JSON.stringify({ ok: true, ...(result.queued ? { queued: true } : {}),
+          session: leadSession.id, task: focusTask?.id ?? "", ...(chatProject === null ? {} : { project: chatProject }), request: requestId }));
+      }
       return redirect(response, chatReturnWithLatest(back));
     }
     if (wantsJson) return said(409, "This conversation ended. Reload to continue.");
@@ -1518,4 +1529,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
     viewAllowedFor({ via: who.via, ...(who.authority === undefined ? {} : { authority: who.authority }), name: who.name,
       fromThisComputer: runtime.fromThisComputer(request), approvers: store.listApprovers().map(one => one.name) });
   return { registrations, chatFirstRun, phoneCard, chatProjectOf, beginLiveTurn, endLiveTurn, noteLead, takeLeadNote, demoResultView, storeChatKey, forgetChatKey, sweepChatDrafts, runChatTurn, chatHomeOf, firstTasksFor, approverCandidateCount, evictOldestCandidate };
+}
+
+function deferredAdmission<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
 }

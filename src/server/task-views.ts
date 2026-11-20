@@ -1,3 +1,4 @@
+import { localOwnerRefusal } from "../local-owner.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
 import { familyInWebReach } from "../findings.js";
@@ -8,7 +9,7 @@ import { feedbackImageProblem } from "../result-actions.js";
 import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
 import { RELEASE_STEPS } from "../release.js";
-import { releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks } from "../store.js";
+import { agentSaidOf, releaseProgressFor, shipChecksForTask, type CiCheckRow, type ShipChecks } from "../store.js";
 import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
@@ -24,7 +25,7 @@ import { html, htmlString, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,personCompletionRefusal,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
-import { failedAttemptSentence,failingCheckSuggestion,GENERAL_SUGGESTION,isInternalErrorReason,latestFinishedAttempt,missedRequirementLine,missedRequirementSuggestion,NO_REASON_RECORDED,stopSuggestionOf,type FailureExplanation } from '../needs-you.js';
+import { codexOfflineDependencySuggestion,failedAttemptSentence,failingCheckSuggestion,GENERAL_SUGGESTION,isInternalErrorReason,latestFinishedAttempt,missedRequirementLine,missedRequirementSuggestion,NO_REASON_RECORDED,stopSuggestionOf,type FailureExplanation } from '../needs-you.js';
 import { planAutoPending } from "../plan-auto.js";
 import { planSourceOf, retryPinsOf } from "../local-owner-acts.js";
 import { planBackoffFor, planStoppedFor } from "../engine-reads.js";
@@ -543,6 +544,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         // and the focused chat, with the readiness this task's runners report.
         route: routeView,
         canEditRoute: who.role === "approver",
+        ...(who.via === "cookie" && who.authority === "local-owner" && who.role === "approver"
+          ? { routeSignIn: localOwnerRefusal(runtime.store.accountOf(who.name)?.passwordSet === true, taskHref(taskId)) } : {}),
         // Results routing (slice 1): the family's saved record, or the one its rows give now; never a reason to fail the page.
         resultRecord: resultRecordWordsOf(runtime.store, taskId, runtime.evidenceRoot, now),
         spendDefaults: runtime.store.getSpendDefaults(),
@@ -802,7 +805,13 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         suggestion: missedRequirementSuggestion(missed.statement), link: see };
     }
     const internal = isInternalErrorReason(run.reason);
-    return { kind: "reason", line: failedAttemptSentence(run.reason), evidence: null, suggestion: stopSuggestionOf(run.reason),
+    const repo = taskId === "" ? null : runtime.store.lookupRef(taskId)?.repo ?? null;
+    const codexHint = codexOfflineDependencySuggestion({
+      provider: run.provider,
+      agentSaid: agentSaidOf(runtime.store, run.id),
+      hasSetup: repo !== null && runtime.store.liveWorktreeSetup(repo) !== null,
+    });
+    return { kind: "reason", line: failedAttemptSentence(run.reason), evidence: null, suggestion: codexHint ?? stopSuggestionOf(run.reason),
       link: internal ? { label: "The recorded error", href: `/r/${run.id}?record=1#run-reason-detail` } : see };
   }
 

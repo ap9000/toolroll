@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "room": "chat",
+  "session": 7,
+  "leadName": "Lead",
+  "canSend": true,
+  "problem": null,
+  "project": null,
+  "busy": false,
+  "pendingProposals": 1,
+  "queued": [
+    {
+      "id": 23,
+      "text": "Also check the failing billing test after that.",
+      "status": "queued",
+      "detail": "Waiting for your earlier messages…"
+    }
+  ],
+  "messages": [
+    {
+      "id": 20,
+      "role": "operator",
+      "text": "Brief me on what needs attention across projects.",
+      "activity": null,
+      "createdAt": "2026-04-12T10:00:00.000Z",
+      "cards": [],
+      "ask": null
+    },
+    {
+      "id": 21,
+      "role": "assistant",
+      "text": "One task is ready for review and one needs a quick retry. I summarized the fleet below.",
+      "activity": "read tasks and runs (3s)",
+      "createdAt": "2026-04-12T10:00:03.000Z",
+      "cards": [
+        {
+          "id": 101,
+          "kind": "control",
+          "label": "Fleet status",
+          "state": "pending",
+          "data": true,
+          "lines": [],
+          "card": {
+            "version": 1,
+            "title": "Fleet status",
+            "asOf": "2026-04-12T10:00:03.000Z",
+            "repos": ["/projects/shop"],
+            "blocks": [
+              { "kind": "text", "text": "One build is waiting for your review." },
+              { "kind": "divider" },
+              {
+                "kind": "facts",
+                "heading": "Summary",
+                "items": [
+                  { "label": "Needs you", "value": "1" },
+                  { "label": "Building", "value": "1" }
+                ]
+              },
+              {
+                "kind": "table",
+                "heading": "Active work",
+                "origin": "records",
+                "columns": [
+                  { "label": "Task", "numeric": false },
+                  { "label": "Files", "numeric": true }
+                ],
+                "rows": [
+                  ["Fix checkout total", "3"]
+                ],
+                "more": 0
+              },
+              {
+                "kind": "notes",
+                "heading": "Checks",
+                "origin": "records",
+                "items": ["All 14 checkout tests passed."],
+                "more": 0
+              },
+              {
+                "kind": "chart",
+                "heading": "Tasks by state",
+                "chart": "bar",
+                "points": [
+                  { "label": "Ready", "value": 1, "shown": "1" },
+                  { "label": "Building", "value": 1, "shown": "1" }
+                ]
+              }
+            ],
+            "buttons": [
+              { "label": "Inspect checkout diff", "path": "/t/t-review/diff" }
+            ],
+            "actions": [
+              { "proposal": 102, "label": "File follow-up task" }
+            ]
+          },
+          "said": null,
+          "note": null,
+          "primary": null,
+          "dismissable": false,
+          "links": [
+            {
+              "label": "Inspect checkout diff",
+              "href": "/t/t-review/diff",
+              "task": "t-review",
+              "tab": "diff"
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "kind": "task",
+          "label": "New task",
+          "state": "pending",
+          "data": false,
+          "lines": [
+            "Add coupon edge-case tests",
+            "Cover zero-total and expired coupon paths in checkout.",
+            "project: shop",
+            "deliverable: branch"
+          ],
+          "card": null,
+          "said": null,
+          "note": null,
+          "primary": {
+            "kind": "confirm",
+            "label": "File task",
+            "irreversible": false,
+            "native": false
+          },
+          "dismissable": true,
+          "links": []
+        },
+        {
+          "id": 103,
+          "kind": "steer",
+          "label": "Guidance for the agent",
+          "state": "confirmed",
+          "data": false,
+          "lines": [
+            "Guidance for t-live",
+            "Keep the existing response header intact."
+          ],
+          "card": null,
+          "said": "Guidance added.",
+          "note": null,
+          "primary": null,
+          "dismissable": false,
+          "links": [
+            {
+              "label": "Open the task",
+              "href": "/t/t-live",
+              "task": "t-live",
+              "tab": null
+            }
+          ]
+        }
+      ],
+      "ask": {
+        "turn": 9,
+        "question": "Should I also check the staging branch?",
+        "options": ["Yes, check staging", "No, stay on main"],
+        "open": true,
+        "stale": false
+      }
+    }
+  ]
+}

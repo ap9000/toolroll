@@ -64,6 +64,20 @@ pub struct Pick {
     /// The value the form posts ("provider|model", or a preset's agent) and its words.
     pub options: Vec<(String, String)>,
     pub selected: usize,
+    pub filter: Option<String>,
+}
+
+impl Pick {
+    fn matches(&self) -> Vec<&(String, String)> {
+        let query = self.filter.as_deref().unwrap_or("");
+        self.options
+            .iter()
+            .filter(|(value, label)| {
+                query.is_empty()
+                    || crate::palette::score(query, &format!("{label} {value}")).is_some()
+            })
+            .collect()
+    }
 }
 
 /// A models change shown whole before it is saved: what it moves, the exact fields posted, the digest read.
@@ -89,10 +103,10 @@ pub fn groups(read: &AgentsRead) -> Vec<(&'static str, Vec<&AgentRow>)> {
             0
         } else if a.state == "not-installed" {
             3
-        } else if a.state == "signed-in" {
-            2
-        } else {
+        } else if a.state == "signed-out" {
             1
+        } else {
+            2
         };
         out[at].1.push(a);
     }
@@ -167,6 +181,15 @@ pub fn open(app: &mut App) -> Vec<Effect> {
     fx
 }
 
+pub fn open_models(app: &mut App) -> Vec<Effect> {
+    let effects = open(app);
+    if let Some(s) = app.agents_screen.as_mut() {
+        s.focus = Focus::Models;
+        s.row = 1; // Start on the planner. The preceding row changes every role.
+    }
+    effects
+}
+
 /// The screen closes; an agent's pane is let go of (its program keeps running in the console until it ends).
 pub fn close(app: &mut App) -> Vec<Effect> {
     app.agents_screen = None;
@@ -192,6 +215,7 @@ pub fn close(app: &mut App) -> Vec<Effect> {
 pub fn check_again(app: &mut App) -> Vec<Effect> {
     if let Some(s) = app.agents_screen.as_mut() {
         s.checking = true;
+        s.outcome = None;
     }
     app.say(Tone::Said, "Looking for this computer's agents again…");
     vec![Effect::CheckAgents]
@@ -218,7 +242,6 @@ pub fn on_agents(app: &mut App) {
     if let Some(s) = app.agents_screen.as_mut() {
         if s.checking {
             s.checking = false;
-            // A sign-in or install that just failed keeps its words on the status line too.
             if s.outcome.is_none() {
                 app.say(Tone::Said, "Agents checked.");
             }
@@ -335,11 +358,12 @@ pub fn key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             }
             vec![]
         }
+        KeyCode::Char('r') if focus == Some(Focus::Models) => vec![Effect::FetchModels],
         KeyCode::Char('r') => check_again(app),
         KeyCode::Char('w') => vec![Effect::OpenBrowser],
         KeyCode::Char('q') => app.run_action(crate::keys::Action::Quit),
         KeyCode::Char('?') => app.run_action(crate::keys::Action::Help),
-        KeyCode::Char('y') => match current(app) {
+        KeyCode::Char('y') if focus == Some(Focus::Agents) => match current(app) {
             Some(a) => {
                 let lines = commands_of(a);
                 app.mode = Mode::Copied;
@@ -347,7 +371,7 @@ pub fn key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             }
             None => vec![],
         },
-        KeyCode::Char('t') => {
+        KeyCode::Char('t') if focus == Some(Focus::Agents) => {
             // Type in the agent's pane (Ctrl-] comes back).
             let Some(a) = current(app).map(|a| a.id.clone()) else {
                 return vec![];
@@ -452,33 +476,41 @@ fn pick(app: &mut App) -> Vec<Effect> {
                     )
                 })
                 .collect(),
-            selected: 0,
+            selected: models
+                .presets
+                .iter()
+                .position(|p| Some(&p.agent) == models.default_agent.as_ref())
+                .unwrap_or(0),
+            filter: None,
         }
     } else {
         let Some(role) = models.roles.get(s.row - 1) else {
             return vec![];
         };
-        let options: Vec<(String, String)> = role
+        let mut options: Vec<(String, String)> = role
             .choices
             .iter()
             .flat_map(|c| {
                 c.models.iter().map(move |m| {
                     let value = format!("{}|{}", c.provider, m.value);
-                    let words = model_words(role, &value)
-                        .unwrap_or_else(|| format!("{} · {}", clean(&c.label), clean(&m.label)));
+                    let words = provider_model_label(&c.label, &m.label);
                     (value, words)
                 })
             })
             .collect();
+        if role.key == "review" {
+            options.insert(0, ("clear".into(), "Follow the planner".into()));
+        }
         let selected = options
             .iter()
-            .position(|(v, _)| *v == role.current)
+            .position(|(v, _)| *v == role.current || (role.current.is_empty() && v == "clear"))
             .unwrap_or(0);
         Pick {
             role: role.key.clone(),
             title: clean(&role.label),
             options,
             selected,
+            filter: None,
         }
     };
     if pick.options.is_empty() {
@@ -512,8 +544,29 @@ pub fn mode_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             }
         },
         Mode::PickModel(mut p) => match key.code {
+            KeyCode::Char('/') if p.filter.is_none() => {
+                p.filter = Some(String::new());
+                p.selected = 0;
+                app.mode = Mode::PickModel(p);
+                vec![]
+            }
+            KeyCode::Char(c) if p.filter.is_some() && !c.is_control() => {
+                let query = p.filter.as_mut().unwrap();
+                if query.chars().count() < 2000 {
+                    query.push(c);
+                }
+                p.selected = 0;
+                app.mode = Mode::PickModel(p);
+                vec![]
+            }
+            KeyCode::Backspace if p.filter.is_some() => {
+                p.filter.as_mut().unwrap().pop();
+                p.selected = 0;
+                app.mode = Mode::PickModel(p);
+                vec![]
+            }
             KeyCode::Char('j') | KeyCode::Down => {
-                p.selected = (p.selected + 1).min(p.options.len().saturating_sub(1));
+                p.selected = (p.selected + 1).min(p.matches().len().saturating_sub(1));
                 app.mode = Mode::PickModel(p);
                 vec![]
             }
@@ -522,6 +575,7 @@ pub fn mode_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
                 app.mode = Mode::PickModel(p);
                 vec![]
             }
+            KeyCode::Enter if p.matches().is_empty() => vec![],
             KeyCode::Enter => {
                 app.mode = match change_of(app, &p) {
                     Some(c) => Mode::ConfirmModels(c),
@@ -570,7 +624,8 @@ pub fn mode_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
 /// The change a pick makes, shown before → after, with the exact fields Settings → Models' write takes.
 fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
     let models = app.agents_screen.as_ref()?.models.as_ref()?;
-    let (value, label) = p.options.get(p.selected)?.clone();
+    let matches = p.matches();
+    let &(value, label) = matches.get(p.selected)?;
     let mut fields = vec![
         ("scope".to_string(), "installation".to_string()),
         ("digest".to_string(), models.digest.clone()),
@@ -579,12 +634,13 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
     let mut lines = vec![];
     let mut sign_in = None;
     if p.role == "default" {
-        let preset = models.presets.iter().find(|x| x.agent == value)?;
-        if let Some(a) = agent_of(app, &preset.agent).filter(|a| !a.ready) {
-            lines.push(format!(
-                "{} isn't signed in yet, so new tasks would wait for it.",
-                clean(&preset.name)
-            ));
+        let preset = models.presets.iter().find(|x| x.agent == *value)?;
+        if let Some(a) = agent_of(app, &preset.agent).filter(|a| a.state != "signed-in") {
+            lines.push(if a.state == "signed-out" {
+                format!("{} isn't signed in yet.", clean(&preset.name))
+            } else {
+                format!("{} · {}", clean(&preset.name), status_of(a).0)
+            });
             if a.setup.can_sign_in && a.state != "not-installed" {
                 sign_in = Some(a.id.clone());
             }
@@ -605,7 +661,12 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
             role_words(role),
             label
         ));
-        fields.push((p.role.clone(), value));
+        if let Some((provider, _)) = value.split_once('|') {
+            if let Some(a) = agent_of(app, provider).filter(|a| a.state != "signed-in") {
+                lines.push(format!("{} · {}", clean(&a.name), status_of(a).0));
+            }
+        }
+        fields.push((p.role.clone(), value.clone()));
     }
     lines.push(
         "It applies to tasks filed from now on; approved and waiting tasks keep theirs.".into(),
@@ -640,12 +701,16 @@ fn model_words(role: &toolroll_api::ModelRole, value: &str) -> Option<String> {
     let (provider, model) = value.split_once('|')?;
     let choice = role.choices.iter().find(|c| c.provider == provider)?;
     let m = choice.models.iter().find(|m| m.value == model)?;
-    let (agent, name) = (clean(&choice.label), clean(&m.label));
-    Some(if name.starts_with(&agent) {
+    Some(provider_model_label(&choice.label, &m.label))
+}
+
+fn provider_model_label(provider: &str, model: &str) -> String {
+    let (agent, name) = (clean(provider), clean(model));
+    if name.starts_with(&agent) {
         name
     } else {
         format!("{agent} · {name}")
-    })
+    }
 }
 
 /// A role's model as the screen says it: the catalog's name when it has one, else the engine's words.
@@ -677,6 +742,9 @@ pub fn ended(app: &mut App, code: Option<i64>, signal: Option<i64>) {
     let key = if kind == "install" { "i" } else { "s" };
     let words = match (code, signal) {
         (Some(0), _) => None,
+        (Some(127), _) if kind == "sign-in" => Some(format!(
+            "{command} exited with code 127. Make sure the agent and its helpers are on Toolroll's trusted PATH, then choose Check again."
+        )),
         (Some(c), _) => Some(format!(
             "{command} exited with an error (code {c}). Try again with {key}."
         )),
@@ -780,11 +848,33 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
         }
         Mode::PickModel(p) => {
             let mut lines = vec![Line::raw("")];
-            let rows = (area.height as usize).saturating_sub(8).clamp(3, 16);
-            let top = p.selected.saturating_sub(rows.saturating_sub(1));
-            // Each choice whole, wrapped under itself (never cut mid-word); the rows shown keep the picked one in view.
+            if let Some(query) = &p.filter {
+                lines.push(Line::from(Span::styled(
+                    format!("Find model  {}", fit(query, w.saturating_sub(12))),
+                    ink(),
+                )));
+            }
+            let rows = (area.height as usize)
+                .saturating_sub(8 + lines.len())
+                .clamp(2, 16);
+            let options = p.matches();
+            if options.is_empty() {
+                lines.push(Line::from(Span::styled("No matching models", dim())));
+            }
+            let mut top = p.selected;
+            let mut used = options
+                .get(top)
+                .map_or(0, |(_, words)| wrap(words, w).len());
+            while top > 0 {
+                let n = wrap(&options[top - 1].1, w).len();
+                if used + n > rows {
+                    break;
+                }
+                used += n;
+                top -= 1;
+            }
             let mut used = 0;
-            for (i, (_, words)) in p.options.iter().enumerate().skip(top) {
+            for (i, (_, words)) in options.into_iter().enumerate().skip(top) {
                 let here = i == p.selected;
                 let pieces = wrap(words, w);
                 if used + pieces.len() > rows && used > 0 {
@@ -805,7 +895,13 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
                 }
             }
             lines.push(Line::raw(""));
-            let mut keys = sheet::act("Enter", "Choose", true);
+            let mut keys = if p.filter.is_none() {
+                sheet::act("/", "Find", false)
+            } else {
+                sheet::act("↑/↓", "Move", false)
+            };
+            keys.push(Span::raw("   "));
+            keys.extend(sheet::act("Enter", "Choose", true));
             keys.push(Span::raw("   "));
             keys.extend(sheet::act("Esc", "Cancel", false));
             lines.push(Line::from(keys));
@@ -876,6 +972,10 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.agents_screen.clone() else {
         return;
     };
+    if screen.focus == Focus::Models {
+        draw_models(f, &screen, area);
+        return;
+    }
     let w = area.width as usize;
     // The head: the title, the last look, Check again.
     let checked = app
@@ -898,6 +998,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let again = sheet::button("Check again", "r", false);
     let pad = w.saturating_sub(sheet::spans_width(&head) + width(&again.content));
     head.push(Span::raw(" ".repeat(pad)));
+    let start = sheet::spans_width(&head).min(w);
+    app.areas.agents_refresh = Rect {
+        x: area.x + start as u16,
+        y: area.y,
+        width: width(&again.content).min(w - start) as u16,
+        height: 1,
+    };
     head.push(again);
     f.render_widget(Paragraph::new(Line::from(head)), Rect { height: 1, ..area });
     let Some(read) = app.agents.clone() else {
@@ -918,13 +1025,23 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(2 + models_h),
         ..area
     };
+    // With one column, give an active setup attempt or its failure the space the list usually owns.
+    let agent = current(app).cloned();
+    let setup_visible = agent.as_ref().is_some_and(|a| {
+        screen
+            .pane
+            .iter()
+            .chain(&screen.outcome)
+            .any(|(id, _)| id == &a.id)
+    });
+    let detail_only = body.width < 90 && screen.focus == Focus::Agents && setup_visible;
     let list_w: u16 = if body.width >= 90 { 34 } else { body.width };
     let list = Rect {
         width: list_w,
         ..body
     };
     let mut lines: Vec<Line<'static>> = vec![];
-    let here = current(app).map(|a| a.id.clone());
+    let here = agent.as_ref().map(|a| &a.id);
     for (gi, (label, rows)) in groups(&read).into_iter().enumerate() {
         if gi > 0 {
             lines.push(Line::raw(""));
@@ -940,7 +1057,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 _ if a.state == "not-installed" || a.state == "unknown" => dim(),
                 _ => needs_you(),
             };
-            let on = Some(&a.id) == here.as_ref();
+            let on = Some(&a.id) == here;
             let name = fit(&clean(&a.name), (list_w as usize).saturating_sub(4));
             let l = Line::from(vec![
                 Span::styled(format!("{mark} "), mark_style),
@@ -953,9 +1070,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             });
         }
     }
-    f.render_widget(Paragraph::new(lines), list);
+    if !detail_only {
+        f.render_widget(Paragraph::new(lines), list);
+    }
     // The agent on screen: its status, how to add it, and its pane.
-    let detail = if list_w < body.width {
+    let detail = if detail_only {
+        body
+    } else if list_w < body.width {
         Rect {
             x: body.x + list_w + 3,
             width: body.width.saturating_sub(list_w + 3),
@@ -964,7 +1085,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Rect { height: 0, ..body }
     };
-    if let Some(a) = current(app).cloned() {
+    if let Some(a) = agent {
         draw_agent(f, app, &a, detail);
     }
     if models_h > 0 {
@@ -1028,7 +1149,7 @@ fn draw_agent(f: &mut Frame, app: &mut App, a: &AgentRow, area: Rect) {
         command(&mut lines, "Install", c, act);
     }
     if let Some(c) = &a.setup.sign_in {
-        let wants = a.state == "signed-out" || a.state == "unknown";
+        let wants = a.state == "signed-out";
         let label = if a.ready { "Sign in again" } else { "Sign in" };
         let act = (a.setup.can_sign_in && a.state != "not-installed")
             .then(|| sheet::button(label, "s", wants));
@@ -1142,13 +1263,13 @@ fn draw_agent(f: &mut Frame, app: &mut App, a: &AgentRow, area: Rect) {
 
 fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
     let w = area.width as usize;
-    let mut lines = vec![
-        Line::from(Span::styled("─".repeat(w), line())),
-        Line::from(vec![
-            Span::styled("Models", ink()),
-            Span::styled("  which agent plans, builds and reviews", dim()),
-        ]),
-    ];
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Models", ink()),
+        Span::styled("  installation defaults for new tasks", dim()),
+    ])];
+    if screen.focus == Focus::Agents {
+        lines.insert(0, Line::from(Span::styled("─".repeat(w), line())));
+    }
     let Some(models) = screen.models.as_ref() else {
         lines.push(Line::from(Span::styled("Reading…", dim())));
         f.render_widget(Paragraph::new(lines), area);
@@ -1160,6 +1281,7 @@ fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
         .map(|d| match d {
             "claude" => "Claude Code".to_string(),
             "codex" => "Codex".to_string(),
+            "antigravity" => "Antigravity".to_string(),
             other => clean(other),
         })
         .unwrap_or_else(|| "not chosen yet".into());
@@ -1173,6 +1295,7 @@ fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
         .max()
         .unwrap_or(10)
         .min(28)
+        .min(w / 2)
         + 2;
     for (i, (label, words)) in rows.into_iter().enumerate() {
         let on = screen.focus == Focus::Models && i == screen.row;

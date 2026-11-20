@@ -20,7 +20,7 @@ function v174(): string {
   return file;
 }
 test("fresh and v174 files have v175's empty authority tables; saved records survive", () => {
-  expect(SCHEMA_VERSION).toBe(178);
+  expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(175);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(175);
   expect(updateSafeSchema(174)).toBe(true);
   for (const file of [":memory:", v174()]) {

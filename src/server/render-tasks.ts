@@ -2,7 +2,7 @@
 import { archivedWords } from "../tidy.js";
 import { btn, stepRows } from "./kit.js";
 import { whenUtc } from "../when-html.js";
-import { networkWords } from "../egress.js";
+import { codexCommandsOffline, networkWords } from "../egress.js";
 import { wasInterrupted } from "../run-ending.js";
 import type { ReleaseView } from "../release-view.js";
 import { liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence } from "../scope.js";
@@ -798,7 +798,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
   // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
   const terms = sandboxTermsWords(profile);
-  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null, profile.provider)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null, profile.provider, { commandsOffline: codexCommandsOffline(profile) })}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,
@@ -957,7 +957,7 @@ export function runtimeDetailsHtml(scope: Pick<Scope, "profile" | "profileState"
 /** The task page's Agents card: the summary, availability, closed reasons,
  * and — for an approver — closed change controls. Every change re-files
  * the scope; an approval given under the earlier agents needs renewing. */
-export function agentsCardHtml(taskId: string, view: RouteView | null | undefined, canEdit: boolean): Html {
+export function agentsCardHtml(taskId: string, view: RouteView | null | undefined, canEdit: boolean, signIn?: { href: string; action: string }): Html {
   if (view === null || view === undefined) return html``;
   const p = view.projection;
   const sawDigest = view.digest ?? "";
@@ -968,7 +968,7 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
       : html`<ul class="agents-overrides">${view.overrides.map(
           one => joinHtml([
             html`<li><span>${ROLE_NOUN[one.phase]} → <span class="mono">${one.provider} · ${one.model}</span> <span class="meta">by ${one.by} ${whenTime(one.at)}</span></span>`,
-            canEdit && view.editable
+            canEdit && view.editable && !signIn
               ? postForm(route, html`<button type="submit" class="secondary" aria-label="clear the ${ROLE_NOUN[one.phase].toLowerCase()} choice">Clear</button>`, { attrs: { class: "agents-clear" }, hidden: { sawDigest, "clear-phase": one.phase } })
               : "",
             html`</li>`,
@@ -998,6 +998,7 @@ export function agentsCardHtml(taskId: string, view: RouteView | null | undefine
     ? ""
     : !view.editable
       ? html`<p class="meta">${view.editableWhy ?? "the agents cannot change right now"}</p>`
+      : signIn ? joinHtml([html`<a class="button secondary" data-builder-password href="${signIn.href}">${signIn.action} to change agents</a>`, overrides])
       : joinHtml([
         html`<details class="agents-change"><summary>Change agents</summary>`,
         postForm(route, joinHtml([
@@ -1723,6 +1724,7 @@ export function taskBodyParts(data: {
   /** Results routing (slice 1): this task family's result record in words; null when it has none yet. */
   resultRecord?: string | null;
   canEditRoute?: boolean;
+  routeSignIn?: { href: string; action: string };
   runs: Run[];
   /** Proof produced by the newest finished attempt. The two booleans are
    * machine facts about immutable, hash-addressed artifacts — never inferred
@@ -2790,7 +2792,7 @@ export function taskBodyParts(data: {
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;
   const optionsOpen = data.assignment?.primaryAction?.code === "unhold" || data.assignment?.primaryAction?.code === "retry-task";
   // The Plan section after its scope card: the release, the recipe and audit links, the agents, the edit form.
-  const scopeRest: (Html | "")[] = [releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, agentlessRoute(data.dispatch ?? null, data.route) ? null : data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm];
+  const scopeRest: (Html | "")[] = [releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, agentlessRoute(data.dispatch ?? null, data.route) ? null : data.route, data.canEditRoute === true, data.routeSignIn), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm];
   // The page's sections, built once and in order (each `section` also records its part for the rebuilt page).
   const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,

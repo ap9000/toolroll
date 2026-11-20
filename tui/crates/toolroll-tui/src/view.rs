@@ -2,7 +2,9 @@
 //!
 //! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
 //! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
-use crate::app::{App, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::app::{
+    App, ComposerClick, Focus, Item, Mode, NoteKind, Section, StepDestination, StepLink, Tab, Tone,
+};
 use crate::keys::Action;
 use crate::review::{self, Checks, Kind, Note, Row};
 use crate::settings::{Column, Density};
@@ -19,6 +21,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use toolroll_api::{StepCard, StepCards};
+
+/// Running spinner glyph respecting `reduced_motion` and the active glyph set.
+pub(crate) fn live_mark(app: &App) -> &'static str {
+    if app.prefs.settings.reduced_motion {
+        return marks().running;
+    }
+    let frames = if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
+        [marks().running, "/", "-", "\\"]
+    } else {
+        [marks().running, "◓", "◑", "◒"]
+    };
+    frames[app.spinner_frame % frames.len()]
+}
 
 /// "2026-11-14T12:00:00.000Z" → seconds since the epoch (UTC only; anything else is None).
 pub fn epoch(iso: &str) -> Option<i64> {
@@ -109,66 +124,150 @@ fn chain_cards(steps: &StepCards) -> Vec<&StepCard> {
         .collect()
 }
 
-/// A step's time on the strip: "42s", "4m", "1h 05m".
-pub fn short_duration(secs: i64) -> String {
-    let secs = secs.max(0);
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
-    }
+fn active_stage(steps: &StepCards, card: &StepCard) -> bool {
+    matches!(card.mark.as_str(), "live" | "needs" | "stuck") || build_wait(steps, card).is_some()
 }
 
-/// The step strip in a panel's header, "Plan ✓ · Build ◐ 4m · Checks · Review (codex)": the chain's steps from the
-/// task's step cards (a "Just code" chain has no Plan or Approval), the running one's time ticking with the clock.
+fn pipeline_carries_stage(steps: &StepCards) -> bool {
+    chain_cards(steps)
+        .into_iter()
+        .any(|c| active_stage(steps, c))
+}
+
+/// The pipeline strip in a panel's header: completed steps quiet (`✓ Plan`), the active stage highlighted as a pill
+/// (`◐ Build · 4m 12s`, solid ink `● Ready` when waiting on you, red `✕ Build` on failure), upcoming steps muted.
+/// Serves as both the canonical state home (Prägnanz) and proximity to completion (Goal-Gradient).
 pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
-    // Joined by rules when there's room ("Plan ✓ ─── Build ◐ 4m"), else by dots.
-    let ruled = step_line_with(app, steps, true, " ─── ");
-    if ruled.width() <= w {
-        return ruled;
-    }
-    let full = step_line_with(app, steps, true, " · ");
-    if full.width() <= w {
-        return full;
-    }
-    fit_line(step_line_with(app, steps, false, " · "), w)
+    strip_with_mark(app, steps, w, marks().running).0
 }
 
-fn step_line_with(app: &App, steps: &StepCards, times: bool, join: &str) -> Line<'static> {
+/// The cells of each stage are taken from the same compact or full strip that is drawn.
+pub(crate) fn pipeline_at(
+    app: &App,
+    steps: &StepCards,
+    rect: Rect,
+    mark: &str,
+) -> (Line<'static>, Vec<(Rect, Tab, StepLink)>) {
+    let (line, ranges) = strip_with_mark(app, steps, usize::from(rect.width), mark);
+    let targets = ranges
+        .into_iter()
+        .filter_map(|(cols, card)| {
+            let end = cols.end.min(usize::from(rect.width));
+            (cols.start < end && rect.height > 0).then(|| {
+                let target = Rect::new(
+                    rect.x + cols.start as u16,
+                    rect.y,
+                    (end - cols.start) as u16,
+                    1,
+                );
+                (target, app.tab, StepLink::new(steps, card))
+            })
+        })
+        .collect();
+    (line, targets)
+}
+
+type StageRanges<'a> = Vec<(std::ops::Range<usize>, &'a StepCard)>;
+
+fn strip_with_mark<'a>(
+    app: &App,
+    steps: &'a StepCards,
+    w: usize,
+    running_mark: &str,
+) -> (Line<'static>, StageRanges<'a>) {
+    let cards = chain_cards(steps);
+    let wide = step_line_with(app, steps, &cards, " ── ", running_mark);
+    if wide.0.width() <= w {
+        return wide;
+    }
+    let compact = step_line_with(app, steps, &cards, " › ", running_mark);
+    if compact.0.width() <= w {
+        return compact;
+    }
+    let active: Vec<_> = cards
+        .into_iter()
+        .filter(|c| active_stage(steps, c))
+        .collect();
+    let (line, ranges) = if active.is_empty() {
+        compact
+    } else {
+        step_line_with(app, steps, &active, " › ", running_mark)
+    };
+    (fit_line(line, w), ranges)
+}
+
+fn step_line_with<'a>(
+    app: &App,
+    steps: &StepCards,
+    cards: &[&'a StepCard],
+    join: &str,
+    running_mark: &str,
+) -> (Line<'static>, StageRanges<'a>) {
+    let m = marks();
     let mut spans = vec![];
-    for (i, card) in chain_cards(steps).into_iter().enumerate() {
+    let mut ranges = Vec::with_capacity(cards.len());
+    let mut x = 0;
+    for (i, card) in cards.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(
-                join.to_string(),
-                if join == " · " { dim() } else { line() },
-            ));
+            let prev_done = cards[i - 1].mark == "done";
+            let sep_style = if join == " ── " && prev_done {
+                line()
+            } else {
+                dim()
+            };
+            spans.push(Span::styled(join.to_string(), sep_style));
+            x += width(join);
         }
-        let (mark, style) = mark_of(card);
+        let first = spans.len();
         let label = step_label(card);
-        if card.mark == "todo" || card.mark == "wait" {
-            spans.push(Span::styled(label, dim()));
-            continue;
-        }
-        spans.push(Span::raw(format!("{label} ")));
-        spans.push(Span::styled(mark.to_string(), style));
-        if card.mark == "live" && times {
-            // This build's own time (not the first build's).
-            if let Some(start) = card
-                .latest_started_at
-                .as_deref()
-                .or(card.started_at.as_deref())
-                .and_then(epoch)
-            {
-                spans.push(Span::styled(
-                    format!(" {}", short_duration(app.now - start)),
-                    dim(),
-                ));
+        let wait = build_wait(steps, card);
+        if let Some(wait_words) = wait {
+            let mark = if wait_words == "On hold" {
+                m.paused
+            } else {
+                m.running
+            };
+            let text = format!("{mark} {label} · {wait_words}");
+            spans.push(sheet::badge(&text, crate::theme::Role::Fill));
+        } else {
+            match card.mark.as_str() {
+                "done" => {
+                    spans.push(Span::styled(format!("{} ", m.passed), passed()));
+                    spans.push(Span::styled(label, dim()));
+                }
+                "live" => {
+                    let elapsed = card
+                        .latest_started_at
+                        .as_deref()
+                        .or(card.started_at.as_deref())
+                        .and_then(epoch)
+                        .map(|start| format!(" · {}", duration(app.now - start)))
+                        .unwrap_or_default();
+                    let text = format!("{running_mark} {label}{elapsed}");
+                    spans.push(sheet::badge(&text, crate::theme::Role::Running));
+                }
+                "needs" => {
+                    spans.push(sheet::chip(&format!("{} {label}", m.needs)));
+                }
+                "stuck" => {
+                    spans.push(sheet::badge(
+                        &format!("{} {label}", m.failed),
+                        crate::theme::Role::Failed,
+                    ));
+                }
+                "skipped" => {
+                    spans.push(Span::styled(format!("{} {label}", m.skipped), dim()));
+                }
+                _ => {
+                    spans.push(Span::styled(label, dim()));
+                }
             }
         }
+        let end = x + sheet::spans_width(&spans[first..]);
+        ranges.push((x..end, *card));
+        x = end;
     }
-    Line::from(spans)
+    (Line::from(spans), ranges)
 }
 
 /// A build card's words while its task waits: on a person's hold, or to try again after a failed build (None: neither).
@@ -195,9 +294,9 @@ fn upper_first(s: &str) -> String {
     }
 }
 
-/// "claude sonnet · Building now · 4m 12s · $0.31 · attempt 2"; waiting, "Waiting to retry · 21s · after attempt 2".
-/// Short of room (`w` cells), its cost comes first and the model's name goes first: "$0.31 · Building now · 4m 12s ·
-/// attempt 2".
+/// Provenance metadata under the title: while the build is live (the pipeline strip already shows "Build · 4m 12s"),
+/// omit the duplicate status and clock so each fact has one home: "claude sonnet · attempt 1 · $0.31".
+/// When waiting or finished, include the relevant state/duration. Short of room, cost stays first and model drops first.
 fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
     let card = steps
         .cards
@@ -214,17 +313,31 @@ fn facts_line(app: &App, steps: &StepCards, w: usize) -> Option<Line<'static>> {
         .trim()
         .to_string()
     });
+    let agent = agent.map(|name| {
+        if !card.runs.is_empty()
+            && steps.live_run.is_none()
+            && steps.review.is_none()
+            && !matches!(steps.task.state.as_str(), "done" | "cancelled")
+        {
+            format!("Last build: {name}")
+        } else {
+            name
+        }
+    });
     if let Some(agent) = &agent {
         parts.push(agent.clone());
     }
     let wait = build_wait(steps, card);
+    let live_in_strip = card.mark == "live" && card.in_chain && wait.is_none();
     if let Some(words) = wait {
         parts.push(words.to_string());
-    } else if !card.sentence.is_empty() {
+    } else if !live_in_strip && !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
-    if let Some(secs) = build_clock(app, steps, card) {
-        parts.push(duration(secs));
+    if !live_in_strip {
+        if let Some(secs) = build_clock(app, steps, card) {
+            parts.push(duration(secs));
+        }
     }
     let cost = card
         .cost_usd
@@ -280,7 +393,7 @@ pub fn build_clock(app: &App, steps: &StepCards, card: &StepCard) -> Option<i64>
 }
 
 /// A line cut to `w` cells with an ellipsis (ratatui would cut it silently).
-fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
+pub(crate) fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
     if line.width() <= w {
         return line;
     }
@@ -302,6 +415,16 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
     app.areas.links.clear();
+    app.areas.steps.clear();
+    app.areas.builder_button = None;
+    app.areas.builder_controls.clear();
+    app.areas.lead_providers_button = Rect::default();
+    app.areas.lead_send = Rect::default();
+    app.areas.lead_provider_controls.clear();
+    app.areas.approval_dialog = Rect::default();
+    app.areas.approval_controls.clear();
+    app.areas.steer_targets.clear();
+    app.areas.spinner_visible = false;
     // On screen this frame only if draw_terminal draws it, and no dialog is drawn over it.
     if let Some(pane) = app.term.as_mut() {
         pane.drawn = false;
@@ -315,8 +438,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | Mode::TakeOver
             | Mode::ShellOpening
             | Mode::Steer(_)
+            | Mode::ChatCompose(_)
             | Mode::NewTask(..)
             | Mode::Note(..)
+            | Mode::ListFilter(_)
     );
     if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
         pane.drawn = false;
@@ -345,6 +470,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    app.last_width = area.width;
+    app.areas.lead_row = Rect::default();
+    app.areas.chat_area = Rect::default();
+    app.areas.peek_area = Rect::default();
+    app.areas.agents_refresh = Rect::default();
     sheet::paint(f.buffer_mut(), area, ground());
     if area.height < 8 || area.width < 34 {
         f.render_widget(Paragraph::new("Make the window larger."), area);
@@ -444,13 +574,21 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_overlay(f, app, area);
         return;
     }
+    let alone = app.zoom || narrow;
+    let focus = app.effective_focus();
     match list_state {
         crate::viewstate::ListState::Full => {
             let list = sheet::sheet(f.buffer_mut(), left);
+            if focus == Focus::List && !alone {
+                sheet::focus_bar(f.buffer_mut(), left);
+            }
             draw_list(f, app, list);
         }
         crate::viewstate::ListState::Rail => {
             let list = sheet::sheet(f.buffer_mut(), left);
+            if focus == Focus::List && !alone {
+                sheet::focus_bar(f.buffer_mut(), left);
+            }
             draw_rail(f, app, list);
         }
         crate::viewstate::ListState::Hidden => {
@@ -458,32 +596,81 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
             app.areas.rows.clear();
         }
     }
-    // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
-    // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
-    let alone = app.zoom || narrow;
-    let layout = if alone {
-        crate::panes::Layout::Focused
+    // Central Lead chat + Peeked Task docked split (Slice 3), or single Lead chat (Slice 2), or the task panel(s).
+    if app.chat_split_active() {
+        app.panes.areas = vec![];
+        let chat_w = (u32::from(right.width.saturating_sub(1)) * 48 / 100) as u16;
+        let chat_rect = Rect {
+            x: right.x,
+            y: right.y,
+            width: chat_w,
+            height: right.height,
+        };
+        let peek_rect = Rect {
+            x: right.x + chat_w + 1,
+            y: right.y,
+            width: right.width.saturating_sub(chat_w + 1),
+            height: right.height,
+        };
+        app.areas.chat_area = chat_rect;
+        app.areas.peek_area = peek_rect;
+        let chat_inner = sheet::sheet(f.buffer_mut(), chat_rect);
+        crate::chat::draw(f, app, chat_inner, true);
+        let peek_inner = sheet::sheet(f.buffer_mut(), peek_rect);
+        draw_right(f, app, peek_inner);
+        if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+            crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+        }
+        if focus == Focus::Detail {
+            let active_rect = match app.chat_focus {
+                crate::chat::ChatFocus::Chat => chat_rect,
+                crate::chat::ChatFocus::Peek => peek_rect,
+            };
+            sheet::outline_focus(f.buffer_mut(), active_rect);
+        }
+    } else if app.chat_open {
+        app.panes.areas = vec![];
+        app.areas.tabs.clear();
+        app.areas.chat_area = right;
+        let inner = sheet::sheet(f.buffer_mut(), right);
+        app.areas.right = inner;
+        crate::chat::draw(f, app, inner, false);
+        if focus == Focus::Detail && !alone && list_state != crate::viewstate::ListState::Hidden {
+            sheet::focus_bar(f.buffer_mut(), right);
+        }
     } else {
-        app.panes.layout
-    };
-    let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
-    app.panes.areas = if alone { vec![] } else { places.clone() };
-    let several = places.len() > 1;
-    for (i, place) in places.iter().enumerate() {
-        let slot = if alone { app.panes.focus } else { i };
-        let inner = sheet::sheet(f.buffer_mut(), *place);
-        if slot == app.panes.focus {
-            draw_right(f, app, inner);
-            // Search: every match in this panel lit.
-            if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
-                crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
-            }
-            // With several panels, the focused one is outlined in ink, heavy (reads without colour too).
-            if several {
-                sheet::outline_focus(f.buffer_mut(), *place);
-            }
+        // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
+        // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
+        let layout = if alone {
+            crate::panes::Layout::Focused
         } else {
-            crate::panes::draw_watch(f, app, slot, inner);
+            app.panes.layout
+        };
+        let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
+        app.panes.areas = if alone { vec![] } else { places.clone() };
+        let several = places.len() > 1;
+        for (i, place) in places.iter().enumerate() {
+            let slot = if alone { app.panes.focus } else { i };
+            let inner = sheet::sheet(f.buffer_mut(), *place);
+            if slot == app.panes.focus {
+                draw_right(f, app, inner);
+                // Search: every match in this panel lit.
+                if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+                    crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+                }
+                // With several panels, the focused one is outlined in ink, heavy (reads without colour too);
+                // with one panel beside the list, a crisp top accent bar shows when Detail holds keyboard focus.
+                if several {
+                    sheet::outline_focus(f.buffer_mut(), *place);
+                } else if focus == Focus::Detail
+                    && !alone
+                    && list_state != crate::viewstate::ListState::Hidden
+                {
+                    sheet::focus_bar(f.buffer_mut(), *place);
+                }
+            } else {
+                crate::panes::draw_watch(f, app, slot, inner);
+            }
         }
     }
     draw_status(f, app, status);
@@ -571,7 +758,8 @@ pub enum TopItem {
 
 /// The top bar, on the ground: Toolroll, the project and the cost line on the left; what's working, what's set aside,
 /// unread tasks and what needs you on the right. Short of room, items are kept in TopItem's order, the same everywhere.
-fn draw_top(f: &mut Frame, app: &App, area: Rect) {
+fn draw_top(f: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.needs_chip = Rect::default();
     let needs = if !app.loaded {
         Span::styled("Reading…", dim())
     } else if app.needs_count == 0 {
@@ -581,6 +769,7 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     } else {
         sheet::chip(&format!("{} need you", app.needs_count))
     };
+    let needs_w = width(&needs.content) as u16;
     let working = app
         .all_items
         .iter()
@@ -614,14 +803,14 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
             true,
         ));
     }
-    // What is set aside, said where it can't be missed: zoomed, narrow, the list as a rail or hidden.
+    // What is set aside, shown quietly as neutral pills so solid ink stays reserved for "Needs you" (One Signal Rule).
     let narrow = f.area().width < NARROW_WIDTH;
     let mut marks_on: Vec<Span<'static>> = vec![];
     let mut mark = |m: &str| {
         if !marks_on.is_empty() {
             marks_on.push(Span::raw("  "));
         }
-        marks_on.push(sheet::chip(m));
+        marks_on.push(sheet::badge(m, crate::theme::Role::Fill));
     };
     if app.zoom {
         mark("ZOOM");
@@ -685,6 +874,14 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         width: right_w.min(area.width),
         ..area
     };
+    if app.loaded && app.needs_count > 0 && needs_w <= r.width {
+        app.areas.needs_chip = Rect {
+            x: r.right().saturating_sub(needs_w),
+            y: r.y,
+            width: needs_w,
+            height: 1,
+        };
+    }
     f.render_widget(Paragraph::new(Line::from(right)), r);
 }
 
@@ -706,37 +903,103 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     app.areas.list = area;
     app.areas.rows.clear();
     let w = area.width as usize;
-    let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
-    // The sheet's head: "Work 5".
+    // Pinned header rows (Work N, Central Lead chat, live filter/showing bar) stay fixed above the scrollable task list
+    // so scrolling a long queue never hides Lead Chat or the active filter.
+    let mut pinned: Vec<Line<'static>> = vec![];
+    // The sheet's head: "Work 5" (bold ink when List holds focus, muted when Detail holds focus).
+    let list_focused = app.effective_focus() == Focus::List;
     if area.height >= 6 {
-        lines.push((
-            Line::from(vec![
-                Span::styled("Work ", ink()),
-                sheet::count(app.items.len(), false),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("Work ", if list_focused { ink() } else { dim() }),
+            sheet::count(app.items.len(), false),
+        ]));
+        pinned.push(Line::raw(""));
+    }
+    // Pinned Central Lead chat row at the top of the Work rail (once loaded or opened).
+    let mut lead_line_index: Option<usize> = None;
+    if app.chat.loaded || app.chat_visible() {
+        lead_line_index = Some(pinned.len());
+        let lead_active = app.chat_focused();
+        let name = app.chat.lead_name();
+        let pending = app.chat.pending_proposals();
+        let busy = app.chat.is_busy();
+        let mark_span = if busy {
+            Span::styled(format!("{} ", live_mark(app)), running())
+        } else {
+            Span::styled("◆ ", if lead_active { selected() } else { ink() })
+        };
+        let label = format!("{name} · central chat");
+        let badge = if pending > 0 {
+            Some(sheet::chip(&format!("{pending}")))
+        } else if busy {
+            Some(sheet::badge("Live", crate::theme::Role::Running))
+        } else {
+            None
+        };
+        let badge_w = badge.as_ref().map(|b| width(&b.content) + 1).unwrap_or(2);
+        let text_w = w.saturating_sub(2 + badge_w);
+        let shown = fit(&label, text_w);
+        let pad = text_w.saturating_sub(width(&shown));
+        let row_style = if lead_active {
+            selected()
+        } else {
+            ink().add_modifier(Modifier::BOLD)
+        };
+        let mut spans = vec![
+            mark_span,
+            Span::styled(shown, row_style),
+            Span::styled(" ".repeat(pad + 1), if lead_active { selected() } else { dim() }),
+        ];
+        if let Some(b) = badge {
+            spans.push(b);
+        } else {
+            spans.push(Span::styled("C", if lead_active { selected() } else { dim() }));
+        }
+        pinned.push(Line::from(spans));
+        pinned.push(Line::raw(""));
+    }
+    // Live `/` list filter, shown inline at the top of the list.
+    if let Mode::ListFilter(q) = &app.mode {
+        let shown = fit(&clean(q), w.saturating_sub(4));
+        pinned.push(Line::from(vec![
+            Span::styled("/ ", ink()),
+            Span::raw(shown),
+            Span::styled("▏", ink()),
+        ]));
+        pinned.push(Line::raw(""));
+    } else if !app.list_query.is_empty() {
+        pinned.push(Line::from(vec![
+            Span::styled("Filter: ", dim()),
+            Span::styled(fit(&clean(&app.list_query), w.saturating_sub(8)), ink()),
+        ]));
+        pinned.push(Line::raw(""));
     }
     // The filter in use, said once at the top (the palette changes it).
     if let Some(words) = app.filter.words() {
-        lines.push((
-            Line::from(vec![
-                Span::styled("Showing: ", dim()),
-                Span::styled(fit(&words, w.saturating_sub(9)), ink()),
-            ]),
-            None,
-        ));
-        lines.push((Line::raw(""), None));
+        pinned.push(Line::from(vec![
+            Span::styled("Showing: ", dim()),
+            Span::styled(fit(&words, w.saturating_sub(9)), ink()),
+        ]));
+        pinned.push(Line::raw(""));
     }
+    let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
     if app.loaded && app.items.is_empty() {
         let words = if app.all_items.is_empty() {
             "Nothing yet."
+        } else if !app.list_query.is_empty() {
+            "No matching tasks. Esc clears filter."
         } else {
             "Nothing here. : changes the filter."
         };
         lines.push((Line::from(Span::styled(words, dim())), None));
     }
+    // Hide the repeated project name on rows when every listed task belongs to the top bar's active project.
+    let single_project = !app.project_name.is_empty()
+        && !app.items.is_empty()
+        && app
+            .items
+            .iter()
+            .all(|i| i.project.as_deref().map(clean).as_deref() == Some(app.project_name.as_str()));
     let cols = columns(app);
     let comfortable = app.prefs.settings.density == Density::Comfortable;
     // Each row is a card of two lines (three when comfortable); a blank line between cards when they all fit.
@@ -746,7 +1009,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         v.dedup();
         v.len()
     };
-    let spaced = lines.len() + sections * 3 + app.items.len() * (per + 1) <= area.height as usize;
+    let spaced = pinned.len() + lines.len() + sections * 3 + app.items.len() * (per + 1) <= area.height as usize;
     let mut last: Option<Section> = None;
     for (index, item) in app.items.iter().enumerate() {
         if last != Some(item.section) {
@@ -774,25 +1037,64 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push((Line::raw(""), None));
         }
         let here = index == app.selected;
-        for l in card_lines(app, item, here, w, &cols, comfortable) {
+        for l in card_lines(app, item, here, w, &cols, comfortable, single_project) {
             lines.push((l, Some(index)));
         }
     }
-    // Keep the selected row in view (all of its lines).
+    // Render pinned header first, then keep the selected row in view inside the remaining height.
     let h = area.height as usize;
+    let pinned_n = pinned.len().min(h);
+    let avail = h.saturating_sub(pinned_n);
     let at = lines
         .iter()
         .rposition(|(_, i)| *i == Some(app.selected))
         .unwrap_or(0);
-    let top = (at + 1).saturating_sub(h);
-    let shown: Vec<Line<'static>> = lines
-        .iter()
-        .skip(top)
-        .take(h)
-        .map(|(l, _)| l.clone())
-        .collect();
-    for (row, (_, index)) in lines.iter().skip(top).take(h).enumerate() {
+    let top = (at + 1).saturating_sub(avail);
+    let clipped_below = top + avail < lines.len();
+    let take_n = if clipped_below && avail >= 2 {
+        avail - 1
+    } else {
+        avail
+    };
+    let mut shown: Vec<Line<'static>> = Vec::with_capacity(h);
+    for (row, line_item) in pinned.into_iter().take(pinned_n).enumerate() {
+        app.areas.rows.push((area.y + row as u16, None));
+        shown.push(line_item);
+    }
+    if let Some(li) = lead_line_index {
+        if li < pinned_n {
+            app.areas.lead_row = Rect {
+                x: area.x,
+                y: area.y + li as u16,
+                width: area.width,
+                height: 1,
+            };
+        }
+    }
+    for (offset_row, (l, index)) in lines.iter().skip(top).take(take_n).enumerate() {
+        let row = pinned_n + offset_row;
         app.areas.rows.push((area.y + row as u16, *index));
+        shown.push(l.clone());
+    }
+    if clipped_below && avail >= 2 {
+        // Count how many tasks sit entirely below the visible window so nothing is silently hidden.
+        let last_shown = lines
+            .iter()
+            .skip(top)
+            .take(take_n)
+            .filter_map(|(_, i)| *i)
+            .max();
+        let more_tasks = match last_shown {
+            Some(idx) => app.items.len().saturating_sub(idx + 1),
+            None => app.items.len(),
+        };
+        let label = if more_tasks > 0 {
+            format!("↓ {more_tasks} more · j/k scroll")
+        } else {
+            "↓ more below · j/k scroll".to_string()
+        };
+        app.areas.rows.push((area.y + (pinned_n + take_n) as u16, None));
+        shown.push(Line::from(Span::styled(fit(&label, w), dim())));
     }
     f.render_widget(Paragraph::new(shown), area);
 }
@@ -822,6 +1124,7 @@ fn card_lines(
     w: usize,
     cols: &[(Column, usize)],
     comfortable: bool,
+    single_project: bool,
 ) -> Vec<Line<'static>> {
     let (mark, mark_style, role) = look_of(item);
     // The step column is the badge; the others sit before it.
@@ -873,8 +1176,10 @@ fn card_lines(
         first.push(b);
     }
     let mut meta: Vec<String> = vec![];
-    if let Some(p) = item.project.as_deref().filter(|p| !p.is_empty()) {
-        meta.push(clean(p));
+    if !single_project {
+        if let Some(p) = item.project.as_deref().filter(|p| !p.is_empty()) {
+            meta.push(clean(p));
+        }
     }
     if !item.age.is_empty() {
         meta.push(item.age.clone());
@@ -979,12 +1284,12 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         app.mode,
         Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(..) | Mode::NewThread(_)
     );
-    // The composer stays at the foot of a running build's Live tab, ready for a note; any other time only while typing.
+    // The composer stays at the foot of a running build's Live and Terminal (live console) tabs, ready to steer.
     let live_build = item.as_ref().is_some_and(|i| i.is_task && !i.thread)
-        && app.tab == Tab::Live
+        && (app.tab == Tab::Live || (app.tab == Tab::Terminal && app.pane_here().is_none()))
         && app.steps.as_ref().is_some_and(|s| s.live_run.is_some());
     // (A question waiting takes the foot instead: the composer shows again once it is answered, or while typing.)
-    let composer_h = if input || (live_build && roomy && question.is_none()) {
+    let composer_h = if input || (live_build && area.height >= 12 && question.is_none()) {
         let rows = if matches!(app.mode, Mode::NewTask(..) | Mode::NewThread(_)) {
             2
         } else {
@@ -999,8 +1304,26 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         0
     };
-    // The head: the tab track, the task with its badge, what runs it, and its step strip (when its steps are read).
-    let head_h: u16 = if app.steps.is_some() { 3 } else { 2 } + if roomy { 2 } else { 0 };
+    let builder_task = app.builder_task();
+    // The approval terms describe the saved plan. A build card describes the last run.
+    let proposed = app.steps_here().filter(|_| builder_task.is_some()).and_then(|s| {
+        let cards = s.cards.as_ref()?;
+        if !cards.iter().any(|c| c.key == "build" && !c.runs.is_empty()) {
+            return None;
+        }
+        let terms = cards.iter().find(|c| c.key == "approve")?.terms.as_ref()?;
+        let row = terms
+            .rows
+            .iter()
+            .find(|r| r.label == "Your pick" && r.words.starts_with("builder "))
+            .or_else(|| terms.rows.iter().find(|r| r.label == "Agent"))?;
+        Some(format!("Awaiting approval · {}", clean(&row.words)))
+    });
+    // The head: the task with its badge, what runs it, optional proposed-builder note, its step strip, and rule.
+    // Reclaim the extra blank row when no proposed-builder note exists so more task content fits above the fold.
+    let has_proposed = roomy && proposed.is_some();
+    let head_h: u16 =
+        if app.steps.is_some() { 3 } else { 2 } + u16::from(roomy) + u16::from(has_proposed);
     let [tabs, _, head, content, qa, input_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(u16::from(roomy)),
@@ -1036,19 +1359,9 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         x += lw;
         spans.push(Span::styled(shown, style));
     }
-    // Narrow (one column): where this task is in the list, and the way back to it.
+    // Narrow (one column): where this task is in the list, and the universal Esc route back to it.
     if app.narrow && !app.items.is_empty() {
-        let back = key_name(app, Action::ListCycle);
-        let at = format!(
-            "{} of {}{}",
-            app.selected + 1,
-            app.items.len(),
-            if back.is_empty() {
-                String::new()
-            } else {
-                format!(" · {back} list")
-            }
-        );
+        let at = format!("{} of {} · Esc list", app.selected + 1, app.items.len());
         let used = sheet::spans_width(&spans);
         let room = (tabs.width as usize).saturating_sub(used);
         if room > width(&at) + 1 {
@@ -1060,6 +1373,53 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             if room > width(&short) + 1 {
                 spans.push(Span::raw(" ".repeat(room - width(&short))));
                 spans.push(Span::styled(short, dim()));
+            }
+        }
+    } else if !app.narrow && item.as_ref().is_some_and(|i| i.is_task && !i.thread) {
+        // Use empty right-side tab-bar space for zero-scroll task vitals (Cursor/Devin pattern):
+        // on Live/Steps/Terminal show diff totals when loaded; on Diff show current file/line position.
+        let mut vitals: Vec<Span<'static>> = vec![];
+        if app.tab == Tab::Diff {
+            if let Some(d) = &app.diff {
+                if !d.files.is_empty() {
+                    let pos = if app.rows.is_empty() {
+                        format!("file {}/{}", app.diff_index + 1, d.files.len())
+                    } else {
+                        format!(
+                            "file {}/{} · line {}/{}",
+                            app.diff_index + 1,
+                            d.files.len(),
+                            (app.diff_cursor + 1).min(app.rows.len()),
+                            app.rows.len()
+                        )
+                    };
+                    vitals.push(Span::styled(pos, dim()));
+                }
+            }
+        } else if let Some((files, add, del)) = facts_of(app).totals {
+            vitals.push(Span::styled(format!("{} ", files_words(files)), dim()));
+            vitals.push(Span::styled(format!("+{add}"), passed()));
+            vitals.push(Span::raw(" "));
+            vitals.push(Span::styled(format!("−{del}"), failed()));
+            if let Some(kept) = app
+                .diff
+                .as_ref()
+                .and_then(|d| d.run.map(|r| app.notes_of(&d.task, r).len()))
+                .filter(|&k| k > 0)
+            {
+                vitals.push(Span::styled(
+                    format!(" · {kept} {}", if kept == 1 { "note" } else { "notes" }),
+                    ink(),
+                ));
+            }
+        }
+        if !vitals.is_empty() {
+            let used = sheet::spans_width(&spans);
+            let vw = sheet::spans_width(&vitals);
+            let room = (tabs.width as usize).saturating_sub(used);
+            if room >= vw + 2 {
+                spans.push(Span::raw(" ".repeat(room - vw)));
+                spans.extend(vitals);
             }
         }
     }
@@ -1087,13 +1447,17 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         }
         return;
     };
-    // Head: the task (a link to its page in the console, ours: link.rs) and its badge, what's running it, its steps.
-    let badge = match look_of(&item).2 {
+    // Head: the task (a link to its page in the console, ours: link.rs), provenance facts, and the pipeline strip.
+    // Give each fact one home (Prägnanz): when the pipeline strip already carries the active stage and there is no
+    // mid-build Question chip to surface, omit the duplicate status badge beside the title.
+    let show_title_badge = item.question().is_some()
+        || !app.steps.as_ref().is_some_and(pipeline_carries_stage);
+    let badge = show_title_badge.then(|| match look_of(&item).2 {
         None => sheet::chip(&fit(&item.word, 14)),
         Some(role) => sheet::badge(&fit(&item.word, 14), role),
-    };
-    let badge_w = width(&badge.content);
-    let title = fit(&item.title, w.saturating_sub(badge_w + 2));
+    });
+    let badge_w = badge.as_ref().map(|b| width(&b.content) + 2).unwrap_or(0);
+    let title = fit(&item.title, w.saturating_sub(badge_w));
     if item.is_task {
         if let Some(url) = app
             .origin
@@ -1108,20 +1472,73 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             });
         }
     }
-    let mut head_lines = vec![Line::from(vec![
-        Span::styled(title, ink()),
-        Span::raw("  "),
-        badge,
-    ])];
-    match app.steps.as_ref().and_then(|s| facts_line(app, s, w)) {
-        Some(l) => head_lines.push(fit_line(l, w)),
-        None => head_lines.push(Line::from(Span::styled(fit(&item.detail, w), dim()))),
+    let mut title_spans = vec![Span::styled(title, ink())];
+    if let Some(badge) = badge {
+        title_spans.push(Span::raw("  "));
+        title_spans.push(badge);
     }
+    let mut head_lines = vec![Line::from(title_spans)];
+    let button = sheet::button("Change builder", &key_name(app, Action::TaskBuilder), false);
+    let available = if builder_task.is_some() {
+        w.saturating_sub(button.width() + 1)
+    } else {
+        w
+    };
+    let mut facts = app
+        .steps
+        .as_ref()
+        .and_then(|s| facts_line(app, s, available))
+        .unwrap_or_else(|| {
+            if app.approval_waiting() {
+                Line::raw("")
+            } else {
+                Line::from(Span::styled(fit(&item.detail, available), dim()))
+            }
+        });
+    if let Some(words) = proposed.as_ref().filter(|_| !roomy) {
+        facts = Line::from(Span::styled(fit(words, available), ink()));
+    }
+    if let Some(task) = builder_task.filter(|_| head.height >= 2) {
+        let mut row = vec![button, Span::raw(" ")];
+        row.extend(facts.spans);
+        facts = Line::from(row);
+        app.areas.builder_button = Some((
+            Rect::new(head.x, head.y + 1, facts.width().min(w) as u16, 1),
+            task,
+        ));
+    }
+    head_lines.push(fit_line(facts, w));
     if let Some(steps) = &app.steps {
-        if roomy {
-            head_lines.push(Line::raw(""));
+        if has_proposed {
+            head_lines.push(Line::from(Span::styled(
+                fit(proposed.as_deref().unwrap_or(""), w),
+                ink(),
+            )));
         }
-        head_lines.push(strip(app, steps, w));
+        app.areas.spinner_visible = matches!(app.mode, Mode::Normal | Mode::Steer(_))
+            && !app.prefs.settings.reduced_motion
+            && usize::from(head.height) > head_lines.len()
+            && steps.cards.iter().flatten().any(|c| c.in_chain && c.mark == "live");
+        let mark = if app.areas.spinner_visible {
+            let frames = if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
+                [marks().running, "/", "-", "\\"]
+            } else {
+                [marks().running, "◓", "◑", "◒"]
+            };
+            frames[app.spinner_frame % frames.len()]
+        } else {
+            marks().running
+        };
+        let row = head_lines.len() as u16;
+        let rect = Rect::new(
+            head.x,
+            head.y + row,
+            head.width,
+            u16::from(row < head.height),
+        );
+        let (pipeline, targets) = pipeline_at(app, steps, rect, mark);
+        app.areas.steps.extend(targets);
+        head_lines.push(pipeline);
     }
     if roomy {
         // A rule under the head, across the sheet (joining the sheet's outline when it has one).
@@ -1238,7 +1655,7 @@ fn draw_question(f: &mut Frame, app: &App, q: &toolroll_api::Question, area: Rec
 
 /// The composer at the foot of the panel: what is being typed (steering, a note, a new task or thread) with its caret,
 /// or, on a running build, a quiet line saying a note can be sent; the keys on the right. Roomy: a filled box.
-pub(crate) fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
+pub(crate) fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, roomy: bool) {
     let inner = if roomy {
         let r = Rect {
             height: area.height.saturating_sub(1),
@@ -1302,30 +1719,21 @@ pub(crate) fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
         _ => None,
     };
     // The keys on the right: Enter and Esc while typing; else steer, pause, stop.
-    let keys: Vec<Span<'static>> = if typing.is_some() {
-        let mut v = vec![sheet::button("Send", marks().enter, true)];
-        v.push(Span::raw(" "));
-        v.push(sheet::button("Cancel", "Esc", false));
-        v
+    let buttons: Vec<_> = if typing.is_some() {
+        vec![
+            (ComposerClick::Send, sheet::button("Send", marks().enter, true)),
+            (ComposerClick::Cancel, sheet::button("Cancel", "Esc", false)),
+        ]
     } else {
-        let mut v = vec![];
-        for (action, words) in [
-            (Action::Steer, "Steer"),
-            (Action::Pause, "Pause"),
-            (Action::Stop, "Stop"),
-        ] {
-            let k = key_name(app, action);
-            if k.is_empty() {
-                continue;
-            }
-            if !v.is_empty() {
-                v.push(Span::raw(" "));
-            }
-            v.push(sheet::button(words, &k, false));
-        }
-        v
+        [(Action::Steer, "Steer"), (Action::Pause, "Pause"), (Action::Stop, "Stop")]
+            .into_iter()
+            .filter_map(|(a, label)| {
+                let k = key_name(app, a);
+                (!k.is_empty()).then(|| (ComposerClick::Action(a), sheet::button(label, &k, false)))
+            })
+            .collect()
     };
-    let keys_w = sheet::spans_width(&keys);
+    let keys_w = buttons.iter().map(|(_, span)| span.width()).sum::<usize>() + buttons.len().saturating_sub(1);
     let show_keys = rows.width as usize >= keys_w + 24;
     let room_all = (rows.width as usize).saturating_sub(if show_keys { keys_w + 2 } else { 0 });
     let mut spans = vec![];
@@ -1355,17 +1763,33 @@ pub(crate) fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
                 .map(|r| format!(" (it goes to {})", app.attempt_words(r)))
                 .unwrap_or_default();
             spans.push(Span::styled(
-                fit(&format!("Steer the agent: a note{run}"), room_all),
+                fit(&format!("Message the agent{run}"), room_all),
                 dim(),
             ));
         }
     }
-    let used = sheet::spans_width(&spans);
+    let live = app.steps_here().and_then(|s| s.live_run)
+        .filter(|_| matches!(app.mode, Mode::Normal | Mode::Steer(_)) && app.tab == Tab::Live);
+    if let Some(run) = live.filter(|_| app.mode == Mode::Normal) {
+        let input_width = rows.width.saturating_sub(if show_keys { keys_w as u16 } else { 0 });
+        app.areas.steer_targets.push((Rect { width: input_width, ..rows }, run, ComposerClick::Action(Action::Steer)));
+    }
     if show_keys {
-        spans.push(Span::raw(
-            " ".repeat((rows.width as usize).saturating_sub(used + keys_w)),
-        ));
-        spans.extend(keys);
+        let used = sheet::spans_width(&spans);
+        spans.push(Span::raw(" ".repeat((rows.width as usize).saturating_sub(used + keys_w))));
+        let mut x = rows.right() - keys_w as u16;
+        for (i, (click, span)) in buttons.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+                x += 1;
+            }
+            let width = span.width() as u16;
+            if let Some(run) = live {
+                app.areas.steer_targets.push((Rect { x, width, ..rows }, run, click));
+            }
+            spans.push(span);
+            x += width;
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), rows);
 }
@@ -1673,10 +2097,19 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             ..area
         }
     };
+    draw_transcript_body(f, app, area);
+}
+
+/// Shared scrollable transcript body used by both the Live tab and the Terminal tab's live worker console.
+fn draw_transcript_body(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = area.width as usize;
     let t = &app.transcript;
     // Following the newest: only the tail that fills the pane is laid out (cheap at any length). Scrolled back: the
     // whole transcript, laid out again at most twice a second while records keep arriving.
     let h = area.height as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
     let from = if app.follow {
         t.main.len().saturating_sub((h * 3).max(300))
     } else {
@@ -1745,15 +2178,69 @@ fn outcome_of(card: &StepCard) -> (&'static str, Style) {
 /// The Steps tab (T4): one card per step of the task's chain, from the engine's step cards: its mark and name, its
 /// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
 /// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
-fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
-    f.render_widget(
-        Paragraph::new(steps_lines(app, Room::screen(area.width as usize))),
-        area,
-    );
+fn draw_steps(f: &mut Frame, app: &mut App, area: Rect) {
+    let mut cards = Vec::new();
+    let lines = layout_steps(app, Room::screen(usize::from(area.width)), &mut cards);
+    let height = usize::from(area.height);
+    let last = lines.len().saturating_sub(height);
+    let mut offset = app.step_nav.offset.min(last);
+    if app.step_nav.reveal {
+        if let Some((rows, _)) = cards
+            .iter()
+            .find(|(_, link)| Some(&link.step) == app.step_nav.selected.as_ref())
+        {
+            if rows.start < offset || rows.end > offset + height {
+                offset = rows.start.min(last);
+            }
+        }
+        app.step_nav.reveal = false;
+    }
+    let clipped = offset + height < lines.len();
+    let visible_h = if clipped && height >= 3 {
+        height - 1
+    } else {
+        height
+    };
+    app.step_nav.offset = offset;
+    for (range, link) in cards {
+        let start = range.start.max(offset);
+        let end = range.end.min(offset + visible_h);
+        if start < end {
+            let rect = Rect::new(
+                area.x,
+                area.y + (start - offset) as u16,
+                area.width,
+                (end - start) as u16,
+            );
+            app.areas.steps.push((rect, app.tab, link));
+        }
+    }
+    let mut rendered: Vec<Line<'static>> = lines
+        .iter()
+        .skip(offset)
+        .take(visible_h)
+        .cloned()
+        .collect();
+    if clipped && height >= 3 {
+        let rem = lines.len().saturating_sub(offset + visible_h);
+        rendered.push(Line::from(Span::styled(
+            fit(&format!("↓ {rem} more lines · j/k scroll"), usize::from(area.width)),
+            dim(),
+        )));
+    }
+    f.render_widget(Paragraph::new(rendered), area);
 }
 
-/// Everything the Steps tab shows, at width `w`: one source for drawing, search and export (search.rs pane_text).
+/// Drawing, search and export use the same step layout.
 pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
+    layout_steps(app, room, &mut Vec::new())
+}
+
+fn layout_steps(
+    app: &App,
+    room: Room,
+    ranges: &mut Vec<(std::ops::Range<usize>, StepLink)>,
+) -> Vec<Line<'static>> {
     let w = room.w;
     let Some(steps) = &app.steps else {
         if app.steps_unreadable_here() {
@@ -1765,6 +2252,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         return vec![Line::raw("Reading…")];
     };
     let mut lines = vec![];
+    let waiting_approval = app.approval_waiting();
     let why = failure_lines(app, room);
     let stopped = plan_stopped_lines(app, room);
     if !why.is_empty() {
@@ -1777,7 +2265,10 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     } else if !waiting_lines(app, room).is_empty() {
         lines.extend(waiting_lines(app, room));
         lines.push(Line::raw(""));
-    } else if let Some(headline) = &steps.headline {
+    } else if let Some(headline) = steps.headline.as_ref().filter(|h| {
+        !(waiting_approval && h.eq_ignore_ascii_case("Needs you")
+            || steps.live_run.is_some() && h.eq_ignore_ascii_case("Building"))
+    }) {
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
         }
@@ -1792,12 +2283,23 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     }
     // Laid out whole (export): no raised blocks, so nothing is padded out to a width.
     let fills = crate::theme::fills() && !room.whole();
-    // Each step a raised block (without fills, its lines with a blank line between).
-    let w = if fills { w.saturating_sub(4) } else { w };
+    // Only the selected or active step gets a surface. Status words and marks work at every colour depth.
     for (i, card) in cards.iter().enumerate() {
         if i > 0 && !fills {
             lines.push(Line::raw(""));
         }
+        let link = StepLink::new(steps, card);
+        let selected = Some(&card.key) == app.step_nav.selected.as_ref();
+        let expanded = Some(&card.key) == app.step_nav.expanded.as_ref();
+        let action = match &link.destination {
+            StepDestination::Plan(_) => Some("Review plan"),
+            StepDestination::Live(_) => Some("Open live"),
+            StepDestination::Changes(_) => Some("View changes"),
+            StepDestination::Details => None,
+        };
+        let raised = fills && (selected || active_stage(steps, card));
+        let w = if raised { w.saturating_sub(4) } else { w };
+        let start = lines.len();
         let mut c: Vec<Line<'static>> = vec![];
         let (mark, mark_style) = mark_of(card);
         let (outcome, outcome_style) = outcome_of(card);
@@ -1815,13 +2317,45 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             Some(_) => "waiting to retry",
             None => outcome,
         };
-        let mut right = vec![Span::styled(outcome, outcome_style)];
-        // The step's current build, on the header's own clock (build_clock).
+        let mut timing = String::new();
         if let Some(secs) = build_clock(app, steps, card) {
-            right.push(Span::styled(format!(" · {}", duration(secs)), dim()));
+            timing.push_str(&format!(" · {}", duration(secs)));
         }
         if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
-            right.push(Span::styled(format!(" · ${cost:.2}"), dim()));
+            timing.push_str(&format!(" · ${cost:.2}"));
+        }
+        let tint = match (card.mark.as_str(), wait, room.hints) {
+            ("live", None, true) => Some(crate::theme::Role::Running),
+            ("stuck", None, true) => Some(crate::theme::Role::Failed),
+            _ => None,
+        };
+        let mut right = match tint {
+            Some(role) => vec![sheet::badge(&format!("{outcome}{timing}"), role)],
+            None => vec![Span::styled(outcome, outcome_style), Span::styled(timing, dim())],
+        };
+        let mut second_line = None;
+        if let Some(words) = action.filter(|_| room.hints) {
+            if matches!(link.destination, StepDestination::Plan(_)) {
+                right = vec![sheet::button(words, &key_name(app, Action::Accept), true)];
+            } else {
+                let button = sheet::button(words, "", false);
+                if 5 + width(&step_label(card)) + sheet::spans_width(&right) + button.width() <= w {
+                    right.push(Span::raw("  "));
+                    right.push(button);
+                } else {
+                    second_line = Some(Line::from(vec![Span::raw("  "), button]));
+                }
+            }
+        }
+        if room.hints && action.is_none() {
+            let ascii = app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii;
+            let indicator = match (expanded, ascii) {
+                (true, false) => "  ▾",
+                (false, false) => "  ›",
+                (true, true) => "  v",
+                (false, true) => "  >",
+            };
+            right.push(Span::styled(indicator, dim()));
         }
         let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
         let name_style = if card.needs_you {
@@ -1837,14 +2371,94 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
         };
         let mut head = vec![
             Span::styled(format!("{mark} "), mark_style),
-            Span::styled(name, name_style),
+            Span::styled(
+                name,
+                if selected {
+                    name_style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    name_style
+                },
+            ),
             Span::raw(" ".repeat(gap)),
         ];
         head.extend(right);
         c.push(fit_line(Line::from(head), w));
-        if !card.sentence.is_empty() && wait.is_none() {
-            for l in wrap(&clean(&card.sentence), w.saturating_sub(2)) {
+        if let Some(button) = second_line {
+            c.push(button);
+        }
+        let sentence = if waiting_approval && card.key == "plan" {
+            card.sentence.strip_suffix(" · shown below").unwrap_or(&card.sentence)
+        } else {
+            &card.sentence
+        };
+        // When a task has 4+ steps, keep finished non-selected steps to 1 scannable row so Checks and Ready fit
+        // above the fold without scrolling (Enter expands any step in full).
+        let compact_done = cards.len() >= 4
+            && card.mark == "done"
+            && !selected
+            && !expanded
+            && !active_stage(steps, card)
+            && !room.whole();
+        let show_details = !compact_done && (expanded || card.mark != "todo" || room.whole());
+        let repeats_status = matches!(link.destination, StepDestination::Live(_)) && sentence == "Building now";
+        if show_details
+            && !repeats_status
+            && !sentence.is_empty()
+            && wait.is_none()
+            && !(waiting_approval && sentence == "Shown below")
+        {
+            for l in wrap(&clean(sentence), w.saturating_sub(2)) {
                 c.push(Line::raw(format!("  {l}")));
+            }
+        }
+        if expanded {
+            if card.key == "plan" && waiting_approval {
+                if let Some(terms) = cards
+                    .iter()
+                    .find(|c| c.key == "approve")
+                    .and_then(|c| c.terms.as_ref())
+                {
+                    for row in &terms.rows {
+                        c.push(Line::from(Span::styled(
+                            format!("  {}", clean(&row.label)),
+                            ink(),
+                        )));
+                        for text in std::iter::once(&row.words)
+                            .chain(&row.lines)
+                            .filter(|t| !t.is_empty())
+                        {
+                            for l in wrap(&clean(text), w.saturating_sub(2)) {
+                                c.push(Line::raw(format!("  {l}")));
+                            }
+                        }
+                    }
+                }
+            }
+            if card.key == "approve" {
+                if let Some(approval) = &steps.approval {
+                    for line in wrap(
+                        &format!("Approved by {}", clean(&approval.by)),
+                        w.saturating_sub(2),
+                    ) {
+                        c.push(Line::from(format!("  {line}")));
+                    }
+                }
+            }
+            for (label, time) in [
+                ("Started", &card.started_at),
+                ("Finished", &card.finished_at),
+                ("Recorded", &card.at),
+            ] {
+                if label == "Recorded"
+                    && (card.at == card.started_at || card.at == card.finished_at)
+                {
+                    continue;
+                }
+                if let Some(time) = time {
+                    for line in wrap(&format!("{label} {}", clean(time)), w.saturating_sub(2)) {
+                        c.push(Line::from(Span::styled(format!("  {line}"), dim())));
+                    }
+                }
             }
         }
         let mut facts = vec![];
@@ -1871,7 +2485,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
                 format!("attempt {n} (build #{newest})")
             });
         }
-        if !facts.is_empty() {
+        if !facts.is_empty() && !compact_done {
             c.push(fit_line(
                 Line::from(Span::styled(format!("  {}", facts.join(" · ")), dim())),
                 w,
@@ -1904,7 +2518,7 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
                 }
             }
         }
-        if fills {
+        if raised {
             let full = w + 4;
             let raised = crate::theme::raised();
             lines.push(sheet::band(Line::raw(""), full, raised));
@@ -1917,7 +2531,11 @@ pub fn steps_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             lines.push(Line::raw(""));
         } else {
             lines.extend(c);
+            if fills {
+                lines.push(Line::raw(""));
+            }
         }
+        ranges.push((start..lines.len() - usize::from(fills), link));
     }
     if steps.chain == "just-code" {
         lines.push(Line::raw(""));
@@ -2276,12 +2894,13 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let fills = crate::theme::fills();
-    // A wide panel keeps a "Changed files" column on the left (unless it would cost side by side its room).
-    const FILES_W: u16 = 30;
-    let column = area.width >= 110
+    // Keep a Devin/Cursor-style "Changed files" rail beside the diff on normal desktop terminals (>= 84 cols)
+    // unless it would squeeze side-by-side split diff below its minimum width.
+    let files_w: u16 = (area.width / 4).clamp(22, 30);
+    let column = area.width >= 84
         && !(app.diff_split
             && area.width >= review::SPLIT_MIN_WIDTH
-            && area.width.saturating_sub(FILES_W + 2) < review::SPLIT_MIN_WIDTH);
+            && area.width.saturating_sub(files_w + 2) < review::SPLIT_MIN_WIDTH);
     // A result waiting for you: the decision row at the foot, outlined in ink, with Accept and Send back.
     let waits = app.steps.as_ref().is_some_and(|s| s.review.is_some()) && area.height >= 16;
     let foot_h: u16 = if waits { 4 } else { 0 };
@@ -2291,8 +2910,8 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let code_area = if column {
         Rect {
-            x: main.x + FILES_W + 2,
-            width: main.width.saturating_sub(FILES_W + 2),
+            x: main.x + files_w + 2,
+            width: main.width.saturating_sub(files_w + 2),
             ..main
         }
     } else {
@@ -2349,7 +2968,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             app,
             &diff,
             Rect {
-                width: FILES_W,
+                width: files_w,
                 ..main
             },
         );
@@ -2566,7 +3185,11 @@ fn draw_files(f: &mut Frame, app: &App, diff: &toolroll_api::ResultDiff, area: R
         Line::raw(""),
     ];
     let n = diff.files.len();
-    let fit_n = (inner.height as usize).saturating_sub(3) / 3;
+    let avail_rows = (inner.height as usize).saturating_sub(3);
+    // Use compact 2-row file entries when spacing would push files off-screen, so more changed files stay visible.
+    let compact = n * 3 > avail_rows;
+    let per_file = if compact { 2 } else { 3 };
+    let fit_n = avail_rows / per_file;
     let shown = fit_n.max(1).min(n);
     let first = app
         .diff_index
@@ -2603,7 +3226,9 @@ fn draw_files(f: &mut Frame, app: &App, diff: &toolroll_api::ResultDiff, area: R
         }
         lines.push(a);
         lines.push(b);
-        lines.push(Line::raw(""));
+        if !compact {
+            lines.push(Line::raw(""));
+        }
     }
     if n > shown {
         lines.push(Line::from(Span::styled(
@@ -2786,6 +3411,20 @@ fn half_spans(
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Filtering the task list live (`/` while List is focused).
+    if let Mode::ListFilter(q) = &app.mode {
+        let count = format!("  {} of {}", app.items.len(), app.all_items.len());
+        let keys = "  ⏎ open · Esc clear";
+        let line = Line::from(vec![
+            Span::styled("Filter: ", ink()),
+            Span::raw(fit(&clean(q), 40)),
+            Span::styled("▏", ink()),
+            Span::styled(count, ink()),
+            Span::styled(keys, dim()),
+        ]);
+        f.render_widget(Paragraph::new(fit_line(line, area.width as usize)), area);
+        return;
+    }
     // Searching: the query, where it is among the matches, and its keys.
     if let Mode::Search(s) = &app.mode {
         let found = if s.query.is_empty() {
@@ -2844,12 +3483,14 @@ fn keys_name(app: &App, actions: &[Action]) -> String {
         .join("/")
 }
 
-/// The key bar: the five keys that matter most where the person is, then the palette, which has every other.
+/// The key bar: the high-frequency keys that matter most for the focused sheet (List vs. Detail) and task state,
+/// always ending with the palette. Avoids duplicating actions already shown on the live composer directly above.
 fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     use Action::*;
     if app.agents_screen.is_some() {
         return crate::agents::bar_keys(app);
     }
+    let focus = app.effective_focus();
     // Only the acts this task's state allows: steer while it builds, accept and send back while a result waits,
     // retry once it failed (r, the same key as send back).
     let review = app.review_waiting();
@@ -2860,15 +3501,19 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let plan = !live && app.plan_pins().is_some();
     let waiting = !live && app.queued_here();
     let held = !live && app.held_here().is_some();
+    let composer_visible = app.tab == Tab::Live
+        && live
+        && app.areas.right.height >= 12
+        && app.selected_item().is_some_and(|i| i.is_task && !i.thread && i.question().is_none());
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
-        if live {
+        if live && !composer_visible {
             v.push((&[Steer], "steer"));
         }
         if review {
             v.push((&[Accept], "accept"));
             v.push((&[SendBack], "send back"));
         } else if approval {
-            v.push((&[Accept], "approve"));
+            v.push((&[Accept], "review plan"));
             v.push((&[Browser], "browser"));
         } else if plan_again {
             v.push((&[SendBack], "plan again"));
@@ -2886,65 +3531,141 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[Pause], "plan"));
         }
     };
-    let five: Vec<(&[Action], &'static str)> = match app.tab {
-        _ if app.items.is_empty() => vec![
-            (&[NewTask], "new task"),
-            (&[Agents], "agents"),
-            (&[Help], "keys"),
-        ],
-        Tab::Diff if app.thread_selected().is_none() => {
-            let mut v: Vec<(&[Action], &str)> =
-                vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
-            if review {
-                v.push((&[Accept], "accept"));
-                v.push((&[SendBack], "send back"));
-            } else if approval {
-                v.push((&[Accept], "approve"));
+    let mut out: Vec<(String, &'static str)> = vec![];
+    if matches!(app.mode, Mode::ChatCompose(_)) {
+        out.push(("Enter".into(), "send"));
+        out.push(("Shift-Enter".into(), "newline"));
+        out.push(("Tab".into(), "choices"));
+        out.push(("PgUp/PgDn".into(), "scroll"));
+        out.push(("Esc".into(), "browse"));
+    } else if app.chat_focused() {
+        if !app.chat.numbered_choices.is_empty() {
+            out.push((format!("1–{}", app.chat.numbered_choices.len()), "select"));
+        }
+        let action = match app.chat.current_hit() {
+            Some(crate::chat::ChatHit::ConfirmProposal(_)) => "review",
+            Some(crate::chat::ChatHit::DismissProposal(_)) => "dismiss",
+            Some(crate::chat::ChatHit::AnswerAsk(_)) => "send",
+            Some(crate::chat::ChatHit::RemoveQueued(_)) => "remove",
+            _ => "open",
+        };
+        out.push(("Enter".into(), action));
+        out.push(("↑/↓".into(), "choose"));
+        out.push(("e".into(), "tools"));
+        if app.chat_split_active() {
+            out.push(("o".into(), "peek"));
+            out.push(("D".into(), "undock"));
+        } else {
+            out.push(("D".into(), "dock"));
+        }
+        out.push(("Esc".into(), "list"));
+    } else if app.items.is_empty() && app.list_query.is_empty() {
+        for (a, what) in [
+            (&[NewTask][..], "new task"),
+            (&[Agents][..], "agents"),
+            (&[Help][..], "keys"),
+        ] {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
             }
-            v.push((&[PreviousFile, NextFile], "file"));
-            v
         }
-        Tab::Terminal
-            if app
-                .pane_here()
-                .is_some_and(|p| p.link == crate::term::Link::Live) =>
-        {
-            vec![
-                (&[TakeOver], "type in it"),
-                (&[ScrollUp, ScrollDown], "scroll"),
-                (&[Copy], "copy"),
-                (&[MoveDown, MoveUp], "task"),
-                (&[NextTab], "next tab"),
-            ]
+    } else if focus == Focus::Detail {
+        let mut five: Vec<(&[Action], &'static str)> = match app.tab {
+            Tab::Diff if app.thread_selected().is_none() => {
+                let mut v: Vec<(&[Action], &str)> =
+                    vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
+                if review {
+                    v.push((&[Accept], "accept"));
+                    v.push((&[SendBack], "send back"));
+                } else if approval {
+                    v.push((&[Accept], "review plan"));
+                }
+                v.push((&[PreviousFile, NextFile], "file"));
+                v
+            }
+            Tab::Terminal
+                if app
+                    .pane_here()
+                    .is_some_and(|p| p.link == crate::term::Link::Live) =>
+            {
+                vec![
+                    (&[TakeOver], "type in it"),
+                    (&[ScrollUp, ScrollDown], "scroll"),
+                    (&[Copy], "copy"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
+            Tab::Steps if app.thread_selected().is_none() => {
+                vec![
+                    (&[MoveDown, MoveUp], "step"),
+                    (&[Open], "open step"),
+                    (&[ScrollUp, ScrollDown], "scroll"),
+                    (&[Search], "search"),
+                ]
+            }
+            Tab::Terminal if app.pane_here().is_some() => {
+                vec![(&[TakeOver], "Open build shell"), (&[NextTab], "next tab")]
+            }
+            Tab::Terminal if app.live_run().is_some() => {
+                vec![
+                    (&[Steer], "steer"),
+                    (&[TakeOverAgent], "live agent"),
+                    (&[Pause], "pause"),
+                    (&[Stop], "stop"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
+            Tab::Terminal
+                if app.selected_item().is_some_and(|i| i.is_task && !i.thread)
+                    && app
+                        .steps_here()
+                        .and_then(crate::app::shell_refusal_of)
+                        .is_none() =>
+            {
+                vec![
+                    (&[TakeOverAgent], "live agent"),
+                    (&[TakeOver], "build shell"),
+                    (&[NextTab], "next tab"),
+                ]
+            }
+            _ => {
+                let mut v: Vec<(&[Action], &str)> = vec![
+                    (&[MoveDown, MoveUp], "scroll"),
+                    (&[Search], "search"),
+                ];
+                acts(&mut v);
+                if app.panes.layout.count() > 1 {
+                    v.push((&[NextPane], "next panel"));
+                }
+                v
+            }
+        };
+        for (a, what) in five.drain(..) {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
+            }
         }
-        Tab::Terminal if app.pane_here().is_some() => vec![
-            (&[TakeOver], "Open build shell"),
-            (&[MoveDown, MoveUp], "task"),
-            (&[NextTab], "next tab"),
-        ],
-        _ if app.panes.layout.count() > 1 => {
-            let mut v: Vec<(&[Action], &str)> = vec![
-                (&[MoveDown, MoveUp], "move"),
-                (&[NextPane], "next panel"),
-                (&[Open], "open"),
-            ];
-            acts(&mut v);
-            v.push((&[NewTask], "new"));
-            v
+        out.push(("Esc".to_string(), "list"));
+    } else {
+        let mut five: Vec<(&[Action], &'static str)> =
+            vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
+        if !app.all_items.is_empty() {
+            five.push((&[Search], "filter"));
         }
-        _ => {
-            let mut v: Vec<(&[Action], &str)> =
-                vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
-            acts(&mut v);
-            v.push((&[NewTask], "new"));
-            v
+        if app.panes.layout.count() > 1 {
+            five.push((&[NextPane], "next panel"));
         }
-    };
-    let mut out: Vec<(String, &'static str)> = five
-        .into_iter()
-        .map(|(a, what)| (keys_name(app, a), what))
-        .filter(|(k, _)| !k.is_empty())
-        .collect();
+        acts(&mut five);
+        five.push((&[NewTask], "new"));
+        for (a, what) in five {
+            let k = keys_name(app, a);
+            if !k.is_empty() {
+                out.push((k, what));
+            }
+        }
+    }
     let palette = key_name(app, Palette);
     if !palette.is_empty() {
         out.push((palette, "all actions"));
@@ -3068,13 +3789,42 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         out
     };
     let mut lines = vec![];
-    let global: Vec<Vec<Line<'static>>> = rows
+    // Chunk Global bindings by role (Miller's Law / Chunking) while keeping every row visible in a 30-row window.
+    let roomy_help = area.height >= 34;
+    let nav_layout: Vec<Vec<Line<'static>>> = rows
         .iter()
-        .filter(|r| r.scope == crate::keys::Scope::Global)
+        .filter(|r| {
+            r.scope == crate::keys::Scope::Global
+                && matches!(r.group, crate::keys::Group::Move | crate::keys::Group::Layout)
+        })
         .map(|r| cell(&r.keys, &r.words))
         .collect();
-    lines.extend(columns(global));
-    lines.push(Line::raw(""));
+    let work_acts: Vec<Vec<Line<'static>>> = rows
+        .iter()
+        .filter(|r| {
+            r.scope == crate::keys::Scope::Global
+                && matches!(r.group, crate::keys::Group::Act | crate::keys::Group::Filter | crate::keys::Group::Setting)
+        })
+        .map(|r| cell(&r.keys, &r.words))
+        .collect();
+    if roomy_help {
+        if !nav_layout.is_empty() {
+            lines.push(Line::from(Span::styled("Navigate & layout", ink())));
+            lines.extend(columns(nav_layout));
+        }
+        if !work_acts.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled("Work & decisions", ink())));
+            lines.extend(columns(work_acts));
+        }
+        lines.push(Line::raw(""));
+    } else {
+        // Compact 30-row window: order Navigate/Layout before Work & decisions in one dense two-column grid so every
+        // binding plus the [keys] footer fits without clipping.
+        let mut combined = nav_layout;
+        combined.extend(work_acts);
+        lines.extend(columns(combined));
+    }
     lines.push(Line::from(Span::styled("In Diff", ink())));
     let diff: Vec<Vec<Line<'static>>> = rows
         .iter()
@@ -3192,6 +3942,54 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
+        Mode::LeadProviders(_) => return crate::chat_providers::draw_providers(f, app, area),
+        Mode::BuilderPassword { task, setup } => {
+            let task = clean(task);
+            let setup = *setup;
+            let w = area.width.saturating_sub(2).min(62);
+            let inner_width = usize::from(w.saturating_sub(4)).max(1);
+            let words = format!("Open {task} in your browser to choose its builder. Toolroll requires your password to save this change.");
+            let mut lines: Vec<Line> = wrap(&words, inner_width)
+                .into_iter()
+                .map(Line::raw)
+                .collect();
+            lines.push(Line::raw(""));
+            let h = (lines.len() as u16 + 3).min(area.height);
+            let rect = Rect::new(
+                area.x + (area.width - w) / 2,
+                area.y + (area.height - h) / 2,
+                w,
+                h,
+            );
+            let block = dialog(f, rect, " Change builder in browser ");
+            let inner = block.inner(rect);
+            let button = sheet::button(
+                if setup { "Set password" } else { "Open task" },
+                "Enter",
+                true,
+            );
+            let back = sheet::button("Back", "Esc", false);
+            let y = inner.y + lines.len() as u16;
+            if inner.width >= button.width() as u16 && y < inner.bottom() {
+                app.areas.builder_controls.push((
+                    Rect::new(inner.x, y, button.width() as u16, 1),
+                    crate::app::BuilderControl::Save,
+                ));
+                let x = inner.x + button.width() as u16 + 1;
+                if x + back.width() as u16 <= inner.right() {
+                    app.areas.builder_controls.push((
+                        Rect::new(x, y, back.width() as u16, 1),
+                        crate::app::BuilderControl::Back,
+                    ));
+                }
+            } else {
+                app.drawn_dialog = None;
+            }
+            lines.push(Line::from(vec![button, Span::raw(" "), back]));
+            f.render_widget(Paragraph::new(lines).block(block), rect);
+            return;
+        }
+        Mode::TaskBuilder { .. } => return draw_task_builder(f, app, area),
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
         Mode::Settings => (
@@ -3202,33 +4000,85 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 app.threads.answered.then_some(!app.threads.off),
             ),
         ),
-        Mode::Quit => (
-            " Quit Toolroll? ",
-            vec![
-                Line::raw(""),
-                Line::from(sheet::act("s", "Stop agents and quit", false)),
-                Line::from(sheet::act(
-                    "b",
-                    "Keep agents running (reopen with `toolroll`)",
-                    false,
-                )),
-                Line::from(sheet::act("Esc", "Back", false)),
-            ],
-        ),
-        Mode::ConfirmTakeOver { run, .. } => {
-            let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
+        Mode::Quit => {
+            let working = app
+                .all_items
+                .iter()
+                .filter(|i| i.section == Section::Working && !i.paused)
+                .count();
             let mut lines = vec![Line::raw("")];
+            if working > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("Working now: {working}"),
+                    ink(),
+                )));
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::from(sheet::act("s", "Stop agents and quit", false)));
+            lines.push(Line::from(sheet::act(
+                "b",
+                "Keep agents running (reopen with `toolroll`)",
+                false,
+            )));
+            lines.push(Line::from(sheet::act("Esc", "Back", false)));
+            (" Quit Toolroll? ", lines)
+        }
+        Mode::ConfirmTakeOver { run, program, .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
+            let live = app.steps_here().is_some_and(|s| s.live_run == Some(*run));
+            let fills = crate::theme::fills();
+            let mut picker: Vec<Span<'static>> = vec![];
+            for (i, (id, label)) in [
+                ("shell", "1 Shell"),
+                ("claude", "2 Claude Code"),
+                ("codex", "3 Codex"),
+                ("antigravity", "4 Antigravity"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if i > 0 {
+                    picker.push(Span::raw(" "));
+                }
+                let active = program == id;
+                let text = if fills {
+                    format!(" {label} ")
+                } else if active {
+                    format!("[{label}]")
+                } else {
+                    label.to_string()
+                };
+                let style = if active {
+                    crate::theme::tab_on()
+                } else {
+                    crate::theme::tab_off()
+                };
+                picker.push(Span::styled(text, style));
+            }
+            let mut lines = vec![Line::raw(""), fit_line(Line::from(picker), w), Line::raw("")];
             lines.extend(
-                wrap(&crate::app::take_over_scope(&app.attempt_words(*run)), w)
-                    .into_iter()
-                    .map(|l| Line::from(Span::styled(l, ink()))),
+                wrap(
+                    &crate::app::take_over_scope_for(&app.attempt_words(*run), program, live),
+                    w,
+                )
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, ink()))),
             );
             lines.push(Line::raw(""));
-            let mut keys = sheet::act("t", "to open,", true);
+            let open_key = if program == "shell" { "t" } else { "i" };
+            let mut keys = sheet::act(open_key, "to open,", true);
             keys.push(Span::raw("  "));
-            keys.extend(sheet::act("Esc", "to cancel", false));
-            lines.push(Line::from(keys));
-            (" Open build shell ", lines)
+            keys.extend(sheet::act("Tab", "switch,", false));
+            keys.push(Span::raw("  "));
+            keys.extend(sheet::act("Esc", "cancel", false));
+            lines.push(fit_line(Line::from(keys), w));
+            let title = match program.as_str() {
+                "claude" => " Open Claude Code ",
+                "codex" => " Open Codex ",
+                "antigravity" => " Open Antigravity ",
+                _ => " Open build shell ",
+            };
+            (title, lines)
         }
         Mode::ThreadNext(next) => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
@@ -3532,6 +4382,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } | Mode::Approve { .. } => return draw_build(f, app, area),
+        Mode::ConfirmProposal(_) => return draw_proposal_dialog(f, app, area),
         Mode::ConfirmInstall { .. }
         | Mode::PickModel(_)
         | Mode::ConfirmModels(_)
@@ -3761,6 +4612,105 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
+fn draw_task_builder(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::app::BuilderControl;
+    let Mode::TaskBuilder { task, form, index } = &app.mode else {
+        return;
+    };
+    let width = area.width.saturating_sub(2).min(82);
+    let height = area.height.saturating_sub(2).min(22);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = dialog(f, rect, " Change task builder ");
+    let inner = block.inner(rect);
+    let w = usize::from(inner.width);
+    let mut lines = vec![
+        Line::from(Span::styled(fit(&clean(task), w), dim())),
+        Line::raw(""),
+    ];
+    let Some(form) = form else {
+        lines.push(Line::raw("Reading this task’s configured builders…"));
+        f.render_widget(Paragraph::new(lines).block(block), rect);
+        return;
+    };
+    let name = |value: &str| clean(&value.replace('|', " · "));
+    let choice = form.choices.get(*index);
+    let changed = choice.is_some() && choice != form.current.as_ref();
+    let summary = choice
+        .map(|v| format!("Next builder: {}", name(v)))
+        .unwrap_or_default();
+    let mut foot: Vec<Line> = wrap(&summary, w.max(1))
+        .into_iter()
+        .map(Line::raw)
+        .collect();
+    foot.extend(
+        wrap("Changing the builder requires a new approval.", w.max(1))
+            .into_iter()
+            .map(|s| Line::from(Span::styled(s, dim()))),
+    );
+    let rows = usize::from(inner.height).saturating_sub(lines.len() + foot.len() + 3);
+    if rows == 0 || w < 22 {
+        app.drawn_dialog = None;
+        f.render_widget(
+            Paragraph::new("Enlarge the terminal to choose a builder. Esc goes back.").block(block),
+            rect,
+        );
+        return;
+    }
+    let start = index.saturating_sub(rows - 1);
+    for (i, value) in form.choices.iter().enumerate().skip(start).take(rows) {
+        let current = if form.current.as_ref() == Some(value) {
+            " · current"
+        } else {
+            ""
+        };
+        let text = format!(
+            "{} {}{}",
+            if i == *index { ">" } else { " " },
+            name(value),
+            current
+        );
+        let style = if i == *index { selected() } else { ink() };
+        let row = Rect::new(inner.x, inner.y + lines.len() as u16, inner.width, 1);
+        app.areas
+            .builder_controls
+            .push((row, BuilderControl::Choose(i)));
+        lines.push(sheet::band(
+            Line::from(Span::styled(fit(&text, w), style)),
+            w,
+            style,
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.append(&mut foot);
+    lines.push(Line::raw(""));
+    let save = sheet::button("Use builder", "Enter", true);
+    let back = sheet::button("Back", "Esc", false);
+    let y = inner.y + lines.len() as u16;
+    let mut buttons = vec![];
+    if changed {
+        app.areas.builder_controls.push((
+            Rect::new(inner.x, y, save.width() as u16, 1),
+            BuilderControl::Save,
+        ));
+        buttons.extend([save, Span::raw(" ")]);
+    }
+    let x = inner.x + sheet::spans_width(&buttons) as u16;
+    if x + back.width() as u16 <= inner.right() {
+        app.areas.builder_controls.push((
+            Rect::new(x, y, back.width() as u16, 1),
+            BuilderControl::Back,
+        ));
+        buttons.push(back);
+    }
+    lines.push(Line::from(buttons));
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
 /// A dialog's sheet over the screen: what is behind it fades (the scrim), and the dialog is paper with a rounded
 /// outline and its title in it.
 pub fn dialog(f: &mut Frame, r: Rect, title: &str) -> Block<'static> {
@@ -3810,14 +4760,14 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         .min(18);
     let text_w = inner_w.saturating_sub(label_w + 2);
     // Head 2 lines, foot 4 lines: what's left shows the terms.
-    let visible = (h as usize).saturating_sub(2 + 6);
+    let visible = (h as usize).saturating_sub(if approving { 9 } else { 8 });
     let r = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + 1,
         width: w,
         height: h,
     };
-    let block = dialog(f, r, if approving { " Approve " } else { " New task " });
+    let block = dialog(f, r, if approving { " Review plan " } else { " New task " });
     if text_w < 16 || visible < 3 {
         // Too small to show them: no in-terminal Build (or approval).
         *seen_end = false;
@@ -3891,28 +4841,44 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::raw(""));
     if end < body.len() {
         lines.push(Line::from(Span::styled(
-            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
             ink(),
         )));
     } else {
         lines.push(Line::raw(""));
     }
     if approving {
-        if *seen_end {
-            let mut keys = sheet::act("Enter", "Approve", true);
-            keys.push(Span::styled(" (or y)", dim()));
-            lines.push(Line::from(keys));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "Enter approves once you've read to the end.",
-                dim(),
-            )));
+        use crossterm::event::KeyCode;
+        let inner = block.inner(r);
+        app.areas.approval_dialog = r;
+        let mut add_control = |row: usize, span: Span<'static>, key: KeyCode| {
+            let rect = Rect {
+                x: inner.x,
+                y: inner.y.saturating_add(row as u16),
+                width: (span.width() as u16).min(inner.width),
+                height: 1,
+            };
+            if rect.y < inner.bottom() {
+                app.areas.approval_controls.push((rect, key));
+            }
+            Line::from(span)
+        };
+        if end < body.len() {
+            let row = lines.len() - 1;
+            let words = format!("Read more · {} lines left", body.len() - end);
+            lines[row] = add_control(row, sheet::button(&words, "Space", false), KeyCode::PageDown);
         }
-        lines.push(Line::from(sheet::act("w", "Review in the browser", false)));
-        lines.push(Line::from(Span::styled(
-            "Any other key approves nothing.",
-            dim(),
-        )));
+        if *seen_end {
+            lines.push(add_control(lines.len(), sheet::button("Approve build", "Enter", true), KeyCode::Enter));
+        } else {
+            lines.push(Line::from(Span::styled("Read to the end to approve.", dim())));
+        }
+        lines.push(add_control(lines.len(), sheet::button("Open in browser", "w", false), KeyCode::Char('w')));
+        lines.push(add_control(lines.len(), sheet::button("Back", "Esc", false), KeyCode::Esc));
         f.render_widget(Paragraph::new(lines).block(block), r);
         return;
     }
@@ -3929,6 +4895,103 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
     keys.extend(sheet::act("w", "Review in the browser", false));
     lines.push(Line::from(keys));
     lines.push(Line::from(Span::styled("Esc files nothing.", dim())));
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// Confirming a Lead proposal card (`Mode::ConfirmProposal`): every plain-text line drawn whole (scrolled with j/k or
+/// Space), `seen_end` required before Enter/y confirms, and explicit `a` arming when `irreversible` is true.
+fn draw_proposal_dialog(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::ConfirmProposal(pin) = &mut app.mode else {
+        return;
+    };
+    let w = area.width.saturating_sub(4).min(88);
+    let h = area.height.saturating_sub(2);
+    let inner_w = w.saturating_sub(4) as usize;
+    let footer_h = if pin.irreversible { 7 } else { 5 };
+    let visible = (h as usize).saturating_sub(3 + footer_h);
+    let r = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + 1,
+        width: w,
+        height: h,
+    };
+    let title = format!(" {} ", fit(&pin.label, inner_w.saturating_sub(2).max(8)));
+    let block = dialog(f, r, &title);
+    if inner_w < 16 || visible < 2 {
+        pin.seen_end = false;
+        let lines: Vec<Line<'static>> = wrap(
+            "Make the window larger to read this proposal whole before confirming.",
+            inner_w.max(8),
+        )
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, ink())))
+        .collect();
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
+    }
+    let mut body: Vec<Line<'static>> = Vec::new();
+    for (i, line_str) in pin.lines.iter().enumerate() {
+        let style = if i == 0 {
+            ink().add_modifier(Modifier::BOLD)
+        } else {
+            ink()
+        };
+        for piece in wrap(&clean(line_str), inner_w) {
+            body.push(Line::from(Span::styled(piece, style)));
+        }
+    }
+    if body.is_empty() {
+        body.push(Line::from(Span::styled(pin.label.clone(), ink())));
+    }
+    let max_scroll = body.len().saturating_sub(visible);
+    if pin.scroll > max_scroll {
+        pin.scroll = max_scroll;
+    }
+    let end = (pin.scroll + visible).min(body.len());
+    if end >= body.len() {
+        pin.seen_end = true;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled("Confirm exactly this proposal:", dim())),
+        Line::raw(""),
+    ];
+    lines.extend(body[pin.scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if end < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
+            ink(),
+        )));
+    }
+    if pin.irreversible {
+        let check = if pin.armed { "[x]" } else { "[ ]" };
+        let style = if pin.armed { failed() } else { ink() };
+        lines.push(Line::from(Span::styled(
+            format!("{check} I understand this cannot be undone (press a to toggle)"),
+            style,
+        )));
+        lines.push(Line::raw(""));
+    }
+    if pin.seen_end && (!pin.irreversible || pin.armed) {
+        let mut acts = sheet::act("Enter", &pin.action_label, true);
+        acts.push(Span::raw("   "));
+        acts.extend(sheet::act("Esc", "Cancel", false));
+        lines.push(Line::from(acts));
+    } else if !pin.seen_end {
+        lines.push(Line::from(Span::styled(
+            "Read to the end first (j or Space), then press Enter.",
+            dim(),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Press a to arm irreversible confirmation, or Esc to cancel.",
+            dim(),
+        )));
+    }
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
@@ -3989,7 +5052,11 @@ fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::raw(""));
     if end < body.len() {
         lines.push(Line::from(Span::styled(
-            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            format!(
+                "Read {end}/{} · ↓ {} more lines: j or Space reads on",
+                body.len(),
+                body.len() - end
+            ),
             ink(),
         )));
     } else {
@@ -4027,19 +5094,126 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         .steps_here()
         .and_then(crate::app::shell_refusal_of)
         .filter(|_| item.is_task);
-    let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
-        let words = if let Some(why) = &unavailable {
-            why.as_str()
-        } else if item.is_task {
-            "Open build shell: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
-        } else {
-            "This isn't a task. Press w to open it in the browser."
-        };
-        let lines: Vec<Line> = wrap(words, w)
-            .into_iter()
-            .map(|l| Line::from(Span::styled(l, dim())))
-            .collect();
+    let live_run = app.steps_here().and_then(|s| s.live_run).filter(|_| item.is_task);
+    let default_agent = app
+        .steps_here()
+        .map(crate::app::default_agent_program)
+        .unwrap_or("claude");
+    let target_attempt = app
+        .steps_here()
+        .and_then(|s| crate::app::shell_run_of(s).or(s.live_run))
+        .map(|run| app.attempt_words(run));
+    let worker_agent = app
+        .steps_here()
+        .and_then(|s| s.cards.as_ref())
+        .and_then(|cards| cards.iter().find(|c| c.key == "build"))
+        .and_then(|card| card.agent.as_ref())
+        .map(|a| clean(&a.provider));
+    if app.term.as_ref().is_none_or(|p| p.task != item.id) {
+        if let Some(run) = live_run {
+            // Layer 1: Live Worker Console — framed live transcript with direct steering & jump-in controls.
+            let [head, _, frame] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(u16::from(area.height >= 12)),
+                Constraint::Min(1),
+            ])
+            .areas(area);
+            let mut hspans = vec![sheet::badge("Live worker", crate::theme::Role::Running)];
+            if let Some(agent) = worker_agent.filter(|a| !a.is_empty()) {
+                hspans.push(Span::styled(format!(" · {agent}"), ink()));
+            }
+            hspans.push(Span::styled(format!(" · {}", app.attempt_words(run)), dim()));
+            let full_hint = "i live agent · s steer · p pause · x stop";
+            let short_hint = "i live agent";
+            let used = sheet::spans_width(&hspans);
+            let hint = if w >= used + width(full_hint) + 2 {
+                Some(full_hint)
+            } else if w >= used + width(short_hint) + 2 {
+                Some(short_hint)
+            } else {
+                None
+            };
+            if let Some(hint) = hint {
+                hspans.push(Span::raw(" ".repeat(w - used - width(hint))));
+                hspans.push(Span::styled(hint, dim()));
+            }
+            f.render_widget(Paragraph::new(fit_line(Line::from(hspans), w)), head);
+            if frame.height >= 3 && frame.width >= 6 {
+                sheet::outline(f.buffer_mut(), frame, line());
+                let body = Rect {
+                    x: frame.x + 2,
+                    y: frame.y + 1,
+                    width: frame.width.saturating_sub(4),
+                    height: frame.height.saturating_sub(2),
+                };
+                if app.transcript.main.is_empty() {
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            "Waiting for worker output…",
+                            dim(),
+                        ))),
+                        body,
+                    );
+                } else {
+                    draw_transcript_body(f, app, body);
+                }
+            } else {
+                draw_transcript_body(f, app, frame);
+            }
+            return;
+        }
+        if let Some(why) = &unavailable {
+            let lines: Vec<Line> = wrap(why, w)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, dim())))
+                .collect();
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+        if !item.is_task {
+            let lines: Vec<Line> = wrap("This isn't a task. Press w to open it in the browser.", w)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, dim())))
+                .collect();
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+        // Layers 2 & 3: Interactive Terminal Launcher for finished or failed builds.
+        let agent_name = crate::term::program_label(default_agent);
+        let mut lines: Vec<Line<'static>> = vec![];
+        let mut title = vec![Span::styled("Terminal", ink())];
+        if let Some(att) = target_attempt {
+            title.push(Span::styled(format!(" · separate copy at {att}"), dim()));
+        }
+        lines.push(fit_line(Line::from(title), w));
+        lines.push(Line::raw(""));
+        lines.push(fit_line(
+            Line::from(sheet::act(
+                "i",
+                &format!("Live {agent_name} (interactive, with task context)"),
+                true,
+            )),
+            w,
+        ));
+        lines.push(fit_line(
+            Line::from(sheet::act(
+                "t",
+                "Build shell (isolated copy of this build)",
+                false,
+            )),
+            w,
+        ));
+        lines.push(Line::raw(""));
+        for l in wrap(
+            "Press i to jump into a live agent or t for a shell. Ctrl-] comes back here, and the terminal keeps running in Toolroll.",
+            w,
+        ) {
+            lines.push(Line::from(Span::styled(l, dim())));
+        }
         f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+    let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         return;
     };
     let [head, _, frame] = Layout::vertical([
@@ -4049,15 +5223,28 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     ])
     .areas(area);
     let fills = crate::theme::fills();
+    // Said plainly: a separate copy at that build, on its own branch.
+    let place = if pane.branch.is_empty() {
+        format!("separate copy at {attempt}")
+    } else {
+        format!("separate copy at {attempt} on {}", pane.branch)
+    };
+    let fits_back = w >= width(" Typing · Ctrl-] back ") + width(&place) + 3;
     let (state, style) = match &pane.link {
         crate::term::Link::Opening => ("Opening…".to_string(), dim()),
         crate::term::Link::Attaching => ("Attaching…".to_string(), dim()),
-        // The way back is on the key bar; said here only when the key bar is off.
-        crate::term::Link::Live if typing && app.prefs.settings.key_bar => {
-            ("Typing".to_string(), ink().patch(crate::theme::fill()))
-        }
-        crate::term::Link::Live if typing => (
+        // Keep the Ctrl-] escape hint visible on the terminal header whenever the key bar is off or room allows
+        // without clipping the branch name (when key_bar is on, the bottom bar already shows Ctrl-] exclusively).
+        crate::term::Link::Live if typing && !app.prefs.settings.key_bar => (
             "Typing · Ctrl-] goes back".to_string(),
+            ink().patch(crate::theme::fill()),
+        ),
+        crate::term::Link::Live if typing && fits_back => (
+            "Typing · Ctrl-] back".to_string(),
+            ink().patch(crate::theme::fill()),
+        ),
+        crate::term::Link::Live if typing => (
+            "Typing".to_string(),
             ink().patch(crate::theme::fill()),
         ),
         crate::term::Link::Live if app.prefs.settings.key_bar => (
@@ -4078,12 +5265,6 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         ),
         crate::term::Link::Closed(words) => (clean(words), dim()),
     };
-    // Said plainly: a separate copy at that build, on its own branch.
-    let place = if pane.branch.is_empty() {
-        format!("separate copy at {attempt}")
-    } else {
-        format!("separate copy at {attempt} on {}", pane.branch)
-    };
     // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
     let state = if fills && style.bg.is_some() {
         format!(" {state} ")
@@ -4101,6 +5282,9 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         pane.link,
         crate::term::Link::Closed(_) | crate::term::Link::Opening
     ) {
+        if pane.program != "shell" {
+            spans.push(Span::styled(format!(" · {}", pane.program_label()), ink()));
+        }
         spans.push(Span::styled(format!(" · {place}"), dim()));
     }
     f.render_widget(Paragraph::new(fit_line(Line::from(spans), w)), head);

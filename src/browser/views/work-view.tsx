@@ -23,7 +23,7 @@ import { HomeApproval, SELECTION_SETTLE_MS } from "./home-approval.js";
 import { AgentReport } from "./agent-report.js";
 import { ShellOverlay } from "../shell.js";
 import { RestoreAct, TaskBoard, ToolsMenu, usageSummary } from "./tasks-view.js";
-import { WithCode } from "./task-view.js";
+import { TaskVitals, WithCode } from "./task-view.js";
 import "./home.css";
 import "./work.css";
 
@@ -342,10 +342,22 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
     : live ? <div className="k-acts"><KLinkButton variant="primary" label="Watch the work" href={`${item.href}?tab=activity`} data-work-watch="" /></div>
     : view.status?.action ? <div className="k-acts"><KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} {...(read.workspace.sensitive ? { "data-full-load": "" } : {})} /></div>
     : null;
+  const vitalsExtra: { label: string; value: ReactNode }[] = [];
+  if (view.progress?.steps && view.progress.steps.length > 0) {
+    const done = view.progress.steps.filter(one => one.state === "completed").length;
+    vitalsExtra.push({ label: "Steps", value: `${done}/${view.progress.steps.length}` });
+  }
+  if (view.mergeReady != null && !view.scout) {
+    const word = view.mergeReady.answer === "merged" ? "Merged" : view.mergeReady.answer === "yes" ? "Ready" : "Not yet";
+    vitalsExtra.push({ label: "Merge", value: word });
+  } else if (view.ship != null) {
+    vitalsExtra.push({ label: `PR #${view.ship.pr}`, value: view.ship.summary });
+  }
   return <div className="so-work-task" data-work-task={view.id}>
     {kicker}
     <h2 className="so-open-t">{view.title}</h2>
     {state && <p className="so-open-chip" data-work-state><KChip word={state.headline} tone={toneOf(view)} /><span><WithCode text={state.sentence} /></span></p>}
+    <TaskVitals details={view.details} extra={vitalsExtra} className="so-work-vitals" dataAttr="data-work-vitals" />
     {outcome && <p className="so-open-x" data-work-outcome>{outcome}</p>}
     {view.progress?.line && view.progress.line !== state?.sentence && <p className="so-open-x" data-work-progress>{view.progress.line}</p>}
     {caveats.length > CAVEATS_SHOWN
@@ -354,7 +366,7 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
     {checks && <p className={`so-work-checks${checks.problem ? " is-problem" : ""}`} data-work-checks>{checks.detail}</p>}
     {/* What the agent says about its own work, and what a person said (one-workspace S5): before the act. */}
     {result !== null && <AgentReport report={result.agentReport} said={result.youSaid} />}
-    {act}
+    {act !== null && <div className="so-work-act-dock" data-work-act-dock="">{act}</div>}
     {view.plan?.lead && <section className="so-work-sec" aria-label="Plan"><h3 className="so-work-sec-h">Plan</h3><p className="so-open-x">{view.plan.lead}</p></section>}
     {view.progress?.steps && view.progress.steps.length > 0 && <ol className="so-work-steps" aria-label="Steps">{view.progress.steps.map((step, at) =>
       <li key={at} data-step-state={step.state}>{step.title}</li>)}</ol>}

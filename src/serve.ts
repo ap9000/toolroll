@@ -1442,7 +1442,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
     const session = notStarted ? null : found;
     if (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation)) return null;

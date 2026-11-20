@@ -40,11 +40,11 @@ function staleFinding(db: DatabaseSync) {
   db.exec(sql.replace(FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD).replace(/^CREATE TABLE (?:IF NOT EXISTS )?finding/, "CREATE TABLE finding_old"));
   db.exec("INSERT INTO finding_old SELECT * FROM finding; DROP TABLE finding; ALTER TABLE finding_old RENAME TO finding; CREATE INDEX finding_family ON finding(family_root,state); COMMIT");
 }
-test("positive177 migrates to178 without changing identity/history or the database file, and current reopen runs no DDL", () => {
-  expect(SCHEMA_VERSION).toBe(178); expect(UPDATE_SAFE_MIGRATIONS).toContain(178);
+test("positive177 migrates to current schema without changing identity/history or the database file, and current reopen runs no DDL", () => {
+  expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(178); expect(UPDATE_SAFE_MIGRATIONS).toContain(178);
   const file = source177(), before = snapshot(file), inode = statSync(file);
   openStore(file).close(); const after = snapshot(file);
-  expect(after.version?.["version"]).toBe(178); expect(after.catalog).toHaveLength(709); expect(after.rows).toEqual(before.rows);
+  expect(after.version?.["version"]).toBe(SCHEMA_VERSION); expect(after.catalog).toHaveLength(709); expect(after.rows).toEqual(before.rows);
   expect(statSync(file).ino).toBe(inode.ino); expect(statSync(file).dev).toBe(inode.dev);
   openStore(file).close(); expect(snapshot(file)).toEqual(after);
 });
@@ -54,11 +54,11 @@ test.each(["before-index", "after-index"] as const)("interrupted -177 %s resumes
   else expect(() => openStore(file, { migrationStep: step => { if (step === "action-ledger-index") throw Error("interrupted"); } })).toThrow("interrupted");
   const interrupted = snapshot(file); expect(interrupted.version?.["version"]).toBe(-177); expect(interrupted.rows).toEqual(before.rows);
   expect(interrupted.catalog.filter(r => r["name"] === V178_INDEX)).toHaveLength(phase === "after-index" ? 1 : 0);
-  openStore(file).close(); expect(snapshot(file).rows).toEqual(before.rows); expect(snapshot(file).version?.["version"]).toBe(178);
+  openStore(file).close(); expect(snapshot(file).rows).toEqual(before.rows); expect(snapshot(file).version?.["version"]).toBe(SCHEMA_VERSION);
 });
-test("177/-177/178 reject missing, damaged or corrupt identity before epoch or compatibility DDL", () => {
-  for (const version of [177, -177, 178]) for (const damage of ["table", "row", "guard", "metadata"] as const) {
-    const file = source177(); if (version === 178) openStore(file).close();
+test("177/-177/current reject missing, damaged or corrupt identity before epoch or compatibility DDL", () => {
+  for (const version of [177, -177, SCHEMA_VERSION]) for (const damage of ["table", "row", "guard", "metadata"] as const) {
+    const file = source177(); if (version === SCHEMA_VERSION) openStore(file).close();
     const db = new DatabaseSync(file); staleFinding(db);
     if (damage === "table") db.exec("DROP TABLE workspace_identity");
     if (damage === "guard") db.exec("DROP TRIGGER workspace_identity_immutable");
@@ -80,9 +80,9 @@ test("177/-177/178 reject missing, damaged or corrupt identity before epoch or c
     if (damage !== "table") expect(after.prepare("SELECT * FROM workspace_identity").all()).toEqual(identity); after.close();
   }
 });
-test("current178 index damage is refused before compatibility replay; poisoned177 index is never silently replaced", () => {
-  for (const [version, damage] of [[177, "variant"], [-177, "variant"], [178, "missing"], [178, "variant"], [177, "ordinary"], [-177, "ordinary"], [178, "ordinary"]] as const) {
-    const file = source177(); if (version === 178) openStore(file).close();
+test("current index damage is refused before compatibility replay; poisoned177 index is never silently replaced", () => {
+  for (const [version, damage] of [[177, "variant"], [-177, "variant"], [SCHEMA_VERSION, "missing"], [SCHEMA_VERSION, "variant"], [177, "ordinary"], [-177, "ordinary"], [SCHEMA_VERSION, "ordinary"]] as const) {
+    const file = source177(); if (version === SCHEMA_VERSION) openStore(file).close();
     const db = new DatabaseSync(file); staleFinding(db);
     db.exec(`DROP INDEX IF EXISTS ${V178_INDEX}`);
     if (damage === "variant") db.exec(`CREATE INDEX ${V178_INDEX} ON action_ledger(actor,id)`);
@@ -93,8 +93,8 @@ test("current178 index damage is refused before compatibility replay; poisoned17
     expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(readFileSync(file)).toEqual(originalBytes);
   }
 });
-test("-178 is impossible and never changes the source", () => {
-  const file = source177(), db = new DatabaseSync(file); db.exec("UPDATE schema_version SET version=-178"); db.close();
+test("-SCHEMA_VERSION is impossible and never changes the source", () => {
+  const file = source177(), db = new DatabaseSync(file); db.prepare("UPDATE schema_version SET version=?").run(-SCHEMA_VERSION); db.close();
   const before = snapshot(file); expect(() => openStore(file)).toThrow(/mid-flight marker no build ever wrote/); expect(snapshot(file)).toEqual(before);
 });
 test("actual178 plans index no-event action lookup and candidate q uses primary key without dropping strict predicates", () => {
@@ -113,16 +113,16 @@ test("actual178 plans index no-event action lookup and candidate q uses primary 
 });
 
 
-test("current178 valid identity/index with stale findings refuses without creating an impossible epoch", () => {
+test("current valid identity/index with stale findings refuses without creating an impossible epoch", () => {
   const file = source177(); openStore(file).close();
   const raw = new DatabaseSync(file); staleFinding(raw); raw.close(); const before = snapshot(file), steps: string[] = [];
   expect(() => openStore(file, { migrationStep: step => steps.push(step) })).toThrow(/current finding schema is stale/);
-  expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(snapshot(file).version?.["version"]).toBe(178);
+  expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(snapshot(file).version?.["version"]).toBe(SCHEMA_VERSION);
 });
 test.each([177, -177])("valid %s source keeps legacy finding replay without changing retained identity/authority", version => {
   const file = source177(), raw = new DatabaseSync(file); staleFinding(raw); raw.prepare("UPDATE schema_version SET version=?").run(version); raw.close();
   const before = snapshot(file); openStore(file).close(); const after = snapshot(file);
-  expect(after.version?.["version"]).toBe(178); expect(after.rows).toEqual(before.rows);
+  expect(after.version?.["version"]).toBe(SCHEMA_VERSION); expect(after.rows).toEqual(before.rows);
   const db = new DatabaseSync(file, { readOnly: true }); expect(String(db.prepare("SELECT sql FROM sqlite_master WHERE name='finding'").get()!["sql"])).toContain(FINDING_SOURCES); db.close();
 });
 
@@ -131,7 +131,7 @@ test.each([177, -177])("exact partial index on %s resumes without changing ident
   const file = source177(), raw = new DatabaseSync(file);
   raw.exec(V178_SCHEMA); raw.prepare("UPDATE schema_version SET version=?").run(version); raw.close();
   const before = snapshot(file); openStore(file).close(); const after = snapshot(file);
-  expect(after.version?.["version"]).toBe(178); expect(after.rows).toEqual(before.rows);
+  expect(after.version?.["version"]).toBe(SCHEMA_VERSION); expect(after.rows).toEqual(before.rows);
   const db = new DatabaseSync(file, { readOnly: true });
   expect(db.prepare("PRAGMA index_list('action_ledger')").all().find(row => row["name"] === V178_INDEX)).toMatchObject({ partial: 1, unique: 0, origin: "c" });
   expect(db.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(V178_INDEX)?.["sql"]).toContain("WHERE action = 'checks recovery held'"); db.close();
