@@ -22,6 +22,7 @@ const INVENTORY = [
   ["publication-grant-verifier", "store.ts:revokePublicationGrant/publish.ts:permitsPublication", "publication_grant", true],
   ["release-publish-ledger-hold", "release-auto.ts:holdAutoPublish/autoPublishHeld", "action_ledger (latest held/allowed by id for nonnull task ids)", true],
   ["intake-grant-fresh-command-admission", "store.ts:clearIntakeGrant/operate.ts:intakeCommand", "intake_grant", true],
+  ["flexible-snapshot-sign-in-admission", "flexible-sign-in.ts verifier semantics (private snapshot SQL only)", "flexible_sign_in/flexible_sign_in_epoch", true],
   ["durable-browser-sessions", "server/guards.ts/session.ts", "web_session", true],
   ["local-owner-and-memory", "local-owner.ts/server/guards.ts", "local_mode/in-memory nonces and links", false],
   ["password-and-saved-login", "scope.ts/login-secrets.ts", "approver/protected login files", false],
@@ -205,6 +206,35 @@ export function retireCentralRecoveryStage(handle: RecoveryStageHandle): Recover
       for (const row of stage.handle.prepare("SELECT DISTINCT repo FROM intake_grant WHERE revoked_at IS NULL").all()) {
         if (!stage.clearIntakeGrant(String(row["repo"]), by, now)) throw Error("Intake grant retirement failed");
       }
+      // Snapshot admission only. Counter+1 can collide with unseen post-backup calls; no old-plane safety claim.
+      const people = stage.handle.prepare(`SELECT person FROM flexible_sign_in UNION SELECT person FROM flexible_sign_in_epoch
+        UNION SELECT created_by AS person FROM flexible_thread UNION SELECT owner AS person FROM thread_turn
+        UNION SELECT owner AS person FROM flexible_interactive_session
+        UNION SELECT sign_in_person AS person FROM thread_relay_call WHERE sign_in_person IS NOT NULL
+        UNION SELECT sign_in_person AS person FROM thread_relay_pending WHERE sign_in_person IS NOT NULL`).all();
+      const epochs = new Map<string, number>();
+      for (const row of people) {
+        const person = row["person"];
+        if (typeof person !== "string" || person.length < 1 || person.length > 200) throw Error("Unknown snapshot sign-in identity");
+        const old = stage.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person = ?").get(person)?.["epoch"] ?? 0;
+        if (typeof old !== "number" || !Number.isSafeInteger(old) || old < 0 || old >= Number.MAX_SAFE_INTEGER) throw Error("Unsafe snapshot epoch");
+        epochs.set(person, old);
+      }
+      const captured = stage.handle.prepare(`SELECT owner AS person, sign_in_epoch AS epoch FROM flexible_interactive_session
+        UNION ALL SELECT sign_in_person AS person, sign_in_epoch AS epoch FROM thread_relay_call WHERE sign_in_epoch IS NOT NULL
+        UNION ALL SELECT sign_in_person AS person, sign_in_epoch AS epoch FROM thread_relay_pending WHERE sign_in_epoch IS NOT NULL`).all();
+      for (const row of captured) {
+        const person = row["person"], epoch = row["epoch"];
+        if (typeof person !== "string" || !epochs.has(person) || typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0 || epoch > epochs.get(person)!) throw Error("Snapshot captured epoch disagrees");
+      }
+      // All Flexible validation precedes its writes; leave turns/launches/answers/stop requirements exactly as found.
+      counts.set("flexible-snapshot-sign-in-admission", count(stage, "SELECT count(*) AS n FROM flexible_sign_in WHERE state IN ('active','staged')"));
+      stage.handle.prepare("UPDATE flexible_sign_in SET state='retiring', save_op=NULL, retire_after=NULL, retired_at=? WHERE state IN ('active','staged')").run(now.toISOString());
+      for (const [person, old] of epochs) {
+        stage.handle.prepare("INSERT INTO flexible_sign_in_epoch (person,epoch) VALUES (?,?) ON CONFLICT(person) DO UPDATE SET epoch=excluded.epoch").run(person, old + 1);
+        if (stage.handle.prepare("SELECT epoch FROM flexible_sign_in_epoch WHERE person=?").get(person)?.["epoch"] !== old + 1) throw Error("Snapshot epoch fence failed");
+      }
+      if (count(stage, "SELECT count(*) AS n FROM flexible_sign_in WHERE state IN ('active','staged')") !== 0) throw Error("Snapshot sign-in admission remains live");
       const sessions = stage.webSessions(null); counts.set("durable-browser-sessions", sessions.length);
       for (const session of sessions) stage.dropWebSession(session.idHash);
       if (count(stage, "SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL") !== 0

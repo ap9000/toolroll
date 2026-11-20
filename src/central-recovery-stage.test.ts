@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { runOperate, EXIT } from "./operate.js";
+import { flexibleSignInBilling, signInForTurn, signInStandsAt, signInHoldsFor, signInForInteractiveStands, signInEpochOf } from "./flexible-sign-in.js";
+import { onRelayCancel } from "./flexible-relay-cancel.js";
 import { Store, openStore } from "./store.js";
 import { addApprover } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
@@ -23,6 +25,11 @@ import { permitsPublication, publishPass, type PublishExec } from "./publish.js"
 import { PersistentSessions, FULL_SESSION } from "./server/session.js";
 import { MAX_STAGE_BYTES, copyCentralRecoveryStage, retireCentralRecoveryStage, closeCentralRecoveryStage, type RecoveryStageHandle } from "./central-recovery-stage.js";
 
+const signInSecretCalls = vi.hoisted(() => ({ reads: 0, deletes: 0 }));
+vi.mock("./tool-secret-store.js", async importOriginal => ({ ...await importOriginal<typeof import("./tool-secret-store.js")>(),
+  readSignInSecret: () => { signInSecretCalls.reads += 1; throw Error("Forbidden snapshot secret read"); },
+  removeSignInSecret: () => { signInSecretCalls.deletes += 1; throw Error("Forbidden snapshot secret deletion"); },
+}));
 const copyFault = vi.hoisted(() => ({ afterRead: undefined as ((path: unknown) => void) | undefined, beforeOpen: undefined as ((path: unknown, flags: unknown) => void) | undefined }));
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -34,7 +41,7 @@ vi.mock("node:fs", async importOriginal => {
 });
 let root: string | undefined;
 const handles: RecoveryStageHandle[] = [];
-afterEach(() => { copyFault.afterRead = undefined; copyFault.beforeOpen = undefined; vi.restoreAllMocks(); for (const h of handles.splice(0)) closeCentralRecoveryStage(h); if (root !== undefined) fs.rmSync(root, { recursive: true, force: true }); root = undefined; });
+afterEach(() => { signInSecretCalls.reads = 0; signInSecretCalls.deletes = 0; copyFault.afterRead = undefined; copyFault.beforeOpen = undefined; vi.restoreAllMocks(); for (const h of handles.splice(0)) closeCentralRecoveryStage(h); if (root !== undefined) fs.rmSync(root, { recursive: true, force: true }); root = undefined; });
 function fixture(prepare?: (store: Store, now: Date) => void) {
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "so-central-stage-"))); fs.chmodSync(root, 0o700);
   const source = join(root, "backup.db"), store = openStore(source), now = new Date();
@@ -66,7 +73,7 @@ test("private copied retirement denies actual API/OAuth/code/refresh/cookie/lead
   const f = fixture(), original = hash(f.source), sourceStat = fs.statSync(f.source), h = copy(f.source);
   expect(fs.statSync(h.copyPath).ino).not.toBe(sourceStat.ino);
   const report = retireCentralRecoveryStage(h); expect(report).toMatchObject({ outcome: "retired-partial", schemaSupported: true, complete: false, recoveryReady: false });
-  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(8);
+  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(9);
   expect(report.entries.filter(e => e.status === "unsupported").length).toBeGreaterThan(0);
   expect(JSON.stringify(report)).not.toContain(f.api.hash); expect(JSON.stringify(report)).not.toContain(f.api.token);
   expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true });
@@ -334,4 +341,82 @@ test("post-intake failure restores original live grant standing and imported pro
   const stage = openStore(h.copyPath); expect(intakeHistory(stage)).toEqual(history!); expect(stage.liveIntakeGrant(root!)).not.toBeNull();
   expect(stage.liveIntakeGrant(join(root!, "other-project"))).not.toBeNull(); expect(reproveRemote(stage, f.principal, f.now).ok).toBe(true);
   stage.close(); expect(hash(f.source)).toBe(original);
+});
+
+
+const snapshotIds = { thread: "1".repeat(32), turn: "2".repeat(32), interactiveThread: "3".repeat(32), launch: "4".repeat(32), session: "5".repeat(32), active: "6".repeat(32) };
+function flexibleSnapshot(store: Store, now: Date, captured = 7) {
+  const generation = store.accountOf("synthetic")!.generation, at = now.toISOString(), i = snapshotIds;
+  for (const [suffix, state] of [[i.active, "active"], ["7".repeat(32), "staged"], ["8".repeat(32), "retiring"]]) {
+    store.handle.prepare(`INSERT INTO flexible_sign_in (person,account_generation,generation,kind,state,save_op,proof,staged_at,retire_after,activated_at,retired_at)
+      VALUES ('synthetic',?,?,'setup-token',?,?,'password-now',?,?,?,?)`).run(generation, suffix!, state!, state === "staged" ? "a".repeat(32) : null, at, state === "staged" ? at : null, state === "active" ? at : null, state === "retiring" ? at : null);
+  }
+  store.handle.prepare("INSERT INTO flexible_sign_in_epoch(person,epoch) VALUES ('synthetic',7),('epoch-only',3)").run();
+  for (const thread of [i.thread, i.interactiveThread]) {
+    store.handle.prepare("INSERT INTO flexible_thread (id,repo,base_sha,keep_ref,folder,created_by,created_at,state) VALUES (?,?,?, ?,?,'synthetic',?,'preparing')").run(thread, root!, "1".repeat(40), `refs/toolroll/threads/${thread}/base`, join(root!,thread), at);
+    if (thread === i.interactiveThread) store.handle.prepare("UPDATE flexible_thread_runtime SET runtime='interactive',chosen=1 WHERE thread=?").run(thread);
+    store.handle.prepare("UPDATE flexible_thread SET state='ready' WHERE id=?").run(thread);
+  }
+  store.handle.prepare(`INSERT INTO thread_turn (id,thread,seq,repo,owner,owner_generation,terms_id,terms_digest,level,provider,model,billing,request_key,holder,admitted_at,utc_day,status,started_at)
+    VALUES (?,?,1,?,'synthetic',?,1,?,'full','claude','synthetic','subscription','request','holder',?,?,'running',?)`).run(i.turn,i.thread,root!,generation,"a".repeat(32),at,at.slice(0,10),at);
+  store.handle.prepare(`INSERT INTO flexible_thread_launch (id,thread,provider,level,fence_digest,holder,host,marker,state,started_at)
+    VALUES (?,?,'claude','full',?,'holder','synthetic',?,'spawning',?)`).run(i.launch,i.interactiveThread,"a".repeat(32),"b".repeat(32),at);
+  store.handle.prepare(`INSERT INTO flexible_interactive_session (id,thread,launch,holder,owner,account_generation,runtime,provider,billing,terms_id,terms_digest,start_key,message,level,model,helper_models,fence_digest,network_digest,sign_in_epoch,state,prepared_at)
+    VALUES (?,?,?,'holder','synthetic',?,'interactive','claude','subscription',1,?,?,'Synthetic authority','full','synthetic','[]',?,?,?,'prepared',?)`).run(i.session,i.interactiveThread,i.launch,generation,"a".repeat(32),"b".repeat(32),"a".repeat(32),"c".repeat(32),captured,at);
+  store.handle.prepare("INSERT INTO flexible_stop_request(launch,thread,reason,requested_at) VALUES (?,?,?,?)").run("e".repeat(32),i.thread,"Existing unresolved stop",at);
+  store.handle.prepare(`INSERT INTO thread_relay_pending(thread,turn,launch,holder,relay,route,reserved_at,sign_in_person,sign_in_generation,sign_in_epoch)
+    VALUES (?,?,?,'holder',?,'messages',?,'synthetic',?,?)`).run(i.thread,i.turn,i.launch,"d".repeat(32),at,i.active,captured);
+  store.handle.prepare(`INSERT INTO thread_relay_call(thread,turn,launch,upstream,at,ended_at,route,streamed,status,cost_basis,sign_in_person,sign_in_generation,sign_in_epoch)
+    VALUES (?,?,?,'claude',?,?,'messages',0,'incomplete','unknown','synthetic',?,?)`).run(i.thread,i.turn,i.launch,at,at,i.active,captured);
+  return generation;
+}
+const flexibleCustody = (store: Store) => Object.fromEntries(["thread_turn","flexible_thread","flexible_thread_launch","flexible_interactive_session","flexible_stop_request","thread_relay_call","thread_relay_pending","thread_decision","thread_request","thread_answer"].map(table => {
+  const exists = store.handle.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+  return [table, exists === undefined ? null : store.handle.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()];
+}));
+
+test("snapshot sign-in rows and captured epochs lose admission without changing custody or issuing cancellation", () => {
+  let generation = 0, custody: ReturnType<typeof flexibleCustody>, retiring: Record<string, unknown> | undefined;
+  const f = fixture((s,now) => { generation=flexibleSnapshot(s,now); custody=flexibleCustody(s); retiring=s.handle.prepare("SELECT * FROM flexible_sign_in WHERE state='retiring'").get();
+    expect(flexibleSignInBilling(s,{name:"synthetic",generation}).ok).toBe(true);
+    expect(signInStandsAt(s,{thread:snapshotIds.thread,turn:snapshotIds.turn,person:"synthetic",generation:snapshotIds.active})).toBeNull();
+    expect(signInHoldsFor(s,{turn:snapshotIds.turn,person:"synthetic",epoch:7})).toBe(true); expect(signInForInteractiveStands(s,snapshotIds.session)).toBe(true);
+  });
+  const original=hash(f.source),h=copy(f.source), events: unknown[]=[];
+  const unlisten=onRelayCancel(event=>events.push(event),()=>events.push("failure")); let report;
+  try { report=retireCentralRecoveryStage(h); } finally { unlisten(); }
+  expect(events).toEqual([]); expect(report.entries.find(e=>e.id==='flexible-snapshot-sign-in-admission')).toMatchObject({status:'retired',affected:2,remaining:0});
+  expect(report.entries.find(e=>e.id==='flexible-authority')?.status).toBe('unsupported'); expect(report).toMatchObject({complete:false,recoveryReady:false});
+  const retiredBytes=hash(h.copyPath); expect(retireCentralRecoveryStage(h)).toEqual({...report,repeated:true}); expect(hash(h.copyPath)).toBe(retiredBytes);
+  const s=openStore(h.copyPath); expect(flexibleCustody(s)).toEqual(custody!); expect(s.handle.prepare("SELECT * FROM flexible_sign_in WHERE generation=?").get("8".repeat(32))).toEqual(retiring);
+  expect(signInEpochOf(s,'synthetic')).toBe(8); expect(signInEpochOf(s,'epoch-only')).toBe(4);
+  expect(flexibleSignInBilling(s,{name:'synthetic',generation})).toEqual({ok:false,reason:'no-sign-in'});
+  expect(signInStandsAt(s,{thread:snapshotIds.thread,turn:snapshotIds.turn,person:'synthetic',generation:snapshotIds.active})).toBe('no-sign-in');
+  expect(signInForTurn(s,join(root!,'never-read-secrets'),{owner:'synthetic',ownerGeneration:generation})).toEqual({ok:false,reason:'no-sign-in'});
+  expect(signInForInteractiveStands(s,snapshotIds.session)).toBe(false); expect(signInSecretCalls).toEqual({reads:0,deletes:0});
+  // Fresh synthetic DB standing does not revive captured snapshot7; unseen post-backup8 COLLIDES and is unsupported.
+  const at=f.now.toISOString(); s.handle.prepare("INSERT INTO flexible_sign_in(person,account_generation,generation,kind,state,proof,staged_at,activated_at) VALUES ('synthetic',?,?,'setup-token','active','password-now',?,?)").run(generation,"9".repeat(32),at,at);
+  expect(signInHoldsFor(s,{turn:snapshotIds.turn,person:'synthetic',epoch:7})).toBe(false);
+  expect(signInHoldsFor(s,{turn:snapshotIds.turn,person:'synthetic',epoch:8})).toBe(true); // Explicit recovery limitation, never claimed fenced.
+  expect(flexibleCustody(s)).toEqual(custody!); s.close(); expect(hash(f.source)).toBe(original);
+});
+
+test.each(['future-captured','overflow','unsafe-captured','missing-counter'] as const)("snapshot sign-in %s refuses before Flexible writes and rolls back prior retirements", kind => {
+  let before: unknown;
+  const f=fixture((s,now)=>{ flexibleSnapshot(s,now,kind==='future-captured'?8:kind==='unsafe-captured'?7.5:7);
+    if(kind==='missing-counter') s.handle.prepare("DELETE FROM flexible_sign_in_epoch WHERE person='synthetic'").run();
+    if(kind==='overflow') s.handle.prepare("UPDATE flexible_sign_in_epoch SET epoch=? WHERE person='synthetic'").run(Number.MAX_SAFE_INTEGER);
+    before={rows:s.handle.prepare("SELECT * FROM flexible_sign_in ORDER BY generation").all(),epochs:s.handle.prepare("SELECT * FROM flexible_sign_in_epoch ORDER BY person").all(),custody:flexibleCustody(s)};
+  });
+  const original=hash(f.source),h=copy(f.source); expect(retireCentralRecoveryStage(h).outcome).toBe('failed');
+  const s=openStore(h.copyPath); expect({rows:s.handle.prepare("SELECT * FROM flexible_sign_in ORDER BY generation").all(),epochs:s.handle.prepare("SELECT * FROM flexible_sign_in_epoch ORDER BY person").all(),custody:flexibleCustody(s)}).toEqual(before);
+  expect(reproveRemote(s,f.principal,f.now).ok).toBe(true); s.close(); expect(hash(f.source)).toBe(original);
+});
+
+test("late failure rolls back snapshot sign-in changes and epochs without custody edits",()=>{
+  let before: unknown; const f=fixture((s,now)=>{flexibleSnapshot(s,now);before={rows:s.handle.prepare("SELECT * FROM flexible_sign_in ORDER BY generation").all(),epochs:s.handle.prepare("SELECT * FROM flexible_sign_in_epoch ORDER BY person").all(),custody:flexibleCustody(s)};});
+  const original=hash(f.source),h=copy(f.source);vi.spyOn(Store.prototype,'dropWebSession').mockImplementation(()=>{throw Error('synthetic post-signin failure');});
+  expect(retireCentralRecoveryStage(h).outcome).toBe('failed');vi.restoreAllMocks();const s=openStore(h.copyPath);
+  expect({rows:s.handle.prepare("SELECT * FROM flexible_sign_in ORDER BY generation").all(),epochs:s.handle.prepare("SELECT * FROM flexible_sign_in_epoch ORDER BY person").all(),custody:flexibleCustody(s)}).toEqual(before);
+  s.close();expect(hash(f.source)).toBe(original);
 });
