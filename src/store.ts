@@ -148,7 +148,7 @@ import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_C
 export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
-import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
+import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, recordActionWhole, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
@@ -166,7 +166,7 @@ import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, D
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
-import { configBase, envValue, namedPath } from "./names.js";
+import { configBase, envValue, namedPath, headWithin } from "./names.js";
 import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
@@ -10227,7 +10227,9 @@ export class Store {
         now,
       );
     }
-    const repoIntents = `publication IN (
+    const frozenIntents = this.db.prepare("SELECT 1 FROM action_ledger WHERE action=? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined ? []
+      : this.db.prepare("SELECT i.id,i.publication FROM merge_intent i JOIN publication p ON p.id=i.publication JOIN run r ON r.id=p.run JOIN task_ref t ON t.id=r.task_ref WHERE i.state IN ('waiting-human','pending','claimed') AND t.repo=?").all(repo).filter(row => mergeIntentRecoveryHeld(this, Number(row["publication"]))).map(row => Number(row["id"]));
+    const repoIntents = `id NOT IN (SELECT value FROM json_each('${JSON.stringify(frozenIntents)}')) AND publication IN (
                 SELECT publication.id FROM publication
                   JOIN run ON run.id = publication.run
                   JOIN task_ref ON task_ref.id = run.task_ref
@@ -10825,6 +10827,7 @@ export class Store {
   }
 
   recordAction(entry: Omit<LedgerEntry, "id" | "detail"> & { detail?: string | null }): number {
+    if (entry.action === MERGE_FIRING_ADMITTED) throw new Error("Merge firing admission is written only by the firing transaction");
     const detail = entry.detail == null ? null : entry.detail.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 300);
     const row = this.db.prepare("INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (?,?,?,?,?,?,?,?,?)")
       .run(entry.at, entry.actor, entry.repo, entry.taskId, entry.runId, entry.action, entry.outcome, entry.source, detail);
@@ -19350,7 +19353,10 @@ export class Store {
    * stalled older response can neither overwrite nor authorize.
    */
   reserveObservation(githubRepo: string, prNumber: number): number {
-    return this.transact(() => {
+    const key = `${githubRepo}:${prNumber}`;
+    mergeObservationReservations.get(this)?.delete(key);
+    const eligible = (this.handle as Database & { isTransaction?: unknown }).isTransaction === false;
+    const generation = this.transact(() => {
       const row = this.db
         .prepare("SELECT generation FROM ci_observation WHERE github_repo = ? AND pr_number = ?")
         .get(githubRepo, prNumber);
@@ -19368,6 +19374,15 @@ export class Store {
       }
       return generation;
     });
+    if (eligible && Number.isSafeInteger(generation) && generation > 0) {
+      const dataVersion = this.db.prepare("PRAGMA data_version").get()?.["data_version"];
+      if (typeof dataVersion === "number" && Number.isSafeInteger(dataVersion) && dataVersion >= 0) {
+        let reservations = mergeObservationReservations.get(this);
+        if (reservations === undefined) { reservations = new Map(); mergeObservationReservations.set(this, reservations); }
+        reservations.set(key, { generation, dataVersion, scope: mergeObservationScope(this, githubRepo, prNumber), writeStamp: mergeObservationWriteStamp(this) });
+      }
+    }
+    return generation;
   }
 
   /**
@@ -19426,8 +19441,9 @@ export class Store {
   createMergeIntent(
     intent: { publication: number; repo: string; grantTermsHash: string; headSha: string; method: "squash" | "merge" | "rebase"; deleteBranch: boolean },
     now: Date,
-  ): void {
-    this.transact(() => {
+  ): "recovery-held" | void {
+    return this.transact(() => {
+      if (mergeIntentRecoveryHeld(this, intent.publication)) return "recovery-held" as const;
       // The nightly check of main is a check only (release-once.md, part 3): nothing merges it.
       if (nightlyPublication(this, intent.publication)) throw new Error(NIGHTLY_CHECK_ONLY);
       // A release's result merges only through its coordinator (release-once.md; security review): no intent for it.
@@ -19470,8 +19486,8 @@ export class Store {
    */
   claimMergeIntent(id: number, by: string, leaseMs: number, now: Date): { generation: number } | null {
     return this.transact(() => {
-      const row = this.db.prepare("SELECT state, claimed_until, generation FROM merge_intent WHERE id = ?").get(id);
-      if (row === undefined) return null;
+      const row = this.db.prepare("SELECT state, claimed_until, generation, publication FROM merge_intent WHERE id = ?").get(id);
+      if (row === undefined || mergeIntentRecoveryHeld(this, Number(row["publication"]))) return null;
       const state = String(row["state"]);
       const expired = row["claimed_until"] !== null && String(row["claimed_until"]) <= now.toISOString();
       if (state !== "pending" && !(state === "claimed" && expired)) return null;
@@ -19498,6 +19514,12 @@ export class Store {
     now: Date,
     detail: { error?: string | null; receipt?: string | null; countAttempt?: boolean; from?: "claimed" | "firing" | "nonterminal"; bumpGeneration?: boolean } = {},
   ): boolean {
+    return this.transact(() => {
+    const observed = validMergeIntentObservation(this, id, generation);
+    const current = this.db.prepare("SELECT publication, state, generation FROM merge_intent WHERE id=?").get(id);
+    if (current === undefined) return false;
+    if (mergeIntentRecoveryHeld(this, Number(current["publication"])) &&
+        (state !== "merged" || !observed)) return false;
     const from = detail.from ?? "nonterminal";
     const { changes } = this.db
       .prepare(
@@ -19522,16 +19544,18 @@ export class Store {
         from, from,
       );
     return Number(changes) === 1;
+    });
   }
 
   /** The per-merge password ceremony's write (E1: waiting-human → pending
    * by the EXACT-INTENT ceremony): the caller has authenticated and shown
    * the operator the head they are authorizing. Basis becomes 'human' —
    * this signature covers this one merge and nothing else. */
-  authorizeMergeIntent(id: number, expectedHeadSha: string, by: string, now: Date): { ok: true } | { ok: false; reason: "not-waiting" | "head-moved" } {
+  authorizeMergeIntent(id: number, expectedHeadSha: string, by: string, now: Date): { ok: true } | { ok: false; reason: "not-waiting" | "head-moved" | "recovery-held" } {
     void by;
     void now;
     return this.transact(() => {
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, reason: "recovery-held" as const };
       const row = this.db.prepare("SELECT state, head_sha FROM merge_intent WHERE id = ?").get(id);
       if (row === undefined || String(row["state"]) !== "waiting-human") return { ok: false as const, reason: "not-waiting" as const };
       if (String(row["head_sha"]) !== expectedHeadSha) return { ok: false as const, reason: "head-moved" as const };
@@ -19562,11 +19586,12 @@ export class Store {
     generation: number,
     proof: { repo: string; headSha: string; liveGrantTermsHash: string | null; graceMs: number },
     now: Date,
-  ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human"; why: string } {
-    return this.transact(() => {
+  ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human" | "recovery-held"; why: string } {
+    return this.transact(() => this.savepoint(() => {
       const row = this.db
         .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest, publication FROM merge_intent WHERE id = ?")
         .get(id);
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, outcome: "recovery-held" as const, why: MERGE_RECOVERY_HELD };
       // The shared merge authority (release-once.md, part 3): a nightly check of main never merges, by any road.
       if (row !== undefined && nightlyPublication(this, Number(row["publication"]))) {
         this.settleMergeIntent(id, generation, "refused", now, { error: NIGHTLY_CHECK_ONLY, from: "claimed" });
@@ -19598,8 +19623,14 @@ export class Store {
       if (proof.liveGrantTermsHash === null || proof.liveGrantTermsHash !== String(row["grant_terms_hash"])) {
         return supersede("the grant was revoked or its merge terms changed since this intent was written");
       }
+      const admission = mergeAdmissionScope(this, id, generation, null);
+      if (admission === null || proof.repo !== admission.repo || proof.headSha !== admission.head || proof.liveGrantTermsHash !== admission.grantHash) {
+        return { ok: false as const, outcome: "raced" as const, why: "the actual publication and live merge grant no longer bind this claim" };
+      }
+      const prior = readMergeAdmissionCandidates(this, admission);
+      if (prior === null || prior.some(c => c.g === generation)) return { ok: false as const, outcome: "raced" as const, why: "the firing admission history is inconsistent" };
       const basis = String(row["authority_basis"]);
-      const mode = this.activeMode(proof.repo, now);
+      const mode = this.activeMode(admission.repo, now);
       if (basis === "mode") {
         let publication: unknown;
         try {
@@ -19625,19 +19656,20 @@ export class Store {
             WHERE id = ? AND state = 'claimed' AND generation = ?`,
         )
         .run(now.toISOString(), new Date(now.getTime() + proof.graceMs).toISOString(), id, generation);
-      return Number(changes) === 1
-        ? { ok: true as const }
-        : { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
-    });
+      if (Number(changes) !== 1) return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
+      writeMergeAdmission(this, admission, now);
+      return { ok: true as const };
+    }));
   }
 
   /** F1: an OPEN same-head PR under a STALE firing row is never
    * auto-retried — this authenticated recovery ceremony re-arms it
    * through the full firing CAS, generation bumped so the dead owner's
    * late writes lose. Refuses while the deadline has not passed. */
-  refireMergeIntent(id: number, by: string, now: Date): { ok: true } | { ok: false; reason: "not-firing" | "not-stale" } {
+  refireMergeIntent(id: number, by: string, now: Date): { ok: true } | { ok: false; reason: "not-firing" | "not-stale" | "recovery-held" } {
     void by;
     return this.transact(() => {
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, reason: "recovery-held" as const };
       const row = this.db.prepare("SELECT state, firing_deadline FROM merge_intent WHERE id = ?").get(id);
       if (row === undefined || String(row["state"]) !== "firing") return { ok: false as const, reason: "not-firing" as const };
       if (String(row["firing_deadline"]) > now.toISOString()) return { ok: false as const, reason: "not-stale" as const };
@@ -19653,11 +19685,14 @@ export class Store {
   }
 
   /** Refused intents rearm to pending after the operator fixed the cause. */
-  rearmMergeIntent(publication: number): boolean {
+  rearmMergeIntent(publication: number): boolean | "recovery-held" {
+    return this.transact(() => {
+    if (mergeIntentRecoveryHeld(this, publication)) return "recovery-held" as const;
     const { changes } = this.db
       .prepare("UPDATE merge_intent SET state = 'pending', last_error = NULL WHERE publication = ? AND state = 'refused'")
       .run(publication);
     return Number(changes) > 0;
+    });
   }
 
   mergeIntentFor(publication: number): { id: number; state: string; headSha: string; generation: number; attempts: number; lastError: string | null; firingDeadline: string | null } | null {
@@ -28109,4 +28144,157 @@ function unresolvedRecoveryCheckFamily(store: Store, refs: readonly number[]): s
     for (const member of evidence.familyRefs) covered.add(member);
   }
   return null;
+}
+
+/** Separate from historical check outcomes; no recovery evidence is permission. */
+export const MERGE_RECOVERY_HELD = "Checks are on hold after recovery. Earlier execution is unverified.";
+export function mergeIntentRecoveryHeld(store: Store, publicationId: number): boolean {
+  try {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action=? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return false;
+  const p = store.handle.prepare("SELECT task_ref, run FROM publication WHERE id=?").get(publicationId);
+  const run = p === undefined ? undefined : store.handle.prepare("SELECT task_ref FROM run WHERE id=?").get(p["run"] as number);
+  if (p === undefined || run === undefined || run["task_ref"] !== p["task_ref"]) return true;
+  return readCheckRecoveryHoldsForTaskRef(store, Number(p["task_ref"])).kind !== "no-evidence";
+  } catch { return true; }
+}
+function mergeIntentRecoveryHeldById(store: Store, id: number): boolean {
+  const row = store.handle.prepare("SELECT publication FROM merge_intent WHERE id=?").get(id);
+  return mergeIntentRecoveryHeld(store, Number(row?.["publication"]));
+}
+/** Actual returned fields; these values are checked, never asserted as permission flags. */
+export type MergeObservationFacts = { githubRepo: string; prNumber: number; generation: number; head: string; base: string; url: string; number: number; state: string };
+const mergeObservationReservations = new WeakMap<Store, Map<string, { generation: number; dataVersion: number; scope: string | null; writeStamp: string | null }>>();
+const activeMergeObservations = new WeakMap<Store, { id: number; generation: number; state: string; facts: MergeObservationFacts }>();
+/** Result-only compound operation. No private authority survives its synchronous frame or rollback. */
+export function settleObservedMergeIntent(store: Store, publication: number, facts: MergeObservationFacts, now: Date, rollup?: unknown): { won: boolean; settled: boolean; resolved: number } {
+  const key = `${facts.githubRepo}:${facts.prNumber}`;
+  const eligibility = mergeObservationReservations.get(store)?.get(key);
+  // Consume before any write, even on nested refusal or rollback. A numeric generation is never terminal authority.
+  mergeObservationReservations.get(store)?.delete(key);
+  if (!Number.isSafeInteger(facts.generation) || facts.generation <= 0 || !Number.isSafeInteger(facts.prNumber) || facts.prNumber <= 0 || (facts.state !== "MERGED" && facts.state !== "CLOSED") || (store.handle as Database & { isTransaction?: unknown }).isTransaction !== false || eligibility === undefined || eligibility.generation !== facts.generation
+    || eligibility.dataVersion !== store.handle.prepare("PRAGMA data_version").get()?.["data_version"]) return { won: false, settled: false, resolved: 0 };
+  try {
+    return store.transact(() => {
+      if (eligibility.dataVersion !== store.handle.prepare("PRAGMA data_version").get()?.["data_version"] || eligibility.writeStamp === null || eligibility.writeStamp !== mergeObservationWriteStamp(store) || eligibility.scope === null || eligibility.scope !== mergeObservationScope(store, facts.githubRepo, facts.prNumber)) return { won: false, settled: false, resolved: 0 };
+      const p = store.handle.prepare("SELECT github_repo,pr_number FROM publication WHERE id=?").get(publication);
+      if (p?.["github_repo"] !== facts.githubRepo || p["pr_number"] !== facts.prNumber || facts.number !== facts.prNumber || facts.url !== `https://github.com/${facts.githubRepo}/pull/${facts.prNumber}`) return { won: false, settled: false, resolved: 0 };
+      if (!store.settleObservation({ githubRepo: facts.githubRepo, prNumber: facts.prNumber, generation: facts.generation, headSha: facts.head, state: "none" }, now).won) return { won: false, settled: false, resolved: 0 };
+      if (rollup !== undefined) recordCiChecks(store, facts.githubRepo, facts.prNumber, facts.head, parseCiRollup(rollup), now);
+      // Independent actual remote observation is factual, not proof of this intent's exact merged scope.
+      if (facts.state === "MERGED" || facts.state === "CLOSED") store.recordPublicationRemoteState(publication, facts.state, now);
+      const row = store.handle.prepare("SELECT id,generation,state FROM merge_intent WHERE publication=?").get(publication);
+      let settled = false;
+      if (row !== undefined) {
+        if (facts.state === "MERGED" && exactMergeObservation(store, Number(row["id"]), facts)) activeMergeObservations.set(store, { id: Number(row["id"]), generation: Number(row["generation"]), state: String(row["state"]), facts: { ...facts } });
+        settled = store.settleMergeIntent(Number(row["id"]), Number(row["generation"]), facts.state === "MERGED" ? "merged" : "superseded", now, { receipt: `observed ${facts.state.toLowerCase()} remotely`, bumpGeneration: true });
+      }
+      const canResolve = settled || (row === undefined && !mergeIntentRecoveryHeld(store, publication));
+      let resolved = 0;
+      if (canResolve) { store.liftMergeBlocker(publication, "the-remote", now); store.resolveEpisodes(`merge-attn:${publication}`, now); resolved = store.resolveCiEpisodes(facts.githubRepo, facts.prNumber, null, now); }
+      return { won: true, settled, resolved };
+    });
+  } finally { activeMergeObservations.delete(store); }
+}
+function validMergeIntentObservation(store: Store, id: number, generation: number): boolean {
+  const proof = activeMergeObservations.get(store);
+  // Single use before validation or writes, including wrong/reentrant attempts and rollback.
+  activeMergeObservations.delete(store);
+  return proof !== undefined && proof.id === id && proof.generation === generation
+    && proof.state === store.handle.prepare("SELECT state FROM merge_intent WHERE id=?").get(id)?.["state"] && exactMergeObservation(store, id, proof.facts);
+}
+function exactMergeObservation(store: Store, id: number, facts: MergeObservationFacts): boolean {
+  const row = store.handle.prepare("SELECT i.*,p.github_repo,p.base,p.head,p.head_sha AS publication_head,p.remote,p.pr_number,p.task_ref,p.run FROM merge_intent i JOIN publication p ON p.id=i.publication WHERE i.id=?").get(id);
+  if (row === undefined || !/^[0-9a-f]{40}$/.test(facts.head) || facts.state !== "MERGED" || facts.githubRepo !== row["github_repo"] || facts.prNumber !== row["pr_number"] || facts.number !== row["pr_number"] || facts.head !== row["head_sha"] || facts.head !== row["publication_head"] || facts.base !== row["base"] || facts.url !== `https://github.com/${facts.githubRepo}/pull/${facts.number}`) return false;
+  const ref = store.handle.prepare("SELECT repo FROM task_ref WHERE id=?").get(row["task_ref"] as number);
+  const run = store.handle.prepare("SELECT task_ref FROM run WHERE id=?").get(row["run"] as number);
+  if (ref === undefined || run?.["task_ref"] !== row["task_ref"] || typeof ref["repo"] !== "string") return false;
+  const observed = store.handle.prepare("SELECT generation,head_sha,observed_at FROM ci_observation WHERE github_repo=? AND pr_number=?").get(facts.githubRepo, facts.prNumber);
+  if (observed?.["generation"] !== facts.generation || observed["head_sha"] !== facts.head || observed["observed_at"] === "") return false;
+  if (row["state"] !== "firing") return false;
+  const scope = mergeAdmissionScope(store, id, Number(row["generation"]), null, true);
+  if (scope === null) return false;
+  const capsules = readMergeAdmissionCandidates(store, scope);
+  return capsules !== null && capsules.filter(c => c.g === scope.g).length === 1;
+}
+
+/** Snapshot exact persisted publication + intent scope at committed reservation; no caller narrows it. */
+function mergeObservationScope(store: Store, githubRepo: string, prNumber: number): string | null {
+  const rows = store.handle.prepare("SELECT i.id,i.generation,i.state,i.grant_terms_hash,i.head_sha,p.id AS publication,p.run,p.task_ref,p.github_repo,p.remote,p.base,p.head,p.head_sha AS publication_head,p.pr_number FROM publication p LEFT JOIN merge_intent i ON i.publication=p.id WHERE p.github_repo=? AND p.pr_number=?").all(githubRepo, prNumber);
+  return rows.length === 1 ? JSON.stringify(rows[0]) : null;
+}
+
+/** Conservative same-connection invalidation includes rolled-back writes and schema ABA. */
+function mergeObservationWriteStamp(store: Store): string | null {
+  const changes = store.handle.prepare("SELECT total_changes() AS changes").get()?.["changes"];
+  const schema = store.handle.prepare("PRAGMA schema_version").get()?.["schema_version"];
+  return typeof changes === "number" && Number.isSafeInteger(changes) && changes >= 0 && typeof schema === "number" && Number.isSafeInteger(schema) && schema >= 0 ? JSON.stringify([changes, schema]) : null;
+}
+
+const MERGE_FIRING_ADMITTED = "merge firing admitted";
+type MergeAdmission = { v: 1; i: number; g: number; p: number; r: number; u: number; j: number; s: string };
+type MergeAdmissionScope = MergeAdmission & { repo: string; taskId: string; head: string; grantHash: string };
+/** Actual persisted grant scope; null grant ID means LIVE at firing, or discover explicit capsule at observation. */
+function mergeAdmissionScope(store: Store, id: number, generation: number, grantId: number | null, observing = false, historical = false): MergeAdmissionScope | null {
+  const row = store.handle.prepare("SELECT i.*,p.id AS pid,p.task_ref,p.run,p.github_repo,p.remote,p.base,p.head,p.head_sha AS publication_head,t.repo,t.external_id,t.backend,r.task_ref AS run_ref FROM merge_intent i JOIN publication p ON p.id=i.publication JOIN task_ref t ON t.id=p.task_ref JOIN run r ON r.id=p.run WHERE i.id=?").get(id);
+  const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+  if (row === undefined || !whole(id) || !whole(generation) || (!historical && row["generation"] !== generation) || row["run_ref"] !== row["task_ref"] || row["backend"] !== "built-in"
+    || !(historical ? ["pending","claimed","waiting-human","firing","merged","refused","superseded"] : ["claimed","firing"]).includes(String(row["state"])) || [row["pid"],row["task_ref"],row["run"]].some(v => !whole(v))
+    || [row["repo"],row["external_id"],row["github_repo"],row["remote"],row["base"],row["head"]].some(v => typeof v !== "string" || v.length === 0)
+    || !/^[0-9a-f]{40}$/.test(String(row["head_sha"])) || row["head_sha"] !== row["publication_head"] || !["grant","human","mode"].includes(String(row["authority_basis"]))
+    || (row["mode_digest"] !== null && typeof row["mode_digest"] !== "string") || ![0,1].includes(Number(row["delete_branch"]))) return null;
+  if (observing && grantId === null) {
+    // Locate the original row ID from strict current-epoch candidates, NEVER a terms/time search.
+    const raw = mergeAdmissionRows(store, id, generation, Number(row["run"]), String(row["external_id"]), String(row["repo"]));
+    const candidates = raw.map(r => parseMergeAdmission(r["detail"]));
+    if (candidates.some(c => c === null)) return null;
+    const current = candidates.filter(c => c !== null && c.i === id && c.g === generation);
+    if (current.length !== 1) return null;
+    grantId = current[0]!.j;
+  }
+  const rawGrant = grantId === null ? store.handle.prepare("SELECT * FROM publication_grant WHERE repo=? AND revoked_at IS NULL").get(row["repo"] as string) : store.handle.prepare("SELECT * FROM publication_grant WHERE id=?").get(grantId);
+  if (rawGrant === undefined || !whole(rawGrant["id"])) return null;
+  let grant: PublicationGrant;
+  try { grant = readPublicationGrant(rawGrant); } catch { return null; }
+  const grantHash = createHash("sha256").update("merge-terms/v1 " + grant.githubRepo + " " + grant.base + " " + grant.headPrefix + " " + (grant.mergeMethod ?? "") + " " + (grant.mergeDeleteBranch === true ? 1 : 0)).digest("hex");
+  if (grant.repo !== row["repo"] || grant.merge !== true || grant.githubRepo !== row["github_repo"] || grant.remote !== row["remote"] || grant.base !== row["base"] || !headWithin(String(row["head"]), grant.headPrefix)
+    || grantHash !== row["grant_terms_hash"] || grant.mergeMethod !== row["method"] || (grant.mergeDeleteBranch === true ? 1 : 0) !== row["delete_branch"]) return null;
+  const tuple = [1,id,generation,row["pid"],row["task_ref"],row["run"],row["repo"],row["external_id"],row["github_repo"],row["remote"],row["base"],row["head"],row["head_sha"],row["method"],Number(row["delete_branch"])===1,grant.id,grantHash,row["authority_basis"],row["mode_digest"]];
+  return { v: 1, i: id, g: generation, p: Number(row["pid"]), r: Number(row["task_ref"]), u: Number(row["run"]), j: grant.id, s: createHash("sha256").update(JSON.stringify(tuple)).digest("hex"), repo: grant.repo, taskId: String(row["external_id"]), head: String(row["head_sha"]), grantHash };
+}
+function mergeAdmissionDetail(scope: MergeAdmission): MergeAdmission { return { v:1,i:scope.i,g:scope.g,p:scope.p,r:scope.r,u:scope.u,j:scope.j,s:scope.s }; }
+function parseMergeAdmission(raw: unknown): MergeAdmission | null {
+  if (typeof raw !== "string" || raw.length > 204 || !/^[\x20-\x7e]*$/.test(raw)) return null;
+  try {
+    const c = JSON.parse(raw) as MergeAdmission;
+    if (c === null || Array.isArray(c) || Object.keys(c).join(",") !== "v,i,g,p,r,u,j,s" || c.v !== 1 || [c.i,c.g,c.p,c.r,c.u,c.j].some(v => typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) || typeof c.s !== "string" || !/^[0-9a-f]{64}$/.test(c.s)) return null;
+    return JSON.stringify(mergeAdmissionDetail(c)) === raw ? c : null;
+  } catch { return null; }
+}
+function mergeAdmissionRows(store: Store, id: number, generation: number, run: number, task: string, repo: string): Record<string,unknown>[] {
+  return store.handle.prepare("SELECT * FROM action_ledger WHERE action=? AND (outcome=? OR run_id=? OR (task_id=? AND repo=?) OR (CASE WHEN json_valid(detail) THEN CAST(json_extract(detail,'$.i') AS TEXT) ELSE NULL END)=?) ORDER BY id")
+    .all(MERGE_FIRING_ADMITTED, `${id}:${generation}`, run, task, repo, String(id));
+}
+function readMergeAdmissionCandidates(store: Store, scope: MergeAdmissionScope): MergeAdmission[] | null {
+  const found: MergeAdmission[] = [], seen = new Set<string>();
+  for (const raw of mergeAdmissionRows(store, scope.i, scope.g, scope.u, scope.taskId, scope.repo)) {
+    const c = parseMergeAdmission(raw["detail"]);
+    if (c === null || raw["actor"] !== "toolroll" || raw["source"] !== "work" || raw["outcome"] !== `${c.i}:${c.g}`) return null;
+    const key = `${c.i}:${c.g}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const protectedScope = mergeAdmissionScope(store, c.i, c.g, c.j, false, c.i !== scope.i || c.g !== scope.g);
+    if (protectedScope === null || c.p !== protectedScope.p || c.r !== protectedScope.r || c.u !== protectedScope.u || c.s !== protectedScope.s
+      || raw["repo"] !== protectedScope.repo || raw["task_id"] !== protectedScope.taskId || raw["run_id"] !== protectedScope.u) return null;
+    // A task may have other publications: only fully reconstructed unrelated history can be ignored.
+    if (c.i !== scope.i) continue;
+    if (c.p !== scope.p || c.r !== scope.r || c.u !== scope.u || c.g > scope.g || found.some(other => other.g === c.g)) return null;
+    found.push(c);
+  }
+  return found;
+}
+/** Only called after one-row firing CAS inside its existing IMMEDIATE transaction. */
+function writeMergeAdmission(store: Store, scope: MergeAdmissionScope, now: Date): void {
+  const detail = mergeAdmissionDetail(scope), raw = JSON.stringify(detail);
+  if (parseMergeAdmission(raw) === null || raw.length > 204 || Buffer.byteLength(raw,"ascii") !== raw.length) throw new Error("Merge firing admission detail cannot be represented exactly");
+  recordActionWhole(store.handle, { at: now.toISOString(), actor:"toolroll", repo:scope.repo, taskId:scope.taskId, runId:scope.u, action:MERGE_FIRING_ADMITTED, outcome:`${scope.i}:${scope.g}`, source:"work" }, detail);
 }

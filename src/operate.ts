@@ -8921,6 +8921,7 @@ async function publishCommand(
       // other — a moved head refuses rather than authorizing the unseen.
       const released = store.authorizeMergeIntent(intent.id, intent.headSha, acting.name, clock());
       if (!released.ok) {
+        if (released.reason === "recovery-held") return fail(write, json, "publish merge", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
         return fail(
           write, json, "publish merge",
           released.reason,
@@ -8937,6 +8938,7 @@ async function publishCommand(
     }
     const refired = store.refireMergeIntent(intent.id, acting.name, clock());
     if (!refired.ok) {
+      if (refired.reason === "recovery-held") return fail(write, json, "publish refire", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
       return fail(
         write, json, "publish refire",
         refired.reason,
@@ -8971,6 +8973,7 @@ async function publishCommand(
       ]);
     }
     const rearmed = store.rearmMergeIntent(publication.id);
+    if (rearmed === "recovery-held") return fail(write, json, "publish rearm", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
     store.resolveEpisodes(`merge-attn:${publication.id}`, context.clock());
     return succeed(write, json, "publish rearm", { pr, rearmed }, () => [
       rearmed
