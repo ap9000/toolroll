@@ -52,6 +52,8 @@ import { respond } from "./http.js";
 import { rereadBrowser } from "./live.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
+import { remoteAllows, reproveRemote, type Principal } from "../operate-remote.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest } from "../terminal-connection.js";
 
 const TERMINAL_ID = /^\/term\/([a-f0-9]{32})(?:\/(socket|close|remove))?$/;
 /** A viewer this far behind is dropped; its page reconnects and replays the scrollback. */
@@ -183,7 +185,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   async function state(ctx: HandlerContext): Promise<void> {
     const who = operatorOf(ctx.who);
     if (who === null) return checked(ctx, 403, "refusal", { error: "operator" });
-    const sessions = deps.host === null ? [] : deps.host.list(who.name).filter(one => one.agent === null && owned(who, one) && projectAllowed(who.name, one.repo));
+    const sessions = deps.host === null ? [] : deps.host.listAll().filter(one => one.agent === null && ((who.authority === "full" && one.localGeneration === null) || owned(who, one)) && projectAllowed(who.name, one.repo));
     return checked(ctx, 200, "termState", {
       available: deps.host !== null, problem: deps.host === null ? deps.problem ?? "Terminals aren't available on this install." : null,
       programs: [...TERMINAL_PROGRAMS],
@@ -389,6 +391,13 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     socket.destroy();
   };
 
+  /** True when this browser operator may attach (observe or take control) to `terminal`:
+   *  their own terminal, OR (for full-session operators) a teammate's non-sensitive, non-local-owner
+   *  terminal in a project this operator can access. */
+  const attachable = (who: Operator, terminal: TerminalSummary | null, request: IncomingMessage): terminal is TerminalSummary =>
+    (who.authority === "full" && terminal !== null && terminal.agent === null && terminal.localGeneration === null && projectAllowed(who.name, terminal.repo))
+    || reachable(who, terminal, request);
+
   /** True when this request was an upgrade for a terminal (answered or refused here); false leaves it to others. */
   function upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean {
     let url: URL;
@@ -403,6 +412,26 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     if (!deps.allowedHost(host)) { refuseUpgrade(socket, 421, "This console doesn't answer at that address."); return true; }
     const transport = transportOfRequest(request);
     if (!transport.https && !transport.privatePath) { refuseUpgrade(socket, 403, "Open the console over HTTPS to use a terminal from here."); return true; }
+    // Remote TUI live terminal relay: pinned `terminal-remote` act-scoped approver API token (no cookies/origin).
+    if (isRemoteTerminalRequest(request)) {
+      const identified = runtime.identify(request, false, true);
+      const principal = identified?.via === "bearer" ? identified.principal : undefined;
+      const admitted = admitRemoteTerminalRequest(request, store, principal, runtime.clock);
+      if (!admitted.ok) { refuseUpgrade(socket, admitted.status, `Remote terminal rejected (${admitted.error}).`); return true; }
+      const account = store.accountOf(principal!.account);
+      if (admitted.scope !== "act" || account === null || account.revokedAt !== null || account.role !== "approver"
+        || store.isDemo() || !codingActorAllowed({ name: principal!.account, generation: principal!.generation })) {
+        refuseUpgrade(socket, 403, "Attaching to a remote terminal requires an approver act API token."); return true;
+      }
+      const terminal = deps.host?.get(id) ?? null;
+      if (terminal === null || terminal.agent !== null || terminal.localGeneration !== null
+        || !projectAllowed(principal!.account, terminal.repo) || !remoteAllows(store, principal!, terminal.repo)) {
+        refuseUpgrade(socket, 404, "No such terminal."); return true;
+      }
+      if (deps.host!.viewerCount(id) >= MAX_VIEWERS) { refuseUpgrade(socket, 429, `This terminal is open in ${MAX_VIEWERS} places already.`); return true; }
+      wss.handleUpgrade(request, socket, head, ws => attachRemote(ws, request, principal!, terminal));
+      return true;
+    }
     // Exactly the origin of a page served at this host, over this transport (the public https origin for its host).
     const expected = deps.publicOrigin !== null && host === deps.publicOrigin.host ? deps.publicOrigin.origin : `${transport.https ? "https" : "http"}://${host}`;
     if (request.headers.origin !== expected) { refuseUpgrade(socket, 403, "A terminal opens only from this console's own page."); return true; }
@@ -415,7 +444,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const keyed = runtime.browserKeys.check(who, request, null);
     if (keyed !== null) { refuseUpgrade(socket, keyed.status, keyed.message); return true; }
     const terminal = deps.host?.get(id) ?? null;
-    if (!reachable(who, terminal, request)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
+    if (!attachable(who, terminal, request)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
     if (deps.host!.viewerCount(id) >= MAX_VIEWERS) { refuseUpgrade(socket, 429, `This terminal is open in ${MAX_VIEWERS} places already.`); return true; }
     wss.handleUpgrade(request, socket, head, ws => attach(ws, request, who, terminal));
     return true;
@@ -437,7 +466,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     };
     const prove = (): boolean => {
       const again = rereadBrowser(runtime, request, who);
-      const ok = again !== null && operatorOf(again) !== null && reachable(again as Operator, host.get(terminal.id), request);
+      const ok = again !== null && operatorOf(again) !== null && attachable(again as Operator, host.get(terminal.id), request);
       if (ok) provedAt = Date.now();
       return ok;
     };
@@ -495,6 +524,85 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     catch (error) { return shut(error instanceof TerminalError && /open in/.test(error.message) ? 4429 : 4404, "unavailable"); }
     reprovers.add(reprove);
     record("attach", who.name, terminal);
+  }
+
+  /** Attach a pinned `terminal-remote` act-scoped approver over WebSocket with continuous re-proof. */
+  function attachRemote(ws: WebSocket, request: IncomingMessage, principal: Principal, terminal: TerminalSummary): void {
+    const host = deps.host!;
+    sockets.add(ws);
+    let provedAt = 0, closed = false, detach: (() => void) | null = null;
+    let budget = INPUT_BURST, filledAt = Date.now();
+    const shut = (code: number, reason: string) => {
+      if (closed) return;
+      closed = true;
+      detach?.();
+      reprovers.delete(reprove);
+      try { ws.close(code, reason); } catch { ws.terminate(); }
+      setTimeout(() => ws.terminate(), 2_000).unref?.();
+    };
+    const prove = (): boolean => {
+      const admitted = admitRemoteTerminalRequest(request, store, principal, runtime.clock);
+      const live = reproveRemote(store, principal, runtime.clock());
+      const account = store.accountOf(principal.account);
+      const current = host.get(terminal.id);
+      const ok = admitted.ok && admitted.scope === "act" && live.ok && live.scope === "act"
+        && account !== null && account.revokedAt === null && account.role === "approver"
+        && !store.isDemo() && codingActorAllowed({ name: principal.account, generation: principal.generation })
+        && current !== null && current.agent === null && current.localGeneration === null
+        && projectAllowed(principal.account, current.repo) && remoteAllows(store, principal, current.repo);
+      if (ok) provedAt = Date.now();
+      return ok;
+    };
+    const reprove = () => { if (!closed && !prove()) shut(4401, "signed out"); };
+    const stillProved = (): boolean => Date.now() - provedAt < REPROVE_MS || prove();
+    const viewer: TerminalViewer = {
+      actor: principal.account,
+      output(data) {
+        if (closed) return;
+        if (!stillProved()) return shut(4401, "signed out");
+        if (ws.bufferedAmount > BEHIND_BYTES) return shut(4008, "fell behind");
+        ws.send(data, { binary: true });
+      },
+      control(message) {
+        if (closed) return;
+        if (!stillProved()) return shut(4401, "signed out");
+        ws.send(JSON.stringify(message));
+      },
+      backlog: () => closed ? 0 : ws.bufferedAmount,
+      overflow: () => shut(4008, "fell behind"),
+    };
+    ws.on("message", (data, isBinary) => {
+      if (closed) return;
+      if (isBinary) return shut(1003, "text frames only");
+      if (!prove()) return shut(4401, "signed out");
+      const text = Array.isArray(data) ? Buffer.concat(data).toString("utf8") : Buffer.from(data as ArrayBuffer).toString("utf8");
+      const frame = parseTerminalFrame(text);
+      if (frame === null) return shut(1003, "not a terminal frame");
+      if (frame.t === "take-control") {
+        if (host.takeControl(terminal.id, viewer)) record("take-control", principal.account, terminal);
+        return;
+      }
+      if (frame.t === "release-control") {
+        host.releaseControl(terminal.id, viewer);
+        return;
+      }
+      if (!host.isController(terminal.id, viewer)) return;
+      if (frame.t === "resize") return host.resize(terminal.id, frame.cols, frame.rows);
+      const now = Date.now();
+      budget = Math.min(INPUT_BURST, budget + ((now - filledAt) / 1000) * INPUT_PER_SECOND);
+      filledAt = now;
+      const size = Buffer.byteLength(frame.d);
+      if (size > budget) return shut(1008, "typing faster than a terminal reads");
+      budget -= size;
+      if (!host.input(terminal.id, frame.d)) ws.send(JSON.stringify({ t: "input-full" }));
+    });
+    ws.on("close", () => { closed = true; detach?.(); reprovers.delete(reprove); sockets.delete(ws); });
+    ws.on("error", () => shut(1011, "socket error"));
+    if (!prove()) return shut(4401, "signed out");
+    try { detach = host.attach(terminal.id, viewer); }
+    catch (error) { return shut(error instanceof TerminalError && /open in/.test(error.message) ? 4429 : 4404, "unavailable"); }
+    reprovers.add(reprove);
+    record("attach-remote", principal.account, terminal);
   }
 
   // The console's projects are build-writable too: kept out of a take-over's PATH (live-terminal.ts trustedPath).

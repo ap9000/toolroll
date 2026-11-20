@@ -274,6 +274,7 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.handoff-push": { local: "deny", why: "ordinary person API token only for local code handoff candidate upload" },
   "edge.presence": { local: "allow", why: "observational read of active task viewers, terminal controllers, and task owners within the caller's visible projects" },
   "edge.approval-ping": { local: "deny", why: "ordinary person API token only for remote out-of-band approval ping" },
+  "edge.remote-terminals": { local: "deny", why: "ordinary person act API token only for remote terminal relay discovery" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -357,6 +358,7 @@ edge("remote", "edge.terminal-connection", "GET", "/engine/connection", { caller
 edge("remote", "edge.handoff-pull", "GET", `^\\/api\\/handoff\\/task\\/${TASK}$`, { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one" });
 edge("remote", "edge.handoff-push", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidate" });
 edge("remote", "edge.approval-ping", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/approval-ping$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/approval-ping" });
+edge("remote", "edge.remote-terminals", "GET", "/api/handoff/terminals", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.presence", "GET", "/api/presence", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });

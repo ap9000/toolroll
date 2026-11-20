@@ -481,6 +481,17 @@ impl Client {
         }
     }
 
+    pub(crate) fn remote_creds_for_socket(&self) -> Option<(&str, &str, &str)> {
+        match &*self.auth {
+            ClientAuth::Remote(r) => Some((
+                r.bearer.as_str(),
+                r.workspace_id.as_str(),
+                r.recovery_generation.as_str(),
+            )),
+            ClientAuth::Local(_) => None,
+        }
+    }
+
     /// A form POST like `act`, whose JSON answer the caller reads itself (any status but an ended session).
     pub(crate) async fn post_form_json(
         &self,

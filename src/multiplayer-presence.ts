@@ -13,9 +13,9 @@
  *   or browser without relaxing browser-only approval authority.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { TerminalHost } from "./live-terminal.js";
+import { TERMINAL_PROGRAMS, type TerminalHost } from "./live-terminal.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
-import { rowVisible, type ProjectCeiling } from "./project.js";
+import { projectName, rowVisible, type ProjectCeiling } from "./project.js";
 import type { Admission } from "./request-budget.js";
 import type { Who } from "./server/session.js";
 import type { Store, TaskFamily } from "./store.js";
@@ -349,4 +349,60 @@ export function handleApprovalPingHttp(
     url: origin === null ? null : `${origin}${path}`,
   };
   return sendJson(response, 200, payload);
+}
+
+/**
+ * `GET /api/handoff/terminals` — list attachable non-sensitive live central terminals
+ * for a pinned `terminal-remote` act-scoped approver token, strictly scoped to the
+ * caller's visible projects (same `TermState` shape as `GET /term/state`).
+ */
+export function handleRemoteTerminalsHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: Omit<PresenceHandlerOptions, "taskRooms" | "identify">,
+): void {
+  if (request.method !== "GET") {
+    return sendJson(response, 405, { ok: false, error: "method_not_allowed" }, { allow: "GET" });
+  }
+  const { store, clock, liveCeiling, terminalHost, authenticateBearer, admitBearer } = options;
+  const auth = admitRemoteToken(request, response, store, clock, authenticateBearer, admitBearer);
+  if (auth === null) return;
+  if (auth.scope !== "act") {
+    return sendJson(response, 403, { ok: false, error: "read_only_token", message: "Attaching to a remote terminal requires an act API token." });
+  }
+  const account = store.accountOf(auth.principal.account);
+  if (account === null || account.revokedAt !== null || account.role !== "approver" || store.isDemo()) {
+    return sendJson(response, 403, { ok: false, error: "approver_required", message: "Only an approver can attach to remote terminals." });
+  }
+  const ceiling = liveCeiling();
+  const canSeeRepo = (repo: string): boolean =>
+    rowVisible(ceiling, repo) && store.accountCanAccess(auth.principal.account, repo) && remoteAllows(store, auth.principal, repo);
+  const host = terminalHost();
+  const sessions = host === null
+    ? []
+    : host.listAll()
+        .filter(one => one.agent === null && one.localGeneration === null && canSeeRepo(one.repo))
+        .map(one => ({
+          id: one.id,
+          repo: one.repo,
+          project: projectName(one.repo),
+          program: one.program,
+          branch: one.branch,
+          startedAt: one.startedAt,
+          endedAt: one.endedAt,
+          exit: one.exit,
+          cleanup: one.cleanup,
+          task: one.task,
+          run: one.run,
+        }));
+  if (!reproveRemote(store, auth.principal, clock()).ok) {
+    return sendJson(response, 401, { ok: false, error: "unauthenticated", message: "Your access changed." });
+  }
+  return sendJson(response, 200, {
+    available: host !== null,
+    problem: host === null ? "Terminals aren't available on this server." : null,
+    programs: [...TERMINAL_PROGRAMS],
+    projects: [],
+    sessions,
+  });
 }

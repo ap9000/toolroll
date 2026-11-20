@@ -438,6 +438,11 @@ export class TerminalHost {
     return [...this.sessions.values()].filter(one => one.owner === owner).map(one => this.summary(one)).reverse();
   }
 
+  /** All non-sensitive sessions across accounts, newest first (callers filter by project access). */
+  listAll(): TerminalSummary[] {
+    return [...this.sessions.values()].filter(one => one.agent === null).map(one => this.summary(one)).reverse();
+  }
+
   get(id: string): TerminalSummary | null {
     const session = this.sessions.get(id);
     return session === undefined ? null : this.summary(session);

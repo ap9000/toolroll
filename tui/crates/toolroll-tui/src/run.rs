@@ -164,6 +164,12 @@ async fn open_terminal(
                     && one.program == program
                     && one.ended_at.is_none()
             })
+            .or_else(|| {
+                // In shared/remote mode, also attach to any active terminal open on this task.
+                state.sessions.iter().find(|one| {
+                    one.task.as_deref() == Some(task.as_str()) && one.ended_at.is_none()
+                })
+            })
             .map(|one| (one.id.clone(), one.branch.clone()))
     };
     let listed = match client.term_state().await {
@@ -171,6 +177,12 @@ async fn open_terminal(
         Err(e) => return fail(e),
     };
     if listed.is_none() {
+        if client.is_remote() {
+            return fail(ApiError::Refused(
+                "No live central terminal is open on this task yet — start one in the browser console first."
+                    .into(),
+            ));
+        }
         if let Err(e) = client.term_start(&task, run, &program).await {
             return fail(e);
         }

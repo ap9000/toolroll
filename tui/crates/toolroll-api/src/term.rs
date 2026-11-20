@@ -202,10 +202,14 @@ pub fn control_of(text: &str) -> Option<TermEvent> {
 }
 
 impl Client {
-    /// This session's live terminals.
+    /// Live terminals available to attach to (local session via `/term/state`, remote session via `/api/handoff/terminals`).
     pub async fn term_state(&self) -> Result<TermState, ApiError> {
-        self.get_json::<TermState>("/term/state", "your terminals")
-            .await
+        let path = if self.is_remote() {
+            "/api/handoff/terminals"
+        } else {
+            "/term/state"
+        };
+        self.get_json::<TermState>(path, "your terminals").await
     }
 
     /// Start a take-over terminal on a task's saved build (`program`: shell, claude or codex): its id, or the console's
@@ -282,7 +286,11 @@ impl Client {
         let host = self
             .origin()
             .strip_prefix("http://")
-            .ok_or_else(|| ApiError::Refused("Terminals open only on this computer.".into()))?
+            .ok_or_else(|| {
+                ApiError::Refused(
+                    "Live terminal WebSocket relay currently requires a loopback or private HTTP/Tailscale origin.".into(),
+                )
+            })?
             .to_string();
         let mut request = format!("ws://{host}/term/{}/socket", encode(id))
             .into_client_request()
@@ -291,7 +299,16 @@ impl Client {
             HeaderValue::from_str(v)
                 .map_err(|_| ApiError::Contract("A sign-in value can't be sent.".into()))
         };
-        {
+        if let Some((bearer, workspace_id, recovery_generation)) = self.remote_creds_for_socket() {
+            let headers = request.headers_mut();
+            let mut auth = header(&format!("Bearer {bearer}"))?;
+            auth.set_sensitive(true);
+            headers.insert("authorization", auth);
+            headers.insert("x-toolroll-client", header("terminal-remote")?);
+            headers.insert("x-toolroll-workspace", header(workspace_id)?);
+            headers.insert("x-toolroll-recovery", header(recovery_generation)?);
+            headers.insert("sec-websocket-protocol", header("toolroll")?);
+        } else {
             let creds = self.creds_for_socket()?;
             let headers = request.headers_mut();
             headers.insert("origin", header(self.origin())?);
