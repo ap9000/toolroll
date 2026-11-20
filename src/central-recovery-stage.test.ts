@@ -15,6 +15,7 @@ import { mintApiToken } from "./api-tokens.js";
 import { mintCoordinator, authenticateCoordinator } from "./coordinator.js";
 import { reproveRemote, type Principal } from "./operate-remote.js";
 import { oauthTokenAllowed } from "./mcp-oauth.js";
+import { permitsPublication, publishPass, type PublishExec } from "./publish.js";
 import { PersistentSessions, FULL_SESSION } from "./server/session.js";
 import { MAX_STAGE_BYTES, copyCentralRecoveryStage, retireCentralRecoveryStage, closeCentralRecoveryStage, type RecoveryStageHandle } from "./central-recovery-stage.js";
 
@@ -30,7 +31,7 @@ vi.mock("node:fs", async importOriginal => {
 let root: string | undefined;
 const handles: RecoveryStageHandle[] = [];
 afterEach(() => { copyFault.afterRead = undefined; copyFault.beforeOpen = undefined; vi.restoreAllMocks(); for (const h of handles.splice(0)) closeCentralRecoveryStage(h); if (root !== undefined) fs.rmSync(root, { recursive: true, force: true }); root = undefined; });
-function fixture() {
+function fixture(prepare?: (store: Store, now: Date) => void) {
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "so-central-stage-"))); fs.chmodSync(root, 0o700);
   const source = join(root, "backup.db"), store = openStore(source), now = new Date();
   const who = addApprover(store, "synthetic", now); if (!who.ok) throw Error("fixture");
@@ -50,6 +51,7 @@ function fixture() {
   const principal: Principal = { kind: "person", account: "synthetic", generation: account.generation, scope: "read", tokenId: api.id, projects: null };
   expect(reproveRemote(store, principal, now).ok).toBe(true); expect(store.leadFor(lead.token)).not.toBeNull(); expect(authenticateCoordinator(store, coordinator.token).ok).toBe(true);
   expect(oauthTokenAllowed(store, oauth.id, "/mcp", now)).toBe(true); expect(sessions.load(cookie)).not.toBeNull();
+  prepare?.(store, now);
   store.handle.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE");
   store.close(); return { source, api, oauth, lead, coordinator, principal, code, refresh, client, resource, cookie, now };
 }
@@ -60,7 +62,7 @@ test("private copied retirement denies actual API/OAuth/code/refresh/cookie/lead
   const f = fixture(), original = hash(f.source), sourceStat = fs.statSync(f.source), h = copy(f.source);
   expect(fs.statSync(h.copyPath).ino).not.toBe(sourceStat.ino);
   const report = retireCentralRecoveryStage(h); expect(report).toMatchObject({ outcome: "retired-partial", schemaSupported: true, complete: false, recoveryReady: false });
-  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(5);
+  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(6);
   expect(report.entries.filter(e => e.status === "unsupported").length).toBeGreaterThan(0);
   expect(JSON.stringify(report)).not.toContain(f.api.hash); expect(JSON.stringify(report)).not.toContain(f.api.token);
   expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true });
@@ -161,4 +163,59 @@ test("regular source swapped to FIFO between lstat and open refuses synchronousl
   expect(flagsSeen & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
   expect(flagsSeen & fs.constants.O_NOFOLLOW).toBe(fs.constants.O_NOFOLLOW);
   expect(reads).toBe(0); expect(fs.lstatSync(f.source).isFIFO()).toBe(true); expect(hash(saved)).toBe(original);
+});
+
+
+function publications(store: Store, now: Date) {
+  const repo = root!;
+  const args = { repo, githubRepo: "synthetic/example", remote: "origin", headPrefix: "toolroll/", base: "main", capabilities: ["push-branch", "open-pr"], selector: "all" as const, draft: true, grantedBy: "synthetic" };
+  store.savePublicationGrant(args, now); store.revokePublicationGrant(repo, "earlier", now);
+  store.savePublicationGrant(args, now); // A historic revoked grant and the restored live grant both survive.
+  for (const state of ["intended", "pushed"] as const) {
+    store.createTask({ id: state, title: "Synthetic publication " + state }, now);
+    const ref = store.refFor("built-in", state).id; store.handle.prepare("UPDATE task_ref SET repo = ? WHERE id = ?").run(repo, ref);
+    const run = store.startRun({ taskRef: ref, leaseId: "synthetic-" + state, runner: "synthetic", branch: "toolroll/" + state, worktree: join(repo, state),
+      route: { routeDigest: "legacy", phase: "build", provider: "codex", model: null, chosen: "legacy" }, now });
+    store.recordOutcomeFacts(run, { headRevision: "a".repeat(40), handoff: "Preserve actual evidence" });
+    const id = store.createPublicationIntent({ run, taskRef: ref, githubRepo: args.githubRepo, remote: args.remote, base: args.base, head: "toolroll/" + state, headSha: "a".repeat(40), bodyHash: "synthetic-body", draft: true }, now);
+    if (state === "pushed") store.markPublicationPushed(id, now);
+  }
+}
+const publicationHistory = (store: Store) => ({
+  publications: store.handle.prepare("SELECT * FROM publication ORDER BY id").all(),
+  runs: store.handle.prepare("SELECT * FROM run ORDER BY id").all(),
+  tasks: store.handle.prepare("SELECT * FROM task ORDER BY id").all(),
+});
+
+test("publication grants retire on the copy; real intended/pushed publish passes make zero external calls", async () => {
+  let before: ReturnType<typeof publicationHistory>, oldGrant: Record<string, unknown> | undefined;
+  const f = fixture((s, now) => { publications(s, now); before = publicationHistory(s); oldGrant = s.handle.prepare("SELECT * FROM publication_grant WHERE revoked_by = 'earlier'").get();
+    for (const publication of s.pendingPublications()) expect(permitsPublication(s.publicationGrantFor(root!), publication).ok).toBe(true);
+  });
+  const original = hash(f.source), h = copy(f.source), retired = retireCentralRecoveryStage(h);
+  expect(retired.entries.find(e => e.id === "publication-grant-verifier")).toMatchObject({ status: "retired", affected: 1, remaining: 0 });
+  expect(retired.entries.find(e => e.id === "execution-and-publication")?.status).toBe("unsupported");
+  expect(retired).toMatchObject({ complete: false, recoveryReady: false });
+  const stage = openStore(h.copyPath); expect(stage.publicationGrantFor(root!)).toBeNull();
+  expect(publicationHistory(stage)).toEqual(before!); // Retirement preserves actual publication/result provenance.
+  expect(stage.handle.prepare("SELECT * FROM publication_grant WHERE revoked_by = 'earlier'").get()).toEqual(oldGrant);
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL").get()?.["n"]).toBe(0);
+  for (const publication of stage.pendingPublications()) expect(permitsPublication(stage.publicationGrantFor(root!), publication).ok).toBe(false);
+  const calls: string[] = []; const exec: PublishExec = async file => { calls.push(file); throw Error("Unexpected external call"); };
+  const proof = await publishPass(stage, { repo: root!, evidenceRoot: join(root!, "evidence"), clock: () => f.now, exec });
+  expect(calls).toEqual([]); expect(proof).toMatchObject({ pushed: 0, opened: 0, adopted: 0 }); expect(proof.problems).toHaveLength(2);
+  // The verifier may truthfully record diagnostic errors/attempts; don't misrepresent those as unchanged history.
+  expect(stage.pendingPublications().map(p => p.state)).toEqual(["intended", "pushed"]);
+  stage.close(); expect(hash(f.source)).toBe(original);
+});
+
+test("a failure after publication retirement rolls back grant revocation with every other staged write", () => {
+  const f = fixture(publications), original = hash(f.source), h = copy(f.source);
+  vi.spyOn(Store.prototype, "dropWebSession").mockImplementation(() => { throw Error("synthetic post-grant failure"); });
+  expect(retireCentralRecoveryStage(h).outcome).toBe("failed"); vi.restoreAllMocks();
+  const stage = openStore(h.copyPath); expect(stage.publicationGrantFor(root!)).not.toBeNull();
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL").get()?.["n"]).toBe(1);
+  for (const publication of stage.pendingPublications()) expect(permitsPublication(stage.publicationGrantFor(root!), publication).ok).toBe(true);
+  expect(reproveRemote(stage, f.principal, f.now).ok).toBe(true);
+  stage.close(); expect(hash(f.source)).toBe(original);
 });

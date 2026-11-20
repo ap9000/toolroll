@@ -18,6 +18,7 @@ const INVENTORY = [
   ["lead-credentials", "store.ts:revokeLeadCredentials", "credential", true],
   ["coordinator-credentials", "coordinator.ts:revokeCoordinator", "credential/coordinator_proposal", true],
   ["inbound-oauth", "mcp-oauth.ts/store.ts", "oauth_code/oauth_grant/oauth_refresh", true],
+  ["publication-grant-verifier", "store.ts:revokePublicationGrant/publish.ts:permitsPublication", "publication_grant", true],
   ["durable-browser-sessions", "server/guards.ts/session.ts", "web_session", true],
   ["local-owner-and-memory", "local-owner.ts/server/guards.ts", "local_mode/in-memory nonces and links", false],
   ["password-and-saved-login", "scope.ts/login-secrets.ts", "approver/protected login files", false],
@@ -177,9 +178,14 @@ export function retireCentralRecoveryStage(handle: RecoveryStageHandle): Recover
       for (const row of stage.handle.prepare("SELECT id FROM credential WHERE kind='coordinator'").all()) stage.sweepCoordinatorProposals(now, String(row["id"]));
       counts.set("inbound-oauth", count(stage, "SELECT (SELECT count(*) FROM oauth_code)+(SELECT count(*) FROM oauth_grant)+(SELECT count(*) FROM oauth_refresh) AS n"));
       stage.handle.exec("DELETE FROM oauth_code; DELETE FROM oauth_refresh; DELETE FROM oauth_grant");
+      counts.set("publication-grant-verifier", count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL"));
+      for (const row of stage.handle.prepare("SELECT DISTINCT repo FROM publication_grant WHERE revoked_at IS NULL").all()) {
+        if (!stage.revokePublicationGrant(String(row["repo"]), by, now)) throw Error("Publication grant retirement failed");
+      }
       const sessions = stage.webSessions(null); counts.set("durable-browser-sessions", sessions.length);
       for (const session of sessions) stage.dropWebSession(session.idHash);
-      if (count(stage, "SELECT count(*) AS n FROM coordinator_proposal WHERE state IN ('pending','confirming')") !== 0
+      if (count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0
+        || count(stage, "SELECT count(*) AS n FROM coordinator_proposal WHERE state IN ('pending','confirming')") !== 0
         || count(stage, "SELECT count(*) AS n FROM credential WHERE revoked_at IS NULL") !== 0
         || count(stage, "SELECT (SELECT count(*) FROM oauth_code)+(SELECT count(*) FROM oauth_grant)+(SELECT count(*) FROM oauth_refresh)+(SELECT count(*) FROM web_session) AS n") !== 0) throw Error("Retirement postcondition failed");
       return report(kept, "retired-partial", counts);
