@@ -2414,6 +2414,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolroll-registry-io"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "toolroll-tui"
 version = "0.1.0"
 dependencies = [
