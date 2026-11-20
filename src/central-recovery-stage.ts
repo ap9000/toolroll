@@ -4,6 +4,7 @@ import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, type Store } from "./store.js";
+import { holdAutoPublish, autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import { revokeCoordinator } from "./coordinator.js";
 
 // Exact fresh v177 schema, compiled from this reviewed source (708 non-internal objects).
@@ -19,6 +20,7 @@ const INVENTORY = [
   ["coordinator-credentials", "coordinator.ts:revokeCoordinator", "credential/coordinator_proposal", true],
   ["inbound-oauth", "mcp-oauth.ts/store.ts", "oauth_code/oauth_grant/oauth_refresh", true],
   ["publication-grant-verifier", "store.ts:revokePublicationGrant/publish.ts:permitsPublication", "publication_grant", true],
+  ["release-publish-ledger-hold", "release-auto.ts:holdAutoPublish/autoPublishHeld", "action_ledger (latest held/allowed by id for nonnull task ids)", true],
   ["durable-browser-sessions", "server/guards.ts/session.ts", "web_session", true],
   ["local-owner-and-memory", "local-owner.ts/server/guards.ts", "local_mode/in-memory nonces and links", false],
   ["password-and-saved-login", "scope.ts/login-secrets.ts", "approver/protected login files", false],
@@ -182,6 +184,21 @@ export function retireCentralRecoveryStage(handle: RecoveryStageHandle): Recover
       for (const row of stage.handle.prepare("SELECT DISTINCT repo FROM publication_grant WHERE revoked_at IS NULL").all()) {
         if (!stage.revokePublicationGrant(String(row["repo"]), by, now)) throw Error("Publication grant retirement failed");
       }
+      // Prospective hold only: never invent stopped/resumed/check outcomes or cancel an issued operation.
+      const releaseTasks = stage.handle.prepare("SELECT DISTINCT task_id FROM action_ledger WHERE task_id IS NOT NULL AND action IN (?, ?)").all(PUBLISH_HELD_ACTION, PUBLISH_ALLOWED_ACTION);
+      let held = 0;
+      for (const row of releaseTasks) {
+        const taskId = String(row["task_id"]);
+        if (autoPublishHeld(stage, taskId) === null) {
+          holdAutoPublish(stage, { taskId, now, why: "Restored publication permission is on hold. This does not establish whether earlier work ran or stopped." }); held += 1;
+        }
+        if (autoPublishHeld(stage, taskId) === null) throw Error("Release publication hold failed");
+      }
+      counts.set("release-publish-ledger-hold", held);
+      const stillAllowed = stage.handle.prepare(`SELECT count(*) AS n FROM action_ledger a
+        JOIN (SELECT max(id) AS id FROM action_ledger WHERE task_id IS NOT NULL AND action IN (?, ?) GROUP BY task_id) latest ON latest.id = a.id
+        WHERE a.action = ?`).get(PUBLISH_HELD_ACTION, PUBLISH_ALLOWED_ACTION, PUBLISH_ALLOWED_ACTION);
+      if (Number(stillAllowed?.["n"]) !== 0) throw Error("Restored release permission remains allowed");
       const sessions = stage.webSessions(null); counts.set("durable-browser-sessions", sessions.length);
       for (const session of sessions) stage.dropWebSession(session.idHash);
       if (count(stage, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0

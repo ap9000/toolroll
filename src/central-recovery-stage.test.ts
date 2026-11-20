@@ -15,6 +15,9 @@ import { mintApiToken } from "./api-tokens.js";
 import { mintCoordinator, authenticateCoordinator } from "./coordinator.js";
 import { reproveRemote, type Principal } from "./operate-remote.js";
 import { oauthTokenAllowed } from "./mcp-oauth.js";
+import { holdAutoPublish, autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
+import { resumeAllowedReleases, RELEASE_RESUMED_ACTION } from "./release-next.js";
+import { verifyLedgerChain } from "./ledger-chain.js";
 import { permitsPublication, publishPass, type PublishExec } from "./publish.js";
 import { PersistentSessions, FULL_SESSION } from "./server/session.js";
 import { MAX_STAGE_BYTES, copyCentralRecoveryStage, retireCentralRecoveryStage, closeCentralRecoveryStage, type RecoveryStageHandle } from "./central-recovery-stage.js";
@@ -62,7 +65,7 @@ test("private copied retirement denies actual API/OAuth/code/refresh/cookie/lead
   const f = fixture(), original = hash(f.source), sourceStat = fs.statSync(f.source), h = copy(f.source);
   expect(fs.statSync(h.copyPath).ino).not.toBe(sourceStat.ino);
   const report = retireCentralRecoveryStage(h); expect(report).toMatchObject({ outcome: "retired-partial", schemaSupported: true, complete: false, recoveryReady: false });
-  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(6);
+  expect(report.entries.filter(e => e.status === "retired")).toHaveLength(7);
   expect(report.entries.filter(e => e.status === "unsupported").length).toBeGreaterThan(0);
   expect(JSON.stringify(report)).not.toContain(f.api.hash); expect(JSON.stringify(report)).not.toContain(f.api.token);
   expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true });
@@ -217,5 +220,69 @@ test("a failure after publication retirement rolls back grant revocation with ev
   expect(stage.handle.prepare("SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL").get()?.["n"]).toBe(1);
   for (const publication of stage.pendingPublications()) expect(permitsPublication(stage.publicationGrantFor(root!), publication).ok).toBe(true);
   expect(reproveRemote(stage, f.principal, f.now).ok).toBe(true);
+  stage.close(); expect(hash(f.source)).toBe(original);
+});
+
+
+function releaseStanding(store: Store, now: Date) {
+  const log = (taskId: string | null, action: string, at: string) => store.recordAction({ at, actor: "synthetic", repo: taskId === "release-publish" ? "/synthetic/other" : null, taskId, runId: null, action, outcome: action === PUBLISH_ALLOWED_ACTION ? "allowed" : "held", source: "work", detail: "Synthetic historical record" });
+  for (const task of ["release-tag", "release-publish", "orphan-homebrew", "", "previously-resumed"]) {
+    log(task, PUBLISH_HELD_ACTION, "2099-01-01T00:00:00.000Z");
+    log(task, PUBLISH_ALLOWED_ACTION, "1990-01-01T00:00:00.000Z"); // Higher id wins, never timestamp.
+  }
+  store.createTask({ id: "release-tag", title: "Synthetic release" }, now);
+  store.createTask({ id: "release-publish", title: "Other project release" }, now);
+  const previous = store.handle.prepare("SELECT id FROM action_ledger WHERE task_id='previously-resumed' AND action=? ORDER BY id DESC LIMIT 1").get(PUBLISH_ALLOWED_ACTION)!;
+  store.recordAction({ at: now.toISOString(), actor: "system", repo: null, taskId: "previously-resumed", runId: null, action: RELEASE_RESUMED_ACTION, outcome: String(previous["id"]), source: "work", detail: "Historical resume, not new execution" });
+  log("already-held", PUBLISH_ALLOWED_ACTION, "2099-01-01T00:00:00.000Z");
+  holdAutoPublish(store, { taskId: "already-held", why: "Existing hold", now: new Date("1990-01-01T00:00:00.000Z") });
+  log(null, PUBLISH_ALLOWED_ACTION, now.toISOString()); // Unaddressable taskless event is preserved, outside this leaf.
+  store.recordAction({ at: now.toISOString(), actor: "synthetic", repo: null, taskId: "release-tag", runId: null, action: "checks requested", outcome: "full", source: "work", detail: "Keep this outstanding check request" });
+  store.sealLedger();
+}
+function releaseJournals() {
+  const folder = join(root!, "releases"); fs.mkdirSync(folder);
+  return (["tag", "publish", "homebrew"] as const).map((step, i) => {
+    const file = join(folder, step + ".json"), taskId = ["release-tag", "release-publish", "orphan-homebrew"][i]!;
+    fs.writeFileSync(file, JSON.stringify({ version: 1, id: "synthetic-"+step, github: "synthetic/example", checkout: root, branch: "synthetic-"+step, candidate: { sha: "a".repeat(40), tree: "b".repeat(40) }, packageName: "synthetic", packageVersion: "1.0.0", tag: "v1.0.0", pr: 1, step,
+      task: { id: taskId, scopeDigest: null }, approval: null, check: null, completion: null, deploy: null, ci: null, merge: { sha: "c".repeat(40), tree: null }, tagged: null, published: null, homebrew: null, intents: {}, stopped: null, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() }));
+    return file;
+  });
+}
+
+test("restored ledger permissions receive prospective holds by latest id and real tag/publish/Homebrew resumes stay idle", async () => {
+  let history: Record<string, unknown>[] = [], seals: Record<string, unknown>[] = [];
+  const f = fixture((s, now) => { releaseStanding(s, now); history = s.handle.prepare("SELECT * FROM action_ledger ORDER BY id").all(); seals = s.handle.prepare("SELECT * FROM ledger_seal ORDER BY id").all(); });
+  const original = hash(f.source), journals = releaseJournals(), journalBytes = journals.map(file => fs.readFileSync(file));
+  // Establish that these synthetic journals really reach the existing callback on a separate owned copy.
+  const probeFile = join(root!, "probe.db"); fs.copyFileSync(f.source, probeFile); const probe = openStore(probeFile), probeCalls: string[] = [];
+  expect(await resumeAllowedReleases(probe, root!, async j => { probeCalls.push(j.step); }, f.now)).toBe(3);
+  expect(probeCalls.sort()).toEqual(["homebrew", "publish", "tag"]); probe.close();
+  const h = copy(f.source), report = retireCentralRecoveryStage(h);
+  expect(report.entries.find(e => e.id === "release-publish-ledger-hold")).toMatchObject({ status: "retired", affected: 5, remaining: 0 });
+  expect(report.entries.find(e => e.id === "execution-and-publication")?.status).toBe("unsupported");
+  expect(report).toMatchObject({ complete: false, recoveryReady: false });
+  const beforeRepeat = hash(h.copyPath); expect(retireCentralRecoveryStage(h)).toEqual({ ...report, repeated: true }); expect(hash(h.copyPath)).toBe(beforeRepeat);
+  const stage = openStore(h.copyPath);
+  const prefix = stage.handle.prepare("SELECT * FROM action_ledger WHERE id <= ? ORDER BY id").all(history.at(-1)!["id"] as number);
+  expect(prefix).toEqual(history); expect(stage.handle.prepare("SELECT * FROM ledger_seal WHERE id <= ? ORDER BY id").all(seals.at(-1)!["id"] as number)).toEqual(seals);
+  for (const task of ["release-tag", "release-publish", "orphan-homebrew", "", "previously-resumed", "already-held"]) expect(autoPublishHeld(stage, task)).not.toBeNull();
+  const calls: string[] = []; expect(await resumeAllowedReleases(stage, root!, async j => { calls.push(j.step); }, f.now)).toBe(0); expect(calls).toEqual([]);
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action=?").get(RELEASE_RESUMED_ACTION)?.["n"]).toBe(1); // Historical only.
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action IN ('checks started','checks finished')").get()?.["n"]).toBe(0);
+  expect(stage.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action='checks requested'").get()?.["n"]).toBe(1);
+  expect(verifyLedgerChain(stage.handle).ok).toBe(true); stage.sealLedger(); expect(verifyLedgerChain(stage.handle)).toMatchObject({ ok: true, unsealed: 0 });
+  stage.close(); expect(hash(f.source)).toBe(original); expect(journals.map(file => fs.readFileSync(file))).toEqual(journalBytes);
+});
+
+test("failure after hold append rolls back ledger permissions and seals without inventing check or custody outcomes", () => {
+  let history: Record<string, unknown>[] = [], seals: Record<string, unknown>[] = [];
+  const f = fixture((s, now) => { releaseStanding(s, now); history = s.handle.prepare("SELECT * FROM action_ledger ORDER BY id").all(); seals = s.handle.prepare("SELECT * FROM ledger_seal ORDER BY id").all(); });
+  const original = hash(f.source), h = copy(f.source);
+  vi.spyOn(Store.prototype, "dropWebSession").mockImplementation(() => { throw Error("synthetic post-hold failure"); });
+  expect(retireCentralRecoveryStage(h).outcome).toBe("failed"); vi.restoreAllMocks();
+  const stage = openStore(h.copyPath); expect(stage.handle.prepare("SELECT * FROM action_ledger ORDER BY id").all()).toEqual(history);
+  expect(stage.handle.prepare("SELECT * FROM ledger_seal ORDER BY id").all()).toEqual(seals);
+  expect(autoPublishHeld(stage, "release-tag")).toBeNull(); expect(verifyLedgerChain(stage.handle).ok).toBe(true);
   stage.close(); expect(hash(f.source)).toBe(original);
 });
