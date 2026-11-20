@@ -68,7 +68,7 @@ describe("v174", () => {
       for (const table of V174_TABLES) expect(upgraded.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
       expect(upgraded.lookupRef("kept")).not.toBeNull();
     } finally { upgraded.close(); }
-    expect(SCHEMA_VERSION).toBe(175);
+    expect(SCHEMA_VERSION).toBe(176);
   });
 
   test("a crash after the step resumes to the same shape", () => {
