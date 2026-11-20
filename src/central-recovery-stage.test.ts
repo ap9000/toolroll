@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { runOperate, EXIT } from "./operate.js";
 import { flexibleSignInBilling, signInForTurn, signInStandsAt, signInHoldsFor, signInForInteractiveStands, signInEpochOf } from "./flexible-sign-in.js";
 import { onRelayCancel } from "./flexible-relay-cancel.js";
+import * as storeModule from "./store.js";
 import { Store, openStore } from "./store.js";
 import { addApprover } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
@@ -419,4 +420,31 @@ test("late failure rolls back snapshot sign-in changes and epochs without custod
   expect(retireCentralRecoveryStage(h).outcome).toBe('failed');vi.restoreAllMocks();const s=openStore(h.copyPath);
   expect({rows:s.handle.prepare("SELECT * FROM flexible_sign_in ORDER BY generation").all(),epochs:s.handle.prepare("SELECT * FROM flexible_sign_in_epoch ORDER BY person").all(),custody:flexibleCustody(s)}).toEqual(before);
   s.close();expect(hash(f.source)).toBe(original);
+});
+
+
+test("only exact178/709 is admitted; old177, missing, extra and variant indexes stay untouched", () => {
+  for (const change of ["old177", "missing", "extra", "variant"] as const) {
+    const f = fixture(), raw = new DatabaseSync(f.source);
+    if (change !== "extra") raw.exec("DROP INDEX action_ledger_action");
+    if (change === "old177") raw.exec("UPDATE schema_version SET version = 177");
+    if (change === "extra") raw.exec("CREATE INDEX unexpected_index ON action_ledger(action)");
+    if (change === "variant") raw.exec("CREATE INDEX action_ledger_action ON action_ledger(id) WHERE action = 'checks recovery held'");
+    raw.close(); const before = hash(f.source), h = copy(f.source), copied = hash(h.copyPath);
+    expect(retireCentralRecoveryStage(h)).toMatchObject({ outcome: "unsupported-schema", schemaSupported: false, complete: false, recoveryReady: false });
+    expect(hash(f.source)).toBe(before); expect(hash(h.copyPath)).toBe(copied);
+    const after = new DatabaseSync(h.copyPath, { readOnly: true });
+    expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(change === "old177" ? 177 : 178); after.close();
+    closeCentralRecoveryStage(h); handles.splice(handles.indexOf(h), 1); fs.rmSync(root!, { recursive: true, force: true }); root = undefined;
+  }
+});
+
+test.each(["catalog", "version", "binding"] as const)("post-open %s of the actual retained Store is revalidated", change => {
+  const f = fixture(), before = hash(f.source), original = storeModule.openStore;
+  vi.spyOn(storeModule, "openStore").mockImplementation((file, options) => {
+    const s = original(change === "binding" && file.endsWith("/stage.db") ? ":memory:" : file, options);
+    if (file.endsWith("/stage.db") && change !== "binding") s.handle.exec(change === "catalog" ? "CREATE INDEX post_open_variant ON action_ledger(action)" : "UPDATE schema_version SET version=177");
+    return s;
+  });
+  expect(() => copy(f.source)).toThrow(/Retained stage (schema|database file) changed/); expect(hash(f.source)).toBe(before);
 });

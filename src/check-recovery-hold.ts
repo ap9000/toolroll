@@ -141,7 +141,7 @@ export function readCheckRecoveryHoldsForRun(store: Store, runId: number): ReadC
         (h.run_id IN (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))
           OR h.task_id IN (SELECT value FROM json_each(?))
           OR (CASE WHEN json_valid(h.detail) THEN json_extract(h.detail, '$.r') ELSE NULL END) IN (SELECT value FROM json_each(?))
-          OR EXISTS (SELECT 1 FROM action_ledger q WHERE CAST(q.id AS TEXT) = h.outcome AND
+          OR EXISTS (SELECT 1 FROM action_ledger q WHERE q.id = CAST(h.outcome AS INTEGER) AND CAST(q.id AS TEXT) = h.outcome AND
             (q.task_id IN (SELECT value FROM json_each(?)) OR q.run_id IN
               (SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?)))))) ORDER BY h.id`)
         .all(CHECK_RECOVERY_HELD, serialized, names, serialized, names, serialized);

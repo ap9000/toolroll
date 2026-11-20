@@ -1,4 +1,9 @@
-/** Unreachable copied-stage experiment. This is neither a restore API nor proof of recovery readiness. */
+/** Unreachable experiment for controlled synthetic fixtures only, never operator/live data.
+ * JavaScript UID/mode and post-open inode checks do not attest macOS ACL privacy,
+ * cross-UID privacy, hostile-writer isolation, or safe path-based SQLite open/cleanup.
+ * No operator/live caller until native descriptor-owned protected ancestors/copy ACLs,
+ * same-object SQLite open/cleanup binding and process exclusion are independently reviewed.
+ * This is neither a restore API nor proof of recovery readiness. */
 import * as fs from "node:fs";
 import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,13 +12,14 @@ import { openStore, type Store } from "./store.js";
 import { holdAutoPublish, autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import { revokeCoordinator } from "./coordinator.js";
 
-// Exact fresh v177 schema, compiled from this reviewed source (708 non-internal objects).
+// Exact fresh v178 schema, compiled from this source (709 non-internal objects).
 // Variants/unknown schemas remain unsupported; no caller can supply or widen this inventory.
 // This unreachable scaffold supports backups up to128MiB; larger files require a reviewed streaming design.
 // This is an input byte bound, never an agent/model runtime deadline.
 export const MAX_STAGE_BYTES = 128 * 1024 * 1024;
-const SUPPORTED_SCHEMA = 177;
-const SCHEMA_DIGEST = "d9aa15ce2b9571f9453f981272c5322b6714d123667e49ed5251dc7eeb23baa1";
+const SUPPORTED_SCHEMA = 178;
+const SCHEMA_OBJECT_COUNT = 709;
+const SCHEMA_DIGEST = "e19ee516ce7d955cd4a7bea60cb5cc404b02a7264f0fb0dc555b83b8361f6e06";
 const INVENTORY = [
   ["person-credentials", "store.ts:revokeApiToken", "credential", true],
   ["lead-credentials", "store.ts:revokeLeadCredentials", "credential", true],
@@ -101,10 +107,14 @@ function schemaOf(path: string): { schema: number | null; supported: boolean } {
     const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
     const version = db.prepare("SELECT version FROM schema_version").all();
     const schema = version.length === 1 && typeof version[0]?.["version"] === "number" ? version[0]["version"] : null;
-    return { schema, supported: schema === SUPPORTED_SCHEMA && createHash("sha256").update(JSON.stringify(rows)).digest("hex") === SCHEMA_DIGEST };
+    return { schema, supported: schema === SUPPORTED_SCHEMA && rows.length === SCHEMA_OBJECT_COUNT && createHash("sha256").update(JSON.stringify(rows)).digest("hex") === SCHEMA_DIGEST };
   } finally { db.close(); }
 }
-/** Explicit cold backup only; no default path, existing Store, live service or caller-supplied isolation proof. */
+/** Controlled synthetic cold-backup fixtures only; not an operator restore/admission API.
+ * No default path, live caller, existing Store or caller-supplied isolation proof is admitted.
+ * JS ownership/mode/inode checks are not ACL/cross-UID/hostile-writer isolation proof.
+ * Native descriptor-owned ancestor/copy-ACL protection, same-object SQLite open and
+ * cleanup binding, and exclusion must be reviewed before any operator/live caller. */
 export function copyCentralRecoveryStage(source: string, privateParent: string): RecoveryStageHandle {
   const parent = canonical(privateParent, true);
   if (parent.uid !== process.getuid?.() || (parent.mode & 0o077) !== 0) throw Error("Stage parent must be owner-private");
@@ -131,6 +141,16 @@ export function copyCentralRecoveryStage(source: string, privateParent: string):
     // Open only while the newly random private location is still undisclosed. Never reopen a handle-supplied path.
     if (shape.supported) {
       stageStore = openStore(copy);
+      const openedFile = canonical(copy);
+      if (stageStore.databaseFile() !== copy || openedFile.dev !== copied.mark.dev || openedFile.ino !== copied.mark.ino) {
+        throw Error("Retained stage database file changed after open");
+      }
+      // Reprove the actual retained connection after open: never report a raw-copy
+      // version/fingerprint if opening migrated or substituted its catalog.
+      const openedVersion = stageStore.handle.prepare("SELECT version FROM schema_version").all();
+      const openedRows = stageStore.handle.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
+      if (openedVersion.length !== 1 || openedVersion[0]?.["version"] !== SUPPORTED_SCHEMA || openedRows.length !== SCHEMA_OBJECT_COUNT
+        || createHash("sha256").update(JSON.stringify(openedRows)).digest("hex") !== SCHEMA_DIGEST) throw Error("Retained stage schema changed after open");
       stageStore.handle.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE");
     }
     const final = readStable(copy);

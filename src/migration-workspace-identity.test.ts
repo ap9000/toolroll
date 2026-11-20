@@ -14,11 +14,12 @@ function v176(): string {
   const file = join(dir, "orders.db"), store = openStore(file);
   store.createTask({ id: "kept", title: "Keep this task" }, new Date("2026-11-20T00:00:00.000Z")); store.close();
   const raw = new DatabaseSync(file);
+  raw.exec("DROP INDEX action_ledger_action");
   for (const [type, name] of [...V177_OBJECTS].reverse()) raw.exec(`DROP ${type} ${name}`);
   raw.exec("UPDATE schema_version SET version = 176"); raw.close(); return file;
 }
 test("fresh/v176 files gain one identity without changing saved tasks, and reopening preserves it", () => {
-  expect(SCHEMA_VERSION).toBe(177); expect(UPDATE_SAFE_MIGRATIONS).toContain(177);
+  expect(SCHEMA_VERSION).toBe(178); expect(UPDATE_SAFE_MIGRATIONS).toContain(177);
   const file = v176(), before = new DatabaseSync(file), task = before.prepare("SELECT * FROM task WHERE id = 'kept'").get(); before.close();
   const store = openStore(file), identity = store.workspaceIdentity();
   expect(WORKSPACE_ID_PATTERN.test(identity.id)).toBe(true); expect(RECOVERY_GENERATION_PATTERN.test(identity.recoveryGeneration)).toBe(true);
@@ -52,8 +53,8 @@ test("a missing current identity row is never recreated, including direct reads"
   const raw = new DatabaseSync(file); expect(raw.prepare("SELECT count(*) AS n FROM workspace_identity").get()?.["n"]).toBe(0); raw.close();
 });
 
-test("current identity cannot be reminted during stale finding compatibility replay; impossible -177 remains refused", () => {
-  for (const damage of ["table", "row"] as const) for (const version of [177, -177]) {
+test("current identity cannot be reminted during stale finding compatibility replay; resumed -177 also refuses identity loss; -178 is impossible", () => {
+  for (const damage of ["table", "row"] as const) for (const version of [177, -177, 178, -178]) {
     const file = v176(); openStore(file).close(); const raw = new DatabaseSync(file);
     const sql = String(raw.prepare("SELECT sql FROM sqlite_master WHERE name = 'finding'").get()!["sql"]);
     raw.exec("PRAGMA foreign_keys = OFF; BEGIN");
@@ -66,7 +67,7 @@ test("current identity cannot be reminted during stale finding compatibility rep
       raw.exec(V177_SCHEMA.slice(V177_SCHEMA.indexOf("CREATE TRIGGER IF NOT EXISTS workspace_identity_not_deleted")));
     }
     raw.prepare("UPDATE schema_version SET version = ?").run(version); raw.close();
-    expect(() => openStore(file)).toThrow(version === 177 ? /workspace identity/ : /mid-flight marker no build ever wrote/);
+    expect(() => openStore(file)).toThrow(version === -178 ? /mid-flight marker no build ever wrote/ : /workspace identity/);
     const after = new DatabaseSync(file);
     expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(version);
     expect(after.prepare("SELECT title FROM task WHERE id = 'kept'").get()?.["title"]).toBe("Keep this task");
