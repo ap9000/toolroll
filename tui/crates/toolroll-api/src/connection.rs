@@ -200,7 +200,6 @@ impl RemoteCapabilities {
 
     fn allowed(&self) -> bool {
         !self.provider_setup
-            && !self.local_code
             && !self.local_execution
             && !self.interactive
             && self

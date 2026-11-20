@@ -1,4 +1,5 @@
 import { handleTerminalConnection } from "../terminal-connection.js";
+import { handleHandoffPull, handleHandoffPush } from "../local-handoff.js";
 import { credentialProof, freshFacts, proveAccountNow, ssoNowAvailable, type FreshFacts } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
@@ -196,6 +197,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.team-send": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); },
     "edge.cli": async ({ request, response }) => { await cliEndpoint(request, response); },
     "edge.terminal-connection": async ({ request, response }) => { handleTerminalConnection(request, response, { store, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.handoff-pull": async ({ request, response, url }) => { await handleHandoffPull(request, response, url, { store, evidenceRoot, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.handoff-push": async ({ request, response, url }) => { await handleHandoffPush(request, response, url, { store, evidenceRoot, clock, authenticate: tokenPrincipalOf, admit: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.teams": teams,
   });
   return { registrations };

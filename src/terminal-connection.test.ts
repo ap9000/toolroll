@@ -55,7 +55,7 @@ test("native HTTP admission preserves personal read/act scope, advertises live r
     expect(body.capabilities.commands).toEqual(expected === "act" ? [...REMOTE_TUI_COMMANDS] : []);
     expect(body.capabilities.approval).toBe("browser");
     expect(body.capabilities.providerSetup).toBe(false);
-    expect(body.capabilities.localCode).toBe(false);
+    expect(body.capabilities.localCode).toBe(true);
     expect(body.capabilities.localExecution).toBe(false);
     expect(body.capabilities.interactive).toBe(false);
     expect(reply.headers["cache-control"]).toBe("no-store"); expect(reply.text).not.toContain(token.token); expect(reply.text).not.toContain(token.hash); expect(reply.text).not.toContain("/synthetic");

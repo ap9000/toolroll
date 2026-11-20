@@ -31,7 +31,7 @@ export const terminalConnectionSchema = z.strictObject({
     workRows: z.boolean(), stepCards: z.boolean(), resultDiff: z.boolean(), runLiveWindow: z.boolean(),
     leadChat: z.boolean(), liveStream: z.boolean(),
     commands: z.array(z.enum(REMOTE_TUI_COMMANDS)), approval: z.literal("browser"),
-    providerSetup: z.literal(false), localCode: z.literal(false), localExecution: z.literal(false), interactive: z.literal(false),
+    providerSetup: z.literal(false), localCode: z.boolean(), localExecution: z.literal(false), interactive: z.literal(false),
   }),
 });
 export type TerminalConnection = z.infer<typeof terminalConnectionSchema>;

@@ -425,6 +425,11 @@ async function dispatch(
   if (central !== null) argv = central.local;
   const connected = await maybeRunConnectCommand(argv, write, mainOptions.connect);
   if (connected !== null) return connected;
+  if (argv[0] === "handoff") {
+    const { maybeRunHandoffCommand } = await import("./handoff-cli.js");
+    const handoffCode = await maybeRunHandoffCommand(argv, write, connectOptions ?? {});
+    if (handoffCode !== null) return handoffCode;
+  }
   if (argv[0] === "--remote") {
     return runRemoteTuiCommand(argv.slice(1), write, connectOptions ?? {});
   }

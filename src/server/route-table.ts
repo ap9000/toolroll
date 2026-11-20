@@ -270,6 +270,8 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.team-send": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
   "edge.cli": { local: "deny", why: "bearer only" },
   "edge.terminal-connection": { local: "deny", why: "ordinary person API token only; never a local-owner cookie or credential conversion" },
+  "edge.handoff-pull": { local: "deny", why: "ordinary person API token only for local code handoff export" },
+  "edge.handoff-push": { local: "deny", why: "ordinary person API token only for local code handoff candidate upload" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -350,6 +352,8 @@ edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bear
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.terminal-connection", "GET", "/engine/connection", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.handoff-pull", "GET", `^\\/api\\/handoff\\/task\\/${TASK}$`, { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one" });
+edge("remote", "edge.handoff-push", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidate" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });

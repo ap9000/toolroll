@@ -146,6 +146,7 @@ export function handleTerminalConnection(request: IncomingMessage, response: Ser
       runLiveWindow: true,
       leadChat: account.role === "approver",
       liveStream: true,
+      localCode: true,
       commands: before.scope === "act" && account.role === "approver" ? [...REMOTE_TUI_COMMANDS] : [],
     };
     const candidate: TerminalConnection = {
