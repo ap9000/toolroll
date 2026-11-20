@@ -2432,6 +2432,7 @@ dependencies = [
  "toolroll-fake-engine",
  "toolroll-vt100",
  "unicode-width",
+ "url",
  "vt100",
  "zeroize",
 ]

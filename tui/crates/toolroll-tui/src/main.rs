@@ -8,12 +8,14 @@
 //! says so there (one line), and only then does the launcher write the one-time sign-in link on file descriptor 3 (one
 //! line, then end of file); it is redeemed at once and the session kept in memory only. Exit codes: 0 leave, 40 stop
 //! the agents, 41 keep them in the background, 42 open the classic screen instead, 43 unprotected (classic screen), 1
-//! the session ended, 2 started wrongly.
-use std::io::{Read, Write};
+//! the session ended, 2 started wrongly, 44 structured central bootstrap unavailable (no local fallback).
+use std::io::Write;
 use std::os::fd::FromRawFd;
 use toolroll_tui::app::{EXIT_CLASSIC, EXIT_ENDED, EXIT_UNPROTECTED};
+use toolroll_tui::bootstrap::{
+    self, Bootstrap, BootstrapError, CENTRAL_UNAVAILABLE, EXIT_CENTRAL_UNAVAILABLE,
+};
 use toolroll_tui::guard;
-use zeroize::Zeroizing;
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -22,20 +24,15 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-/// The link on descriptor 3: at most 1 KiB, one line, held in zeroizing memory.
-fn read_link() -> Option<Zeroizing<String>> {
+/// Protected input on descriptor 3: bounded/zeroizing, with legacy local links and a disabled central discriminator.
+fn read_bootstrap() -> Result<Option<Bootstrap>, BootstrapError> {
     // SAFETY: descriptor 3 is the launcher's pipe (or nothing: fstat says so and nothing is taken over).
     let open = unsafe { libc_fstat_ok(3) };
     if !open {
-        return None;
+        return Ok(None);
     }
-    let mut file = unsafe { std::fs::File::from_raw_fd(3) };
-    let mut buf = Zeroizing::new(Vec::with_capacity(1024));
-    let _ = (&mut file).take(1024).read_to_end(&mut buf);
-    drop(file);
-    let text = std::str::from_utf8(&buf).ok()?;
-    let line = Zeroizing::new(text.lines().next()?.trim().to_string());
-    (!line.is_empty()).then_some(line)
+    let file = unsafe { std::fs::File::from_raw_fd(3) };
+    bootstrap::read(file)
 }
 
 /// Whether a descriptor is open (fcntl F_GETFD), without taking it over.
@@ -99,18 +96,26 @@ fn main() {
                     .and_then(|_| c.flush());
             }
         },
-        read_link,
+        read_bootstrap,
     );
     let link = match started {
         Err(guard::Startup::Unprotected(why)) => {
             eprintln!("The terminal workbench {why}, so it won't hold a sign-in. Opening the classic screen instead.");
             std::process::exit(EXIT_UNPROTECTED);
         }
-        Ok(None) => {
+        Ok(Ok(None)) => {
             eprintln!("Start the terminal workbench with `toolroll`.");
             std::process::exit(2);
         }
-        Ok(Some(link)) => link,
+        Ok(Err(error)) => {
+            eprintln!("{error}");
+            std::process::exit(EXIT_CENTRAL_UNAVAILABLE);
+        }
+        Ok(Ok(Some(Bootstrap::CentralUnavailable))) => {
+            eprintln!("{CENTRAL_UNAVAILABLE}");
+            std::process::exit(EXIT_CENTRAL_UNAVAILABLE);
+        }
+        Ok(Ok(Some(Bootstrap::LocalLink(link)))) => link,
     };
     toolroll_tui::stats::mark("link_read");
     let rt = tokio::runtime::Builder::new_current_thread()

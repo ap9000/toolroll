@@ -43,6 +43,7 @@ Proposed metadata shape; field names become final with the server contract revie
   "kind": "central",
   "origin": "https://toolroll.example.com",
   "workspaceId": "<server-issued immutable workspace ID>",
+  "recoveryGeneration": "<server-issued 32 lowercase hex generation>",
   "account": "<account returned by the authenticated server>",
   "label": "Acme",
   "credentialRef": "<opaque launcher-owned credential slot>"
@@ -57,7 +58,29 @@ Proposed metadata shape; field names become final with the server contract revie
 
 ### Protected launch
 
-The trusted launcher selects a bootstrap kind before it starts any local service. It proves the native binary and protected-start response before handing a secret through a bounded close-on-exec descriptor. A proposed tagged envelope distinguishes `local-link` from `central-token`; the central envelope includes the bound non-secret profile identity and zeroizing token. Direct native-binary invocation is not a new supported credential entry point.
+The trusted launcher selects a bootstrap kind before it starts any local service. It proves the native binary and protected-start response before handing a secret through a bounded close-on-exec descriptor. Existing descriptor input stays the same plain local one-time link. A separately versioned structured envelope identifies a proposed central-token bootstrap; it is not accepted by the current Node launcher and is only a disabled native guard in the next slice. Direct native-binary invocation is not a new supported credential entry point.
+
+Proposed exact central descriptor shape (the token below is a shape placeholder, never a literal to advertise):
+
+```json
+{
+  "bootstrap": 1,
+  "kind": "central-token",
+  "connectionProtocol": 1,
+  "origin": "https://toolroll.example.com",
+  "binding": {
+    "kind": "enrolled-person",
+    "workspaceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "account": "alice"
+  },
+  "token": "so_<12 lowercase hex>_<43 base64url characters>"
+}
+```
+
+`bootstrap` versions the protected descriptor envelope; `connectionProtocol` names the separate server metadata protocol. The binding kind identifies expected values from an enrolled person profile, not a returned metadata object. The native parser validates those formats but cannot prove a caller really enrolled; parsing is not authority. `origin` must already be the exact canonical HTTPS origin with no credentials, path, query or fragment. Unknown/duplicate fields or kinds, oversized bodies, malformed token shape and inconsistent identity fields refuse without echoing their values. The disabled bootstrap accepts literal UTF-8 strings only and rejects every JSON escape before deserialization, so an escaped token cannot enter serde's ordinary decoding scratch buffer. This intentionally excludes escaped spellings (including names requiring escaped quotes/backslashes) even where the broader metadata contract accepts the decoded printable name; no central launcher is enabled by this narrow wire contract.
+
+Disabled guard behavior: after dump protection and descriptor reading, every structured central outcome (valid, invalid, unknown or unsupported) returns native exit 44, never local redemption, a runtime/UI loop, or `EXIT_CLASSIC`. The valid token and input buffer are dropped/zeroized before exit. Existing Node `runTuiBinary` treats an otherwise unclassified post-handoff exit as `leave`, not `classic`, `stop` or `keep`; this slice does not change that launcher or emit a central payload. This is only a native-binary negative guard: `easy-start.ts` currently stops an owned personal worker after an ordinary `leave`, so exit 44 alone is not an end-to-end no-worker-stop guarantee. A future central launcher must select central before starting any personal service and bypass personal ownership/shutdown handling. Pre-secret protection failures retain the existing exit 43 and receive no credential. That future central launcher must also keep such failures out of personal fallback before this bootstrap can become reachable. These are blocking launcher integration requirements; no claim of a usable central mode follows from the guard.
 
 The native binary must reject unknown tags and inconsistent fields. Local code continues to call `redeem`; central code calls its new person-token constructor and `/engine/connection`. Neither branch falls into the other on an error. Subprocesses/editors receive no inherited credential descriptor or token environment variable.
 
