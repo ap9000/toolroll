@@ -9833,6 +9833,7 @@ async function runTaskChecks(positional: readonly string[], flags: Map<string, s
   const asked = requestFollowUpChecks(store, { runId: result.runId, level, actor: "cli" }, clock());
   if (!asked.ok) return fail(write, json, "task checks", asked.reason, asked.message, EXIT.refused);
   const done = await runFollowUpCheck(store, context.evidenceRoot, asked.request, { now: clock });
+  if (done?.state === "recovery-held") return fail(write, json, "task checks", "recovery-held", done.note!, EXIT.refused);
   const state = done?.state ?? "waiting";
   const words = `${CHECK_LEVEL_WORDS[asked.level]} checks`;
   const payload = { task: taskId, run: result.runId, head: result.head, request: asked.request, level: asked.level, state, exitCode: done?.exitCode ?? null };

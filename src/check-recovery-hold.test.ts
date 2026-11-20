@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requestFollowUpChecks } from "./result-follow-ups.js";
 import { openStore, type Store } from "./store.js";
 import { CHECK_RECOVERY_HELD, checkRequestDigest, parseCheckHoldDetail, readCheckRecoveryHoldsForRun, representCheckHoldDetail } from "./check-recovery-hold.js";
 
@@ -183,6 +184,23 @@ describe("CH0 check-recovery event representation and actual-Store reader", () =
     store.handle.prepare("UPDATE run SET task_ref = ? WHERE id = ?").run(foreign.ref, original.run);
     const result = readCheckRecoveryHoldsForRun(store, nextRun);
     expect(result.kind).toBe("invalid-evidence"); disabled(result);
+  });
+
+  it("binds the real Store 16-hex approved command digest in an actual requested check", () => {
+    const t = task("real-command-digest");
+    const command = store.setVerifyCommand({ repo, command: "echo synthetic", timeoutMs: 1000, approvedBy: "fixture" }, now);
+    expect(command.digest).toMatch(/^[0-9a-f]{16}$/);
+    const asked = requestFollowUpChecks(store, { runId: t.run, level: "full", actor: "fixture" }, now);
+    if (!asked.ok) throw new Error(asked.message);
+    const row = store.handle.prepare("SELECT * FROM action_ledger WHERE id = ?").get(asked.request)!;
+    const representation = { id: asked.request, repo: row["repo"], runId: row["run_id"], taskId: row["task_id"], action: row["action"], outcome: row["outcome"], detail: row["detail"] };
+    const digest = checkRequestDigest(representation)!;
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    fixtureEvent(t, { id: asked.request, representation: representation as ReturnType<typeof ask>["representation"], digest });
+    expect(readCheckRecoveryHoldsForRun(store, t.run).kind).toBe("held-evidence");
+    for (const length of [0, 15, 17, 63, 65]) expect(checkRequestDigest({ ...representation,
+      detail: `${"a".repeat(40)} · person · ${"b".repeat(length)}` })).toBeNull();
+    expect(checkRequestDigest({ ...representation, detail: `${"a".repeat(40)} · person · ${"d".repeat(16)}` })).not.toBe(digest);
   });
 
 });

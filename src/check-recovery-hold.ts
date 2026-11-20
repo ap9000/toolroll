@@ -29,12 +29,13 @@ export function parseCheckHoldDetail(raw: unknown): CheckHoldDetail | null {
   } catch { return null; }
 }
 /** Stable versioned tuple, not a hash of caller-chosen partial fields. Representation only. */
+// The live Store uses 16-hex approved-command digests; 64-hex remains explicit representation compatibility.
 export function checkRequestDigest(input: unknown): string | null {
   const parsed = requestSchema.safeParse(input);
   if (!parsed.success) return null;
   const q = parsed.data, parts = q.detail.split(" · ");
   if ((parts.length !== 3 && parts.length !== 4) || !/^[0-9a-f]{40}$/.test(parts[0]!)
-    || !["person", "pull-request", "batch", "recheck"].includes(parts[1]!) || !/^[0-9a-f]{64}$/.test(parts[2]!)
+    || !["person", "pull-request", "batch", "recheck"].includes(parts[1]!) || !/^(?:[0-9a-f]{16}|[0-9a-f]{64})$/.test(parts[2]!)
     || (parts.length === 4 && (parts[1] !== "batch" || (parts[3] !== "" && !/^[0-9a-f]{40}$/.test(parts[3]!))))) return null;
   return createHash("sha256").update(JSON.stringify([1, q.id, q.repo, q.runId, q.taskId, q.action, q.outcome, q.detail])).digest("hex");
 }
