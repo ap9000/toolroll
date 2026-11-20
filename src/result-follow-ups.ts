@@ -369,8 +369,10 @@ export function resultCheckLevel(store: Store, runId: number, now: Date): CheckL
 /** Before a Quick or Off result merges: the project's full check on its exact
  * commit. Clear when the build already ran the full check, when the project has
  * no full command (its CI covers it), or when a follow-up full check passed. */
-export type FullCheckGate = { state: "clear" } | { state: "not-requested" | "waiting" | "failed" | "not-run"; message: string };
+export type FullCheckGate = { state: "clear" } | { state: "recovery-held"; message: string; recovery: ReadCheckRecoveryHolds; priorExecution: "unverified" } | { state: "not-requested" | "waiting" | "failed" | "not-run"; message: string };
 export function fullCheckGate(store: Store, runId: number, now: Date): FullCheckGate {
+  const held = recoveryCheckBlock(store, runId);
+  if (held !== null) return { state: "recovery-held", message: CHECK_RECOVERY_MESSAGE, recovery: held, priorExecution: "unverified" };
   const level = runCheckLevel(store, runId);
   const repo = repoOfRun(store, runId);
   const run = store.getRun(runId);

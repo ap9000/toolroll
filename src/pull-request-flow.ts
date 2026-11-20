@@ -32,7 +32,7 @@ import type { Publication, Store } from "./store.js";
 import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, refArchived, releaseTaskRef } from "./store.js";
 import { belongsToRelease } from "./release-authority.js";
 import { autoReleaseSealed } from "./release-auto.js";
-import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
+import { fullCheckGate, requestFollowUpChecks, type FullCheckGate } from "./result-follow-ups.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
 export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
@@ -510,6 +510,7 @@ export async function mergePullRequest(
 
   // Built with Quick or Off checks: Merge waits for the full check on this commit, unless a person merges anyway.
   const gate = fullCheckGate(store, publication.run, clock());
+  if (gate.state === "recovery-held") return refuse("recovery-held", gate.message);
   if (gate.state === "not-requested") requestFollowUpChecks(store, { runId: publication.run, level: "full", actor: input.by, why: "pull-request" }, clock());
   const skippedFullCheck = gate.state !== "clear";
   if (skippedFullCheck && input.anyway !== true) return fail("full-checks", gate.message);
@@ -533,7 +534,8 @@ export async function mergePullRequest(
   // one that comes after waits for GitHub's answer (the reservation counts as work going on).
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();
-  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" => {
+  const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" | "recovery-held" => {
+    if (fullCheckGate(store, publication.run, clock()).state === "recovery-held") return "recovery-held";
     if (input.proceed?.({ base: before.base, url: before.url, head: before.head }) === false) return "halted";
     // A Flexible result: its Ship reserved (merging) under exactly this token, in this same transaction (the armed
     // merge's `proceed` takes the reservation); a cancel or revocation that landed first leaves nothing to merge.
@@ -541,9 +543,12 @@ export async function mergePullRequest(
     if (refArchived(store, publication.taskRef)) return "archived";
     if (store.handle.prepare("SELECT 1 FROM hold WHERE task_ref = ? AND owner_id LIKE 'project-delete:%' AND (until IS NULL OR until > ?)").get(publication.taskRef, clock().toISOString()) !== undefined) return "deleting";
     if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";
-    store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, clock().toISOString());
+    const reservedAt = clock();
+    if (fullCheckGate(store, publication.run, reservedAt).state === "recovery-held") return "recovery-held";
+    store.handle.prepare("INSERT OR REPLACE INTO merge_in_flight (publication, task_ref, token, by, at) VALUES (?, ?, ?, ?, ?)").run(publication.id, publication.taskRef, token, input.by, reservedAt.toISOString());
     return "ok";
   });
+  if (reserved === "recovery-held") return refuse("recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.");
   if (reserved === "halted") return refuse("halted", "The worker is stopping or paused, so this merge waits for its next pass.");
   if (reserved === "archived") return refuse("archived", "This task is put away. Restore it before merging.");
   if (reserved === "deleting") return refuse("deleting", "This task's project is being deleted, so nothing merges.");
@@ -580,7 +585,7 @@ export type PullRequestView = {
   canMerge: boolean;
   revisionTask: string | null;
   /** Quick or Off results: the full check Merge waits for, unless a person merges anyway. */
-  fullCheck: { state: "not-requested" | "waiting" | "failed" | "not-run"; message: string } | null;
+  fullCheck: Exclude<FullCheckGate, { state: "clear" }> | null;
 };
 
 /** The pull request a result opened through Complete, in plain words; null when it opened none. */
@@ -604,6 +609,7 @@ export function pullRequestViewOf(store: Store, runId: number): PullRequestView 
   if (publication.remoteState === "CLOSED") return { ...base, state: "closed", label: "Closed", detail: "The pull request was closed on GitHub without merging." };
   switch (publication.lastCheckState) {
     case "passing":
+      if (fullCheck?.state === "recovery-held") return { ...base, state: "waiting", label: "Checks held after recovery", detail: fullCheck.message };
       if (fullCheck !== null) return { ...base, state: "waiting", label: fullCheck.state === "failed" ? "Full checks failed" : "Waiting for full checks", detail: `CI passed on GitHub. ${fullCheck.message}${error}`, canMerge: grant !== null };
       return { ...base, state: "ready", label: "Ready to merge", detail: `CI passed on GitHub.${grant?.mergeWhenGreen === true ? " It merges by itself." : ""}${error}`, canMerge: grant !== null };
     case "failing":
