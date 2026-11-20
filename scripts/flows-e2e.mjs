@@ -235,7 +235,9 @@ await journey("steps", SCRIPTED, "A Draft step writes a reply with Claude, and t
 });
 
 await journey("lead", REAL_MODEL, "The lead drafts a reply-and-approve flow from plain words (real coding agent turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
-  let { reply, text } = await askLead(`Make a flow called Customer replies in this project: ${w.agentProvider === "codex" ? "Codex" : "Claude"} drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.`);
+  // This journey draws the existing Claude Draft step; the lead itself still uses the selected real provider.
+  // Asking for a Codex draft instead requests a different capability and can correctly produce a Research step.
+  let { reply, text } = await askLead("Make a flow called Customer replies in this project: Claude drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.");
   // An earlier check made a similar "Replies" flow, and the lead may fairly ask whether to reuse it, or hold back for a
   // missing chat app: whenever no card was drafted, it is asked once more, the way a person would.
   const drafted = await reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: "Customer replies" }).first().waitFor({ timeout: 10_000 }).then(() => true, () => false);
