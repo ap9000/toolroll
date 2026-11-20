@@ -384,3 +384,7 @@ mod tests;
 
 #[cfg(test)]
 mod initial;
+
+// No stage construction code is included in the production library.
+#[cfg(test)]
+mod stage_namespace;
