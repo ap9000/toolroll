@@ -13,7 +13,9 @@ import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { quickVerifyKey, recordRunCheckLevel, type CheckLevel } from "./check-levels.js";
-import { followUpChecksOf, runFollowUpCheck } from "./result-follow-ups.js";
+import { CHECK_RECOVERY_HELD, checkRequestDigest, representCheckHoldDetail } from "./check-recovery-hold.js";
+import { authorizationProblem, recheckStanding, readAuthorization } from "./check-only-standing.js";
+import { followUpChecksOf, runFollowUpCheck, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
 import { authorizeCheckOnly, claimRecheck, CHECK_ONLY_WINDOW_MS, RECHECK_ACTOR, requestMissingRechecks } from "./check-only.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
@@ -211,5 +213,87 @@ describe("must refuse", () => {
     const { run } = built("t", { level: "quick" });
     authorizeCheckOnly(store, run, NOW);
     expect(auth(run)).toMatchObject({ level: "quick" });
+  });
+});
+
+
+/** Synthetic ledger fixture only; no production hold writer is introduced. */
+function recoveryHoldFor(run: number, request?: number): number {
+  const result = store.getRun(run)!, ref = store.refById(result.taskRef)!;
+  const qid = request ?? store.recordAction({ at: NOW.toISOString(), actor: "fixture", repo: ref.repo, taskId: ref.externalId, runId: run,
+    action: "checks requested", outcome: "full", source: "work", detail: `${result.headRevision} · person · ${store.liveVerifyCommand(REPO)!.digest}` });
+  const q = store.handle.prepare("SELECT * FROM action_ledger WHERE id = ?").get(qid)!;
+  const digest = checkRequestDigest({ id: qid, repo: q["repo"], runId: q["run_id"], taskId: q["task_id"], action: q["action"], outcome: q["outcome"], detail: q["detail"] });
+  if (digest === null) throw new Error("synthetic request binding");
+  store.recordAction({ at: NOW.toISOString(), actor: "toolroll", repo: ref.repo, taskId: ref.externalId, runId: run,
+    action: CHECK_RECOVERY_HELD, outcome: String(qid), source: "work", detail: representCheckHoldDetail({ v: 1, q: digest, g: "d".repeat(32), r: ref.id })! });
+  return qid;
+}
+const checkLedger = () => store.handle.prepare("SELECT * FROM action_ledger WHERE action LIKE 'checks %' ORDER BY id").all();
+
+describe("recovery holds narrow check-only admission without spending or closing", () => {
+  test("unspent authorization and cached proof refuse without changing rows or failed evidence", () => {
+    const { run } = built("held-unspent"), id = authorizeCheckOnly(store, run, NOW)!;
+    store.recordRunCheck(run, { status: "failed", exitCode: 7, suites: [] }, NOW);
+    const before = auth(run)!, cached = readAuthorization(before);
+    recoveryHoldFor(run); const ledger = checkLedger();
+    expect(authorizationProblem(store, cached, { head: HEAD, digest: store.liveVerifyCommand(REPO)!.digest }, NOW)).not.toBeNull();
+    expect(claimRecheck(store, id, later(1))).toBeNull();
+    expect(requestMissingRechecks(store, root, later(2))).toBe(0);
+    expect(authorizeCheckOnly(store, run, later(2))).toBeNull();
+    expect(auth(run)).toEqual(before); expect(auth(run)).toMatchObject({ used_at: null, used_request: null, closed_at: null });
+    expect(checkLedger()).toEqual(ledger);
+    expect(store.handle.prepare("SELECT status,exit_code FROM run_check WHERE run = ?").get(run)).toMatchObject({ status: "failed", exit_code: 7 });
+  });
+  test("used authorization cannot reprove dispatch or change provenance after a hold", async () => {
+    const { run } = built("held-used"), id = authorizeCheckOnly(store, run, NOW)!;
+    const asked = claimRecheck(store, id, later(1))!;
+    expect(asked).not.toBeNull(); const before = auth(run)!, cached = readAuthorization(before);
+    recoveryHoldFor(run, asked.request); const ledger = checkLedger();
+    expect(recheckStanding(store, { request: asked.request, runId: run, head: HEAD, digest: cached.commandDigest }).ok).toBe(false);
+    expect(authorizationProblem(store, cached, { head: HEAD, digest: cached.commandDigest }, NOW)).not.toBeNull();
+    const runner = vi.fn(), recordingGit = vi.fn();
+    expect(await runFollowUpCheck(store, root, asked.request, { now: () => later(2), runner: runner as never, git: recordingGit as never })).toMatchObject({ state: "recovery-held", priorExecution: "unverified" });
+    expect(runner).not.toHaveBeenCalled(); expect(recordingGit).not.toHaveBeenCalled();
+    expect(claimRecheck(store, id, later(2))).toBeNull(); expect(requestMissingRechecks(store, root, later(2))).toBe(0);
+    expect(auth(run)).toEqual(before); expect(checkLedger()).toEqual(ledger);
+    expect(store.artifactsFor(run).filter(a => a.capture === FOLLOW_UP_RECEIPT)).toEqual([]);
+  });
+  test("reproves hold at claim even after an authorization was read", () => {
+    const { run } = built("held-claim-race"), id = authorizeCheckOnly(store, run, NOW)!, before = auth(run)!;
+    const original = store.transact.bind(store); let heldLedger: ReturnType<typeof checkLedger> = [];
+    vi.spyOn(store, "transact").mockImplementationOnce(body => original(() => { recoveryHoldFor(run); heldLedger = checkLedger(); return body(); }));
+    expect(claimRecheck(store, id, later(1))).toBeNull();
+    expect(auth(run)).toEqual(before); expect(checkLedger()).toEqual(heldLedger);
+  });
+  test("reproves the sweep's cached row before requesting or closing", () => {
+    const { run } = built("held-sweep-race"); authorizeCheckOnly(store, run, NOW);
+    store.recordRunCheck(run, { status: "failed", exitCode: 9, suites: [] }, NOW);
+    const before = auth(run)!, original = store.transact.bind(store); let heldLedger: ReturnType<typeof checkLedger> = [];
+    vi.spyOn(store, "transact").mockImplementationOnce(body => original(() => { recoveryHoldFor(run); heldLedger = checkLedger(); return body(); }));
+    expect(requestMissingRechecks(store, root, later(1))).toBe(0);
+    expect(auth(run)).toEqual(before); expect(checkLedger()).toEqual(heldLedger);
+  });
+  test("a hold observed during verdict reading never closes the authorization", () => {
+    const { run } = built("held-close-race"); authorizeCheckOnly(store, run, NOW);
+    store.recordRunCheck(run, { status: "failed", exitCode: 2, suites: [] }, NOW);
+    const before = auth(run)!, original = store.getRun.bind(store); let inserted = false;
+    vi.spyOn(store, "getRun").mockImplementationOnce(id => { const value = original(id); inserted = true; recoveryHoldFor(run); return value; });
+    expect(requestMissingRechecks(store, root, later(1))).toBe(0); expect(inserted).toBe(true);
+    expect(auth(run)).toEqual(before); expect(auth(run)?.["closed_at"]).toBeNull();
+  });
+  test("a held historical replacement family cannot gain a fresh check-only authorization", () => {
+    const old = built("held-old"), next = built("held-next"); recoveryHoldFor(old.run);
+    store.handle.prepare("INSERT INTO task_replacement(task_ref,successor,at) VALUES (?,?,?)").run(old.ref, "held-next", NOW.toISOString());
+    expect(authorizeCheckOnly(store, next.run, later(1))).toBeNull(); expect(auth(next.run)).toBeUndefined();
+  });
+  test("no-event standing still requests once and spends only its actual request", () => {
+    const { run } = built("personal-check-only"), id = authorizeCheckOnly(store, run, NOW)!;
+    const cached = readAuthorization(auth(run)!);
+    expect(authorizationProblem(store, cached, { head: HEAD, digest: cached.commandDigest }, NOW)).toBeNull();
+    const asked = claimRecheck(store, id, later(1))!; expect(asked).not.toBeNull();
+    expect(auth(run)).toMatchObject({ used_at: later(1).toISOString(), used_request: asked.request, closed_at: null });
+    expect(recheckStanding(store, { request: asked.request, runId: run, head: HEAD, digest: cached.commandDigest }).ok).toBe(true);
+    expect(claimRecheck(store, id, later(2))).toBeNull();
   });
 });

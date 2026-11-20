@@ -13,7 +13,7 @@
  */
 import { assignmentChecksForRun } from "./assignment.js";
 import { runCheckLevel, repoOfRun, checkCommandFor } from "./check-levels.js";
-import { approvedScopeStands, authorizationProblem, readAuthorization } from "./check-only-standing.js";
+import { approvedScopeStands, authorizationProblem, readAuthorization, checkOnlyRecoveryProblem } from "./check-only-standing.js";
 import { requestFollowUpChecks } from "./result-follow-ups.js";
 import { releaseCheckScope } from "./scope.js";
 import { refArchived } from "./task-archive.js";
@@ -30,6 +30,7 @@ export const RECHECK_ACTOR = "Toolroll";
  */
 export function authorizeCheckOnly(store: Store, runId: number, now: Date): number | null {
   return store.transact(() => {
+    if (checkOnlyRecoveryProblem(store, runId) !== null) return null;
     const run = store.getRun(runId);
     if (run === null || run.role !== "builder" || run.outcome !== "built" || run.headRevision === null || !/^[a-f0-9]{40}$/.test(run.headRevision)) return null;
     const ref = store.refById(run.taskRef);
@@ -56,6 +57,7 @@ export function claimRecheck(store: Store, authorization: number, now: Date): { 
     const row = store.handle.prepare("SELECT * FROM check_authorization WHERE id = ? AND used_at IS NULL AND closed_at IS NULL AND expires_at > ?").get(authorization, now.toISOString());
     if (row === undefined) return null;
     const auth = readAuthorization(row);
+    if (checkOnlyRecoveryProblem(store, auth.run) !== null) return null;
     const run = store.getRun(auth.run);
     const repo = repoOfRun(store, auth.run);
     if (run === null || repo === null || store.lastBuilderRun(auth.taskRef)?.id !== auth.run || store.hasLiveClaim(auth.taskRef, now)) return null;
@@ -64,6 +66,7 @@ export function claimRecheck(store: Store, authorization: number, now: Date): { 
     const asked = requestFollowUpChecks(store, { runId: auth.run, level: auth.level, actor: RECHECK_ACTOR, why: "recheck" }, now);
     // An existing request is the person's own: it stands, and this authorization isn't spent on it.
     if (!asked.ok || asked.existing) return null;
+    if (checkOnlyRecoveryProblem(store, auth.run) !== null) return null;
     const spent = store.handle.prepare("UPDATE check_authorization SET used_at = ?, used_request = ? WHERE id = ? AND used_at IS NULL").run(now.toISOString(), asked.request, auth.id);
     if (Number(spent.changes) !== 1) throw new Error("the recheck's authorization moved inside its own transaction");
     return { request: asked.request };
@@ -75,12 +78,22 @@ export function requestMissingRechecks(store: Store, root: string, now: Date): n
   const open = store.handle.prepare("SELECT * FROM check_authorization WHERE used_at IS NULL AND closed_at IS NULL AND expires_at > ? ORDER BY id").all(now.toISOString());
   let asked = 0;
   for (const row of open) {
-    const auth = readAuthorization(row);
-    const run = store.getRun(auth.run);
-    if (run === null || run.finishedAt === null) continue;
-    const state = approvedCheckStateOf(assignmentChecksForRun(store, root, auth.run, now));
-    if (state === "not-run" || state === "unreadable") { if (claimRecheck(store, auth.id, now) !== null) asked++; continue; }
-    if (state !== "running") store.handle.prepare("UPDATE check_authorization SET closed_at = ? WHERE id = ? AND used_at IS NULL").run(now.toISOString(), auth.id);
+    asked += store.transact(() => {
+      // The sweep's row may be cached: re-read standing and hold inside the same
+      // transaction that requests/spends or closes it. A hold is neither event.
+      const current = store.handle.prepare("SELECT * FROM check_authorization WHERE id = ? AND used_at IS NULL AND closed_at IS NULL AND expires_at > ?").get(row["id"]!, now.toISOString());
+      if (current === undefined) return 0;
+      const auth = readAuthorization(current);
+      if (checkOnlyRecoveryProblem(store, auth.run) !== null) return 0;
+      const run = store.getRun(auth.run);
+      if (run === null || run.finishedAt === null) return 0;
+      const state = approvedCheckStateOf(assignmentChecksForRun(store, root, auth.run, now));
+      if (state === "not-run" || state === "unreadable") return claimRecheck(store, auth.id, now) === null ? 0 : 1;
+      if (state !== "running" && checkOnlyRecoveryProblem(store, auth.run) === null) {
+        store.handle.prepare("UPDATE check_authorization SET closed_at = ? WHERE id = ? AND used_at IS NULL AND closed_at IS NULL").run(now.toISOString(), auth.id);
+      }
+      return 0;
+    });
   }
   return asked;
 }
