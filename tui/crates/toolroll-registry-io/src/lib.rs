@@ -1,5 +1,6 @@
 //! Unreachable, read-only filesystem foundation. There is deliberately no production
 //! constructor, account lookup, enrollment/admission result, writer or helper binary.
+//! Initial publication experiments compile only in the private test module.
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use std::ffi::CString;
@@ -380,3 +381,6 @@ enum Stage {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod initial;
