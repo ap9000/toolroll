@@ -718,8 +718,13 @@ async fn event_loop(
         };
         app.remote_badge = Some(format!("Remote · {} · {}{mode}", info.label, info.account));
     }
-    // Where the last run left off (state.rs): our own small file, read only when it is safe to.
-    let state_path = crate::state::path(env);
+    // Where the last run left off (state.rs): isolated per (workspaceId, account) for central sessions,
+    // keeping legacy tui-state.toml / view.json untouched for personal local sessions.
+    let remote_info = client.remote_info();
+    let state_path = match &remote_info {
+        Some(info) => crate::state::remote_path(env, &info.workspace_id, &info.account),
+        None => crate::state::path(env),
+    };
     app.restore = state_path.as_deref().and_then(crate::state::load);
     let mut saved = app.restore.clone();
     let mut last_save = Instant::now();
@@ -728,12 +733,22 @@ async fn event_loop(
     app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
     app.split = prefs.settings.list_width();
     app.side = prefs.settings.list_side;
-    // This project's view (viewstate.rs), keyed by a hash of the project the console runs for this terminal.
-    let view_path = crate::viewstate::path(env);
+    // This project's view (viewstate.rs), keyed by a hash of the project (or central workspace+account+project).
+    let view_path = match &remote_info {
+        Some(info) => crate::viewstate::remote_path(env, &info.workspace_id, &info.account),
+        None => crate::viewstate::path(env),
+    };
     // Where a pane's text may go for the editor (editor.rs), and any export left by a screen that ended abruptly.
     let export_places = crate::editor::places(env);
     crate::editor::reclaim(&export_places);
-    let view_key = crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)"));
+    let view_key = match &remote_info {
+        Some(info) => crate::viewstate::remote_project_key(
+            &info.workspace_id,
+            &info.account,
+            opts.project.as_deref().unwrap_or("(all)"),
+        ),
+        None => crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)")),
+    };
     let mut views = view_path
         .as_deref()
         .map(|p| crate::viewstate::load(p, env.home.as_deref()))

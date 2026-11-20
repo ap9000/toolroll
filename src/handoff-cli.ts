@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
-import { centralProfile, type ConnectOptions } from "./connect-cli.js";
+import { centralProfile, serviceOrigin, type ConnectOptions } from "./connect-cli.js";
 import { MAX_HANDOFF_PATCH_BYTES, validateHandoffPatch } from "./local-handoff.js";
 
 const HELP = `toolroll handoff pull <task> [--repo <local-dir>] [--profile <name>]
@@ -52,30 +52,40 @@ function httpJson<T>(
   origin: string,
   path: string,
   token: string,
+  pins: { workspaceId?: string | undefined; recoveryGeneration?: string | undefined } = {},
   body?: unknown,
 ): Promise<{ status: number; data: T | null }> {
-  const url = new URL(path, origin);
+  const safeOrigin = serviceOrigin(origin);
+  const url = new URL(path, safeOrigin);
   const reqFn = url.protocol === "https:" ? httpsRequest : httpRequest;
   const serialized = body === undefined ? undefined : JSON.stringify(body);
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
     accept: "application/json",
+    ...(pins.workspaceId !== undefined ? { "x-toolroll-workspace": pins.workspaceId } : {}),
+    ...(pins.recoveryGeneration !== undefined ? { "x-toolroll-recovery": pins.recoveryGeneration } : {}),
     ...(serialized === undefined ? {} : { "content-type": "application/json", "content-length": String(Buffer.byteLength(serialized)) }),
   };
   return new Promise((resolve, reject) => {
     const req = reqFn(url, { method, headers, timeout: 30_000 }, res => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        res.resume();
+        resolve({ status, data: null });
+        return;
+      }
       const chunks: Buffer[] = [];
       let size = 0;
       res.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_HANDOFF_PATCH_BYTES + 128 * 1024) { req.destroy(); resolve({ status: res.statusCode ?? 0, data: null }); return; }
+        if (size > MAX_HANDOFF_PATCH_BYTES + 128 * 1024) { req.destroy(); resolve({ status, data: null }); return; }
         chunks.push(chunk);
       });
       res.on("end", () => {
         try {
-          resolve({ status: res.statusCode ?? 0, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) as T });
+          resolve({ status, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) as T });
         } catch {
-          resolve({ status: res.statusCode ?? 0, data: null });
+          resolve({ status, data: null });
         }
       });
     });
@@ -148,7 +158,13 @@ export async function maybeRunHandoffCommand(
       write("Run this inside a local Git checkout of the project, or pass --repo <local-dir>.");
       return 2;
     }
-    const reply = await httpJson<HandoffPullResponse>("GET", profile.origin, `/api/handoff/task/${encodeURIComponent(taskId)}`, profile.token);
+    const reply = await httpJson<HandoffPullResponse>(
+      "GET",
+      profile.origin,
+      `/api/handoff/task/${encodeURIComponent(taskId)}`,
+      profile.token,
+      { workspaceId: profile.workspaceId, recoveryGeneration: profile.recoveryGeneration },
+    );
     if (reply.status !== 200 || reply.data === null || !reply.data.ok) {
       write(reply.data?.message ?? `Central server answered status ${reply.status}.`);
       return 1;
@@ -221,6 +237,10 @@ export async function maybeRunHandoffCommand(
       write("Not inside a handoff worktree. Name the task id: toolroll handoff push <task>");
       return 2;
     }
+    if (meta !== null && meta.workspaceId !== "" && profile.workspaceId !== undefined && meta.workspaceId !== profile.workspaceId) {
+      write("Refused: this handoff worktree belongs to a different central workspace than your active profile.");
+      return 1;
+    }
     const baseCommit = meta?.baseCommit ?? gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
     // Include both committed work on the handoff branch and unstaged edits against baseCommit.
     const patch = execFileSync("git", ["-C", worktreeRoot, "diff", baseCommit], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
@@ -234,6 +254,10 @@ export async function maybeRunHandoffCommand(
       profile.origin,
       `/api/handoff/task/${encodeURIComponent(taskId)}/candidate`,
       profile.token,
+      {
+        workspaceId: meta?.workspaceId || profile.workspaceId,
+        recoveryGeneration: meta?.recoveryGeneration || profile.recoveryGeneration,
+      },
       { patch, baseCommit, note },
     );
     if (reply.status !== 201 || reply.data === null || !reply.data.ok) {

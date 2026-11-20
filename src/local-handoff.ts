@@ -188,6 +188,18 @@ function authenticateHandoff(
     sendJson(response, 503, { protocol: HANDOFF_PROTOCOL, ok: false, error: "workspace-unavailable", message: "Workspace identity unavailable." });
     return null;
   }
+  const pinnedWorkspace = request.headers["x-toolroll-workspace"];
+  const pinnedRecovery = request.headers["x-toolroll-recovery"];
+  if (pinnedWorkspace !== undefined && pinnedWorkspace !== identity.id) {
+    request.resume();
+    sendJson(response, 409, { protocol: HANDOFF_PROTOCOL, ok: false, error: "workspace-mismatch", message: "This central server does not match your saved workspace identity." });
+    return null;
+  }
+  if (pinnedRecovery !== undefined && pinnedRecovery !== identity.recoveryGeneration) {
+    request.resume();
+    sendJson(response, 409, { protocol: HANDOFF_PROTOCOL, ok: false, error: "recovery-changed", message: "This workspace was restored or rotated. Reconnect before pushing." });
+    return null;
+  }
   return { principal, scope: live.scope, identity };
 }
 

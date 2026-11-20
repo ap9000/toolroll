@@ -149,6 +149,7 @@ enum ClientAuth {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteInfo {
     pub origin: String,
+    pub workspace_id: String,
     pub label: String,
     pub account: String,
     pub role: ConnectionRole,
@@ -443,6 +444,7 @@ impl Client {
             ClientAuth::Local(_) => None,
             ClientAuth::Remote(r) => Some(RemoteInfo {
                 origin: self.origin.clone(),
+                workspace_id: r.workspace_id.clone(),
                 label: r.label.clone(),
                 account: self.account.clone(),
                 role: r.role,

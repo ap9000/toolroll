@@ -129,6 +129,20 @@ impl Resume {
     }
 }
 
+/// Deterministic 128-bit hex digest of a `(workspace_id, account)` tuple so raw identifiers never enter filenames.
+pub fn remote_namespace_hash(workspace_id: &str, account: &str) -> String {
+    let input = format!("toolroll-remote-state-v1\0{workspace_id}\0{account}");
+    let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut h2: u64 = 0x8422_2325_cbf2_9ce4;
+    for (i, b) in input.bytes().enumerate() {
+        h1 ^= u64::from(b);
+        h1 = h1.wrapping_mul(0x0000_0100_0000_01b3);
+        h2 ^= u64::from(b).wrapping_add(i as u64);
+        h2 = h2.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    format!("{h1:016x}{h2:016x}")
+}
+
 /// The state file: under `XDG_STATE_HOME` when it is set (an absolute path), else `~/.local/state`.
 pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
     if let Some(x) = env.xdg_state_home.as_ref().filter(|p| p.is_absolute()) {
@@ -140,6 +154,13 @@ pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
             .join("toolroll")
             .join("tui-state.toml")
     })
+}
+
+/// Central/remote state file, isolated per `(workspace_id, account)` so remote sessions never import or overwrite
+/// legacy local task selection.
+pub fn remote_path(env: &crate::settings::Env, workspace_id: &str, account: &str) -> Option<PathBuf> {
+    let tag = remote_namespace_hash(workspace_id, account);
+    path(env).map(|p| p.with_file_name(format!("tui-state-remote-{tag}.toml")))
 }
 
 /// Whether a file with these facts is ours to read: a plain file, this user's, that nobody else can read or change.
@@ -403,5 +424,27 @@ mod tests {
                 "/home/me/.local/state/toolroll/tui-state.toml"
             ))
         );
+    }
+
+    #[test]
+    fn remote_state_paths_are_isolated_per_workspace_and_account_without_raw_identifiers() {
+        let env = crate::settings::Env {
+            home: Some("/home/me".into()),
+            ..Default::default()
+        };
+        let local = path(&env).unwrap();
+        let a_alice = remote_path(&env, "11111111-1111-4111-8111-111111111111", "alice").unwrap();
+        let a_bob = remote_path(&env, "11111111-1111-4111-8111-111111111111", "bob").unwrap();
+        let b_alice = remote_path(&env, "22222222-2222-4222-8222-222222222222", "alice").unwrap();
+        let hostile = remote_path(&env, "../../etc", "alice/evil").unwrap();
+
+        assert_ne!(local, a_alice);
+        assert_ne!(a_alice, a_bob);
+        assert_ne!(a_alice, b_alice);
+        assert_eq!(local.parent(), hostile.parent());
+        let name = hostile.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("tui-state-remote-"));
+        assert!(name.ends_with(".toml"));
+        assert!(!name.contains("etc") && !name.contains("alice") && !name.contains(".."));
     }
 }
