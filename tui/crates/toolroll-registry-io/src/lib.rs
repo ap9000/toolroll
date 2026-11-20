@@ -249,8 +249,12 @@ fn filesystem(file: &File) -> Result<(), Failure> {
     }
     // Linux 0xef53 identifies ext-family, NOT ext4 specifically. This read-only
     // observation filter proves no mount durability or enrollment support.
-    #[cfg(target_os = "linux")]
-    if s.f_type == 0xef53 && s.f_flags & libc::ST_RDONLY as libc::c_long == 0 {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if s.f_type == 0xef53 && s.f_flags & (libc::ST_RDONLY as libc::c_long) == 0 {
+        return Ok(());
+    }
+    #[cfg(all(target_os = "linux", target_env = "musl"))]
+    if s.f_type == 0xef53 && s.f_flags & (libc::ST_RDONLY as libc::c_ulong) == 0 {
         return Ok(());
     }
     Err(Failure::Unsupported)
