@@ -100,3 +100,22 @@ describe("the start's terms card", () => {
     expect(flexibleStartCard(world.store, { repo: world.project, by, model: null, message: "x" })).toMatchObject({ ok: false, reason: "terms-lapsed" });
   });
 });
+
+test("runtime and helper models are part of exactly the approved start; default remains stream-json", () => {
+  plant();
+  const structured = card();
+  expect(structured.runtime).toBe("stream-json");
+  const interactive = card({ runtime: "interactive" });
+  expect(interactive.summary.key).not.toBe(structured.summary.key);
+  expect(interactive.runtime).toBe("interactive");
+  expect(interactive.summary.decisions.some(row => row.label === "Limits")).toBe(false);
+  expect(card({ runtime: "interactive", helperModels: ["claude-haiku-4-5"] }).summary.key).not.toBe(interactive.summary.key);
+});
+
+test("replacing identical project terms invalidates an older start approval", () => {
+  plant(); const first = card({ runtime: "interactive" });
+  plant(); const replaced = card({ runtime: "interactive" });
+  expect(replaced.digest).toBe(first.digest);
+  expect(replaced.termsId).not.toBe(first.termsId);
+  expect(replaced.summary.key).not.toBe(first.summary.key);
+});

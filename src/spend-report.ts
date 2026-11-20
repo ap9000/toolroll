@@ -172,11 +172,11 @@ export function spendRows(db: Database, from: string, to: string): SpendRow[] {
 
   // A subagent's turns and a flow's drafts run on this computer's Claude sign-in with no key from Toolroll: their billing
   // stamp is a machine default, so it is unproved, and a cost they report is an estimate.
-  for (const row of db.prepare(`SELECT t.id, t.at, t.subagent, t.model, t.cost_usd, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
+  for (const row of db.prepare(`SELECT t.id, t.at, t.subagent, t.model, t.provider, t.model_reported, t.cost_usd, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
       WHERE t.at >= ? AND t.at < ? ORDER BY t.id`).all(from, to)) {
     const amount: ReportedAmount = { kind: "unknown" };
     rows.push({ ref: `subagent_turn:${Number(row["id"])}`, at: String(row["at"]), source: "subagent", role: "subagent", project: text(row["repo"]), person: null,
-      subagent: Number(row["subagent"]), taskId: null, runId: null, provider: "claude", modelChosen: text(row["model"]), modelReported: null, billing: "unproved",
+      subagent: Number(row["subagent"]), taskId: null, runId: null, provider: String(row["provider"]), modelChosen: text(row["model"]), modelReported: text(row["model_reported"]), billing: "unproved",
       amount, charge: chargeOf(amount, usdMicro(row["cost_usd"]), "estimated") });
   }
   for (const row of db.prepare("SELECT id, at, repo, provider, model, cost_usd FROM side_spend WHERE at >= ? AND at < ? ORDER BY id").all(from, to)) {

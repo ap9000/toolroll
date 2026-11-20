@@ -21,7 +21,7 @@ type Done = { ok: true; said: string } | { ok: false; said: string };
 
 export type Week = {
   since: string;
-  turns: number; failedTurns: number; costUsd: number | null; minutes: number;
+  turns: number; pendingTurns: number; failedTurns: number; costUsd: number | null; minutes: number;
   decided: number; handled: number; handed: number; asked: number;
   calls: { made: number; approved: number; denied: number; refused: number; undone: number };
   overrides: { said: string; at: string; href: string | null }[];
@@ -54,7 +54,7 @@ export function weekOf(store: Store, mate: SubagentRow, now: Date, since: string
   });
   const moved = store.flowMovesOverridden(`${name} (AI)`, since).map(one => ({ said: `${one.by} moved “${one.title.slice(0, 80)}” after ${name} did`, at: one.at, href: flowCardHref(one.flow, one.card) }));
   return {
-    since, turns: turns.length, failedTurns: turns.filter(one => !one.ok).length, costUsd: costs.length === 0 ? null : Math.round(costs.reduce((sum, one) => sum + one, 0) * 1e6) / 1e6,
+    since, turns: turns.length, pendingTurns: turns.filter(one => one.pending).length, failedTurns: turns.filter(one => !one.ok && !one.pending).length, costUsd: costs.length !== turns.length || costs.length === 0 ? null : Math.round(costs.reduce((sum, one) => sum + one, 0) * 1e6) / 1e6,
     minutes: Math.round(turns.reduce((sum, one) => sum + one.ms, 0) / 60_000),
     decided: count("decided"), handled: count("handled"), handed: count("handed"), asked: count("asked"),
     calls: { made: calls.filter(one => one.state === "done" || one.state === "failed").length, approved: calls.filter(one => one.decidedBy !== null && one.state !== "denied" && one.state !== "refused").length,
@@ -72,7 +72,7 @@ export function weekWords(mate: SubagentRow, week: Week): string {
   const lines = [
     `${name} decided ${week.decided}, handled ${week.handled}, handed ${week.handed} to people and asked ${week.asked} question${week.asked === 1 ? "" : "s"}.`,
     `Tool calls: ${week.calls.made} made${week.calls.approved > 0 ? ` (${week.calls.approved} after a person approved)` : ""}${week.calls.denied > 0 ? `, ${week.calls.denied} turned down` : ""}${week.calls.refused > 0 ? `, ${week.calls.refused} outside its rules` : ""}${week.calls.undone > 0 ? `, ${week.calls.undone} undone` : ""}.`,
-    `${week.turns} turn${week.turns === 1 ? "" : "s"}${week.failedTurns > 0 ? ` (${week.failedTurns} failed)` : ""}, about ${week.minutes} minute${week.minutes === 1 ? "" : "s"} of thinking${week.costUsd === null ? "" : `, ${money(week.costUsd)} at API prices`}.`,
+    `${week.turns} turn${week.turns === 1 ? "" : "s"}${week.pendingTurns > 0 ? ` (${week.pendingTurns} unfinished)` : ""}${week.failedTurns > 0 ? ` (${week.failedTurns} failed)` : ""}, about ${week.minutes} minute${week.minutes === 1 ? "" : "s"} of thinking${week.costUsd === null ? "" : `, ${money(week.costUsd)} at API prices`}.`,
     ...(week.overrides.length === 0 ? ["Nobody overrode it."] : [`You overrode it ${week.overrides.length} time${week.overrides.length === 1 ? "" : "s"}:`, ...week.overrides.slice(0, 5).map(one => `• ${one.said}`)]),
   ];
   return lines.join("\n");

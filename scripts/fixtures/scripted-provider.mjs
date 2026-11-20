@@ -580,7 +580,7 @@ async function plain(provider, argv) {
 function passThrough(dir, provider, argv) {
   const call = readCall(provider, argv);
   const isTurn = provider === "claude" ? argv.includes("-p") || argv.includes("--print") : argv[0] === "exec";
-  record(dir, { at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.calls ? "lead" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true });
+  record(dir, { at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.action && call.schema?.properties?.remember ? "subagent" : call.schema?.properties?.calls ? "lead" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true });
   const env = { ...process.env };
   const real = env[REAL_ENV];
   delete env[COUNT_ENV]; delete env[REAL_ENV];

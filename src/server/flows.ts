@@ -230,7 +230,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (mate === null) return refuse(response, who, 404, "No such subagent in your projects.", "/settings/lead/subagents");
     const approvers = store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, mate.repo));
     return sendScreen(response, 200, screen(labelOf(mate), html`<p><a href="/settings/lead">Lead</a></p><h1>${labelOf(mate)}</h1>${(subagentPageHtml(store, mate, who.name, projectName, who.via === "cookie" && who.role === "approver", approvers,
-      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), query: url.searchParams.get("q") }))}`, { chrome: chromeFor(mate.repo, "settings") }));
+      { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), backupDraft: url.searchParams.get("backupDraft"), query: url.searchParams.get("q") }))}`, { chrome: chromeFor(mate.repo, "settings") }));
   }
 
   async function subagentSoulFile(ctx: HandlerContext): Promise<void> {
@@ -443,10 +443,12 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     const done = part === "state" ? setSubagentState(store, mate, body.get("state") === "removed" ? "removed" : body.get("state") === "paused" ? "paused" : "active", who.name, now)
       : part === "note" ? tellSubagent(store, mate, body.get("note") ?? "", who.name, now)
-      : part === "settings" ? subagentSettings(store, mate, { model: body.get("model") ?? "default", dailyTurns: Number(body.get("dailyTurns")), manager: body.get("manager") ?? mate.manager }, who.name, now)
+      : part === "settings" ? subagentSettings(store, mate, { model: body.get("model") ?? "default", dailyTurns: Number(body.get("dailyTurns")), manager: body.get("manager") ?? mate.manager,
+          ...(body.get("backupPresent") === "1" ? { codexBackupModel: (body.get("codexBackupModel") ?? "").trim() || null } : {}) }, who.name, now,
+          { proveBackup: () => authenticateApprover(who, body.get("password") ?? "", mate.repo).ok })
       : sendSubagentSummaries(store, mate.repo, now, mate.id) > 0 ? { ok: true as const, said: `Sent today's summary to ${mate.manager}.` } : { ok: false as const, said: "The summary couldn't be sent." };
     if (part === "state" && body.get("state") === "removed" && done.ok) return redirect(response, `/settings/lead/subagents?said=${encodeURIComponent(done.said)}`);
-    return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}${part === "note" ? "#memory" : ""}`);
+    return redirect(response, `${back}?${done.ok ? "said" : "problem"}=${encodeURIComponent(done.said)}${part === "settings" && !done.ok && body.get("backupPresent") === "1" ? `&backupDraft=${encodeURIComponent(body.get("codexBackupModel") ?? "")}` : ""}${part === "note" ? "#memory" : part === "settings" ? "#backup" : ""}`);
   };
 
   // ---- flows: making one -----------------------------------------------------

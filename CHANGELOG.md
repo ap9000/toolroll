@@ -4,6 +4,25 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.116 — 2026-11-19
+
+Clearer recovery for threads and AI teammates, with consistent light and dark colours.
+
+### New
+
+- **Optional Codex backup for AI teammates.** Set its model in the teammate's Settings. Your ChatGPT sign-in
+  can answer when Claude hits its limit or isn't installed; existing tool approvals and daily limits remain.
+
+### Changed
+
+- **Flow colours follow your theme.** The colour picker uses the standard controls and marks the selected colour.
+- **Quieter surfaces.** Chat, workspace panels and overlays use the shared shadow and dimming styles.
+
+### Fixed
+
+- **Thread connection errors explain the next step.** Review changes, then reply to retry. An uncertain outcome
+  still says so; retrying is always your choice.
+
 ## 0.9.115 — 2026-11-18
 
 Interactive agent threads (beta) get their everyday loop, a failed plan is no longer a dead end, and every screen

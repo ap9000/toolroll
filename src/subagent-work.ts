@@ -29,6 +29,7 @@ import { LIMITS } from "./decision.js";
 import { callName, callOutcome, callWords, inputProblem, makeCall, offeredTools, refreshGrants, ruleFor, type OfferedTool, type ToolIo } from "./subagent-tools.js";
 import { ACCEPT, answerSuggestion, considerSuggestion, memoriesFor, remember } from "./subagent-memory.js";
 import { replyToAsker } from "./subagent-desk.js";
+import { subagentAttemptWithBackup } from "./subagent-backup.js";
 import { claudeMachineBilling } from "./spend.js";
 
 /** A question waits for its answer this long before the step is due again on its own: never, in practice. */
@@ -127,14 +128,16 @@ export async function subagentTurn(store: Store, flow: FlowRow, definition: Flow
     const tools = spent ? [] : offeredTools(store, mate);
     const context = { ...contextOf(store, flow, definition, stage, card, mate, tools, spent && made > 0), ...(shorten === undefined ? {} : { shorten }) };
     const asked = Date.now();
-    const reply = await (io.turn ?? claudeTurnRunner())({ model, prompt: turnPrompt(context), timeoutMs: TURN_TIMEOUT_MS });
-    // v97: every turn is kept with what it cost, for its weekly report.
-    store.addSubagentTurn({ subagent: mate.id, card: card.id, model, ok: reply.ok, ms: reply.ok ? reply.ms : Date.now() - asked, costUsd: reply.costUsd ?? null, tokensIn: reply.tokensIn ?? null, tokensOut: reply.tokensOut ?? null }, now);
+    const attempt = io.turn === undefined && store.getSubagent(mate.id)?.codexBackupModel != null
+      ? await subagentAttemptWithBackup(store, mate, card, { model, prompt: turnPrompt(context), timeoutMs: TURN_TIMEOUT_MS, flowRevision: flow.revision }) : null;
+    const reply = attempt?.reply ?? await (io.turn ?? claudeTurnRunner())({ model, prompt: turnPrompt(context), timeoutMs: TURN_TIMEOUT_MS });
+    // Reserved provider attempts were already recorded separately, including the failed primary.
+    if (attempt === null) store.addSubagentTurn({ subagent: mate.id, card: card.id, model, ok: reply.ok, ms: reply.ok ? reply.ms : Date.now() - asked, costUsd: reply.costUsd ?? null, tokensIn: reply.tokensIn ?? null, tokensOut: reply.tokensOut ?? null }, now);
     if (!reply.ok) return { state: "retry", said: reply.said, ...(log.length === 0 ? {} : { log: log.join("\n\n") }) };
     const read = readTurn(reply.value, context);
     if (!read.ok) return { state: "retry", said: `${context.name}'s answer wasn't one this zone allows.`, log: [...log, read.issues.map(issue => issue.line).join("\n"), JSON.stringify(reply.value).slice(0, 4000)].join("\n\n") };
     const answer = read.value;
-    const header = `${context.name} (${model}) · ${(reply.ms / 1000).toFixed(1)} s`;
+    const header = `${context.name} (${attempt?.backup ? `Codex backup · ${attempt.model}` : model}) · ${(reply.ms / 1000).toFixed(1)} s`;
     const over = turnOverruns(answer);
     if (over.length > 0 && !shortened) {
       shortened = true;
@@ -144,13 +147,19 @@ export async function subagentTurn(store: Store, flow: FlowRow, definition: Flow
       continue;
     }
     shorten = undefined;
-    if (answer.remember !== "") remember(store, mate, answer.remember, { source: "subagent", card: card.id, by: subagentActor({ name: context.name }) }, now);
-    if (answer.action !== "use_tool") {
-      const outcome = carryOut(store, flow, definition, stage, card, mate, context, answer, now, io, header);
+    const accepted = store.transact(() => {
+      const problem = attempt?.authorize();
+      if (problem != null) return { refused: { state: "retry" as const, said: problem } };
+      if (answer.remember !== "") remember(store, mate, answer.remember, { source: "subagent", card: card.id, by: subagentActor({ name: context.name }) }, now);
+      return answer.action === "use_tool" ? {} : { outcome: carryOut(store, flow, definition, stage, card, mate, context, answer, now, io, header) };
+    });
+    if (accepted.refused !== undefined) return accepted.refused;
+    if (accepted.outcome !== undefined) {
+      const outcome = accepted.outcome;
       return log.length === 0 ? outcome : { ...outcome, log: `${log.join("\n\n")}\n\n${outcome.log ?? ""}`.trim() };
     }
     log.push(`${header}\n\n${JSON.stringify(answer)}`);
-    const waiting = await useTool(store, flow, stage, card, mate, context, answer, io, now);
+    const waiting = await useTool(store, flow, stage, card, mate, context, answer, io, now, attempt?.authorize);
     if (waiting !== null) return { ...waiting, log: log.join("\n\n") };
   }
 }
@@ -160,42 +169,48 @@ export async function subagentTurn(store: Store, flow: FlowRow, definition: Flow
  * turn goes on: null), refused with the reason (the turn goes on and reads
  * it), or put to its person — the turn waits for the answer.
  */
-async function useTool(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCardRow, mate: SubagentRow, context: TurnContext, answer: TurnAnswer, io: ToolIo, now: Date): Promise<SubagentOutcome | null> {
-  const split = answer.tool.indexOf(".");
-  const tool = split < 0 ? answer.tool : answer.tool.slice(0, split), action = split < 0 ? "" : answer.tool.slice(split + 1);
-  const receipt = { subagent: mate.id, card: card.id, entry: card.entry, tool: tool.slice(0, 40), action: action.slice(0, 64) || "(none)", why: answer.reason };
-  const refuse = (input: Record<string, unknown>, said: string) => { store.addSubagentCall({ ...receipt, input, rule: "never", state: "refused", result: said }, now); return null; };
-  if (!(context.tools ?? []).some(one => one.name === answer.tool)) return refuse({}, `There's no ${answer.tool} among the tools you may use.`);
-  let input: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(answer.input === "" ? "{}" : answer.input) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return refuse({}, "Its input wasn't a JSON object.");
-    input = parsed as Record<string, unknown>;
-  } catch {
-    return refuse({}, "Its input wasn't a JSON object.");
-  }
-  const grant = store.subagentGrant(mate.id, tool)!;
-  const info = grant.actions.find(one => one.name === action)!;
-  const problem = inputProblem(info, input);
-  if (problem !== null) return refuse(input, problem);
-  const rule = ruleFor(grant, action, input);
-  if (rule.use === "never") return refuse(input, rule.why);
-  if (rule.use === "free") {
-    const id = store.addSubagentCall({ ...receipt, input, rule: "free", state: "running" }, now);
-    await makeCall(store, store.subagentCall(id)!, flow.repo, io, now);
-    return null;
-  }
-  // Ask first: its person approves this exact call, in their chat app or on the card.
-  const soul = { name: context.name, role: context.role };
-  const id = store.addSubagentCall({ ...receipt, input, rule: "ask", state: "asked", result: rule.why }, now);
-  const words = callWords(tool, action, input, 480);
-  const question = store.openSubagentQuestion({ subagent: mate.id, card: card.id, entry: card.entry, question: `Use ${words}?`, options: [{ id: APPROVE, label: "Approve" }, { id: DENY, label: "Deny" }], askedOf: context.person, toolCall: id }, now);
-  if (question === null) return { state: "failed", said: "It asked to make the same call twice." };
-  notifyPeople(store, card, [context.person], null, { key: `teammate-q:${question}`, attention: true, subject: `${subagentLabel(soul)} asks to use ${action} on “${card.title}”`,
-    body: `${words}\n\n${answer.reason === "" ? "" : `Why: ${answer.reason}\n`}(${rule.why})\n\nApprove makes exactly this call. Deny stops it. Or answer in words to tell ${context.name} what to do instead.`,
-  }, now);
-  if (stage.kind !== "approval") store.updateFlowCard(card.id, { waiting: `${context.name} asked ${context.person} to approve: ${words}`.slice(0, 300) }, now);
-  return { state: "waiting", said: `Asked ${context.person} to approve ${action}`, nextAt: ASKED };
+async function useTool(store: Store, flow: FlowRow, stage: FlowStage, card: FlowCardRow, mate: SubagentRow, context: TurnContext, answer: TurnAnswer, io: ToolIo, now: Date, authorize?: () => string | null): Promise<SubagentOutcome | null> {
+  const prepared = store.transact((): { outcome: SubagentOutcome | null } | { call: number } => {
+    const authorityProblem = authorize?.();
+    if (authorityProblem != null) return { outcome: { state: "retry", said: authorityProblem } };
+    const split = answer.tool.indexOf(".");
+    const tool = split < 0 ? answer.tool : answer.tool.slice(0, split), action = split < 0 ? "" : answer.tool.slice(split + 1);
+    const receipt = { subagent: mate.id, card: card.id, entry: card.entry, tool: tool.slice(0, 40), action: action.slice(0, 64) || "(none)", why: answer.reason };
+    const refuse = (input: Record<string, unknown>, said: string) => { store.addSubagentCall({ ...receipt, input, rule: "never", state: "refused", result: said }, now); return { outcome: null }; };
+    if (!(context.tools ?? []).some(one => one.name === answer.tool)) return refuse({}, `There's no ${answer.tool} among the tools you may use.`);
+    let input: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(answer.input === "" ? "{}" : answer.input) as unknown;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return refuse({}, "Its input wasn't a JSON object.");
+      input = parsed as Record<string, unknown>;
+    } catch {
+      return refuse({}, "Its input wasn't a JSON object.");
+    }
+    const grant = store.subagentGrant(mate.id, tool);
+    const info = grant?.actions.find(one => one.name === action);
+    if (grant === null || info === undefined) return refuse(input, "This tool action is no longer available.");
+    const problem = inputProblem(info, input);
+    if (problem !== null) return refuse(input, problem);
+    const rule = ruleFor(grant, action, input);
+    if (rule.use === "never") return refuse(input, rule.why);
+    if (rule.use === "free") {
+      const id = store.addSubagentCall({ ...receipt, input, rule: "free", state: "running" }, now);
+      return { call: id };
+    }
+    // Ask first: its person approves this exact call, in their chat app or on the card.
+    const soul = { name: context.name, role: context.role };
+    const id = store.addSubagentCall({ ...receipt, input, rule: "ask", state: "asked", result: rule.why }, now);
+    const words = callWords(tool, action, input, 480);
+    const question = store.openSubagentQuestion({ subagent: mate.id, card: card.id, entry: card.entry, question: `Use ${words}?`, options: [{ id: APPROVE, label: "Approve" }, { id: DENY, label: "Deny" }], askedOf: context.person, toolCall: id }, now);
+    if (question === null) return { outcome: { state: "failed", said: "It asked to make the same call twice." } };
+    notifyPeople(store, card, [context.person], null, { key: `teammate-q:${question}`, attention: true, subject: `${subagentLabel(soul)} asks to use ${action} on “${card.title}”`,
+      body: `${words}\n\n${answer.reason === "" ? "" : `Why: ${answer.reason}\n`}(${rule.why})\n\nApprove makes exactly this call. Deny stops it. Or answer in words to tell ${context.name} what to do instead.`,
+    }, now);
+    if (stage.kind !== "approval") store.updateFlowCard(card.id, { waiting: `${context.name} asked ${context.person} to approve: ${words}`.slice(0, 300) }, now);
+    return { outcome: { state: "waiting", said: `Asked ${context.person} to approve ${action}`, nextAt: ASKED } };
+  });
+  if ("call" in prepared) { await makeCall(store, store.subagentCall(prepared.call)!, flow.repo, io, now); return null; }
+  return prepared.outcome;
 }
 
 /** Text still over its limit after the one shorten turn: attached whole to the card's discussion, and what is passed on

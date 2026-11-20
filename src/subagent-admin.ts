@@ -5,6 +5,7 @@
  *
  * Shared by the Subagents pages and the lead chat, so both do the same thing.
  */
+import { validModelId } from "./provider.js";
 import type { Store, SubagentRow } from "./store.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { handleOf, parseSoul, SUBAGENT_TEMPLATES, subagentLabel } from "./subagents.js";
@@ -57,13 +58,22 @@ export function setSubagentState(store: Store, mate: SubagentRow, state: "active
   return { ok: true, said: state === "paused" ? `${name} is paused. Its decisions go to people until you resume it.` : `${name} is working again.` };
 }
 
-export function subagentSettings(store: Store, mate: SubagentRow, change: { model?: string; dailyTurns?: number; manager?: string }, by: string, now: Date): Done {
-  const model = change.model === undefined ? undefined : change.model === "default" ? null : SUBAGENT_MODELS.includes(change.model as typeof SUBAGENT_MODELS[number]) ? change.model : undefined;
-  if (change.model !== undefined && model === undefined) return { ok: false, said: "Choose one of the models listed." };
-  if (change.dailyTurns !== undefined && (!Number.isInteger(change.dailyTurns) || change.dailyTurns < 1 || change.dailyTurns > 2000)) return { ok: false, said: "A daily limit is 1 to 2,000 turns." };
-  if (change.manager !== undefined && !store.accountCanAccess(change.manager, mate.repo)) return { ok: false, said: "Its manager must be someone on this project." };
-  store.updateSubagent(mate.id, { ...(model === undefined ? {} : { model }), ...(change.dailyTurns === undefined ? {} : { dailyTurns: change.dailyTurns }), ...(change.manager === undefined ? {} : { manager: change.manager }) }, by, now);
-  return { ok: true, said: "Saved." };
+export function subagentSettings(store: Store, mate: SubagentRow, change: { model?: string; dailyTurns?: number; manager?: string; codexBackupModel?: string | null }, by: string, now: Date,
+  options: { proveBackup?: () => boolean } = {}): Done {
+  return store.transact(() => {
+    const current = store.getSubagent(mate.id);
+    if (current === null || current.state === "removed") return { ok: false, said: "This teammate is no longer on the team." };
+    const model = change.model === undefined ? undefined : change.model === "default" ? null : SUBAGENT_MODELS.includes(change.model as typeof SUBAGENT_MODELS[number]) ? change.model : undefined;
+    if (change.model !== undefined && model === undefined) return { ok: false, said: "Choose one of the models listed." };
+    if (change.dailyTurns !== undefined && (!Number.isInteger(change.dailyTurns) || change.dailyTurns < 1 || change.dailyTurns > 2000)) return { ok: false, said: "A daily limit is 1 to 2,000 turns." };
+    if (change.manager !== undefined && !store.accountCanAccess(change.manager, current.repo)) return { ok: false, said: "Its manager must be someone on this project." };
+    const backup = change.codexBackupModel;
+    if (backup !== undefined && backup !== null && (!validModelId(backup) || ["default", "inherit", ""].includes(backup))) return { ok: false, said: "Enter an exact Codex backup model ID, or leave it blank to turn the backup off." };
+    if (backup != null && backup !== current.codexBackupModel && (!store.accountCanAccess(by, current.repo) || options.proveBackup?.() !== true)) return { ok: false, said: "Enter your Toolroll password to enable or change the Codex backup. Nothing changed." };
+    store.updateSubagent(current.id, { ...(model === undefined ? {} : { model }), ...(change.dailyTurns === undefined ? {} : { dailyTurns: change.dailyTurns }), ...(change.manager === undefined ? {} : { manager: change.manager }) }, by, now);
+    if (backup !== undefined && backup !== current.codexBackupModel) store.setSubagentCodexBackup(current.id, backup, by, now);
+    return { ok: true, said: "Saved." };
+  });
 }
 
 export const nameOf = (mate: SubagentRow) => { const read = parseSoul(mate.soul); return read.ok ? read.soul.name : mate.handle; };

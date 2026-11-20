@@ -32,7 +32,9 @@ function Face({ name, size = "sm" }: { name: string; size?: "sm" | "md" }) {
     style={{ background: `hsl(${hue} 45% 45%)` }}>{initials}</span>;
 }
 
-const COLORS: Record<string, string> = { slate: "#64748b", blue: "#3b82f6", violet: "#8b5cf6", amber: "#d97706", green: "#059669", rose: "#e11d48" };
+// Keep saved colour ids compatible; the displayed palette follows the approved light/dark tokens.
+const COLORS: Record<string, string> = { slate: "var(--so-muted)", blue: "var(--so-info)", violet: "var(--so-ink)", amber: "var(--so-neutral-ink)", green: "var(--so-success)", rose: "var(--so-danger)" };
+const COLOR_NAMES: Record<string, string> = { slate: "Muted", blue: "Blue", violet: "Ink", amber: "Neutral", green: "Green", rose: "Red" };
 const KIND_ICONS: Record<BrowserFlowStage["kind"], ReactNode> = {
   inbox: <Inbox className="size-3.5" aria-hidden="true" />, task: <Hammer className="size-3.5" aria-hidden="true" />, report: <Search className="size-3.5" aria-hidden="true" />,
   approval: <UserCheck className="size-3.5" aria-hidden="true" />, notify: <Megaphone className="size-3.5" aria-hidden="true" />, done: <Flag className="size-3.5" aria-hidden="true" />,
@@ -853,8 +855,8 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
     </Field>}
     {stage.kind !== "wait" && stage.kind !== "done" && <TimeLimit stage={stage} others={others} update={update} />}
     <div className="grid gap-1.5"><span className="text-body font-medium">Color</span>
-      <div className="flex gap-2">{view.colors.map(color => <button key={color} type="button" aria-label={color} aria-pressed={stage.zone.color === color}
-        className={cn("size-7 rounded-full border-2", stage.zone.color === color ? "border-foreground" : "border-transparent")} style={{ background: COLORS[color] }}
+      <div className="flex gap-2">{view.colors.map(color => <KButton key={color} type="button" variant="ghost" sm iconOnly="check" label={COLOR_NAMES[color] ?? color} aria-pressed={stage.zone.color === color}
+        className="rounded-full [&_svg]:invisible aria-pressed:[&_svg]:visible" style={{ background: COLORS[color], color: "var(--so-paper)" }}
         onClick={() => update({ zone: { ...stage.zone, color } })} />)}</div>
     </div>
     <div className="flex flex-wrap gap-2 pt-1">

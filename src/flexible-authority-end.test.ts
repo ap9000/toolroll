@@ -169,6 +169,42 @@ describe("every road that ends a person's authority ends their threads' turns, i
 });
 
 describe("the console acts on the record, whichever process wrote it", () => {
+  test.each([
+    ["unreachable", "upstream-error", null, "messages", false, true],
+    ["service error", "upstream-error", 503, "messages", false, true],
+    ["limit", "upstream-error", 429, "messages", false, true],
+    ["partial answer", "incomplete", null, "messages", false, true],
+    ["agent claim alone", null, null, "messages", false, false],
+    ["token count only", "upstream-error", null, "count-tokens", false, false],
+    ["recovered call", "upstream-error", null, "messages", true, false],
+  ] as const)("connection explanation uses trusted call evidence: %s", async (_name, status, httpStatus, route, recovered, explained) => {
+    standInSignIn(world.store, world.state, "pat");
+    const turn = running(T1, "pat");
+    launch(L1, T1, turn);
+    expect(await startFlexibleThreadSession(world.store, sessions, { thread: T1 })).toMatchObject({ ok: true });
+    const stdout = new PassThrough();
+    expect(attachFlexibleAgent(world.store, sessions, { thread: T1, turn, launch: L1, stdout, stdin: new PassThrough(), exited: () => {}, clock: () => NOW })).toEqual({ ok: true });
+    const record = (state: string, code: number | null) => world.store.handle.prepare(`INSERT INTO thread_relay_call
+      (thread, turn, launch, upstream, at, ended_at, route, streamed, status, http_status, cost_basis, detail)
+      VALUES (?, ?, ?, 'claude', ?, ?, ?, 0, ?, ?, 'unknown', 'retained diagnostic')`)
+      .run(T1, turn, L1, NOW.toISOString(), NOW.toISOString(), route, state, code);
+    if (status !== null) record(status, httpStatus);
+    if (recovered) record("completed", 200);
+    const raw = 'API Error: 502 {"type":"error","error":{"message":"untrusted agent claim"}}';
+    stdout.write(`${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: raw }] } })}\n`);
+    stdout.write(`${JSON.stringify({ type: "result", subtype: "success", is_error: true, result: raw })}\n`);
+    await new Promise(resolve => setImmediate(resolve));
+    // Presentation never upgrades an uncertain result, interrupts authority, or creates a retry.
+    expect(flexibleTurn(world.store, turn)?.status).toBe("unknown");
+    expect(stops()).toEqual([]);
+    const read = flexibleThreadLiveOf(world.store, sessions, { thread: T1, viewer: { name: "pat" }, file: "main", cursor: null });
+    if (!read.ok || !read.window.ok) throw new Error("thread view unavailable");
+    const said = read.window.records.flatMap(one => one.k === "say" ? one.t : []);
+    expect(said.includes(raw)).toBe(!explained);
+    expect(read.facts.turn?.endWords?.includes("reply")).toBe(explained);
+    if (status !== null) expect(world.store.handle.prepare("SELECT detail FROM thread_relay_call WHERE turn = ? ORDER BY id LIMIT 1").get(turn)?.["detail"]).toBe("retained diagnostic");
+  });
+
   test("a removal written by another process (another handle on the same file): this console's tick stops its agent and settles the requirement", async () => {
     const made = patWorking();
     const other = openStore(world.databaseFile);
