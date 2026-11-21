@@ -227,14 +227,30 @@ export async function handleHandoffPull(
   const latest = results[0] ?? null;
   let patch = "";
   let patchTruncated = false;
+  const patchChain: Array<{ parentCommit: string; headCommit: string; patch: string }> = [];
   if (latest !== null) {
     const view = terminalDiffView(store.artifactsFor(latest.id), evidenceRoot);
     if (view?.patch !== null && view?.patch !== undefined && !("problem" in view.patch)) {
       patch = view.patch.text;
       patchTruncated = view.patch.truncated;
     }
+    // Oldest-to-newest chain of sequential committed runs so `handoff rebase` can reconstruct
+    // multi-hop central heads even before central candidate branches are pushed to a Git remote.
+    let totalChainBytes = 0;
+    const chronological = [...results].reverse().slice(-20);
+    for (const run of chronological) {
+      if (!run.baseRevision || !run.headRevision || !SHA_PATTERN.test(run.baseRevision) || !SHA_PATTERN.test(run.headRevision)) continue;
+      const rv = terminalDiffView(store.artifactsFor(run.id), evidenceRoot);
+      if (rv?.patch && !("problem" in rv.patch) && !rv.patch.truncated && rv.patch.text.trim() !== "") {
+        totalChainBytes += Buffer.byteLength(rv.patch.text, "utf8");
+        if (totalChainBytes <= MAX_HANDOFF_PATCH_BYTES) {
+          patchChain.push({ parentCommit: run.baseRevision, headCommit: run.headRevision, patch: rv.patch.text });
+        }
+      }
+    }
   }
   let baseCommit: string | null = latest?.headRevision ?? latest?.baseRevision ?? null;
+  const parentCommit: string | null = latest?.baseRevision ?? null;
   if (baseCommit === null && existsSync(join(repo, ".git"))) {
     const git = teardownGit();
     const head = await git(repo, ["rev-parse", "HEAD"]).catch(() => null);
@@ -259,10 +275,12 @@ export async function handleHandoffPull(
     projectName: basename(repo),
     runId: latest?.id ?? null,
     baseCommit,
+    parentCommit,
     headCommit,
     branch: latest?.branch ?? null,
     patch,
     patchTruncated,
+    patchChain,
   });
 }
 

@@ -325,6 +325,10 @@ impl Loop {
                 let r = client.promote_candidate(&task, &candidate_id).await;
                 let _ = tx.send(Msg::CandidatePromoted(r));
             })),
+            Effect::OpenCandidatePr { task, candidate_id } => drop(tokio::spawn(async move {
+                let r = client.open_candidate_pr(&task, &candidate_id).await;
+                let _ = tx.send(Msg::CandidatePrOpened(r));
+            })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));

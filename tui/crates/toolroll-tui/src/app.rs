@@ -851,6 +851,11 @@ pub enum Effect {
         task: String,
         candidate_id: String,
     },
+    /// Queue a Git push & GitHub Pull Request for a promoted Candidate's central Run.
+    OpenCandidatePr {
+        task: String,
+        candidate_id: String,
+    },
     /// Suspend the TUI, pull the selected remote task into an isolated local worktree (`toolroll handoff pull`), and resume.
     HandoffLocal(String),
     FetchLive {
@@ -1023,6 +1028,8 @@ pub enum Msg {
     Candidates(String, Vec<toolroll_api::HandoffCandidate>),
     /// Candidate promotion response (`POST /api/handoff/task/<task>/candidate/<id>/promote`).
     CandidatePromoted(Result<toolroll_api::PromoteCandidateOutcome, ApiError>),
+    /// Promoted Candidate PR creation response (`POST /api/handoff/task/<task>/candidate/<id>/open-pr`).
+    CandidatePrOpened(Result<toolroll_api::OpenCandidatePrOutcome, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -2280,6 +2287,22 @@ impl App {
                 vec![Effect::FetchSteps(outcome.task_id), Effect::FetchWork]
             }
             Msg::CandidatePromoted(Err(e)) => self.read_failed(e),
+            Msg::CandidatePrOpened(Ok(outcome)) => {
+                let pr_words = outcome
+                    .publication
+                    .pr_number
+                    .map(|n| format!("PR #{n}"))
+                    .unwrap_or_else(|| "pull request queued".into());
+                self.say(
+                    Tone::Said,
+                    format!(
+                        "Candidate {} (Run #{}) → {pr_words}.",
+                        outcome.candidate_id, outcome.run_id
+                    ),
+                );
+                vec![Effect::FetchSteps(outcome.task_id), Effect::FetchWork]
+            }
+            Msg::CandidatePrOpened(Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -4599,7 +4622,7 @@ impl App {
                     self.say(
                         Tone::Refused,
                         format!(
-                            "Candidate {candidate_id} is stale — run `toolroll handoff pull {task}` and rebase before promoting."
+                            "Candidate {candidate_id} is stale — run `toolroll handoff rebase {task}` before promoting."
                         ),
                     );
                     return vec![];
@@ -4609,6 +4632,20 @@ impl App {
                     format!("Promoting Candidate {candidate_id} into central Run…"),
                 );
                 vec![Effect::PromoteCandidate { task, candidate_id }]
+            }
+            Pick::OpenCandidatePr(candidate_id) => {
+                let Some(task) = self
+                    .selected_item()
+                    .filter(|i| i.is_task)
+                    .map(|i| i.id.clone())
+                else {
+                    return vec![];
+                };
+                self.say(
+                    Tone::Said,
+                    format!("Queuing pull request for promoted Candidate {candidate_id}…"),
+                );
+                vec![Effect::OpenCandidatePr { task, candidate_id }]
             }
         }
     }

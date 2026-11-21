@@ -16,7 +16,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { withActor } from "./actor.js";
 import { materializePromotedCandidate } from "./candidate-materialize.js";
+import { checkCommandFor } from "./check-levels.js";
 import { resultRunsOf } from "./engine-reads.js";
+import { owePullRequest, pullRequestBlocker } from "./pull-request-flow.js";
 import { followUpChecksOf } from "./result-follow-ups.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -31,6 +33,7 @@ import { admitRemoteTerminalRequest, isRemoteTerminalRequest } from "./terminal-
 const ASSIGN_PATH = /^\/api\/handoff\/task\/([^/]+)\/assign-person$/;
 const CANDIDATES_PATH = /^\/api\/handoff\/task\/([^/]+)\/candidates$/;
 const PROMOTE_PATH = /^\/api\/handoff\/task\/([^/]+)\/candidate\/(cand-[a-f0-9]{16})\/promote$/;
+const OPEN_PR_PATH = /^\/api\/handoff\/task\/([^/]+)\/candidate\/(cand-[a-f0-9]{16})\/open-pr$/;
 const CANDIDATE_ID = /^cand-[a-f0-9]{16}$/;
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/;
 const MAX_SMALL_BODY = 8 * 1024;
@@ -106,6 +109,7 @@ type CallerAuth = {
   generation: number;
   role: "approver" | "viewer";
   principal: Principal | null;
+  localOwner: boolean;
 };
 
 function authenticateCaller(
@@ -138,7 +142,7 @@ function authenticateCaller(
       sendJson(response, 403, { ok: false, error: "forbidden", message: "This action requires an approver act API token." });
       return null;
     }
-    return { account: principal!.account, generation: principal!.generation, role: acct.role, principal: principal! };
+    return { account: principal!.account, generation: principal!.generation, role: acct.role, principal: principal!, localOwner: false };
   }
 
   const who = identify(request, needMutation);
@@ -173,7 +177,7 @@ function authenticateCaller(
       return null;
     }
   }
-  return { account: who.name, generation: acct.generation, role: acct.role, principal: null };
+  return { account: who.name, generation: acct.generation, role: acct.role, principal: null, localOwner: who.authority === "local-owner" };
 }
 
 function visibleTaskFamily(store: Store, ceiling: ProjectCeiling, caller: CallerAuth, taskId: string) {
@@ -281,6 +285,29 @@ export async function handleAssignTaskPersonHttp(
   });
 }
 
+function candidateLiveCheckState(
+  store: Store,
+  evidenceRoot: string,
+  runId: number,
+  now: Date,
+): "waiting" | "running" | "passed" | "failed" | "not-run" | null {
+  const followUps = followUpChecksOf(store, runId, now, evidenceRoot);
+  const latestCheck = followUps.at(-1) ?? null;
+  if (latestCheck !== null) return latestCheck.state;
+  const rc = store.runCheckFor(runId);
+  if (rc !== null && (rc.status === "passed" || rc.status === "failed" || rc.status === "not-run")) {
+    return rc.status;
+  }
+  return null;
+}
+
+type CandidatePublicationSummary = {
+  id: number;
+  state: string;
+  prNumber: number | null;
+  prUrl: string | null;
+};
+
 /** GET /api/handoff/task/:task/candidates — list uploaded Local Checkout Candidates for a visible Task. */
 export async function handleListCandidatesHttp(
   request: IncomingMessage,
@@ -302,8 +329,16 @@ export async function handleListCandidatesHttp(
   // GET stays strictly read-only on SQLite + evidenceRoot (never touches repo folder or spawns git).
   const now = options.clock();
   const currentBaseCommit = currentTaskBaseCommitReadOnly(options.store, found.family);
+  const hasFullCheck = checkCommandFor(options.store, found.repo, "full").command !== null;
   const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
-  const candidates: Array<HandoffCandidateMeta & { stale: boolean; liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null }> = [];
+  const candidates: Array<
+    HandoffCandidateMeta & {
+      stale: boolean;
+      liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null;
+      publication: CandidatePublicationSummary | null;
+      canOpenPr: boolean;
+    }
+  > = [];
   if (existsSync(dir)) {
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
@@ -314,20 +349,21 @@ export async function handleListCandidatesHttp(
         const parsed = JSON.parse(readFileSync(join(dir, file), "utf8")) as HandoffCandidateMeta;
         if (parsed && parsed.id === id && typeof parsed.patchSha256 === "string") {
           const stale = parsed.promotedAt === null && parsed.baseCommit !== null && currentBaseCommit !== null && parsed.baseCommit !== currentBaseCommit;
-          let liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null = null;
+          const liveCheckState = typeof parsed.runId === "number"
+            ? candidateLiveCheckState(options.store, options.evidenceRoot, parsed.runId, now)
+            : null;
+          let publication: CandidatePublicationSummary | null = null;
+          let canOpenPr = false;
           if (typeof parsed.runId === "number") {
-            const followUps = followUpChecksOf(options.store, parsed.runId, now, options.evidenceRoot);
-            const latestCheck = followUps.at(-1) ?? null;
-            if (latestCheck !== null) {
-              liveCheckState = latestCheck.state;
+            const pub = options.store.publicationForRun(parsed.runId);
+            if (pub !== null) {
+              publication = { id: pub.id, state: pub.state, prNumber: pub.prNumber, prUrl: pub.prUrl };
             } else {
-              const rc = options.store.runCheckFor(parsed.runId);
-              if (rc !== null && (rc.status === "passed" || rc.status === "failed" || rc.status === "not-run")) {
-                liveCheckState = rc.status;
-              }
+              const checksReady = !hasFullCheck || liveCheckState === "passed";
+              canOpenPr = checksReady && pullRequestBlocker(options.store, parsed.runId) === null;
             }
           }
-          candidates.push({ ...parsed, stale, liveCheckState });
+          candidates.push({ ...parsed, stale, liveCheckState, publication, canOpenPr });
         }
       } catch { /* skip malformed */ }
     }
@@ -384,7 +420,7 @@ export async function handlePromoteCandidateHttp(
       error: "stale_candidate",
       baseCommit: meta.baseCommit,
       currentBaseCommit,
-      message: `Task head moved from ${meta.baseCommit.slice(0, 8)} to ${currentBaseCommit.slice(0, 8)}. Re-pull your Local Checkout and rebase before promoting.`,
+      message: `Task head moved from ${meta.baseCommit.slice(0, 8)} to ${currentBaseCommit.slice(0, 8)}. Run \`toolroll handoff rebase ${found.family.current.id}\` before promoting.`,
     });
   }
 
@@ -476,5 +512,110 @@ export async function handlePromoteCandidateHttp(
     branch,
     headCommit,
     checks,
+  });
+}
+
+/**
+ * POST /api/handoff/task/:task/candidate/:id/open-pr — owe a Git push & GitHub Pull Request
+ * for a promoted Candidate's central Run under the Project's approved publication grant.
+ * Requires central checks to have passed whenever the Project has an approved check command,
+ * and refuses passwordless local-owner sessions.
+ */
+export async function handleOpenCandidatePrHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  options: MultiplayerHandoffOptions,
+): Promise<void> {
+  if (request.method !== "POST") return sendJson(response, 405, { ok: false, error: "method_not_allowed" }, { allow: "POST" });
+  const match = OPEN_PR_PATH.exec(url.pathname);
+  if (match === null) return sendJson(response, 404, { ok: false, error: "not_found" });
+  let taskId: string;
+  try { taskId = decodeURIComponent(match[1]!); } catch { return sendJson(response, 400, { ok: false, error: "bad_task" }); }
+  const candidateId = match[2]!;
+
+  const caller = authenticateCaller(request, response, options, true);
+  if (caller === null) return;
+  if (caller.localOwner) {
+    return sendJson(response, 403, { ok: false, error: "password_required", message: "Opening a pull request requires a password-authenticated session or act API token." });
+  }
+  const found = visibleTaskFamily(options.store, options.liveCeiling(), caller, taskId);
+  if (found === null) return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
+
+  const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
+  const metaPath = join(dir, `${candidateId}.json`);
+  if (!existsSync(metaPath)) {
+    return sendJson(response, 404, { ok: false, error: "candidate_not_found", message: "Candidate not found for this task." });
+  }
+  let meta: HandoffCandidateMeta;
+  try {
+    meta = JSON.parse(readFileSync(metaPath, "utf8")) as HandoffCandidateMeta;
+  } catch {
+    return sendJson(response, 500, { ok: false, error: "candidate_unreadable", message: "Could not read saved candidate." });
+  }
+  if (typeof meta.runId !== "number" || meta.promotedAt === null) {
+    return sendJson(response, 409, { ok: false, error: "not_promoted", message: "Promote this Candidate into a central Run before opening a pull request." });
+  }
+
+  const now = options.clock();
+  if (caller.principal !== null && !reproveRemote(options.store, caller.principal, now).ok) {
+    return sendJson(response, 401, { ok: false, error: "unauthenticated", message: "Your access changed." });
+  }
+
+  const hasFullCheck = checkCommandFor(options.store, found.repo, "full").command !== null;
+  const liveCheckState = candidateLiveCheckState(options.store, options.evidenceRoot, meta.runId, now);
+  if (hasFullCheck && liveCheckState !== "passed") {
+    return sendJson(response, 409, {
+      ok: false,
+      error: "checks_required",
+      liveCheckState,
+      message: `Central checks must pass before opening a pull request (current state: ${liveCheckState ?? "not-run"}).`,
+    });
+  }
+
+  const blocker = pullRequestBlocker(options.store, meta.runId);
+  if (blocker !== null) {
+    return sendJson(response, 409, { ok: false, error: "not_publishable", message: blocker });
+  }
+
+  let publication;
+  try {
+    publication = owePullRequest(options.store, meta.runId, caller.account, null, now);
+  } catch (error) {
+    return sendJson(response, 409, {
+      ok: false,
+      error: "publish_refused",
+      message: error instanceof Error ? error.message : "Could not queue pull request.",
+    });
+  }
+
+  options.store.recordAction({
+    at: now.toISOString(),
+    actor: caller.account,
+    repo: found.repo,
+    taskId: found.family.current.id,
+    runId: meta.runId,
+    action: "handoff.open-pr",
+    outcome: "recorded",
+    source: caller.principal !== null ? "api" : "work",
+    detail: `Queued pull request for promoted Candidate ${candidateId} (Run #${meta.runId}, ${publication.head} -> ${publication.base}).`,
+  });
+  options.store.bumpWake();
+
+  return sendJson(response, 200, {
+    ok: true,
+    taskId: found.family.current.id,
+    candidateId,
+    runId: meta.runId,
+    publication: {
+      id: publication.id,
+      state: publication.state,
+      githubRepo: publication.githubRepo,
+      base: publication.base,
+      head: publication.head,
+      headSha: publication.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+    },
   });
 }

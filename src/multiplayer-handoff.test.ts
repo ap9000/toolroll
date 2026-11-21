@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { mintApiToken } from "./api-tokens.js";
+import { savePublishing } from "./pull-request-flow.js";
 import { runFollowUpCheck } from "./result-follow-ups.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -288,5 +289,92 @@ describe("human task handoff and local candidate promotion", () => {
     if (checked && checked.state === "passed") {
       expect(checked.head).toBe(headCommit);
     }
+  });
+
+  test("opening a PR from a promoted candidate enforces passing central checks, publication grant, and act approver auth", async () => {
+    const root = tempDir("so-handoff-pr-");
+    const repo = join(root, "app");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+    writeFileSync(join(repo, "hello.txt"), "before\n");
+    execFileSync("git", ["-C", repo, "add", "hello.txt"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    const baseCommit = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+    const store = openStore(join(root, "state.db"));
+    const now = new Date("2026-11-21T10:30:00Z");
+    const alex = addApprover(store, "alex", now);
+    if (!alex.ok) throw new Error("alex");
+
+    store.setVerifyCommand({ repo, command: "grep -q '^after$' hello.txt", timeoutMs: 30_000, approvedBy: "alex" }, now);
+    savePublishing(store, { repo, githubRepo: "acme/app", remote: "origin", base: "main", account: "alex" }, "alex", {}, now);
+
+    store.createTask({ id: "t-pr", title: "Ship promoted candidate PR" }, now);
+    const ref = store.refFor("built-in", "t-pr", "ours").id;
+    store.placeTask(ref, repo);
+
+    const actTok = mintApiToken();
+    store.createApiToken({ id: actTok.id, account: "alex", name: "act", secretHash: actTok.hash, access: "act", purpose: "api", by: "alex", projects: [repo], expiresAt: "2027-01-01T00:00:00Z" }, now);
+    const readTok = mintApiToken();
+    store.createApiToken({ id: readTok.id, account: "alex", name: "read", secretHash: readTok.hash, access: "read", purpose: "api", by: "alex", projects: [repo], expiresAt: "2027-01-01T00:00:00Z" }, now);
+    const identity = store.workspaceIdentity();
+    const evidenceRoot = join(root, "evidence");
+
+    const server = createDecisionServer({ store, configDir: root, evidenceRoot, repos: [repo], clock: () => now, terminalHost: null });
+    const origin = await listen(server);
+    const headers = (tok: string) => ({
+      authorization: `Bearer ${tok}`,
+      "x-toolroll-client": "terminal-remote",
+      "x-toolroll-workspace": identity.id,
+      "x-toolroll-recovery": identity.recoveryGeneration,
+    });
+
+    const patch = "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    const uploaded = await rawReq(origin, "POST", "/api/handoff/task/t-pr/candidate", headers(actTok.token), { patch, baseCommit, note: "ship it" });
+    expect(uploaded.status).toBe(201);
+    const candidateId = String(uploaded.json.candidateId);
+
+    const promoted = await rawReq(origin, "POST", `/api/handoff/task/t-pr/candidate/${candidateId}/promote`, headers(actTok.token), {});
+    expect(promoted.status).toBe(200);
+    const runId = Number(promoted.json.runId);
+    const checks = promoted.json.checks as { requestId: number };
+
+    // Before central checks pass, canOpenPr is false and POST .../open-pr refuses with 409 checks_required.
+    const beforeCheckList = await rawReq(origin, "GET", "/api/handoff/task/t-pr/candidates", headers(readTok.token));
+    expect((beforeCheckList.json.candidates as Array<Record<string, unknown>>)[0]?.canOpenPr).toBe(false);
+    const refusedBeforeCheck = await rawReq(origin, "POST", `/api/handoff/task/t-pr/candidate/${candidateId}/open-pr`, headers(actTok.token), {});
+    expect(refusedBeforeCheck.status).toBe(409);
+    expect(refusedBeforeCheck.json.error).toBe("checks_required");
+
+    // Once central checks pass, canOpenPr becomes true; read-only token is still refused (403), act approver queues the PR cleanly.
+    const checked = await runFollowUpCheck(store, evidenceRoot, checks.requestId, { now: () => now });
+    expect(checked?.state).toBe("passed");
+
+    const afterCheckList = await rawReq(origin, "GET", "/api/handoff/task/t-pr/candidates", headers(readTok.token));
+    expect((afterCheckList.json.candidates as Array<Record<string, unknown>>)[0]?.canOpenPr).toBe(true);
+
+    expect((await rawReq(origin, "POST", `/api/handoff/task/t-pr/candidate/${candidateId}/open-pr`, headers(readTok.token), {})).status).toBe(403);
+
+    const opened = await rawReq(origin, "POST", `/api/handoff/task/t-pr/candidate/${candidateId}/open-pr`, headers(actTok.token), {});
+    expect(opened.status).toBe(200);
+    expect(opened.json).toMatchObject({
+      ok: true,
+      taskId: "t-pr",
+      candidateId,
+      runId,
+      publication: {
+        state: "intended",
+        githubRepo: "acme/app",
+        base: "main",
+        head: `toolroll/candidate/${candidateId}`,
+      },
+    });
+
+    // Listing candidates now shows the queued publication and flips canOpenPr back to false.
+    const afterOpenList = await rawReq(origin, "GET", "/api/handoff/task/t-pr/candidates", headers(readTok.token));
+    expect((afterOpenList.json.candidates as Array<Record<string, unknown>>)[0]).toMatchObject({
+      canOpenPr: false,
+      publication: { state: "intended" },
+    });
   });
 });

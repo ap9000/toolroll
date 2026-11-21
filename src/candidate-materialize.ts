@@ -173,6 +173,39 @@ export async function materializePromotedCandidate(
       Buffer.from(canonicalDiff, "utf8"),
       `git diff ${baseCommit.slice(0, 12)}..${headCommit.slice(0, 12)} (candidate ${candidateId})`,
       now,
+      { captureStatus: "ok" },
+    );
+    storeEvidence(
+      store,
+      evidenceRoot,
+      runId,
+      "terminal-diff",
+      "terminal-diff.patch",
+      Buffer.from(canonicalDiff, "utf8"),
+      `git diff ${baseCommit.slice(0, 12)}..${headCommit.slice(0, 12)} (candidate ${candidateId})`,
+      now,
+      { captureStatus: "ok" },
+    );
+    storeEvidence(
+      store,
+      evidenceRoot,
+      runId,
+      "diff-stat",
+      "diff-stat.json",
+      Buffer.from(
+        JSON.stringify({
+          schema: 1,
+          head: headCommit,
+          base: baseCommit,
+          filesTruncated: false,
+          fileCount: checked.files.length,
+          files: checked.files.map(path => ({ path })),
+        }),
+        "utf8",
+      ),
+      "git diff --numstat",
+      now,
+      { captureStatus: "ok" },
     );
 
     // Queue central verification checks against the materialized commit if configured.
