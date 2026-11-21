@@ -921,6 +921,63 @@ impl Client {
         })
     }
 
+    /// Queue a Git push & GitHub Pull Request for a promoted Candidate's central Run
+    /// (`POST /api/handoff/task/<task>/candidate/<id>/open-pr`).
+    pub async fn open_candidate_pr(
+        &self,
+        task: &str,
+        candidate_id: &str,
+    ) -> Result<OpenCandidatePrOutcome, ApiError> {
+        let path = format!(
+            "/api/handoff/task/{}/candidate/{}/open-pr",
+            encode(task),
+            encode(candidate_id)
+        );
+        let req = match &*self.auth {
+            ClientAuth::Remote(r) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("authorization", r.bearer.as_str())
+                .header("x-toolroll-client", "terminal-remote")
+                .header("x-toolroll-workspace", &r.workspace_id)
+                .header("x-toolroll-recovery", &r.recovery_generation),
+            ClientAuth::Local(c) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("cookie", c.cookie.as_str())
+                .header("origin", &self.origin)
+                .header("x-csrf-token", c.csrf.as_str())
+                .header("x-toolroll-key", c.key.as_str())
+                .header("x-toolroll-client", "terminal"),
+        };
+        let res = req
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body("{}")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Opening pull request refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<OpenCandidatePrOutcome>(&text).map_err(|_| {
+            ApiError::Contract("The pull request answer isn't what this version expects.".into())
+        })
+    }
+
     /// Start or reuse a central Live Terminal on a task in remote mode (`POST /api/handoff/task/<task>/terminal`).
     pub(crate) async fn remote_term_start(
         &self,
@@ -1734,6 +1791,18 @@ pub struct ApprovalPingResult {
     pub url: Option<String>,
 }
 
+/// Pull request publication state attached to a promoted Candidate's Run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidatePublication {
+    pub id: i64,
+    pub state: String,
+    #[serde(default)]
+    pub pr_number: Option<i64>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+}
+
 /// One Local Checkout Candidate listed by `GET /api/handoff/task/<task>/candidates`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1761,6 +1830,10 @@ pub struct HandoffCandidate {
     pub check_status: Option<String>,
     #[serde(default)]
     pub live_check_state: Option<String>,
+    #[serde(default)]
+    pub publication: Option<CandidatePublication>,
+    #[serde(default)]
+    pub can_open_pr: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -1782,6 +1855,16 @@ pub struct PromoteCandidateOutcome {
     pub branch: Option<String>,
     #[serde(default)]
     pub head_commit: Option<String>,
+}
+
+/// Outcome of `POST /api/handoff/task/<task>/candidate/<id>/open-pr`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCandidatePrOutcome {
+    pub task_id: String,
+    pub candidate_id: String,
+    pub run_id: i64,
+    pub publication: CandidatePublication,
 }
 
 #[cfg(test)]

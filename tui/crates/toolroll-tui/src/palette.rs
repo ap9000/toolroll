@@ -17,6 +17,8 @@ pub enum Pick {
     HandOff(String),
     /// Promote an unverified Local Checkout Candidate into a central Run + queued checks.
     PromoteCandidate(String),
+    /// Queue a Git push & GitHub Pull Request for a promoted Candidate's central Run.
+    OpenCandidatePr(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +121,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
         Pick::Project(_) => -40,
         Pick::HandOff(_) => 60,
         Pick::PromoteCandidate(_) => 65,
+        Pick::OpenCandidatePr(_) => 66,
     }
 }
 
@@ -189,6 +192,14 @@ pub fn entries(app: &App) -> Vec<Entry> {
         if let Some(candidates) = app.candidates.get(&item.id) {
             for cand in candidates {
                 if cand.promoted_at.is_some() {
+                    if cand.can_open_pr && cand.publication.is_none() {
+                        out.push(Entry {
+                            kind: "Candidate",
+                            label: format!("Open PR for promoted {} by {}", cand.id, cand.author),
+                            key: String::new(),
+                            pick: Pick::OpenCandidatePr(cand.id.clone()),
+                        });
+                    }
                     continue;
                 }
                 let count = cand.files.len();

@@ -1110,6 +1110,8 @@ fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
         head_commit: None,
         check_status: None,
         live_check_state: None,
+        publication: None,
+        can_open_pr: false,
     };
     let fresh_cand = toolroll_api::HandoffCandidate {
         id: "cand-2222222222222222".into(),
@@ -1125,6 +1127,8 @@ fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
         head_commit: None,
         check_status: None,
         live_check_state: None,
+        publication: None,
+        can_open_pr: false,
     };
 
     app.update(Msg::Candidates(
@@ -1143,7 +1147,7 @@ fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
     assert!(stale_fx.is_empty(), "{stale_fx:?}");
     let msg = app.status.as_ref().unwrap().1.clone();
     assert!(
-        msg.contains("stale") && msg.contains("toolroll handoff pull t-done"),
+        msg.contains("stale") && msg.contains("toolroll handoff rebase t-done"),
         "{msg}"
     );
 
@@ -1175,12 +1179,60 @@ fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
     assert!(done_fx.contains(&Effect::FetchWork));
     assert!(app.status.as_ref().unwrap().1.contains("central Run #9"));
 
-    // Once central checks pass, the header badge updates to "candidate checks passed".
+    // Once central checks pass and publishing is enabled, header shows ": open PR" and palette queues it.
     let mut passed = fresh_cand;
     passed.promoted_at = Some("2026-11-20T18:06:00Z".into());
     passed.run_id = Some(9);
     passed.live_check_state = Some("passed".into());
+    passed.can_open_pr = true;
+    app.update(Msg::Candidates("t-done".into(), vec![passed.clone()]));
+    let after = screen(&mut app, 150, 30);
+    assert!(
+        after.contains("candidate checks passed · : open PR"),
+        "{after}"
+    );
+
+    app.key(key(':'));
+    for ch in "open pr".chars() {
+        app.key(key(ch));
+    }
+    let pr_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        pr_fx,
+        vec![Effect::OpenCandidatePr {
+            task: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+        }]
+    );
+    let opened_fx = app.update(Msg::CandidatePrOpened(Ok(
+        toolroll_api::OpenCandidatePrOutcome {
+            task_id: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+            run_id: 9,
+            publication: toolroll_api::CandidatePublication {
+                id: 3,
+                state: "pending".into(),
+                pr_number: None,
+                pr_url: None,
+            },
+        },
+    )));
+    assert!(opened_fx.contains(&Effect::FetchSteps("t-done".into())));
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("pull request queued"));
+
+    passed.can_open_pr = false;
+    passed.publication = Some(toolroll_api::CandidatePublication {
+        id: 3,
+        state: "open".into(),
+        pr_number: Some(42),
+        pr_url: Some("https://github.com/acme/app/pull/42".into()),
+    });
     app.update(Msg::Candidates("t-done".into(), vec![passed]));
-    let after = screen(&mut app, 140, 30);
-    assert!(after.contains("candidate checks passed"), "{after}");
+    let with_pr = screen(&mut app, 150, 30);
+    assert!(with_pr.contains("candidate PR #42"), "{with_pr}");
 }

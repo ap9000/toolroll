@@ -29,6 +29,13 @@ type Candidate = {
   checkStatus?: "queued" | "not-configured" | "refused" | null;
   checkRequestId?: number | null;
   liveCheckState?: "waiting" | "running" | "passed" | "failed" | "not-run" | null;
+  publication?: {
+    id: number;
+    state: string;
+    prNumber: number | null;
+    prUrl: string | null;
+  } | null;
+  canOpenPr?: boolean;
 };
 
 export function TaskMultiplayerBar({
@@ -153,6 +160,47 @@ export function TaskMultiplayerBar({
     }
   };
 
+  const openPr = async (candidateId: string) => {
+    if (busy !== null) return;
+    setBusy(`pr:${candidateId}`);
+    setNotice(null);
+    try {
+      const res = await fetch(
+        `/api/handoff/task/${encodeURIComponent(taskId)}/candidate/${encodeURIComponent(candidateId)}/open-pr`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: keyed({
+            "content-type": "application/json",
+            "x-csrf-token": csrf,
+            accept: "application/json",
+          }),
+          body: "{}",
+        },
+      );
+      const json = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        message?: string;
+        publication?: { githubRepo?: string; head?: string; base?: string; prNumber?: number | null } | null;
+      } | null;
+      if (!res.ok || !json?.ok) {
+        setNotice(json?.message ?? "Could not queue pull request.");
+      } else {
+        const pub = json.publication;
+        setNotice(
+          pub?.prNumber
+            ? `Pull request #${pub.prNumber} already open for ${candidateId}.`
+            : `Queued pull request for ${candidateId} (${pub?.head ?? "candidate"} → ${pub?.base ?? "main"}).`,
+        );
+        window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
+      }
+    } catch {
+      setNotice("Could not reach Toolroll.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div
       className="so-task-multiplayer"
@@ -254,7 +302,7 @@ export function TaskMultiplayerBar({
             {cand.stale && !cand.promotedAt ? (
               <>
                 {" · run "}
-                <code>{`toolroll handoff pull ${taskId}`}</code>
+                <code>{`toolroll handoff rebase ${taskId}`}</code>
               </>
             ) : null}
             {cand.runId ? (
@@ -263,6 +311,19 @@ export function TaskMultiplayerBar({
                 <a className="k-link" href={`/r/${cand.runId}`}>
                   Run #{cand.runId}
                 </a>
+              </>
+            ) : null}
+            {cand.publication?.prUrl ? (
+              <>
+                {" · "}
+                <a className="k-link" href={cand.publication.prUrl} target="_blank" rel="noreferrer">
+                  {cand.publication.prNumber ? `PR #${cand.publication.prNumber}` : "Open PR"}
+                </a>
+              </>
+            ) : cand.publication ? (
+              <>
+                {" · "}
+                <KChip word="PR queued" tone="live" />
               </>
             ) : null}
           </span>
@@ -274,6 +335,17 @@ export function TaskMultiplayerBar({
               busy={busy === cand.id ? "Promoting…" : false}
               onClick={() => {
                 void promote(cand.id);
+              }}
+            />
+          )}
+          {cand.promotedAt && cand.canOpenPr && !cand.publication && (
+            <KButton
+              sm
+              variant="primary"
+              label="Open PR"
+              busy={busy === `pr:${cand.id}` ? "Opening PR…" : false}
+              onClick={() => {
+                void openPr(cand.id);
               }}
             />
           )}

@@ -1511,15 +1511,32 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
                 crate::theme::Role::NeedsYou,
             ));
         } else if let Some(latest) = cands.iter().find(|c| c.promoted_at.is_some()) {
-            let (label, role) = match latest.live_check_state.as_deref() {
-                Some("passed") => ("candidate checks passed", crate::theme::Role::Passed),
-                Some("failed") => ("candidate checks failed", crate::theme::Role::Failed),
-                Some("running") => ("candidate checks running", crate::theme::Role::Running),
-                Some("waiting") => ("candidate checks queued", crate::theme::Role::Running),
-                _ => ("candidate promoted", crate::theme::Role::Running),
+            let (label, role) = if let Some(pub_info) = latest.publication.as_ref() {
+                let text = pub_info
+                    .pr_number
+                    .map(|n| format!("candidate PR #{n}"))
+                    .unwrap_or_else(|| "candidate PR queued".to_string());
+                (text, crate::theme::Role::Passed)
+            } else {
+                let (text, r) = match latest.live_check_state.as_deref() {
+                    Some("passed") if latest.can_open_pr => (
+                        "candidate checks passed · : open PR",
+                        crate::theme::Role::Passed,
+                    ),
+                    Some("passed") => ("candidate checks passed", crate::theme::Role::Passed),
+                    Some("failed") => ("candidate checks failed", crate::theme::Role::Failed),
+                    Some("running") => ("candidate checks running", crate::theme::Role::Running),
+                    Some("waiting") => ("candidate checks queued", crate::theme::Role::Running),
+                    _ if latest.can_open_pr => (
+                        "candidate promoted · : open PR",
+                        crate::theme::Role::Running,
+                    ),
+                    _ => ("candidate promoted", crate::theme::Role::Running),
+                };
+                (text.to_string(), r)
             };
             title_spans.push(Span::raw("  "));
-            title_spans.push(sheet::badge(label, role));
+            title_spans.push(sheet::badge(&label, role));
         }
     }
     let mut head_lines = vec![Line::from(title_spans)];
