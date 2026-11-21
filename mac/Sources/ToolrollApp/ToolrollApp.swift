@@ -10,6 +10,9 @@ struct ToolrollMacApp: App {
         WindowGroup("Toolroll") {
             MainWorkbenchView(store: store)
                 .frame(minWidth: 960, minHeight: 620)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    store.previewServer.stopManagedServer()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1380, height: 860)

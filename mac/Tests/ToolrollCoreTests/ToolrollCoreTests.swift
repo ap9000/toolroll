@@ -341,4 +341,28 @@ struct ToolrollCoreTests {
         #expect(loaded[0].linkedTaskId == "t-ui-1")
         #expect(abs(loaded[0].xFrac - 0.42) < 0.001)
     }
+
+    @Test("Discovers TanStack routes and detects pnpm Vite dev command & port automatically")
+    func routeDiscoveryAndDevCommandDetection() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-routes-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let routesDir = tmpDir.appendingPathComponent("src/routes/work", isDirectory: true)
+        try FileManager.default.createDirectory(at: routesDir, withIntermediateDirectories: true)
+        try Data("export default {}".utf8).write(to: tmpDir.appendingPathComponent("src/routes/index.tsx"))
+        try Data("export default {}".utf8).write(to: tmpDir.appendingPathComponent("src/routes/shelf.tsx"))
+        try Data("export default {}".utf8).write(to: tmpDir.appendingPathComponent("src/routes/work/index.tsx"))
+        try Data("export default {}".utf8).write(to: tmpDir.appendingPathComponent("src/routes/__root.tsx"))
+        try Data("lockfileVersion: 9".utf8).write(to: tmpDir.appendingPathComponent("pnpm-lock.yaml"))
+        try Data(#"{"scripts":{"dev":"vite dev --port 3000"}}"#.utf8).write(to: tmpDir.appendingPathComponent("package.json"))
+
+        let discovered = YouiCanvasStorage.discoverRoutes(projectRoot: tmpDir.path)
+        #expect(discovered.map(\.path) == ["/", "/shelf", "/work"])
+        #expect(discovered.first(where: { $0.path == "/shelf" })?.sourceFile == "src/routes/shelf.tsx")
+
+        let detected = PreviewServerManager.detectDevCommand(projectRoot: tmpDir.path)
+        #expect(detected?.displayCommand == "pnpm dev")
+        #expect(detected?.expectedPort == 3000)
+    }
 }

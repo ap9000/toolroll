@@ -71,11 +71,20 @@ public final class WorkbenchStore {
     private var preZenSidebar: Bool = true
     private var preZenInspector: Bool = false
 
-    // Native Toolroll Canvas (youiyoux port)
+    // Native Toolroll Canvas (youiyoux port — disk tile cache + 1 managed preview server + 2-slot WebView pool)
+    public let previewServer = PreviewServerManager()
     public private(set) var canvasArtboards: [CanvasArtboard] = []
+    public private(set) var discoveredCanvasRoutes: [YouiScreenEntry] = []
     public private(set) var canvasPins: [CanvasPin] = []
+    public private(set) var canvasProjectName: String = ""
     public private(set) var canvasProjectRoot: String? = nil
+    public private(set) var canvasStateKey: String = "latest"
+    public private(set) var canvasBaselineKey: String = "baseline"
+    public private(set) var canvasViewport: CanvasViewportPreset = .desktop
+    public private(set) var canvasBaseURL: String = ""
+    public private(set) var hydratingBoardIds: Set<String> = []
     public private(set) var activeAgentSetupTitle: String? = nil
+    public private(set) var localSessionCookie: (name: String, value: String, origin: String)? = nil
 
     // Navigation History (← / →)
     private var backStack: [String?] = []
@@ -235,62 +244,148 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Native Toolroll Canvas (youiyoux port)
+    // MARK: - Native Toolroll Canvas (youiyoux port — disk-cached, lazy-wake, 2-slot hydration pool)
 
-    public func loadCanvasForCurrentProject() {
-        let root = resolveLocalProjectRoot()
+    public var draftCanvasPins: [CanvasPin] {
+        canvasPins.filter(\.isDraft)
+    }
+
+    public var remainingDiscoveredRoutes: [YouiScreenEntry] {
+        let activePaths = Set(canvasArtboards.map(\.path))
+        return discoveredCanvasRoutes.filter { !activePaths.contains($0.path) }
+    }
+
+    public func loadCanvasForCurrentProject(forceRefresh: Bool = false) async {
+        let targetProject = selectedProject ?? selectedRow?.project ?? allProjects.first ?? "toolroll"
+        let root = resolveLocalProjectRoot(for: targetProject)
+
+        let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
+        canvasProjectName = targetProject
         canvasProjectRoot = root
 
-        var screens: [YouiScreenEntry] = []
-        if let root, let manifest = YouiCanvasStorage.loadManifest(projectRoot: root) {
-            screens = Array(manifest.screens.prefix(9))
+        let stateKey = root.map { YouiCanvasStorage.gitStateKey(projectRoot: $0) } ?? "latest"
+        let baselineKey = root.map { YouiCanvasStorage.mainBranchKey(projectRoot: $0) } ?? "baseline"
+        canvasStateKey = stateKey
+        canvasBaselineKey = baselineKey
+
+        if projectChanged || canvasArtboards.isEmpty || forceRefresh {
+            hydratingBoardIds.removeAll()
+            let discovered = root.map { YouiCanvasStorage.discoverRoutes(projectRoot: $0) }
+                ?? [YouiScreenEntry(route: "/", path: "/")]
+            discoveredCanvasRoutes = discovered
+            // Cap initial canvas to 8 clean artboards (remaining routes live in `+ Screen`)
+            let initial = Array(discovered.prefix(8))
+            canvasArtboards = YouiCanvasStorage.layoutArtboards(
+                from: initial,
+                projectRoot: root,
+                stateKey: stateKey,
+                baselineKey: baselineKey,
+                columns: initial.count <= 2 ? max(1, initial.count) : 3,
+                viewport: canvasViewport
+            )
+            canvasPins = root.map { YouiCanvasStorage.loadPins(projectRoot: $0) } ?? []
         }
-        if screens.isEmpty {
-            // Crisp default screen starter set
-            screens = [
-                YouiScreenEntry(route: "/work", path: "/work"),
-                YouiScreenEntry(route: "/chat", path: "/chat"),
-                YouiScreenEntry(route: "/agents", path: "/agents"),
-            ]
+
+        // Lazy-wake preview server ONLY if any tile is missing/stale for the current git state!
+        let needsHydration = forceRefresh || canvasArtboards.contains(where: { $0.latestImagePath == nil || $0.cachedStateKey != stateKey })
+        if needsHydration {
+            await wakePreviewServerAndHydrate(forceAll: forceRefresh)
         }
-        if canvasArtboards.isEmpty {
-            canvasArtboards = YouiCanvasStorage.layoutArtboards(from: screens, projectRoot: root, columns: 3, viewport: .desktop)
-        }
-        if let root {
-            let loadedPins = YouiCanvasStorage.loadPins(projectRoot: root)
-            if !loadedPins.isEmpty {
-                canvasPins = loadedPins
+    }
+
+    public func wakePreviewServerAndHydrate(forceAll: Bool = false) async {
+        guard let root = canvasProjectRoot else { return }
+        let isToolrollRepo = (root as NSString).lastPathComponent.lowercased() == "toolroll"
+        let preferredOrigin: String? = (isToolrollRepo && isLocalSession) ? activeProfile.origin : nil
+
+        if let url = await previewServer.ensureRunning(projectRoot: root, preferredOrigin: preferredOrigin) {
+            canvasBaseURL = url
+            if forceAll {
+                for idx in canvasArtboards.indices {
+                    canvasArtboards[idx].cachedStateKey = nil
+                }
             }
+            pumpHydrationPool()
+        }
+    }
+
+    public func sleepPreviewServer() {
+        hydratingBoardIds.removeAll()
+        for idx in canvasArtboards.indices {
+            canvasArtboards[idx].isHydrating = false
+            canvasArtboards[idx].isLiveInteractive = false
+        }
+        previewServer.stopManagedServer()
+    }
+
+    /// Maintains at most 2 concurrent WebView hydrations so 8–20 screens never spike memory.
+    public func pumpHydrationPool() {
+        guard !canvasBaseURL.isEmpty else { return }
+        let maxPool = 2
+        while hydratingBoardIds.count < maxPool {
+            guard let nextIdx = canvasArtboards.firstIndex(where: {
+                !hydratingBoardIds.contains($0.id)
+                    && ($0.latestImagePath == nil || $0.cachedStateKey != canvasStateKey)
+            }) else { break }
+            let id = canvasArtboards[nextIdx].id
+            hydratingBoardIds.insert(id)
+            canvasArtboards[nextIdx].isHydrating = true
         }
     }
 
     public func arrangeCanvasArtboards(viewport: CanvasViewportPreset) {
-        let screens = canvasArtboards.map { YouiScreenEntry(route: $0.route, path: $0.path) }
-        let updated = YouiCanvasStorage.layoutArtboards(from: screens, projectRoot: canvasProjectRoot, columns: 3, viewport: viewport)
+        let viewportChanged = canvasViewport != viewport
+        canvasViewport = viewport
+        let screens = canvasArtboards.map { YouiScreenEntry(route: $0.route, path: $0.path, sourceFile: $0.sourceFile) }
+        let updated = YouiCanvasStorage.layoutArtboards(
+            from: screens,
+            projectRoot: canvasProjectRoot,
+            stateKey: canvasStateKey,
+            baselineKey: canvasBaselineKey,
+            columns: screens.count <= 2 ? max(1, screens.count) : 3,
+            viewport: viewport
+        )
         canvasArtboards = zip(canvasArtboards, updated).map { old, next in
             var merged = next
-            merged.baselineImagePath = old.baselineImagePath ?? next.baselineImagePath
-            merged.latestImagePath = old.latestImagePath ?? next.latestImagePath
+            if !viewportChanged {
+                merged.baselineImagePath = old.baselineImagePath ?? next.baselineImagePath
+                merged.latestImagePath = old.latestImagePath ?? next.latestImagePath
+                merged.cachedStateKey = old.cachedStateKey ?? next.cachedStateKey
+            }
             merged.isLiveInteractive = old.isLiveInteractive
             merged.compareSplit = old.compareSplit
             return merged
         }
+        if viewportChanged {
+            Task { await wakePreviewServerAndHydrate(forceAll: false) }
+        }
     }
 
-    public func addCanvasArtboard(route: String, path: String, viewport: CanvasViewportPreset) {
+    public func addCanvasArtboard(route: String, path: String, sourceFile: String? = nil, viewport: CanvasViewportPreset) {
         let count = canvasArtboards.count
         let col = count % 3
         let row = count / 3
-        let board = CanvasArtboard(
+        var board = CanvasArtboard(
             route: route,
             path: path,
+            sourceFile: sourceFile,
             x: 60 + Double(col) * (viewport.width + 44),
-            y: 60 + Double(row) * (viewport.height + 64),
+            y: 56 + Double(row) * (viewport.height + 60),
             width: viewport.width,
-            height: viewport.height,
-            isLiveInteractive: true
+            height: viewport.height
         )
+        if let root = canvasProjectRoot {
+            let cached = YouiCanvasStorage.cachedTilePath(projectRoot: root, stateKey: canvasStateKey, slug: board.slug, viewport: viewport).path
+            if FileManager.default.fileExists(atPath: cached) {
+                board.latestImagePath = cached
+                board.baselineImagePath = cached
+                board.cachedStateKey = canvasStateKey
+            }
+        }
         canvasArtboards.append(board)
+        if board.latestImagePath == nil {
+            Task { await wakePreviewServerAndHydrate(forceAll: false) }
+        }
     }
 
     public func moveCanvasArtboard(id: String, dx: Double, dy: Double) {
@@ -301,7 +396,18 @@ public final class WorkbenchStore {
 
     public func toggleArtboardLive(id: String) {
         guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
-        canvasArtboards[idx].isLiveInteractive.toggle()
+        let turningOn = !canvasArtboards[idx].isLiveInteractive
+        // Keep only 1 artboard live interactive at a time for razor-low memory
+        for i in canvasArtboards.indices {
+            canvasArtboards[i].isLiveInteractive = false
+        }
+        canvasArtboards[idx].isLiveInteractive = turningOn
+        if turningOn {
+            previewServer.touchActivity()
+            if canvasBaseURL.isEmpty {
+                Task { await wakePreviewServerAndHydrate(forceAll: false) }
+            }
+        }
     }
 
     public func setArtboardCompareSplit(id: String, split: Double) {
@@ -313,10 +419,22 @@ public final class WorkbenchStore {
         guard let idx = canvasArtboards.firstIndex(where: { $0.id == boardId }) else { return }
         let root = canvasProjectRoot ?? NSTemporaryDirectory()
         let slug = canvasArtboards[idx].slug
-        if let saved = YouiCanvasStorage.saveSnapshotPNG(pngData, projectRoot: root, slug: slug) {
+        if let saved = YouiCanvasStorage.saveTilePNG(
+            pngData,
+            projectRoot: root,
+            stateKey: canvasStateKey,
+            baselineKey: canvasBaselineKey,
+            slug: slug,
+            viewport: canvasViewport
+        ) {
             canvasArtboards[idx].baselineImagePath = saved.baseline
             canvasArtboards[idx].latestImagePath = saved.latest
+            canvasArtboards[idx].cachedStateKey = canvasStateKey
         }
+        canvasArtboards[idx].isHydrating = false
+        hydratingBoardIds.remove(boardId)
+        previewServer.touchActivity()
+        pumpHydrationPool()
     }
 
     public func createCanvasPin(
@@ -326,8 +444,13 @@ public final class WorkbenchStore {
         yFrac: Double,
         kind: CanvasPinKind,
         body: String,
-        fileTask: Bool
+        elementName: String? = nil,
+        elementSelector: String? = nil,
+        elementFile: String? = nil,
+        elementLine: Int? = nil,
+        fileImmediately: Bool
     ) async {
+        let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile
         let pin = CanvasPin(
             artboardRoute: route,
             artboardPath: path,
@@ -335,38 +458,88 @@ public final class WorkbenchStore {
             yFrac: yFrac,
             kind: kind,
             body: body,
-            author: activeProfile.account.isEmpty ? "alex" : activeProfile.account
+            author: activeProfile.account.isEmpty ? "alex" : activeProfile.account,
+            elementName: elementName,
+            elementSelector: elementSelector,
+            elementFile: fallbackFile,
+            elementLine: elementLine,
+            isDraft: !fileImmediately
         )
         canvasPins.append(pin)
 
         if let root = canvasProjectRoot {
             _ = YouiCanvasStorage.writeYouiRequest(
                 projectRoot: root,
-                projectName: selectedProject ?? "toolroll",
+                projectName: canvasProjectName.isEmpty ? "toolroll" : canvasProjectName,
                 pin: pin
             )
         }
 
-        if fileTask {
-            await fileTaskFromCanvasPin(pin)
+        if fileImmediately {
+            await submitPins([pin], grouping: .perPin)
         } else {
-            notice = WorkbenchNotice(kind: .info, message: "Pinned feedback on \(route).")
+            notice = WorkbenchNotice(kind: .info, message: "Saved draft pin on \(route) — click Create Tasks when ready.")
         }
-        _ = pin
     }
 
-    public func fileTaskFromCanvasPin(_ pin: CanvasPin) async {
-        let prefix = pin.kind == .options ? "[UI Options A/B/C/D] " : "[UI] "
-        let title = "\(prefix)\(pin.artboardRoute): \(pin.body)"
-        let detail = "Canvas pin \(pin.id) on route `\(pin.artboardPath)` at (\(Int(pin.xFrac * 100))%, \(Int(pin.yFrac * 100))%).\n\n\(pin.body)"
-        await createTask(title: String(title.prefix(118)), project: selectedProject, body: detail, planFirst: true)
-        if let newest = workRowsResponse.rows.first?.id,
-           let idx = canvasPins.firstIndex(where: { $0.id == pin.id }) {
-            canvasPins[idx].linkedTaskId = newest
+    public func deleteCanvasPin(id: String) {
+        canvasPins.removeAll { $0.id == id }
+    }
+
+    public func submitDraftPins(grouping: PinBatchGrouping) async {
+        let drafts = draftCanvasPins
+        guard !drafts.isEmpty else { return }
+        await submitPins(drafts, grouping: grouping)
+    }
+
+    public func submitPins(_ pins: [CanvasPin], grouping: PinBatchGrouping) async {
+        let groups: [(String, [CanvasPin])]
+        switch grouping {
+        case .perScreen:
+            let byRoute = Dictionary(grouping: pins, by: \.artboardRoute)
+            groups = byRoute.keys.sorted().map { ($0, byRoute[$0] ?? []) }
+        case .singleTask:
+            groups = [("UI Review (\(pins.count) pins)", pins)]
+        case .perPin:
+            groups = pins.map { ($0.artboardRoute, [$0]) }
+        }
+
+        let targetProj = canvasProjectName.isEmpty ? selectedProject : canvasProjectName
+        for (label, batch) in groups where !batch.isEmpty {
+            let title: String
+            if batch.count == 1, let only = batch.first {
+                let prefix = only.kind == .options ? "[UI Options A/B/C/D] " : "[UI] "
+                title = String("\(prefix)\(only.artboardRoute): \(only.body)".prefix(118))
+            } else {
+                title = String("[UI] \(label) (\(batch.count) changes)".prefix(118))
+            }
+
+            let details = batch.enumerated().map { idx, p -> String in
+                var meta = "route `\(p.artboardPath)` at (\(Int(p.xFrac * 100))%, \(Int(p.yFrac * 100))%)"
+                if let el = p.elementName { meta += " · element `\(el)`" }
+                if let f = p.elementFile {
+                    meta += p.elementLine.map { " · `\(f):\($0)`" } ?? " · `\(f)`"
+                }
+                let kindTag = p.kind == .options ? "[Options A/B/C/D] " : ""
+                return "\(idx + 1). \(kindTag)\(p.body) (\(meta))"
+            }.joined(separator: "\n")
+
+            await createTask(title: title, project: targetProj, body: details, planFirst: true)
+            let createdTaskId = workRowsResponse.rows.first?.id
+            for p in batch {
+                if let i = canvasPins.firstIndex(where: { $0.id == p.id }) {
+                    canvasPins[i].isDraft = false
+                    canvasPins[i].linkedTaskId = createdTaskId
+                    if let root = canvasProjectRoot {
+                        _ = YouiCanvasStorage.writeYouiRequest(projectRoot: root, projectName: targetProj ?? "toolroll", pin: canvasPins[i])
+                    }
+                }
+            }
         }
     }
 
     public func statusTone(forPin pin: CanvasPin) -> TaskStatusTone {
+        if pin.isDraft { return .queued }
         if let taskId = pin.linkedTaskId,
            let row = workRowsResponse.rows.first(where: { $0.id == taskId }) {
             return row.status
@@ -374,14 +547,25 @@ public final class WorkbenchStore {
         return .queued
     }
 
-    private func resolveLocalProjectRoot() -> String? {
+    private func resolveLocalProjectRoot(for projectName: String) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "\(home)/Documents/firstmate/projects/toolroll",
-            "\(home)/Documents/\(selectedProject ?? "")",
+        let directCandidates = [
+            "\(home)/Documents/\(projectName)",
+            "\(home)/Documents/firstmate/projects/\(projectName)",
+            "\(home)/code/\(projectName)",
+            "\(home)/Projects/\(projectName)",
         ]
-        return candidates.first(where: { FileManager.default.fileExists(atPath: "\($0)/.youi/screens/screens.json") })
-            ?? candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
+        for path in directCandidates where FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+        // Fallback: scan ~/Documents for a folder matching projectName case-insensitively
+        let docsURL = URL(fileURLWithPath: "\(home)/Documents")
+        if let entries = try? FileManager.default.contentsOfDirectory(at: docsURL, includingPropertiesForKeys: [.isDirectoryKey]) {
+            if let match = entries.first(where: { $0.lastPathComponent.lowercased() == projectName.lowercased() }) {
+                return match.path
+            }
+        }
+        return nil
     }
 
     public func completeSetup() {
@@ -653,6 +837,11 @@ public final class WorkbenchStore {
             self.activeProfile = localProf
             self.isLocalSession = true
             self.client = ToolrollClient(localSession: creds)
+            if let eq = creds.cookieHeader.firstIndex(of: "=") {
+                let cname = String(creds.cookieHeader[..<eq])
+                let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
+                self.localSessionCookie = (cname, cval, creds.origin)
+            }
             self.terminalSession.disconnect(clearOutput: true)
             self.selectedTaskId = nil
             self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")

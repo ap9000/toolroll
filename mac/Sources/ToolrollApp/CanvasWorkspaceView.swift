@@ -3,9 +3,14 @@ import SwiftUI
 import ToolrollCore
 import WebKit
 
-/// Native SwiftUI + WKWebView Spatial UI Canvas (Toolroll's native port of `youiyoux`).
-/// Infinite dot-grid pan/zoom, live interactive screen artboards, spatial Pin-to-Task & Options (A/B/C/D)
-/// commentary (`youi.request/v1`), live SSE status halos on pins, and Before/After visual comparison scrub.
+/// Native SwiftUI + WKWebView Spatial UI Canvas (v1.5):
+/// - Project-aware route auto-discovery (`.youi/screens`, TanStack, Next, Astro/Vite)
+/// - Disk-backed content-addressed tile cache (`~/.cache/toolroll/canvas`) -> 0% idle CPU & 0 MB dev-server RAM
+/// - Single managed preview server with lazy wake + 5-min idle sleep
+/// - True 1440×900 (Desktop) / 390×844 (Mobile) logical viewport scaled cleanly into each artboard card
+/// - Auto-injected local Toolroll session cookie (zero login screens)
+/// - Read-only DOM element hover highlighter (`WKUserScript`) in Pin/Options mode
+/// - Draft-batch pin review (`Per screen` | `Single task` | `Per pin`) + instant `⌘↵` filing
 public struct CanvasWorkspaceView: View {
     @Bindable var store: WorkbenchStore
 
@@ -15,18 +20,17 @@ public struct CanvasWorkspaceView: View {
     @State private var zoom: CGFloat = 0.85
     @State private var gestureBaseZoom: CGFloat = 0.85
 
-    // Active tool & modals
+    // Tools & UI popovers
     @State private var tool: CanvasTool = .select
-    @State private var viewportPreset: CanvasViewportPreset = .desktop
-    @State private var baseURLString: String = "http://127.0.0.1:4180"
     @State private var isAddingRoute: Bool = false
     @State private var newRouteDraft: String = "/"
+    @State private var isSubmitBatchOpen: Bool = false
+    @State private var batchGrouping: PinBatchGrouping = .perScreen
 
-    // Pin drafting / inspection
+    // Pin drafting & inspection
     @State private var draftPin: PendingPinDraft? = nil
     @State private var draftPinText: String = ""
     @State private var selectedPinId: String? = nil
-    @State private var snapshotTick: Int = 0
 
     private struct PendingPinDraft: Equatable {
         let artboardId: String
@@ -35,6 +39,10 @@ public struct CanvasWorkspaceView: View {
         let xFrac: Double
         let yFrac: Double
         let kind: CanvasPinKind
+        let elementName: String?
+        let elementSelector: String?
+        let elementFile: String?
+        let elementLine: Int?
     }
 
     public init(store: WorkbenchStore) {
@@ -63,7 +71,7 @@ public struct CanvasWorkspaceView: View {
                                 }
                         )
 
-                    // Artboard layer
+                    // Artboards
                     ZStack(alignment: .topLeading) {
                         ForEach(store.canvasArtboards) { board in
                             artboardView(board)
@@ -75,10 +83,10 @@ public struct CanvasWorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                    // Floating Bottom Tool Dock (Minimal Signal 1.0.0 Pill)
+                    // Floating Bottom Dock
                     VStack {
                         Spacer()
-                        floatingDock(canvasSize: geo.size)
+                        floatingDock()
                             .padding(.bottom, 18)
                     }
                 }
@@ -95,11 +103,8 @@ public struct CanvasWorkspaceView: View {
             }
         }
         .background(ToolrollPalette.ground)
-        .onAppear {
-            if !store.activeProfile.origin.isEmpty && !store.activeProfile.isDemo {
-                baseURLString = store.activeProfile.origin
-            }
-            store.loadCanvasForCurrentProject()
+        .task(id: "\(store.selectedProject ?? "")::\(store.selectedRow?.project ?? "")") {
+            await store.loadCanvasForCurrentProject()
         }
         .onKeyPress("v") { tool = .select; return .handled }
         .onKeyPress("c") { tool = .pin; return .handled }
@@ -117,28 +122,46 @@ public struct CanvasWorkspaceView: View {
 
     private var canvasControlStrip: some View {
         HStack(spacing: 10) {
-            // Live Base URL pill
-            HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ToolrollPalette.muted)
-                TextField("http://localhost:3000", text: $baseURLString)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .frame(width: 195)
+            // Project switcher directly on Canvas
+            Menu {
+                ForEach(store.allProjects, id: \.self) { proj in
+                    Button {
+                        store.selectedProject = proj
+                    } label: {
+                        HStack {
+                            Text(proj)
+                            if store.canvasProjectName == proj { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+                Divider()
+                Button("Add Project…") { store.isAddProjectSheetOpen = true }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10.5))
+                    Text(store.canvasProjectName.isEmpty ? "Project" : store.canvasProjectName)
+                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(ToolrollPalette.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .menuStyle(.borderlessButton)
+            .fixedSize()
 
-            // Desktop / Mobile viewport switcher
+            // Preview server status pill (Cached 0 MB | Starting | Live with 1-click Sleep)
+            previewServerPill
+
+            // Desktop (1440×900) / Mobile (390×844) switcher
             HStack(spacing: 2) {
                 ForEach(CanvasViewportPreset.allCases) { preset in
-                    let active = viewportPreset == preset
+                    let active = store.canvasViewport == preset
                     Button {
-                        viewportPreset = preset
                         store.arrangeCanvasArtboards(viewport: preset)
                     } label: {
                         Image(systemName: preset == .desktop ? "macwindow" : "iphone")
@@ -149,14 +172,14 @@ public struct CanvasWorkspaceView: View {
                             .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                    .help(preset.rawValue)
+                    .help("\(preset.rawValue) (\(Int(preset.logicalWidth))×\(Int(preset.logicalHeight)))")
                 }
             }
             .padding(2)
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-            // Add Route button
+            // + Screen popover (shows remaining auto-discovered routes + custom path input)
             Button {
                 isAddingRoute.toggle()
             } label: {
@@ -168,43 +191,21 @@ public struct CanvasWorkspaceView: View {
             }
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
             .popover(isPresented: $isAddingRoute, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Add Screen Route")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                    HStack(spacing: 6) {
-                        TextField("/pricing", text: $newRouteDraft)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                            .frame(width: 170)
-                            .onSubmit { addNewRoute() }
-                        Button("Add") { addNewRoute() }
-                            .buttonStyle(KitButtonStyle(.primary, compact: true))
-                    }
-                }
-                .padding(12)
-                .background(ToolrollPalette.paper)
+                addScreenPopover
             }
 
             Button {
-                snapshotTick += 1
-                store.notice = WorkbenchNotice(kind: .info, message: "Captured live snapshots for \(store.canvasArtboards.count) screen(s).")
+                Task { await store.loadCanvasForCurrentProject(forceRefresh: true) }
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "camera")
-                        .font(.system(size: 10.5))
-                    Text("Snapshot All")
-                }
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.muted)
             }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .buttonStyle(.plain)
+            .help("Re-capture screens from latest code")
 
             Spacer()
 
-            // Quiet project UI progress summary
             HStack(spacing: 8) {
                 Text("\(store.canvasArtboards.count) screens")
                     .font(.system(size: 11, design: .monospaced))
@@ -221,11 +222,123 @@ public struct CanvasWorkspaceView: View {
         .background(ToolrollPalette.ground)
     }
 
-    private func addNewRoute() {
+    private var previewServerPill: some View {
+        HStack(spacing: 6) {
+            switch store.previewServer.status {
+            case .asleep:
+                Circle().fill(ToolrollPalette.muted).frame(width: 6, height: 6)
+                Text("Cached · 0 MB")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Button("Wake") {
+                    Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(ToolrollPalette.ink)
+                .buttonStyle(.plain)
+
+            case .starting(let cmd):
+                Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
+                Text("Starting \(cmd)…")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+
+            case .running(let url, _):
+                Circle().fill(ToolrollPalette.success).frame(width: 6, height: 6)
+                Text(url.replacingOccurrences(of: "http://", with: ""))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Button("Sleep") {
+                    store.sleepPreviewServer()
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(ToolrollPalette.muted)
+                .buttonStyle(.plain)
+
+            case .external(let url):
+                Circle().fill(ToolrollPalette.success).frame(width: 6, height: 6)
+                Text(url.replacingOccurrences(of: "http://", with: ""))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+
+            case .failed(let msg):
+                Circle().fill(ToolrollPalette.danger).frame(width: 6, height: 6)
+                Text(msg)
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.danger)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private var addScreenPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Add Screen")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+
+            HStack(spacing: 6) {
+                TextField("/pricing", text: $newRouteDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    .frame(width: 175)
+                    .onSubmit { addCustomRoute() }
+                Button("Add") { addCustomRoute() }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+            }
+
+            if !store.remainingDiscoveredRoutes.isEmpty {
+                HairlineDivider()
+                Text("DISCOVERED IN REPO")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(store.remainingDiscoveredRoutes.prefix(12)) { entry in
+                            Button {
+                                store.addCanvasArtboard(route: entry.route, path: entry.path, sourceFile: entry.sourceFile, viewport: store.canvasViewport)
+                                isAddingRoute = false
+                            } label: {
+                                HStack {
+                                    Text(entry.route)
+                                        .font(.system(size: 11.5, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.ink)
+                                    Spacer()
+                                    if let f = entry.sourceFile {
+                                        Text((f as NSString).lastPathComponent)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 170)
+            }
+        }
+        .padding(12)
+        .frame(width: 260)
+        .background(ToolrollPalette.paper)
+    }
+
+    private func addCustomRoute() {
         let cleaned = newRouteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         let path = cleaned.hasPrefix("/") ? cleaned : "/\(cleaned)"
-        store.addCanvasArtboard(route: path, path: path, viewport: viewportPreset)
+        store.addCanvasArtboard(route: path, path: path, viewport: store.canvasViewport)
         newRouteDraft = "/"
         isAddingRoute = false
     }
@@ -255,20 +368,29 @@ public struct CanvasWorkspaceView: View {
         .background(ToolrollPalette.ground)
     }
 
-    // MARK: - Artboard Card
+    // MARK: - Artboard Card (True 1440×900 / 390×844 Scaled Rendering + Hybrid Tile Cache)
 
     private func artboardView(_ board: CanvasArtboard) -> some View {
         let pinsForBoard = store.canvasPins.filter { $0.artboardPath == board.path || $0.artboardRoute == board.route }
         let scaledW = board.width * zoom
         let scaledH = board.height * zoom
+        let needsWebView = board.isLiveInteractive || board.isHydrating
+        let inspectorOn = board.isLiveInteractive && (tool == .pin || tool == .options)
 
         return VStack(alignment: .leading, spacing: 6) {
-            // Draggable artboard header bar
+            // Draggable artboard title bar
             HStack(spacing: 6) {
                 Text(board.route)
                     .font(.system(size: max(10, 11.5 * zoom), weight: .semibold, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.ink)
                     .lineLimit(1)
+
+                if let src = board.sourceFile {
+                    Text((src as NSString).lastPathComponent)
+                        .font(.system(size: max(9, 10 * zoom), design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
+                        .lineLimit(1)
+                }
 
                 if !pinsForBoard.isEmpty {
                     Text("\(pinsForBoard.count)")
@@ -284,11 +406,11 @@ public struct CanvasWorkspaceView: View {
                 Button {
                     store.toggleArtboardLive(id: board.id)
                 } label: {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Circle()
-                            .fill(board.isLiveInteractive ? ToolrollPalette.success : ToolrollPalette.muted.opacity(0.5))
+                            .fill(board.isLiveInteractive ? ToolrollPalette.success : (board.isHydrating ? ToolrollPalette.live : ToolrollPalette.muted.opacity(0.5)))
                             .frame(width: 5, height: 5)
-                        Text(board.isLiveInteractive ? "Live" : "Snapshot")
+                        Text(board.isLiveInteractive ? "Live" : (board.isHydrating ? "Rendering…" : "Cached"))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(ToolrollPalette.muted)
                     }
@@ -304,7 +426,7 @@ public struct CanvasWorkspaceView: View {
                     }
             )
 
-            // Artboard visual surface
+            // Visual surface
             ZStack(alignment: .topLeading) {
                 if tool == .compare,
                    let basePath = board.baselineImagePath,
@@ -312,26 +434,66 @@ public struct CanvasWorkspaceView: View {
                    let baseImg = NSImage(contentsOfFile: basePath),
                    let latestImg = NSImage(contentsOfFile: latestPath) {
                     beforeAfterScrubView(board: board, before: baseImg, after: latestImg, width: scaledW, height: scaledH)
-                } else if board.isLiveInteractive || board.latestImagePath == nil {
-                    LiveArtboardWebView(
+                } else if needsWebView && !store.canvasBaseURL.isEmpty {
+                    // Render at TRUE logical viewport (1440×900 or 390×844), GPU-scaled smoothly into box!
+                    let logW = store.canvasViewport.logicalWidth
+                    let logH = store.canvasViewport.logicalHeight
+                    let scale = scaledW / logW
+
+                    ScaledLiveArtboardWebView(
                         urlString: resolvedURL(for: board.path),
-                        snapshotTrigger: snapshotTick,
+                        logicalWidth: logW,
+                        logicalHeight: logH,
+                        sessionCookie: store.localSessionCookie,
+                        autoCaptureOnLoad: board.isHydrating,
+                        inspectorEnabled: inspectorOn,
                         onSnapshotPNG: { pngData in
                             store.saveArtboardSnapshot(boardId: board.id, pngData: pngData)
+                        },
+                        onInspectClick: { hit in
+                            draftPin = PendingPinDraft(
+                                artboardId: board.id,
+                                route: board.route,
+                                path: board.path,
+                                xFrac: hit.xFrac,
+                                yFrac: hit.yFrac,
+                                kind: tool == .options ? .options : .change,
+                                elementName: hit.elementName,
+                                elementSelector: hit.selector,
+                                elementFile: hit.file ?? board.sourceFile,
+                                elementLine: hit.line
+                            )
+                            draftPinText = ""
+                            selectedPinId = nil
                         }
                     )
-                    .frame(width: scaledW, height: scaledH)
-                    .allowsHitTesting(tool == .select && board.isLiveInteractive)
+                    .frame(width: logW, height: logH)
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .frame(width: scaledW, height: scaledH, alignment: .topLeading)
+                    .clipped()
+                    .allowsHitTesting(board.isLiveInteractive)
                 } else if let imgPath = board.latestImagePath, let img = NSImage(contentsOfFile: imgPath) {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: scaledW, height: scaledH)
                         .clipped()
+                } else {
+                    // Clean minimal placeholder while queued for pooled hydration
+                    VStack(spacing: 6) {
+                        Text(board.route)
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.ink)
+                        Text(store.canvasBaseURL.isEmpty ? "Click Wake to render live preview" : "Queued for capture…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                    .frame(width: scaledW, height: scaledH)
+                    .background(ToolrollPalette.codeBg)
                 }
 
-                // Transparent pin-drop overlay when Pin or Options tool is active
-                if tool == .pin || tool == .options {
+                // Static-tile pin-drop overlay when Pin or Options is active on a cached tile
+                if (tool == .pin || tool == .options) && !inspectorOn {
                     Color.clear
                         .contentShape(Rectangle())
                         .onTapGesture { location in
@@ -343,7 +505,11 @@ public struct CanvasWorkspaceView: View {
                                 path: board.path,
                                 xFrac: xFrac,
                                 yFrac: yFrac,
-                                kind: tool == .options ? .options : .change
+                                kind: tool == .options ? .options : .change,
+                                elementName: nil,
+                                elementSelector: nil,
+                                elementFile: board.sourceFile,
+                                elementLine: nil
                             )
                             draftPinText = ""
                             selectedPinId = nil
@@ -356,7 +522,7 @@ public struct CanvasWorkspaceView: View {
                         .position(x: pin.xFrac * scaledW, y: pin.yFrac * scaledH)
                 }
 
-                // Active draft pin marker + inline creation popover
+                // Active draft pin popover
                 if let draft = draftPin, draft.artboardId == board.id {
                     Circle()
                         .fill(draft.kind == .options ? ToolrollPalette.live : ToolrollPalette.ink)
@@ -377,7 +543,7 @@ public struct CanvasWorkspaceView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .strokeBorder(
-                        (tool == .pin || tool == .options) ? ToolrollPalette.ink.opacity(0.45) : ToolrollPalette.line,
+                        board.isLiveInteractive ? ToolrollPalette.live.opacity(0.6) : ((tool == .pin || tool == .options) ? ToolrollPalette.ink.opacity(0.45) : ToolrollPalette.line),
                         lineWidth: 1
                     )
             )
@@ -407,24 +573,23 @@ public struct CanvasWorkspaceView: View {
                         .frame(width: width, height: height, alignment: .leading)
                 )
 
-            // Vertical scrub hairline + handle
             Rectangle()
                 .fill(ToolrollPalette.ink)
                 .frame(width: 1.5, height: height)
                 .offset(x: splitX)
 
             HStack {
-                Text("BEFORE")
+                Text("BEFORE · \(store.canvasBaselineKey.prefix(7))")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(ToolrollPalette.paper.opacity(0.88), in: RoundedRectangle(cornerRadius: 3))
+                    .background(ToolrollPalette.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 3))
                 Spacer()
-                Text("AFTER")
+                Text("AFTER · \(store.canvasStateKey.prefix(7))")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(ToolrollPalette.paper.opacity(0.88), in: RoundedRectangle(cornerRadius: 3))
+                    .background(ToolrollPalette.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 3))
             }
             .foregroundStyle(ToolrollPalette.ink)
             .padding(8)
@@ -442,6 +607,7 @@ public struct CanvasWorkspaceView: View {
     private func pinMarker(pin: CanvasPin, index: Int) -> some View {
         let statusTone = store.statusTone(forPin: pin)
         let fillColor: Color = {
+            if pin.isDraft { return ToolrollPalette.warning }
             switch statusTone {
             case .needs: return ToolrollPalette.ink
             case .running: return ToolrollPalette.live
@@ -468,10 +634,11 @@ public struct CanvasWorkspaceView: View {
         ), arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
-                    StatusChip(tone: statusTone)
-                    Text(pin.kind == .options ? "Options (A/B/C/D)" : pin.artboardRoute)
+                    StatusChip(tone: statusTone, label: pin.isDraft ? "Draft pin" : nil)
+                    Text(pin.elementName ?? pin.artboardRoute)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
                     Spacer()
                 }
 
@@ -479,6 +646,12 @@ public struct CanvasWorkspaceView: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(ToolrollPalette.ink)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let file = pin.elementFile {
+                    Text(pin.elementLine.map { "\(file):\($0)" } ?? file)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
 
                 HStack(spacing: 8) {
                     if let taskId = pin.linkedTaskId {
@@ -489,20 +662,23 @@ public struct CanvasWorkspaceView: View {
                         }
                         .buttonStyle(KitButtonStyle(.primary, compact: true))
                     } else {
-                        Button("Turn into Task") {
+                        Button("File Task Now") {
                             selectedPinId = nil
-                            Task { await store.fileTaskFromCanvasPin(pin) }
+                            Task { await store.submitPins([pin], grouping: .perPin) }
                         }
                         .buttonStyle(KitButtonStyle(.primary, compact: true))
+
+                        Button("Remove") {
+                            selectedPinId = nil
+                            store.deleteCanvasPin(id: pin.id)
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
                     }
                     Spacer()
-                    Text("@\(pin.author)")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(ToolrollPalette.muted)
                 }
             }
             .padding(14)
-            .frame(width: 280)
+            .frame(width: 290)
             .background(ToolrollPalette.paper)
         }
     }
@@ -510,19 +686,26 @@ public struct CanvasWorkspaceView: View {
     private func draftPinPopover(_ draft: PendingPinDraft) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(draft.kind == .options ? "Explore UI Options (A/B/C/D)" : "Pin Feedback → Task")
+                Text(draft.kind == .options ? "Explore UI Options (A/B/C/D)" : "Add Canvas Pin")
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                 Spacer()
-                Text(draft.route)
+                Text(draft.elementName ?? draft.route)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+            }
+
+            if let f = draft.elementFile {
+                Text(draft.elementLine.map { "\(f):\($0)" } ?? f)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
             }
 
             TextField(
                 draft.kind == .options
-                    ? "Ask agent for 2–4 visual options (e.g. tighter header layout)…"
-                    : "Describe the UI change for Toolroll to build…",
+                    ? "Ask agent for 2–4 visual options…"
+                    : "Describe the UI change…",
                 text: $draftPinText,
                 axis: .vertical
             )
@@ -534,27 +717,28 @@ public struct CanvasWorkspaceView: View {
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
 
             HStack {
-                Button("Comment only") {
-                    commitDraftPin(draft, fileTaskImmediately: false)
+                Button("File Now (⌘↵)") {
+                    commitDraftPin(draft, fileImmediately: true)
                 }
                 .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .keyboardShortcut(.return, modifiers: [.command])
                 .disabled(draftPinText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Spacer()
 
-                Button("File Task") {
-                    commitDraftPin(draft, fileTaskImmediately: true)
+                Button("Add to Review") {
+                    commitDraftPin(draft, fileImmediately: false)
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
                 .disabled(draftPinText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(14)
-        .frame(width: 310)
+        .frame(width: 315)
         .background(ToolrollPalette.paper)
     }
 
-    private func commitDraftPin(_ draft: PendingPinDraft, fileTaskImmediately: Bool) {
+    private func commitDraftPin(_ draft: PendingPinDraft, fileImmediately: Bool) {
         let body = draftPinText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
         draftPin = nil
@@ -567,14 +751,18 @@ public struct CanvasWorkspaceView: View {
                 yFrac: draft.yFrac,
                 kind: draft.kind,
                 body: body,
-                fileTask: fileTaskImmediately
+                elementName: draft.elementName,
+                elementSelector: draft.elementSelector,
+                elementFile: draft.elementFile,
+                elementLine: draft.elementLine,
+                fileImmediately: fileImmediately
             )
         }
     }
 
-    // MARK: - Floating Bottom Pill Dock
+    // MARK: - Floating Bottom Dock + Batch Create Tasks (N)
 
-    private func floatingDock(canvasSize: CGSize) -> some View {
+    private func floatingDock() -> some View {
         HStack(spacing: 4) {
             dockToolButton(.select, icon: "cursorarrow", key: "V")
             dockToolButton(.pin, icon: "mappin.and.ellipse", key: "C")
@@ -584,7 +772,7 @@ public struct CanvasWorkspaceView: View {
             HairlineDivider(vertical: true).frame(height: 18).padding(.horizontal, 4)
 
             Button {
-                store.arrangeCanvasArtboards(viewport: viewportPreset)
+                store.arrangeCanvasArtboards(viewport: store.canvasViewport)
                 panOffset = .zero
                 dragStartPan = .zero
                 zoom = 0.85
@@ -597,7 +785,6 @@ public struct CanvasWorkspaceView: View {
                     .padding(.vertical, 5)
             }
             .buttonStyle(.plain)
-            .help("Arrange artboards in a clean grid")
 
             Button {
                 zoom = max(0.35, zoom - 0.15)
@@ -622,7 +809,6 @@ public struct CanvasWorkspaceView: View {
                     .frame(width: 38)
             }
             .buttonStyle(.plain)
-            .help("Reset Zoom (⌘0)")
 
             Button {
                 zoom = min(2.0, zoom + 0.15)
@@ -634,6 +820,61 @@ public struct CanvasWorkspaceView: View {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
+
+            // Batch review CTA (Q4 + Q8)
+            if !store.draftCanvasPins.isEmpty {
+                HairlineDivider(vertical: true).frame(height: 18).padding(.horizontal, 4)
+
+                Button {
+                    isSubmitBatchOpen.toggle()
+                } label: {
+                    Text("Create Tasks (\(store.draftCanvasPins.count))")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(ToolrollPalette.ink, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $isSubmitBatchOpen, arrowEdge: .top) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("File \(store.draftCanvasPins.count) Draft Pin\(store.draftCanvasPins.count == 1 ? "" : "s")")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.ink)
+
+                        HStack(spacing: 4) {
+                            ForEach(PinBatchGrouping.allCases) { g in
+                                let active = batchGrouping == g
+                                Button {
+                                    batchGrouping = g
+                                } label: {
+                                    Text(g.rawValue)
+                                        .font(.system(size: 11, weight: active ? .semibold : .regular))
+                                        .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(2)
+                        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+
+                        HStack {
+                            Spacer()
+                            Button("Create Tasks") {
+                                isSubmitBatchOpen = false
+                                Task { await store.submitDraftPins(grouping: batchGrouping) }
+                            }
+                            .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        }
+                    }
+                    .padding(14)
+                    .background(ToolrollPalette.paper)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -662,67 +903,176 @@ public struct CanvasWorkspaceView: View {
     }
 
     private func resolvedURL(for path: String) -> String {
-        let cleanBase = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanBase = store.canvasBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let cleanPath = path.hasPrefix("/") ? path : "/\(path)"
         return "\(cleanBase)\(cleanPath)"
     }
 }
 
-// MARK: - Live WKWebView Artboard Surface with Real PNG Snapshot Capture
+// MARK: - Scaled Live WKWebView with Session Cookie Injection + Read-Only DOM Inspector
 
-private struct LiveArtboardWebView: NSViewRepresentable {
+private struct DOMInspectHit {
+    let elementName: String?
+    let selector: String?
+    let file: String?
+    let line: Int?
+    let xFrac: Double
+    let yFrac: Double
+}
+
+private struct ScaledLiveArtboardWebView: NSViewRepresentable {
     let urlString: String
-    let snapshotTrigger: Int
+    let logicalWidth: Double
+    let logicalHeight: Double
+    let sessionCookie: (name: String, value: String, origin: String)?
+    let autoCaptureOnLoad: Bool
+    let inspectorEnabled: Bool
     let onSnapshotPNG: (Data) -> Void
+    let onInspectClick: (DOMInspectHit) -> Void
+
+    private static let inspectorScript = """
+    (function() {
+      if (window.__toolrollInspectorInstalled) return;
+      window.__toolrollInspectorInstalled = true;
+      window.__toolrollInspectOn = false;
+      var box = document.createElement('div');
+      box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border:1.5px solid #0d74ce;background:rgba(13,116,206,0.08);display:none;box-sizing:border-box;';
+      document.documentElement.appendChild(box);
+      document.addEventListener('mousemove', function(e) {
+        if (!window.__toolrollInspectOn) { box.style.display = 'none'; return; }
+        var el = document.elementFromPoint(e.clientX, e.clientY);
+        if (!el || el === box) { box.style.display = 'none'; return; }
+        var r = el.getBoundingClientRect();
+        box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+        box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+        box.style.display = 'block';
+      }, true);
+      document.addEventListener('click', function(e) {
+        if (!window.__toolrollInspectOn) return;
+        e.preventDefault(); e.stopPropagation();
+        var el = document.elementFromPoint(e.clientX, e.clientY);
+        var name = el ? (el.getAttribute('data-component') || el.tagName.toLowerCase()) : 'page';
+        var sel = el ? (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')) : '';
+        var file = null, line = null;
+        if (el) {
+          var fk = Object.keys(el).find(function(k) { return k.startsWith('__reactFiber$'); });
+          if (fk && el[fk]) {
+            var cur = el[fk];
+            for (var i = 0; i < 8 && cur; i++) {
+              if (cur._debugSource) { file = cur._debugSource.fileName; line = cur._debugSource.lineNumber; break; }
+              if (cur.type && typeof cur.type === 'function' && cur.type.name) { name = cur.type.name; }
+              cur = cur.return;
+            }
+          }
+        }
+        window.webkit.messageHandlers.toolrollInspect.postMessage({
+          elementName: name, selector: sel, file: file, line: line,
+          xFrac: e.clientX / Math.max(1, window.innerWidth),
+          yFrac: e.clientY / Math.max(1, window.innerHeight)
+        });
+      }, true);
+    })();
+    """
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSnapshotPNG: onSnapshotPNG)
+        Coordinator(
+            autoCaptureOnLoad: autoCaptureOnLoad,
+            onSnapshotPNG: onSnapshotPNG,
+            onInspectClick: onInspectClick
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        let webView = WKWebView(frame: .zero, configuration: config)
+        config.userContentController.add(context.coordinator, name: "toolrollInspect")
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.inspectorScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight), configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        if let url = URL(string: urlString) {
-            webView.load(URLRequest(url: url))
-            context.coordinator.loadedURL = urlString
-        }
+        context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.autoCaptureOnLoad = autoCaptureOnLoad
         context.coordinator.onSnapshotPNG = onSnapshotPNG
-        if context.coordinator.loadedURL != urlString, let url = URL(string: urlString) {
-            context.coordinator.loadedURL = urlString
-            webView.load(URLRequest(url: url))
+        context.coordinator.onInspectClick = onInspectClick
+        if context.coordinator.loadedURL != urlString {
+            context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         }
-        if context.coordinator.lastSnapshotTrigger != snapshotTrigger {
-            context.coordinator.lastSnapshotTrigger = snapshotTrigger
-            context.coordinator.captureSnapshot(webView: webView)
-        }
+        let flag = inspectorEnabled ? "true" : "false"
+        webView.evaluateJavaScript("window.__toolrollInspectOn = \(flag);", completionHandler: nil)
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var loadedURL: String = ""
-        var lastSnapshotTrigger: Int = 0
+        var autoCaptureOnLoad: Bool
         var onSnapshotPNG: (Data) -> Void
+        var onInspectClick: (DOMInspectHit) -> Void
 
-        init(onSnapshotPNG: @escaping (Data) -> Void) {
+        init(autoCaptureOnLoad: Bool, onSnapshotPNG: @escaping (Data) -> Void, onInspectClick: @escaping (DOMInspectHit) -> Void) {
+            self.autoCaptureOnLoad = autoCaptureOnLoad
             self.onSnapshotPNG = onSnapshotPNG
+            self.onInspectClick = onInspectClick
         }
 
-        func captureSnapshot(webView: WKWebView) {
-            let config = WKSnapshotConfiguration()
-            webView.takeSnapshot(with: config) { [weak self] image, _ in
-                guard let image,
-                      let tiff = image.tiffRepresentation,
-                      let rep = NSBitmapImageRep(data: tiff),
-                      let png = rep.representation(using: .png, properties: [:])
-                else { return }
-                self?.onSnapshotPNG(png)
+        func loadWithCookie(webView: WKWebView, urlString: String, sessionCookie: (name: String, value: String, origin: String)?) {
+            guard let targetURL = URL(string: urlString) else { return }
+            loadedURL = urlString
+            if let sc = sessionCookie,
+               let cookieOrigin = URL(string: sc.origin),
+               cookieOrigin.host == targetURL.host,
+               cookieOrigin.port == targetURL.port,
+               let cookie = HTTPCookie(properties: [
+                   .domain: targetURL.host ?? "127.0.0.1",
+                   .path: "/",
+                   .name: sc.name,
+                   .value: sc.value,
+               ]) {
+                webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                    webView.load(URLRequest(url: targetURL))
+                }
+            } else {
+                webView.load(URLRequest(url: targetURL))
             }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard autoCaptureOnLoad else { return }
+            // Wait 550ms for fonts/CSS/hydration to settle, then silently cache Retina tile to disk
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self, weak webView] in
+                guard let self, let webView else { return }
+                let config = WKSnapshotConfiguration()
+                config.rect = webView.bounds
+                webView.takeSnapshot(with: config) { image, _ in
+                    guard let image,
+                          let tiff = image.tiffRepresentation,
+                          let rep = NSBitmapImageRep(data: tiff),
+                          let png = rep.representation(using: .png, properties: [:])
+                    else { return }
+                    self.onSnapshotPNG(png)
+                }
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "toolrollInspect",
+                  let dict = message.body as? [String: Any]
+            else { return }
+            let hit = DOMInspectHit(
+                elementName: dict["elementName"] as? String,
+                selector: dict["selector"] as? String,
+                file: dict["file"] as? String,
+                line: dict["line"] as? Int,
+                xFrac: (dict["xFrac"] as? Double) ?? 0.5,
+                yFrac: (dict["yFrac"] as? Double) ?? 0.5
+            )
+            onInspectClick(hit)
         }
     }
 }

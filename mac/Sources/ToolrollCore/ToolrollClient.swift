@@ -44,6 +44,15 @@ public enum ClientTransport: Sendable, Equatable {
         if case .localSession = self { return true }
         return false
     }
+
+    public var localSessionCookie: (name: String, value: String, origin: String)? {
+        guard case .localSession(let s) = self,
+              let eq = s.cookieHeader.firstIndex(of: "=")
+        else { return nil }
+        let name = String(s.cookieHeader[..<eq])
+        let value = String(s.cookieHeader[s.cookieHeader.index(after: eq)...])
+        return (name, value, s.origin)
+    }
 }
 
 /// Async HTTP + SSE + WebSocket client over Toolroll's central Engine API.
