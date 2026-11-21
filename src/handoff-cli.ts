@@ -16,7 +16,11 @@ const HELP = `toolroll handoff pull <task> [--repo <local-dir>] [--profile <name
 toolroll handoff push [<task>] [--note "<summary>"] [--profile <name>]
   Upload your local handoff diff back to the central task as an unverified revision candidate.
 toolroll handoff rebase [<task>] [--repo <worktree>] [--push] [--note "<summary>"] [--profile <name>]
-  Rebase your isolated handoff worktree onto the latest central task head after a teammate's promotion (3-way merge, preserving a backup patch).`;
+  Rebase your isolated handoff worktree onto the latest central task head after a teammate's promotion (3-way merge, preserving a backup patch).
+toolroll handoff status [<task>] [--repo <worktree>] [--profile <name>]
+  Show local handoff diff status, whether your base commit is stale, and central candidate/check/PR state.
+toolroll handoff clean [<task>] [--repo <dir>] [--force]
+  Remove an isolated local handoff worktree without touching your main checkout (refuses dirty edits unless --force).`;
 
 type HandoffMeta = {
   workspaceId: string;
@@ -53,6 +57,23 @@ type HandoffPushResponse = {
   trust?: string;
 };
 
+type HandoffCandidatesListResponse = {
+  ok: boolean;
+  message?: string;
+  taskId?: string;
+  currentBaseCommit?: string | null;
+  candidates?: Array<{
+    id: string;
+    author: string;
+    stale?: boolean;
+    promotedAt?: string | null;
+    runId?: number | null;
+    liveCheckState?: string | null;
+    canOpenPr?: boolean;
+    publication?: { state: string; prNumber: number | null; prUrl: string | null } | null;
+  }>;
+};
+
 function httpJson<T>(
   method: "GET" | "POST",
   origin: string,
@@ -68,6 +89,7 @@ function httpJson<T>(
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
     accept: "application/json",
+    "x-toolroll-client": "terminal-remote",
     ...(pins.workspaceId !== undefined ? { "x-toolroll-workspace": pins.workspaceId } : {}),
     ...(pins.recoveryGeneration !== undefined ? { "x-toolroll-recovery": pins.recoveryGeneration } : {}),
     ...(serialized === undefined ? {} : { "content-type": "application/json", "content-length": String(Buffer.byteLength(serialized)) }),
@@ -212,11 +234,16 @@ export async function maybeRunHandoffCommand(
   let repoFlag: string | undefined;
   let note = "";
   let pushAfterRebase = false;
+  let forceClean = false;
   const positionals: string[] = [];
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     if (arg === "--push") {
       pushAfterRebase = true;
+      continue;
+    }
+    if (arg === "--force") {
+      forceClean = true;
       continue;
     }
     if (arg === "--profile" || arg === "--repo" || arg === "--note") {
@@ -230,6 +257,65 @@ export async function maybeRunHandoffCommand(
     if (arg.startsWith("-")) { write(`Unknown option: ${arg}`); return 2; }
     positionals.push(arg);
   }
+  const cwd = options.cwd ?? process.cwd();
+  if (sub === "clean") {
+    const targetDir = repoFlag ?? cwd;
+    let repoRoot: string;
+    try { repoRoot = realpathSync(gitRun(targetDir, ["rev-parse", "--show-toplevel"])); } catch {
+      write("Run this inside your local repository or handoff worktree (or pass --repo <dir>).");
+      return 2;
+    }
+    const common = gitCommonDirOf(repoRoot);
+    const poolDir = join(common, "toolroll-handoff");
+    const hereMetaPath = join(gitDirOf(repoRoot), "toolroll-handoff.json");
+    let worktree: string;
+    let taskId: string | undefined = positionals[0];
+    if (existsSync(hereMetaPath)) {
+      worktree = repoRoot;
+      if (!taskId) {
+        try { taskId = (JSON.parse(readFileSync(hereMetaPath, "utf8")) as HandoffMeta).taskId; } catch {}
+      }
+    } else {
+      if (!taskId) {
+        write("Name the task id to clean (or run inside its handoff worktree): toolroll handoff clean <task>");
+        return 2;
+      }
+      worktree = join(poolDir, taskId.replace(/[^A-Za-z0-9_.-]/g, "-"));
+    }
+    if (!existsSync(worktree)) {
+      write(`No local handoff worktree found at ${worktree}.`);
+      return 0;
+    }
+    const wtReal = realpathSync(worktree);
+    if (!wtReal.startsWith(realpathSync(poolDir))) {
+      write("Refused: target directory is not an isolated Toolroll handoff worktree.");
+      return 1;
+    }
+    const wtMetaPath = join(gitDirOf(wtReal), "toolroll-handoff.json");
+    let meta: HandoffMeta | null = null;
+    if (existsSync(wtMetaPath)) {
+      try { meta = JSON.parse(readFileSync(wtMetaPath, "utf8")) as HandoffMeta; } catch { meta = null; }
+    }
+    const diffBase = (meta?.localHead && commitExistsLocally(wtReal, meta.localHead))
+      ?? (meta?.baseCommit && commitExistsLocally(wtReal, meta.baseCommit))
+      ?? gitRun(wtReal, ["rev-parse", "HEAD"]);
+    const dirtyDiff = execFileSync("git", ["-C", wtReal, "diff", diffBase], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
+    const untracked = gitRun(wtReal, ["status", "--porcelain"]);
+    if (!forceClean && (dirtyDiff.trim() !== "" || untracked.trim() !== "")) {
+      write("Refused: handoff worktree has local changes. Push them first (`toolroll handoff push`) or re-run with `--force`.");
+      return 1;
+    }
+    const resolvedTask = taskId ?? meta?.taskId ?? "";
+    const safeTask = resolvedTask.replace(/[^A-Za-z0-9_.-]/g, "-");
+    const mainWorktree = realpathSync(join(common, ".."));
+    gitRun(mainWorktree, ["worktree", "remove", "--force", "--", wtReal]);
+    if (safeTask !== "") {
+      try { gitRun(mainWorktree, ["branch", "-D", "--", `toolroll/handoff/${safeTask}`]); } catch { /* branch already gone */ }
+    }
+    write(`Removed isolated handoff worktree for ${resolvedTask || wtReal} (your main checkout was untouched).`);
+    return 0;
+  }
+
   let profile: ReturnType<typeof centralProfile>;
   try { profile = centralProfile(options, profileName); } catch (error) {
     write(error instanceof Error ? error.message : "Could not read remote profile.");
@@ -239,7 +325,6 @@ export async function maybeRunHandoffCommand(
     write("Connect to a central server with an API token first: toolroll connect <https://origin> --as <account> --token-stdin");
     return 2;
   }
-  const cwd = options.cwd ?? process.cwd();
 
   if (sub === "pull") {
     const taskId = positionals[0];
@@ -480,6 +565,78 @@ export async function maybeRunHandoffCommand(
       );
     }
     write(`Ready to upload a fresh candidate: toolroll handoff push ${taskId}`);
+    return 0;
+  }
+
+  if (sub === "status") {
+    let worktreeRoot: string;
+    try { worktreeRoot = realpathSync(gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch {
+      write("Run this inside your local handoff worktree (or pass --repo <worktree>).");
+      return 2;
+    }
+    const metaPath = join(gitDirOf(worktreeRoot), "toolroll-handoff.json");
+    let meta: HandoffMeta | null = null;
+    if (existsSync(metaPath)) {
+      try { meta = JSON.parse(readFileSync(metaPath, "utf8")) as HandoffMeta; } catch { meta = null; }
+    }
+    const taskId = positionals[0] ?? meta?.taskId;
+    if (!taskId) {
+      write("Not inside a handoff worktree. Name the task id: toolroll handoff status <task>");
+      return 2;
+    }
+    const baseCommit = meta?.baseCommit ?? gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
+    const diffBase = (meta?.localHead && commitExistsLocally(worktreeRoot, meta.localHead)) ?? baseCommit;
+    const localPatch = execFileSync("git", ["-C", worktreeRoot, "diff", diffBase], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
+    const checked = localPatch.trim() === "" ? null : validateHandoffPatch(localPatch);
+
+    const reply = await httpJson<HandoffCandidatesListResponse>(
+      "GET",
+      profile.origin,
+      `/api/handoff/task/${encodeURIComponent(taskId)}/candidates`,
+      profile.token,
+      {
+        workspaceId: meta?.workspaceId || profile.workspaceId,
+        recoveryGeneration: meta?.recoveryGeneration || profile.recoveryGeneration,
+      },
+    );
+    if (reply.status !== 200 || reply.data === null || !reply.data.ok) {
+      write(reply.data?.message ?? `Central server answered status ${reply.status}.`);
+      return 1;
+    }
+    const centralBase = reply.data.currentBaseCommit ?? null;
+    const stale = centralBase !== null && baseCommit !== centralBase;
+    write(`Task: ${taskId} (${profile.origin})`);
+    write(`Local base: ${baseCommit.slice(0, 12)}${stale ? `  [STALE — central is ${centralBase.slice(0, 12)}]` : "  [up to date]"}`);
+    if (checked === null) {
+      write("Local edits: none");
+    } else if (checked.ok) {
+      write(`Local edits: ${checked.files.length} file${checked.files.length === 1 ? "" : "s"} (${checked.files.join(", ")})`);
+    } else {
+      write(`Local edits: invalid patch (${checked.error})`);
+    }
+    const cands = reply.data.candidates ?? [];
+    if (cands.length === 0) {
+      write("Central candidates: none");
+    } else {
+      write(`Central candidates (${cands.length}):`);
+      for (const c of cands) {
+        const state = c.promotedAt
+          ? c.publication?.prNumber
+            ? `promoted Run #${c.runId ?? "?"} · PR #${c.publication.prNumber}`
+            : c.publication
+              ? `promoted Run #${c.runId ?? "?"} · PR queued`
+              : `promoted Run #${c.runId ?? "?"} · checks ${c.liveCheckState ?? "not-run"}${c.canOpenPr ? " · ready for PR" : ""}`
+          : c.stale
+            ? "stale"
+            : "unverified";
+        write(`  - ${c.id} by ${c.author} [${state}]`);
+      }
+    }
+    if (stale) {
+      write(`Next step: toolroll handoff rebase ${taskId}`);
+    } else if (checked?.ok) {
+      write(`Next step: toolroll handoff push ${taskId}`);
+    }
     return 0;
   }
 

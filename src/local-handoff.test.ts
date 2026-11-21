@@ -243,9 +243,25 @@ test("toolroll handoff rebase cleanly rebases onto a teammate's promoted central
   // Conflict case: Alice edits b.txt at her old base (`b1 -> b-conflict`) and rebases onto promoted2 (`b2`):
   // rebase exits 1, keeps conflict markers + backup patch, never silently loses her edits.
   writeFileSync(join(aWt, "b.txt"), "b-conflict\n");
+  const statusStale: string[] = [];
+  expect(await maybeRunHandoffCommand(["handoff", "status"], l => statusStale.push(l), { profileFile: aliceProfile, cwd: aWt })).toBe(0);
+  expect(statusStale.join("\n")).toContain("[STALE");
+  expect(statusStale.join("\n")).toContain("toolroll handoff rebase t-rebase");
+
   const conflictLines: string[] = [];
   expect(await maybeRunHandoffCommand(["handoff", "rebase"], l => conflictLines.push(l), { profileFile: aliceProfile, cwd: aWt })).toBe(1);
   expect(conflictLines.join("\n")).toContain("merge conflicts");
   expect(conflictLines.join("\n")).toContain("rebase-backup.patch");
   expect(readFileSync(join(aWt, "b.txt"), "utf8")).toContain("<<<<<<<");
+
+  // `handoff clean` refuses dirty worktrees without --force, and cleanly removes with --force without touching aliceLocal.
+  const dirtyClean: string[] = [];
+  expect(await maybeRunHandoffCommand(["handoff", "clean"], l => dirtyClean.push(l), { cwd: aWt })).toBe(1);
+  expect(dirtyClean.join("\n")).toContain("--force");
+  expect(existsSync(aWt)).toBe(true);
+
+  const forcedClean: string[] = [];
+  expect(await maybeRunHandoffCommand(["handoff", "clean", "t-rebase", "--repo", aliceLocal, "--force"], l => forcedClean.push(l))).toBe(0);
+  expect(existsSync(aWt)).toBe(false);
+  expect(existsSync(join(aliceLocal, "a.txt"))).toBe(true);
 });
