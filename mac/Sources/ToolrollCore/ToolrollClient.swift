@@ -1,0 +1,361 @@
+import Foundation
+
+public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
+    case invalidOrigin(String)
+    case unauthenticated
+    case refused(String)
+    case httpStatus(Int, String)
+    case unreachable(String)
+    case decoding(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidOrigin(let o): return "Invalid workspace origin: \(o)"
+        case .unauthenticated: return "Session ended or access changed — reconnect in Workspace Settings."
+        case .refused(let m): return m
+        case .httpStatus(let code, let m): return m.isEmpty ? "Server answered HTTP \(code)." : m
+        case .unreachable(let m): return "Could not reach Toolroll: \(m)"
+        case .decoding(let m): return "Unexpected response shape: \(m)"
+        }
+    }
+}
+
+/// Thin, pinned async HTTP + SSE client over Toolroll's central Engine API.
+/// Carries `x-toolroll-client: terminal-remote`, `x-toolroll-workspace`, and `x-toolroll-recovery`
+/// on every request and never duplicates backend business logic.
+public actor ToolrollClient {
+    public let profile: ConnectionProfile
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    public init(profile: ConnectionProfile, session: URLSession = .shared) {
+        self.profile = profile
+        self.session = session
+        self.decoder = JSONDecoder()
+    }
+
+    public static func normalizedOrigin(_ raw: String) throws -> URL {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased()
+        else {
+            throw ToolrollClientError.invalidOrigin(raw)
+        }
+        let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
+        guard scheme == "https" || (scheme == "http" && loopback) else {
+            throw ToolrollClientError.invalidOrigin("Origin must use HTTPS (or loopback HTTP).")
+        }
+        return url
+    }
+
+    private func makeRequest(path: String, method: String = "GET", body: Data? = nil, accept: String = "application/json") throws -> URLRequest {
+        let base = try Self.normalizedOrigin(profile.origin)
+        guard let url = URL(string: path, relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(path)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 25)
+        req.httpMethod = method
+        req.setValue(accept, forHTTPHeaderField: "Accept")
+        req.setValue("terminal-remote", forHTTPHeaderField: "x-toolroll-client")
+        if !profile.token.isEmpty {
+            req.setValue("Bearer \(profile.token)", forHTTPHeaderField: "Authorization")
+        }
+        if let ws = profile.workspaceId, !ws.isEmpty {
+            req.setValue(ws, forHTTPHeaderField: "x-toolroll-workspace")
+        }
+        if let rec = profile.recoveryGeneration, !rec.isEmpty {
+            req.setValue(rec, forHTTPHeaderField: "x-toolroll-recovery")
+        }
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        return req
+    }
+
+    private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ToolrollClientError.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ToolrollClientError.unreachable("No HTTP response")
+        }
+        if http.statusCode == 401 {
+            throw ToolrollClientError.unauthenticated
+        }
+        if !(200...299).contains(http.statusCode) {
+            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String
+                ?? (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+                ?? ""
+            if http.statusCode == 403 || http.statusCode == 409 {
+                throw ToolrollClientError.refused(msg.isEmpty ? "Action refused (\(http.statusCode))." : msg)
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, msg)
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            let preview = String(data: data.prefix(240), encoding: .utf8) ?? "<binary>"
+            throw ToolrollClientError.decoding("\(String(describing: error)) | body: \(preview)")
+        }
+    }
+
+    // MARK: - Core Engine Reads
+
+    public func fetchWorkRows() async throws -> WorkRowsResponse {
+        try await send(try makeRequest(path: "/work/rows"), as: WorkRowsResponse.self)
+    }
+
+    public func fetchSteps(taskId: String) async throws -> StepCardsResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await send(try makeRequest(path: "/t/\(enc)/steps"), as: StepCardsResponse.self)
+    }
+
+    public func fetchDiff(taskId: String, runId: Int? = nil) async throws -> ResultDiffResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let q = runId.map { "?run=\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/diff\(q)"), as: ResultDiffResponse.self)
+    }
+
+    public func fetchDiffFile(taskId: String, fileIndex: Int, runId: Int? = nil) async throws -> ResultDiffFileResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        var comps = URLComponents()
+        comps.queryItems = [URLQueryItem(name: "file", value: String(fileIndex))]
+        if let runId { comps.queryItems?.append(URLQueryItem(name: "run", value: String(runId))) }
+        let query = comps.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/diff\(query)"), as: ResultDiffFileResponse.self)
+    }
+
+    public func fetchPresence() async throws -> PresenceSnapshot {
+        try await send(try makeRequest(path: "/api/presence"), as: PresenceSnapshot.self)
+    }
+
+    public func fetchCandidates(taskId: String) async throws -> CandidatesListResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await send(try makeRequest(path: "/api/handoff/task/\(enc)/candidates"), as: CandidatesListResponse.self)
+    }
+
+    public func fetchTerminals() async throws -> TermStateResponse {
+        try await send(try makeRequest(path: "/api/handoff/terminals"), as: TermStateResponse.self)
+    }
+
+    public func fetchLeadChat(project: String? = nil) async throws -> LeadChatResponse {
+        let path: String
+        if let project, !project.isEmpty,
+           let enc = project.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path = "/engine/chat?project=\(enc)"
+        } else {
+            path = "/engine/chat"
+        }
+        return try await send(try makeRequest(path: path), as: LeadChatResponse.self)
+    }
+
+    public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
+        struct ChatReply: Codable { let ok: Bool?; let message: String?; let problem: String?; let error: String? }
+        var items = [
+            URLQueryItem(name: "message", value: message),
+            URLQueryItem(name: "request", value: UUID().uuidString.lowercased()),
+        ]
+        if let project, !project.isEmpty {
+            items.append(URLQueryItem(name: "project", value: project))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let form = comps.percentEncodedQuery ?? ""
+        var req = try makeRequest(path: "/chat", method: "POST", body: Data(form.utf8))
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let reply = try await send(req, as: ChatReply.self)
+        if let problem = reply.problem ?? reply.error, !problem.isEmpty {
+            throw ToolrollClientError.refused(problem)
+        }
+        return reply.message ?? "Sent to Lead."
+    }
+
+    // MARK: - Multiplayer & Task Mutations
+
+    public func assignTaskPerson(taskId: String, person: String, why: String = "") async throws -> AssignPersonResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let payload = try JSONSerialization.data(withJSONObject: ["person": person, "why": why])
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(enc)/assign-person", method: "POST", body: payload),
+            as: AssignPersonResponse.self
+        )
+    }
+
+    public func promoteCandidate(taskId: String, candidateId: String) async throws -> PromoteCandidateResponse {
+        let encT = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let encC = candidateId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? candidateId
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(encT)/candidate/\(encC)/promote", method: "POST", body: Data("{}".utf8)),
+            as: PromoteCandidateResponse.self
+        )
+    }
+
+    public func openCandidatePr(taskId: String, candidateId: String) async throws -> OpenCandidatePrResponse {
+        let encT = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let encC = candidateId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? candidateId
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(encT)/candidate/\(encC)/open-pr", method: "POST", body: Data("{}".utf8)),
+            as: OpenCandidatePrResponse.self
+        )
+    }
+
+    public func startOrReuseTerminal(taskId: String, program: String = "shell") async throws -> StartRemoteTerminalResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let payload = try JSONSerialization.data(withJSONObject: ["program": program])
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(enc)/terminal", method: "POST", body: payload),
+            as: StartRemoteTerminalResponse.self
+        )
+    }
+
+    public func steerTask(taskId: String, note: String) async throws -> String {
+        struct CliReply: Codable { let ok: Bool; let message: String?; let output: String? }
+        let payload = try JSONSerialization.data(withJSONObject: ["argv": ["task", "steer", taskId, "--note", note]])
+        let res = try await send(try makeRequest(path: "/api/cli", method: "POST", body: payload), as: CliReply.self)
+        return res.message ?? res.output ?? "Steering note delivered."
+    }
+
+    public func pingApproval(taskId: String) async throws -> String {
+        struct PingReply: Codable { let ok: Bool; let channels: [String]?; let url: String?; let path: String? }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let res = try await send(
+            try makeRequest(path: "/api/handoff/task/\(enc)/approval-ping", method: "POST", body: Data("{}".utf8)),
+            as: PingReply.self
+        )
+        let ch = (res.channels ?? []).joined(separator: ", ")
+        return ch.isEmpty ? "Approval link ready (\(res.url ?? res.path ?? "/t/\(taskId)"))." : "Sent approval ping via \(ch)."
+    }
+
+    // MARK: - Browser-Assisted Device Pairing (Static, Pre-Auth)
+
+    public static func startDevicePairing(origin rawOrigin: String, label: String = "Toolroll Mac", session: URLSession = .shared) async throws -> DevicePairStartResponse {
+        let base = try normalizedOrigin(rawOrigin)
+        guard let url = URL(string: "/api/connect/pair/start", relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(rawOrigin)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["label": label])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(code, "Could not start browser pairing.")
+        }
+        return try JSONDecoder().decode(DevicePairStartResponse.self, from: data)
+    }
+
+    public static func pollDevicePairing(origin rawOrigin: String, pairId: String, pollSecret: String, session: URLSession = .shared) async throws -> DevicePairPollResponse {
+        let base = try normalizedOrigin(rawOrigin)
+        guard let url = URL(string: "/api/connect/pair/poll", relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(rawOrigin)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["pairId": pairId, "pollSecret": pollSecret])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(code, "Pairing poll failed.")
+        }
+        return try JSONDecoder().decode(DevicePairPollResponse.self, from: data)
+    }
+
+    // MARK: - Real-Time SSE Stream (GET /live?room=...)
+
+    public func streamLive(rooms: [String]) -> AsyncStream<LiveSignal> {
+        let reqResult = Result { () throws -> URLRequest in
+            var comps = URLComponents()
+            comps.queryItems = rooms.map { URLQueryItem(name: "room", value: $0) }
+            let query = comps.percentEncodedQuery.map { "?\($0)" } ?? ""
+            var r = try makeRequest(path: "/live\(query)", accept: "text/event-stream")
+            r.timeoutInterval = 3600
+            return r
+        }
+        let urlSession = self.session
+        return AsyncStream { continuation in
+            let task = Task {
+                guard case .success(let request) = reqResult else {
+                    continuation.yield(.ended)
+                    continuation.finish()
+                    return
+                }
+                do {
+                    let (bytes, response) = try await urlSession.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        continuation.yield(.ended)
+                        continuation.finish()
+                        return
+                    }
+                    var eventName = ""
+                    var dataLines: [String] = []
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        if line.isEmpty {
+                            if let sig = SSEParser.parseFrame(event: eventName, data: dataLines.joined(separator: "\n")) {
+                                continuation.yield(sig)
+                            }
+                            eventName = ""
+                            dataLines.removeAll(keepingCapacity: true)
+                        } else if line.hasPrefix("event:") {
+                            eventName = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                        } else if line.hasPrefix("data:") {
+                            dataLines.append(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
+                        }
+                    }
+                } catch {
+                    // Network drop ends this stream; WorkbenchStore reconnects cleanly.
+                }
+                continuation.yield(.ended)
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func webSocketRequest(terminalId: String) throws -> URLRequest {
+        let base = try Self.normalizedOrigin(profile.origin)
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        comps.scheme = (base.scheme == "https") ? "wss" : "ws"
+        comps.path = "/term/\(terminalId)/socket"
+        guard let url = comps.url else {
+            throw ToolrollClientError.invalidOrigin(terminalId)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        req.setValue("terminal-remote", forHTTPHeaderField: "x-toolroll-client")
+        if !profile.token.isEmpty {
+            req.setValue("Bearer \(profile.token)", forHTTPHeaderField: "Authorization")
+        }
+        if let ws = profile.workspaceId, !ws.isEmpty {
+            req.setValue(ws, forHTTPHeaderField: "x-toolroll-workspace")
+        }
+        if let rec = profile.recoveryGeneration, !rec.isEmpty {
+            req.setValue(rec, forHTTPHeaderField: "x-toolroll-recovery")
+        }
+        return req
+    }
+}
+
+public enum SSEParser {
+    public static func parseFrame(event: String, data: String) -> LiveSignal? {
+        if event == "reload" { return .reload }
+        guard let jsonData = data.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+        else {
+            return nil
+        }
+        let room = obj["room"] as? String ?? "home"
+        if event == "change" { return .change(room: room) }
+        if event == "turn" { return .turn(room: room) }
+        return nil
+    }
+}
