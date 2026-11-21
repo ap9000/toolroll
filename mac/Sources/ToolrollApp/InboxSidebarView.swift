@@ -1,10 +1,12 @@
 import SwiftUI
 import ToolrollCore
 
-/// Left rail (255px, --so-ground) — calm, pared-down vertical inbox with solo-aware progressive disclosure.
+/// Left rail (--so-ground) — active work up top, expandable `Settled` pinned cleanly to the bottom,
+/// and a quiet utility icon strip. Zero clutter, maximum focus on what's live.
 public struct InboxSidebarView: View {
     @Bindable var store: WorkbenchStore
     @State private var searchExpanded: Bool = false
+    @FocusState private var searchFocused: Bool
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -12,182 +14,246 @@ public struct InboxSidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Minimal header row (search expands only when clicked; team pills appear only in multi-dev workspaces)
-            VStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Text("Tasks")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.muted)
-                    Spacer()
-                    if !store.sidebarSearch.isEmpty || store.selectedProject != nil {
-                        Button("Clear") {
-                            store.sidebarSearch = ""
-                            store.selectedProject = nil
-                            searchExpanded = false
-                        }
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .buttonStyle(.plain)
-                    }
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.12)) {
-                            searchExpanded.toggle()
-                            if !searchExpanded { store.sidebarSearch = "" }
-                        }
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundStyle(searchExpanded ? ToolrollPalette.ink : ToolrollPalette.muted)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Filter tasks")
-                }
-
+            // Top bar: Search + Filter + Add Project + New Task
+            HStack(spacing: 8) {
                 if searchExpanded {
-                    HStack(spacing: 6) {
-                        TextField("Filter tasks…", text: $store.sidebarSearch)
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        TextField("Search", text: $store.sidebarSearch)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12))
                             .foregroundStyle(ToolrollPalette.ink)
-                        if !store.sidebarSearch.isEmpty {
-                            Button {
-                                store.sidebarSearch = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                            }
-                            .buttonStyle(.plain)
+                            .focused($searchFocused)
+                        Button {
+                            store.sidebarSearch = ""
+                            searchExpanded = false
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted)
                         }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    .padding(.vertical, 4)
+                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                } else {
+                    Button {
+                        searchExpanded = true
+                        searchFocused = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 11))
+                            Text("Search")
+                                .font(.system(size: 12))
+                            Spacer()
+                        }
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
 
-                // Team filter appears ONLY in multi-developer workspaces — zero clutter for solo builders!
-                if store.isTeamWorkspace {
-                    HStack(spacing: 4) {
-                        ForEach(TeamFilter.allCases) { filter in
-                            let active = store.teamFilter == filter
-                            Button {
-                                store.teamFilter = filter
-                            } label: {
-                                Text(filter.rawValue)
-                                    .font(.system(size: 10.5, weight: active ? .semibold : .regular))
-                                    .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .frame(maxWidth: .infinity)
-                                    .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                // Filter popover (Project + Team when multi-dev)
+                Menu {
+                    Section("Project") {
+                        Button {
+                            store.selectedProject = nil
+                        } label: {
+                            HStack {
+                                Text("All projects")
+                                if store.selectedProject == nil { Image(systemName: "checkmark") }
                             }
-                            .buttonStyle(.plain)
+                        }
+                        ForEach(store.allProjects, id: \.self) { proj in
+                            Button {
+                                store.selectedProject = proj
+                            } label: {
+                                HStack {
+                                    Text(proj)
+                                    if store.selectedProject == proj { Image(systemName: "checkmark") }
+                                }
+                            }
                         }
                     }
+                    if store.isTeamWorkspace {
+                        Divider()
+                        Section("Owner") {
+                            ForEach(TeamFilter.allCases) { f in
+                                Button {
+                                    store.teamFilter = f
+                                } label: {
+                                    HStack {
+                                        Text(f.rawValue)
+                                        if store.teamFilter == f { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(store.selectedProject != nil || store.teamFilter != .everyone ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Filter by project or owner")
+
+                // Add local project folder (⌘⇧O)
+                Button {
+                    store.pickAndAddLocalFolder()
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Add Local Project Folder (⌘⇧O)")
+
+                // New task inline canvas (⌘N)
+                Button {
+                    store.openNewWorkCanvas()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 12))
+                        .foregroundStyle(store.isComposingNewWork ? ToolrollPalette.ink : ToolrollPalette.muted)
+                }
+                .buttonStyle(.plain)
+                .help("New Task (⌘N)")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
 
-            HairlineDivider()
-
+            // Active work list (Needs you, Running, Queued)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if !store.needsRows.isEmpty {
-                        inboxSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
+                        activeSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
                     }
                     if !store.runningRows.isEmpty {
-                        inboxSection(title: "Running", count: store.runningRows.count, solidBadge: false, rows: store.runningRows)
+                        activeSection(title: "Running", count: store.runningRows.count, solidBadge: false, rows: store.runningRows)
                     }
                     if !store.queuedRows.isEmpty {
-                        inboxSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
-                    }
-                    if !store.failedRows.isEmpty {
-                        inboxSection(title: "Failed", count: store.failedRows.count, solidBadge: false, rows: store.failedRows)
+                        activeSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
                     }
 
-                    if !store.finishedRows.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Button {
-                                store.isFinishedDrawerOpen.toggle()
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: store.isFinishedDrawerOpen ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                    Text("Finished")
-                                        .font(.system(size: 10.5, weight: .semibold))
-                                        .textCase(.uppercase)
-                                        .tracking(0.6)
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                    Spacer()
-                                    Text("\(store.finishedRows.count)")
-                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 3)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            if store.isFinishedDrawerOpen {
-                                ForEach(store.finishedRows) { row in
-                                    inboxRow(row)
-                                }
-                            }
-                        }
-                    }
-
-                    if store.filteredRows.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("All clear.")
-                                .font(.system(size: 12.5, weight: .medium))
+                    if store.needsRows.isEmpty && store.runningRows.isEmpty && store.queuedRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Nothing active")
+                                .font(.system(size: 12))
                                 .foregroundStyle(ToolrollPalette.muted)
-                            Button("+ New Task") {
-                                store.isNewTaskSheetOpen = true
+                            Button("Start something new (⌘N)") {
+                                store.openNewWorkCanvas()
                             }
-                            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink)
+                            .buttonStyle(.plain)
                         }
-                        .padding(14)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
                     }
                 }
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
+            }
+            .frame(maxHeight: .infinity)
+
+            // Bottom-pinned expandable Settled section (Finished + Failed)
+            if !store.settledRows.isEmpty {
+                HairlineDivider()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            store.isSettledExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Settled")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Spacer()
+                            Text("\(store.settledRows.count)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Image(systemName: store.isSettledExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if store.isSettledExpanded {
+                        let visibleSettled = Array(store.settledRows.prefix(store.settledDisplayLimit))
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 1) {
+                                ForEach(visibleSettled) { row in
+                                    settledRow(row)
+                                }
+                                if store.settledRows.count > store.settledDisplayLimit {
+                                    Button {
+                                        store.settledDisplayLimit += 15
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 9))
+                                            Text("Show \(store.settledRows.count - store.settledDisplayLimit) more")
+                                                .font(.system(size: 11.5))
+                                        }
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.bottom, 6)
+                        }
+                        .frame(maxHeight: 280)
+                    }
+                }
             }
 
             HairlineDivider()
 
-            // Quiet 2-action footer (Lead + Terminals)
-            HStack(spacing: 12) {
+            // Minimal bottom utility icon bar
+            HStack(spacing: 14) {
                 Button {
-                    store.isInspectorVisible = true
-                    store.inspectorTab = .lead
+                    store.isSetupOpen = true
                 } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "text.bubble")
-                            .font(.system(size: 11))
-                        Text("Lead")
-                            .font(.system(size: 11.5, weight: .medium))
-                    }
-                    .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .lead ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.muted)
                 }
                 .buttonStyle(.plain)
+                .help("Setup & Agents (⌘,)")
 
                 Button {
-                    store.isInspectorVisible = true
-                    store.inspectorTab = .terminal
+                    store.toggleInspector(tab: .terminal)
                 } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 11))
-                        Text(store.activeTerminalCount > 0 ? "Terminal (\(store.activeTerminalCount))" : "Terminal")
-                            .font(.system(size: 11.5, weight: .medium))
-                    }
-                    .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .terminal ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12))
+                        .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .terminal ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
                 .buttonStyle(.plain)
+                .help("Live Terminal (⌘1)")
+
+                Button {
+                    store.toggleInspector(tab: .lead)
+                } label: {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 12))
+                        .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .lead ? ToolrollPalette.ink : ToolrollPalette.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Lead Thread (⌘L)")
 
                 Spacer()
 
@@ -196,6 +262,16 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
+
+                Button {
+                    Task { await store.refreshAll() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh (⌘R)")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -203,7 +279,7 @@ public struct InboxSidebarView: View {
         .background(ToolrollPalette.ground)
     }
 
-    private func inboxSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {
+    private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(title)
@@ -220,16 +296,16 @@ public struct InboxSidebarView: View {
                     .background(solidBadge ? ToolrollPalette.ink : Color.clear, in: RoundedRectangle(cornerRadius: 3))
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 3)
+            .padding(.bottom, 2)
 
             ForEach(rows) { row in
-                inboxRow(row)
+                activeRow(row)
             }
         }
     }
 
-    private func inboxRow(_ row: WorkRow) -> some View {
-        let isSelected = store.selectedTaskId == row.id
+    private func activeRow(_ row: WorkRow) -> some View {
+        let isSelected = !store.isComposingNewWork && store.selectedTaskId == row.id
         let pres = store.presence.tasks[row.id]
 
         return Button {
@@ -250,22 +326,22 @@ public struct InboxSidebarView: View {
                         .foregroundStyle(ToolrollPalette.muted)
                 }
 
-                HStack(spacing: 6) {
-                    if let project = row.project, !project.isEmpty {
+                if let project = row.project, !project.isEmpty {
+                    HStack(spacing: 5) {
                         Text(project)
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(ToolrollPalette.muted)
                             .lineLimit(1)
+                        if let summary = pres?.summary {
+                            Text("· \(summary)")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(ToolrollPalette.live)
+                                .lineLimit(1)
+                        }
+                        Spacer()
                     }
-                    if let summary = pres?.summary {
-                        Text("· \(summary)")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(ToolrollPalette.live)
-                            .lineLimit(1)
-                    }
-                    Spacer()
+                    .padding(.leading, 13)
                 }
-                .padding(.leading, 13)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -276,6 +352,42 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
+    }
+
+    private func settledRow(_ row: WorkRow) -> some View {
+        let isSelected = !store.isComposingNewWork && store.selectedTaskId == row.id
+        let badgeChar = row.project.flatMap { $0.isEmpty ? nil : String($0.prefix(2)).uppercased() } ?? "•"
+
+        return Button {
+            Task { await store.selectTask(row.id) }
+        } label: {
+            HStack(spacing: 8) {
+                Text(badgeChar)
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(row.status == .failed ? ToolrollPalette.danger : ToolrollPalette.muted)
+                    .frame(width: 18, height: 18)
+                    .background(ToolrollPalette.raised, in: Circle())
+                    .overlay(Circle().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+                Text(row.title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 6)
+
+                Text(row.age)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5.5)
+            .background(isSelected ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
     }
 
     @ViewBuilder

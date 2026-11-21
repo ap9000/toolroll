@@ -92,157 +92,113 @@ public struct TaskCockpitView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Compact Status & Action Strip (Breadcrumb lives cleanly in the top chrome bar)
 
     private func taskHeader(_ row: WorkRow) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(row.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                StatusChip(tone: row.status, label: row.word)
-            }
+        HStack(spacing: 10) {
+            StatusChip(tone: row.status, label: row.word)
 
-            HStack(spacing: 10) {
-                if let project = row.project, !project.isEmpty {
-                    Text(project)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                }
-
-                Text(row.id)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-
-                if !store.presence.accounts.isEmpty {
-                    Menu {
-                        ForEach(store.presence.accounts, id: \.self) { person in
-                            Button {
-                                Task { await store.handOffTask(taskId: row.id, to: person) }
-                            } label: {
-                                HStack {
-                                    Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
-                                    if store.selectedTaskOwner == person {
-                                        Image(systemName: "checkmark")
-                                    }
+            if store.isTeamWorkspace {
+                Menu {
+                    ForEach(store.presence.accounts, id: \.self) { person in
+                        Button {
+                            Task { await store.handOffTask(taskId: row.id, to: person) }
+                        } label: {
+                            HStack {
+                                Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
+                                if store.selectedTaskOwner == person {
+                                    Image(systemName: "checkmark")
                                 }
                             }
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "person")
-                                .font(.system(size: 10.5))
-                            Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
-                                .font(.system(size: 11.5, weight: .medium))
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8.5, weight: .semibold))
-                        }
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-
-                if let presSummary = store.selectedTaskPresence?.summary {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(ToolrollPalette.live)
-                            .frame(width: 6, height: 6)
-                        Text(presSummary)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(ToolrollPalette.muted)
-                    }
-                }
-
-                Spacer()
-
-                if let busy = store.busyLabel {
-                    Text(busy)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-
-                if let diff = store.diffResponse, !diff.files.isEmpty {
-                    Button {
-                        store.isInspectorVisible = true
-                        store.inspectorTab = .diff
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Diff")
-                            if let totals = diff.totals {
-                                Text("+\(totals.added)")
-                                    .foregroundStyle(ToolrollPalette.success)
-                                    .font(.system(size: 10.5, design: .monospaced))
-                            }
-                        }
-                    }
-                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                }
-
-                Button {
-                    Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell") }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 11))
-                        Text("Terminal")
+                        Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
+                            .font(.system(size: 11.5, weight: .medium))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
                     }
-                }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
-                // Task lifecycle actions menu (all native in-app)
-                Menu {
-                    if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
-                        Button("Plan Again") {
-                            Task { await store.planAgainSelectedTask() }
-                        }
-                    }
-                    if store.stepCards?.retry != nil {
-                        Button("Retry Build") {
-                            Task { await store.retrySelectedTask() }
-                        }
-                    }
-                    if store.stepCards?.liveRun != nil {
-                        Button("Stop Active Run") {
-                            Task { await store.stopSelectedTask() }
-                        }
-                    }
-                    Button(store.stepCards?.held != nil ? "Resume Task" : "Pause / Hold Task") {
-                        Task { await store.holdOrResumeSelectedTask() }
-                    }
-                    Divider()
-                    Button("Cancel Task", role: .destructive) {
-                        Task { await store.cancelSelectedTask() }
-                    }
-                    Divider()
-                    Button("Open Web View ↗") {
-                        store.openTaskInBrowser(taskId: row.id)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .frame(width: 26, height: 24)
-                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
-                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    .foregroundStyle(ToolrollPalette.muted)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
+
+            if let presSummary = store.selectedTaskPresence?.summary {
+                HStack(spacing: 5) {
+                    Circle().fill(ToolrollPalette.live).frame(width: 5, height: 5)
+                    Text(presSummary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+            }
+
+            if let busy = store.busyLabel {
+                Text(busy)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+
+            Spacer()
+
+            if let diff = store.diffResponse, !diff.files.isEmpty {
+                Button {
+                    store.toggleInspector(tab: .diff)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Diff")
+                        if let totals = diff.totals {
+                            Text("+\(totals.added)")
+                                .foregroundStyle(ToolrollPalette.success)
+                                .font(.system(size: 10.5, design: .monospaced))
+                        }
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+
+            Menu {
+                Button("Attach Live Terminal") {
+                    Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell") }
+                }
+                if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
+                    Button("Plan Again") {
+                        Task { await store.planAgainSelectedTask() }
+                    }
+                }
+                if store.stepCards?.retry != nil {
+                    Button("Retry Build") {
+                        Task { await store.retrySelectedTask() }
+                    }
+                }
+                if store.stepCards?.liveRun != nil {
+                    Button("Stop Active Run") {
+                        Task { await store.stopSelectedTask() }
+                    }
+                }
+                Button(store.stepCards?.held != nil ? "Resume Task" : "Pause / Hold Task") {
+                    Task { await store.holdOrResumeSelectedTask() }
+                }
+                Divider()
+                Button("Cancel Task", role: .destructive) {
+                    Task { await store.cancelSelectedTask() }
+                }
+                Divider()
+                Button("Open Web View ↗") {
+                    store.openTaskInBrowser(taskId: row.id)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 24, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
     }
 
     // MARK: - In-Place Notice

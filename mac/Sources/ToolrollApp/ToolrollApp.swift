@@ -15,38 +15,58 @@ struct ToolrollMacApp: App {
         .defaultSize(width: 1380, height: 860)
         .commands {
             CommandMenu("Workbench") {
-                Button("New Task…") {
-                    store.isNewTaskSheetOpen = true
+                Button("New Task") {
+                    store.isSetupOpen = false
+                    store.openNewWorkCanvas()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+
+                Button("Add Local Project Folder…") {
+                    store.pickAndAddLocalFolder()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
 
                 Button("Command Palette") {
                     store.isCommandPaletteOpen.toggle()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
 
-                Button("Toggle Inspector") {
+                Divider()
+
+                Button("Toggle Sidebar") {
+                    store.isSidebarVisible.toggle()
+                }
+                .keyboardShortcut("b", modifiers: [.command])
+
+                Button("Toggle Drawer") {
                     store.isInspectorVisible.toggle()
                 }
                 .keyboardShortcut("j", modifiers: [.command])
 
+                Button("Back") {
+                    Task { await store.goBack() }
+                }
+                .keyboardShortcut("[", modifiers: [.command])
+
+                Button("Forward") {
+                    Task { await store.goForward() }
+                }
+                .keyboardShortcut("]", modifiers: [.command])
+
                 Divider()
 
-                Button("Focus Live Terminal") {
-                    store.isInspectorVisible = true
-                    store.inspectorTab = .terminal
+                Button("Toggle Live Terminal") {
+                    store.toggleInspector(tab: .terminal)
                 }
                 .keyboardShortcut("1", modifiers: [.command])
 
-                Button("Focus Diff Inspector") {
-                    store.isInspectorVisible = true
-                    store.inspectorTab = .diff
+                Button("Toggle Diff Inspector") {
+                    store.toggleInspector(tab: .diff)
                 }
                 .keyboardShortcut("2", modifiers: [.command])
 
-                Button("Focus Lead Thread") {
-                    store.isInspectorVisible = true
-                    store.inspectorTab = .lead
+                Button("Toggle Lead Thread") {
+                    store.toggleInspector(tab: .lead)
                 }
                 .keyboardShortcut("l", modifiers: [.command])
 

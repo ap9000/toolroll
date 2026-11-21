@@ -44,13 +44,22 @@ public final class WorkbenchStore {
     public var selectedProject: String? = nil
     public var teamFilter: TeamFilter = .everyone
     public var sidebarSearch: String = ""
+    public var isSidebarVisible: Bool = true
     public var isInspectorVisible: Bool = false
     public var inspectorTab: InspectorTab = .diff
     public var isCommandPaletteOpen: Bool = false
     public var isPairSheetOpen: Bool = false
     public var isNewTaskSheetOpen: Bool = false
+    public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
-    public var isFinishedDrawerOpen: Bool = false
+    public var isSettledExpanded: Bool = false
+    public var settledDisplayLimit: Int = 10
+
+    // Navigation History (← / →)
+    private var backStack: [String?] = []
+    private var forwardStack: [String?] = []
+    public var canGoBack: Bool { !backStack.isEmpty }
+    public var canGoForward: Bool { !forwardStack.isEmpty }
 
     // Engine State
     public private(set) var workRowsResponse: WorkRowsResponse = WorkRowsResponse()
@@ -162,6 +171,79 @@ public final class WorkbenchStore {
     public var queuedRows: [WorkRow] { filteredRows.filter { $0.status == .queued } }
     public var failedRows: [WorkRow] { filteredRows.filter { $0.status == .failed } }
     public var finishedRows: [WorkRow] { filteredRows.filter { $0.status == .finished || $0.status == .unknown } }
+
+    /// Settled work (Finished + Failed) pinned cleanly to the bottom expandable section of the sidebar.
+    public var settledRows: [WorkRow] {
+        filteredRows.filter { $0.status == .finished || $0.status == .failed || $0.status == .unknown }
+    }
+
+    public func openNewWorkCanvas() {
+        if !isComposingNewWork, let current = selectedTaskId {
+            backStack.append(current)
+            forwardStack.removeAll()
+        }
+        isComposingNewWork = true
+    }
+
+    public func toggleInspector(tab: InspectorTab) {
+        if isInspectorVisible && inspectorTab == tab {
+            isInspectorVisible = false
+        } else {
+            inspectorTab = tab
+            isInspectorVisible = true
+        }
+    }
+
+    public func goBack() async {
+        guard let prev = backStack.popLast() else { return }
+        forwardStack.append(isComposingNewWork ? nil : selectedTaskId)
+        if let taskId = prev {
+            isComposingNewWork = false
+            await selectTask(taskId, recordHistory: false)
+        } else {
+            isComposingNewWork = true
+        }
+    }
+
+    public func goForward() async {
+        guard let next = forwardStack.popLast() else { return }
+        backStack.append(isComposingNewWork ? nil : selectedTaskId)
+        if let taskId = next {
+            isComposingNewWork = false
+            await selectTask(taskId, recordHistory: false)
+        } else {
+            isComposingNewWork = true
+        }
+    }
+
+    public func pickAndAddLocalFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Project"
+        panel.message = "Choose a local Git repository folder to add to Toolroll"
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await addLocalProject(path: url.path) }
+        }
+    }
+
+    public func addLocalProject(path folderPath: String) async {
+        busyLabel = "Adding project…"
+        defer { busyLabel = nil }
+        if activeProfile.isDemo {
+            notice = WorkbenchNotice(kind: .info, message: "Added \((folderPath as NSString).lastPathComponent) (demo).")
+            return
+        }
+        guard let client else { return }
+        do {
+            let reply = try await client.openLocalProject(path: folderPath)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
 
     public var needsCount: Int {
         max(workRowsResponse.needsCount, workRowsResponse.rows.filter { $0.status == .needs }.count)
@@ -349,7 +431,12 @@ public final class WorkbenchStore {
         }
     }
 
-    public func selectTask(_ taskId: String) async {
+    public func selectTask(_ taskId: String, recordHistory: Bool = true) async {
+        if recordHistory && (selectedTaskId != taskId || isComposingNewWork) {
+            backStack.append(isComposingNewWork ? nil : selectedTaskId)
+            forwardStack.removeAll()
+        }
+        isComposingNewWork = false
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
         selectedDiffPath = nil
@@ -651,6 +738,7 @@ public final class WorkbenchStore {
         do {
             let reply = try await client.createTask(title: trimmed, project: project, body: body, planFirst: planFirst)
             isNewTaskSheetOpen = false
+            isComposingNewWork = false
             notice = WorkbenchNotice(kind: .info, message: reply)
             await refreshAll()
         } catch {

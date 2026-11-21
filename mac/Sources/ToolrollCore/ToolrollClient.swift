@@ -324,6 +324,18 @@ public actor ToolrollClient {
         )
     }
 
+    public func openLocalProject(path folderPath: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/projects/open",
+            fields: [
+                ("path", folderPath),
+                ("via", "path"),
+                ("return", "/work"),
+            ],
+            defaultDone: "Added project \((folderPath as NSString).lastPathComponent)."
+        )
+    }
+
     public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
         if case .localSession(let s) = transport {
             var fields = [
