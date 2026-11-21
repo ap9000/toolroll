@@ -810,7 +810,7 @@ impl Client {
             ClientAuth::Remote(r) => self
                 .http
                 .post(format!("{}{}", self.origin, path))
-                .header("authorization", format!("Bearer {}", r.bearer.as_str()))
+                .header("authorization", r.bearer.as_str())
                 .header("x-toolroll-client", "terminal-remote")
                 .header("x-toolroll-workspace", &r.workspace_id)
                 .header("x-toolroll-recovery", &r.recovery_generation),
@@ -846,7 +846,134 @@ impl Client {
                 .unwrap_or_else(|| format!("Hand-off refused (status {status})."));
             return Err(ApiError::Refused(msg));
         }
-        Ok(person.to_string())
+        let warning = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["warning"].as_str().map(str::to_string));
+        Ok(match warning {
+            Some(w) if !w.is_empty() => format!("{person} — {w}"),
+            _ => person.to_string(),
+        })
+    }
+
+    /// List uploaded Local Checkout Candidates for a task (`GET /api/handoff/task/<task>/candidates`).
+    pub async fn list_candidates(&self, task: &str) -> Result<Vec<HandoffCandidate>, ApiError> {
+        let path = format!("/api/handoff/task/{}/candidates", encode(task));
+        let parsed = self
+            .get::<HandoffCandidatesResponse>(&path, "task candidates")
+            .await?;
+        Ok(parsed.candidates)
+    }
+
+    /// Promote a Local Checkout Candidate into a central Run and queue central checks
+    /// (`POST /api/handoff/task/<task>/candidate/<id>/promote`).
+    pub async fn promote_candidate(
+        &self,
+        task: &str,
+        candidate_id: &str,
+    ) -> Result<PromoteCandidateOutcome, ApiError> {
+        let path = format!(
+            "/api/handoff/task/{}/candidate/{}/promote",
+            encode(task),
+            encode(candidate_id)
+        );
+        let req = match &*self.auth {
+            ClientAuth::Remote(r) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("authorization", r.bearer.as_str())
+                .header("x-toolroll-client", "terminal-remote")
+                .header("x-toolroll-workspace", &r.workspace_id)
+                .header("x-toolroll-recovery", &r.recovery_generation),
+            ClientAuth::Local(c) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("cookie", c.cookie.as_str())
+                .header("origin", &self.origin)
+                .header("x-csrf-token", c.csrf.as_str())
+                .header("x-toolroll-key", c.key.as_str())
+                .header("x-toolroll-client", "terminal"),
+        };
+        let res = req
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body("{}")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Candidate promotion refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<PromoteCandidateOutcome>(&text).map_err(|_| {
+            ApiError::Contract("The promotion answer isn't what this version expects.".into())
+        })
+    }
+
+    /// Start or reuse a central Live Terminal on a task in remote mode (`POST /api/handoff/task/<task>/terminal`).
+    pub(crate) async fn remote_term_start(
+        &self,
+        task: &str,
+        program: &str,
+    ) -> Result<String, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Remote terminal start requires a remote session.".into(),
+                ));
+            }
+        };
+        let path = format!("/api/handoff/task/{}/terminal", encode(task));
+        let body = serde_json::json!({ "program": program }).to_string();
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("authorization", remote.bearer.as_str())
+            .header("x-toolroll-client", "terminal-remote")
+            .header("x-toolroll-workspace", &remote.workspace_id)
+            .header("x-toolroll-recovery", &remote.recovery_generation)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body(body)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| {
+                    format!("Central Live Terminal refused to start (status {status}).")
+                });
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["id"].as_str().map(str::to_string))
+            .ok_or_else(|| {
+                ApiError::Contract("The terminal start answer had no terminal id.".into())
+            })
     }
 
     /// Trigger an out-of-band approval ping to the calling approver's paired phone/chat channels
@@ -864,10 +991,7 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header(
-                "authorization",
-                format!("Bearer {}", remote.bearer.as_str()),
-            )
+            .header("authorization", remote.bearer.as_str())
             .header("x-toolroll-client", "terminal-remote")
             .header("x-toolroll-workspace", &remote.workspace_id)
             .header("x-toolroll-recovery", &remote.recovery_generation)
@@ -1608,6 +1732,56 @@ pub struct ApprovalPingResult {
     pub path: String,
     #[serde(default)]
     pub url: Option<String>,
+}
+
+/// One Local Checkout Candidate listed by `GET /api/handoff/task/<task>/candidates`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffCandidate {
+    pub id: String,
+    pub author: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub promoted_at: Option<String>,
+    #[serde(default)]
+    pub promoted_by: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
+    #[serde(default)]
+    pub check_status: Option<String>,
+    #[serde(default)]
+    pub live_check_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffCandidatesResponse {
+    #[serde(default)]
+    candidates: Vec<HandoffCandidate>,
+}
+
+/// Outcome of `POST /api/handoff/task/<task>/candidate/<id>/promote`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteCandidateOutcome {
+    pub task_id: String,
+    pub candidate_id: String,
+    #[serde(default)]
+    pub run_id: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
 }
 
 #[cfg(test)]

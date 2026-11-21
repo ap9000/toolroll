@@ -213,13 +213,23 @@ impl Client {
     }
 
     /// Start a take-over terminal on a task's saved build (`program`: shell, claude or codex): its id, or the console's
-    /// words for why not. No password is sent: the console proves a local owner's start itself.
+    /// words for why not. In remote mode, starts or reuses a central Live Terminal via `/api/handoff/task/<task>/terminal`.
     pub async fn term_start(
         &self,
         task: &str,
         run: i64,
         program: &str,
     ) -> Result<String, ApiError> {
+        if self.is_remote() {
+            let id = self.remote_term_start(task, program).await?;
+            return if term_id_ok(&id) {
+                Ok(id)
+            } else {
+                Err(ApiError::Contract(
+                    "The terminal's answer isn't what this version expects.".into(),
+                ))
+            };
+        }
         let run = run.to_string();
         let text = self
             .post_form_json(

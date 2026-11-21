@@ -1501,6 +1501,27 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         title_spans.push(Span::raw("  "));
         title_spans.push(sheet::badge(&presence, crate::theme::Role::Running));
     }
+    if let Some(cands) = app.candidates.get(&item.id) {
+        let pending = cands.iter().filter(|c| c.promoted_at.is_none()).count();
+        if pending > 0 {
+            let s = if pending == 1 { "" } else { "s" };
+            title_spans.push(Span::raw("  "));
+            title_spans.push(sheet::badge(
+                &format!("{pending} candidate{s} · : promote"),
+                crate::theme::Role::NeedsYou,
+            ));
+        } else if let Some(latest) = cands.iter().find(|c| c.promoted_at.is_some()) {
+            let (label, role) = match latest.live_check_state.as_deref() {
+                Some("passed") => ("candidate checks passed", crate::theme::Role::Passed),
+                Some("failed") => ("candidate checks failed", crate::theme::Role::Failed),
+                Some("running") => ("candidate checks running", crate::theme::Role::Running),
+                Some("waiting") => ("candidate checks queued", crate::theme::Role::Running),
+                _ => ("candidate promoted", crate::theme::Role::Running),
+            };
+            title_spans.push(Span::raw("  "));
+            title_spans.push(sheet::badge(label, role));
+        }
+    }
     let mut head_lines = vec![Line::from(title_spans)];
     let button = sheet::button("Change builder", &key_name(app, Action::TaskBuilder), false);
     let available = if builder_task.is_some() {
@@ -5279,6 +5300,32 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             f.render_widget(Paragraph::new(lines), area);
             return;
         }
+        if app.remote_badge.is_some() {
+            let mut lines: Vec<Line<'static>> = vec![
+                fit_line(
+                    Line::from(vec![Span::styled("Central Live Terminal", ink())]),
+                    w,
+                ),
+                Line::raw(""),
+                fit_line(
+                    Line::from(sheet::act(
+                        "i",
+                        "Attach or start central Live Terminal",
+                        true,
+                    )),
+                    w,
+                ),
+                Line::raw(""),
+            ];
+            for l in wrap(
+                "Press i to attach over WebSocket to a running central Live Terminal on this task — or start a new one directly from here (Observing / Controlling handoff).",
+                w,
+            ) {
+                lines.push(Line::from(Span::styled(l, dim())));
+            }
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
         // Layers 2 & 3: Interactive Terminal Launcher for finished or failed builds.
         let agent_name = crate::term::program_label(default_agent);
         let mut lines: Vec<Line<'static>> = vec![];
@@ -5334,6 +5381,24 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let (state, style) = match &pane.link {
         crate::term::Link::Opening => ("Opening…".to_string(), dim()),
         crate::term::Link::Attaching => ("Attaching…".to_string(), dim()),
+        crate::term::Link::Live if pane.is_observer && pane.takeover_armed => (
+            "Confirm takeover · press i again".to_string(),
+            crate::theme::badge(crate::theme::Role::NeedsYou),
+        ),
+        crate::term::Link::Live if pane.is_observer => (
+            pane.controller
+                .as_deref()
+                .map(|who| format!("Observing · {who} controlling · i take control"))
+                .unwrap_or_else(|| "Observing · Idle · i take control".to_string()),
+            crate::theme::badge(crate::theme::Role::Running),
+        ),
+        crate::term::Link::Live if typing && pane.observer_count > 0 => (
+            format!(
+                "Controlling · {} observing · Ctrl-] back",
+                pane.observer_count
+            ),
+            ink().patch(crate::theme::fill()),
+        ),
         // Keep the Ctrl-] escape hint visible on the terminal header whenever the key bar is off or room allows
         // without clipping the branch name (when key_bar is on, the bottom bar already shows Ctrl-] exclusively).
         crate::term::Link::Live if typing && !app.prefs.settings.key_bar => (

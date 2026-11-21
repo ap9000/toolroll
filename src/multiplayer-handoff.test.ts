@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { mintApiToken } from "./api-tokens.js";
+import { runFollowUpCheck } from "./result-follow-ups.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore } from "./store.js";
@@ -171,46 +172,121 @@ describe("human task handoff and local candidate promotion", () => {
     });
 
     const patch = "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    const patch2 = "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-before\n+concurrent\n";
     const uploaded = await rawReq(origin, "POST", "/api/handoff/task/t-cand/candidate", headers(actTok.token), { patch, baseCommit, note: "tweaked locally" });
     expect(uploaded.status).toBe(201);
     const candidateId = String(uploaded.json.candidateId);
 
+    // A second concurrent Local Checkout candidate built on the same baseCommit before promotion.
+    const uploaded2 = await rawReq(origin, "POST", "/api/handoff/task/t-cand/candidate", headers(actTok.token), { patch: patch2, baseCommit, note: "concurrent edit" });
+    expect(uploaded2.status).toBe(201);
+    const candidateId2 = String(uploaded2.json.candidateId);
+
     const listed = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
     expect(listed.status).toBe(200);
-    expect(listed.json.candidates).toEqual([
+    expect(listed.json.candidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: candidateId, author: "alex", trust: "unverified", promotedAt: null, stale: false }),
-    ]);
+      expect.objectContaining({ id: candidateId2, author: "alex", trust: "unverified", promotedAt: null, stale: false }),
+    ]));
 
     // Read-only token refused on promote (403).
     expect((await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(readTok.token), {})).status).toBe(403);
 
-    // Act approver promotes cleanly while base commit matches.
+    // Act approver promotes cleanly: materializes real Git branch/commit, Run row with not-run check, and sealed diff artifact.
     const promoted = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
     expect(promoted.status).toBe(200);
-    expect(promoted.json).toMatchObject({ ok: true, taskId: "t-cand", candidateId, promotedBy: "alex" });
+    expect(promoted.json).toMatchObject({
+      ok: true,
+      taskId: "t-cand",
+      candidateId,
+      promotedBy: "alex",
+      branch: `toolroll/candidate/${candidateId}`,
+    });
+    const runId = Number(promoted.json.runId);
+    const headCommit = String(promoted.json.headCommit);
+    expect(runId).toBeGreaterThan(0);
+    expect(headCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(headCommit).not.toBe(baseCommit);
+    expect(execFileSync("git", ["-C", repo, "show", `${headCommit}:hello.txt`], { encoding: "utf8" })).toBe("after\n");
+    // Materialized run starts with check status 'not-run' (never forged as passed) and stores a sealed diff artifact.
+    expect(store.getRun(runId)?.headRevision).toBe(headCommit);
+    expect(store.runCheckFor(runId)?.status).toBe("not-run");
+    expect(store.artifactsFor(runId).some(a => a.kind === "diff")).toBe(true);
+    // Default branch 'main' was untouched.
+    expect(execFileSync("git", ["-C", repo, "rev-parse", "main"], { encoding: "utf8" }).trim()).toBe(baseCommit);
 
-    // Moving the central repo head refuses promotion with 409 stale_candidate (no silent auto-merge).
-    writeFileSync(join(repo, "other.txt"), "advanced\n");
-    execFileSync("git", ["-C", repo, "add", "other.txt"]);
-    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "advance head"]);
-    const advancedHead = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const stalePromote = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
-    expect(stalePromote.status).toBe(409);
-    expect(stalePromote.json.error).toBe("stale_candidate");
-
-    // Once a central run records the advanced head in SQLite, GET .../candidates flags stale: true purely from DB (never spawning git on GET).
-    store.handle.prepare(`
-      INSERT INTO run (task_ref, runner, lease_id, role, started_at, finished_at, outcome, committed, base_revision, head_revision, branch, worktree)
-      VALUES (?, 'builder-1', 'lease-adv', 'builder', ?, ?, 'built', 1, ?, ?, 'toolroll/t-cand', ?)
-    `).run(ref, now.toISOString(), now.toISOString(), baseCommit, advancedHead, repo);
+    // Because candidate 1's promotion advanced the task head in SQLite, concurrent candidate 2 is now stale on GET (purely from DB) and refused with 409 stale_candidate on POST.
     const staleList = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
     expect(staleList.status).toBe(200);
-    expect((staleList.json.candidates as Array<{ stale: boolean }>)[0]?.stale).toBe(true);
+    const listedById = new Map((staleList.json.candidates as Array<{ id: string; stale: boolean; runId?: number }>).map(c => [c.id, c]));
+    expect(listedById.get(candidateId)?.stale).toBe(false);
+    expect(listedById.get(candidateId)?.runId).toBe(runId);
+    expect(listedById.get(candidateId2)?.stale).toBe(true);
+    const stalePromote = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId2}/promote`, headers(actTok.token), {});
+    expect(stalePromote.status).toBe(409);
+    expect(stalePromote.json.error).toBe("stale_candidate");
 
     // Tampering with the saved patch file causes 409 digest_mismatch.
     writeFileSync(join(evidenceRoot, "handoff-candidates", "t-cand", `${candidateId}.patch`), `${patch}\n# tampered\n`);
     const tampered = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
     expect(tampered.status).toBe(409);
     expect(tampered.json.error).toBe("digest_mismatch");
+  });
+
+  test("promoting a candidate queues central verification when the project has an approved check command", async () => {
+    const root = tempDir("so-handoff-check-");
+    const repo = join(root, "app");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
+    writeFileSync(join(repo, "hello.txt"), "before\n");
+    execFileSync("git", ["-C", repo, "add", "hello.txt"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    const baseCommit = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+    const store = openStore(join(root, "state.db"));
+    const now = new Date("2026-11-20T15:00:00Z");
+    const alex = addApprover(store, "alex", now);
+    if (!alex.ok) throw new Error("alex");
+
+    // Configure an approved full verification command that asserts the promoted commit's content.
+    store.setVerifyCommand({ repo, command: "grep -q '^after$' hello.txt", timeoutMs: 30_000, approvedBy: "alex" }, now);
+
+    store.createTask({ id: "t-check", title: "Verify promoted candidate" }, now);
+    const ref = store.refFor("built-in", "t-check", "ours").id;
+    store.placeTask(ref, repo);
+
+    const actTok = mintApiToken();
+    store.createApiToken({ id: actTok.id, account: "alex", name: "act", secretHash: actTok.hash, access: "act", purpose: "api", by: "alex", projects: [repo], expiresAt: "2027-01-01T00:00:00Z" }, now);
+    const identity = store.workspaceIdentity();
+    const evidenceRoot = join(root, "evidence");
+
+    const server = createDecisionServer({ store, configDir: root, evidenceRoot, repos: [repo], clock: () => now, terminalHost: null });
+    const origin = await listen(server);
+    const headers = {
+      authorization: `Bearer ${actTok.token}`,
+      "x-toolroll-client": "terminal-remote",
+      "x-toolroll-workspace": identity.id,
+      "x-toolroll-recovery": identity.recoveryGeneration,
+    };
+
+    const patch = "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    const uploaded = await rawReq(origin, "POST", "/api/handoff/task/t-check/candidate", headers, { patch, baseCommit, note: "ready for central check" });
+    expect(uploaded.status).toBe(201);
+    const candidateId = String(uploaded.json.candidateId);
+
+    const promoted = await rawReq(origin, "POST", `/api/handoff/task/t-check/candidate/${candidateId}/promote`, headers, {});
+    expect(promoted.status).toBe(200);
+    const checks = promoted.json.checks as { status: string; level?: string; requestId?: number };
+    expect(checks).toMatchObject({ status: "queued", level: "full" });
+    expect(typeof checks.requestId).toBe("number");
+    const headCommit = String(promoted.json.headCommit);
+
+    // Executing the queued central verification checks out headCommit and passes against the materialized file.
+    const checked = await runFollowUpCheck(store, evidenceRoot, checks.requestId!, { now: () => now });
+    expect(checked).not.toBeNull();
+    expect(checked?.state).toBe("passed");
+    if (checked && checked.state === "passed") {
+      expect(checked.head).toBe(headCommit);
+    }
   });
 });

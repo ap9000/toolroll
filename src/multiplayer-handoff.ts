@@ -15,7 +15,9 @@ import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { withActor } from "./actor.js";
+import { materializePromotedCandidate } from "./candidate-materialize.js";
 import { resultRunsOf } from "./engine-reads.js";
+import { followUpChecksOf } from "./result-follow-ups.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
 import { verifyApproverStanding } from "./principal.js";
 import { rowVisible, type ProjectCeiling } from "./project.js";
@@ -46,6 +48,11 @@ export type HandoffCandidateMeta = {
   trust: "unverified";
   promotedAt: string | null;
   promotedBy: string | null;
+  runId?: number | null;
+  branch?: string | null;
+  headCommit?: string | null;
+  checkStatus?: "queued" | "not-configured" | "refused" | null;
+  checkRequestId?: number | null;
 };
 
 export type MultiplayerHandoffOptions = {
@@ -258,6 +265,7 @@ export async function handleAssignTaskPersonHttp(
     source: caller.principal !== null ? "api" : "work",
     detail: `handed to ${person}: ${why}`,
   });
+  options.store.bumpWake();
 
   const recipient = options.store.accountOf(person);
   const warning = recipient?.role === "viewer" && taskNeedsApproval(options.store, found.family)
@@ -292,9 +300,10 @@ export async function handleListCandidatesHttp(
   if (found === null) return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
 
   // GET stays strictly read-only on SQLite + evidenceRoot (never touches repo folder or spawns git).
+  const now = options.clock();
   const currentBaseCommit = currentTaskBaseCommitReadOnly(options.store, found.family);
   const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
-  const candidates: Array<HandoffCandidateMeta & { stale: boolean }> = [];
+  const candidates: Array<HandoffCandidateMeta & { stale: boolean; liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null }> = [];
   if (existsSync(dir)) {
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
@@ -304,8 +313,21 @@ export async function handleListCandidatesHttp(
       try {
         const parsed = JSON.parse(readFileSync(join(dir, file), "utf8")) as HandoffCandidateMeta;
         if (parsed && parsed.id === id && typeof parsed.patchSha256 === "string") {
-          const stale = parsed.baseCommit !== null && currentBaseCommit !== null && parsed.baseCommit !== currentBaseCommit;
-          candidates.push({ ...parsed, stale });
+          const stale = parsed.promotedAt === null && parsed.baseCommit !== null && currentBaseCommit !== null && parsed.baseCommit !== currentBaseCommit;
+          let liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null = null;
+          if (typeof parsed.runId === "number") {
+            const followUps = followUpChecksOf(options.store, parsed.runId, now, options.evidenceRoot);
+            const latestCheck = followUps.at(-1) ?? null;
+            if (latestCheck !== null) {
+              liveCheckState = latestCheck.state;
+            } else {
+              const rc = options.store.runCheckFor(parsed.runId);
+              if (rc !== null && (rc.status === "passed" || rc.status === "failed" || rc.status === "not-run")) {
+                liveCheckState = rc.status;
+              }
+            }
+          }
+          candidates.push({ ...parsed, stale, liveCheckState });
         }
       } catch { /* skip malformed */ }
     }
@@ -371,22 +393,67 @@ export async function handlePromoteCandidateHttp(
     return sendJson(response, 401, { ok: false, error: "unauthenticated", message: "Your access changed." });
   }
 
+  const effectiveBase = meta.baseCommit ?? currentBaseCommit;
+  let runId: number | null = meta.runId ?? null;
+  let branch: string | null = meta.branch ?? null;
+  let headCommit: string | null = meta.headCommit ?? null;
+  let checks:
+    | { status: "queued"; requestId: number; level: "quick" | "full" }
+    | { status: "not-configured" | "refused"; reason: string; message: string }
+    | null = null;
+
+  if (runId === null && effectiveBase !== null && existsSync(join(found.repo, ".git"))) {
+    const materialized = await materializePromotedCandidate({
+      store: options.store,
+      evidenceRoot: options.evidenceRoot,
+      repo: found.repo,
+      taskRef: found.family.current.refId,
+      taskId: found.family.current.id,
+      candidateId,
+      author: meta.author,
+      promoter: caller.account,
+      baseCommit: effectiveBase,
+      patch,
+      patchSha256: actualSha,
+      note: meta.note,
+      now,
+    });
+    if (!materialized.ok) {
+      return sendJson(response, 409, { ok: false, error: materialized.error, message: materialized.message });
+    }
+    runId = materialized.runId;
+    branch = materialized.branch;
+    headCommit = materialized.headCommit;
+    checks = materialized.checks;
+  }
+
   const updated: HandoffCandidateMeta = {
     ...meta,
-    promotedAt: now.toISOString(),
-    promotedBy: caller.account,
+    promotedAt: meta.promotedAt ?? now.toISOString(),
+    promotedBy: meta.promotedBy ?? caller.account,
+    runId,
+    branch,
+    headCommit,
+    checkStatus: checks?.status ?? meta.checkStatus ?? null,
+    checkRequestId: checks?.status === "queued" ? checks.requestId : (meta.checkRequestId ?? null),
   };
   const tmp = `${metaPath}.tmp`;
   writeFileSync(tmp, JSON.stringify(updated, null, 2), { mode: 0o600 });
   renameSync(tmp, metaPath);
 
-  const detail = `Promoted local code candidate ${candidateId} (sha256:${actualSha.slice(0, 12)}, ${meta.files.length} file${meta.files.length === 1 ? "" : "s"}, uploaded by ${meta.author}) for central build & verification — apply patch and run full central checks.`;
+  const runWords = runId === null ? "" : ` into central Run #${runId} (${branch ?? "candidate"}, ${headCommit?.slice(0, 8) ?? ""})`;
+  const checkWords = checks?.status === "queued"
+    ? ` and queued ${checks.level} central checks (request #${checks.requestId})`
+    : checks?.status === "not-configured"
+      ? " (no project check command configured yet)"
+      : "";
+  const detail = `Promoted Candidate ${candidateId} (sha256:${actualSha.slice(0, 12)}, ${meta.files.length} file${meta.files.length === 1 ? "" : "s"}, by ${meta.author})${runWords}${checkWords}.`;
   options.store.recordAction({
     at: now.toISOString(),
     actor: caller.account,
     repo: found.repo,
     taskId: found.family.current.id,
-    runId: null,
+    runId,
     action: "handoff.promote",
     outcome: "recorded",
     source: caller.principal !== null ? "api" : "work",
@@ -396,6 +463,7 @@ export async function handlePromoteCandidateHttp(
   if (standing.ok) {
     options.store.fileSteerNote(found.family.current.id, standing.who.name as unknown as Parameters<Store["fileSteerNote"]>[1], detail, now);
   }
+  options.store.bumpWake();
 
   return sendJson(response, 200, {
     ok: true,
@@ -404,5 +472,9 @@ export async function handlePromoteCandidateHttp(
     sha256: actualSha,
     promotedAt: updated.promotedAt,
     promotedBy: updated.promotedBy,
+    runId,
+    branch,
+    headCommit,
+    checks,
   });
 }
