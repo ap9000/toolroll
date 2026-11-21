@@ -1090,3 +1090,97 @@ fn remote_live_terminal_attaches_requires_takeover_confirm_and_releases_control(
     );
     assert_eq!(app.mode, Mode::Normal);
 }
+
+#[test]
+fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
+    let mut app = app_on("t-done");
+    app.remote_badge = Some("acme · sam".into());
+
+    let stale_cand = toolroll_api::HandoffCandidate {
+        id: "cand-1111111111111111".into(),
+        author: "alex".into(),
+        created_at: "2026-11-20T18:00:00Z".into(),
+        files: vec!["src/a.ts".into()],
+        note: "old edit".into(),
+        stale: true,
+        promoted_at: None,
+        promoted_by: None,
+        run_id: None,
+        branch: None,
+        head_commit: None,
+        check_status: None,
+        live_check_state: None,
+    };
+    let fresh_cand = toolroll_api::HandoffCandidate {
+        id: "cand-2222222222222222".into(),
+        author: "alex".into(),
+        created_at: "2026-11-20T18:05:00Z".into(),
+        files: vec!["src/a.ts".into(), "src/b.ts".into()],
+        note: "rebased edit".into(),
+        stale: false,
+        promoted_at: None,
+        promoted_by: None,
+        run_id: None,
+        branch: None,
+        head_commit: None,
+        check_status: None,
+        live_check_state: None,
+    };
+
+    app.update(Msg::Candidates(
+        "t-done".into(),
+        vec![stale_cand.clone(), fresh_cand.clone()],
+    ));
+    let shown = screen(&mut app, 140, 30);
+    assert!(shown.contains("2 candidates · : promote"), "{shown}");
+
+    // Picking the stale candidate in the palette refuses inline with recovery instructions.
+    app.key(key(':'));
+    for ch in "cand-1111".chars() {
+        app.key(key(ch));
+    }
+    let stale_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(stale_fx.is_empty(), "{stale_fx:?}");
+    let msg = app.status.as_ref().unwrap().1.clone();
+    assert!(
+        msg.contains("stale") && msg.contains("toolroll handoff pull t-done"),
+        "{msg}"
+    );
+
+    // Picking the fresh candidate emits Effect::PromoteCandidate.
+    app.key(key(':'));
+    for ch in "cand-2222".chars() {
+        app.key(key(ch));
+    }
+    let promote_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        promote_fx,
+        vec![Effect::PromoteCandidate {
+            task: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+        }]
+    );
+
+    // Promotion outcome announces central Run + triggers refresh.
+    let done_fx = app.update(Msg::CandidatePromoted(Ok(
+        toolroll_api::PromoteCandidateOutcome {
+            task_id: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+            run_id: Some(9),
+            branch: Some("toolroll/candidate/cand-2222222222222222".into()),
+            head_commit: Some("a".repeat(40)),
+        },
+    )));
+    assert!(done_fx.contains(&Effect::FetchSteps("t-done".into())));
+    assert!(done_fx.contains(&Effect::FetchWork));
+    assert!(app.status.as_ref().unwrap().1.contains("central Run #9"));
+
+    // Once central checks pass, the header badge updates to "candidate checks passed".
+    let mut passed = fresh_cand;
+    passed.promoted_at = Some("2026-11-20T18:06:00Z".into());
+    passed.run_id = Some(9);
+    passed.live_check_state = Some("passed".into());
+    app.update(Msg::Candidates("t-done".into(), vec![passed]));
+    let after = screen(&mut app, 140, 30);
+    assert!(after.contains("candidate checks passed"), "{after}");
+}

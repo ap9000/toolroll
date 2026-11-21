@@ -15,6 +15,8 @@ pub enum Pick {
     Project(String),
     /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
     HandOff(String),
+    /// Promote an unverified Local Checkout Candidate into a central Run + queued checks.
+    PromoteCandidate(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +118,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
         Pick::Task(_) => -20,
         Pick::Project(_) => -40,
         Pick::HandOff(_) => 60,
+        Pick::PromoteCandidate(_) => 65,
     }
 }
 
@@ -181,6 +184,27 @@ pub fn entries(app: &App) -> Vec<Entry> {
             key: String::new(),
             pick: Pick::Task(item.id.clone()),
         });
+    }
+    if let Some(item) = app.selected_item().filter(|i| i.is_task) {
+        if let Some(candidates) = app.candidates.get(&item.id) {
+            for cand in candidates {
+                if cand.promoted_at.is_some() {
+                    continue;
+                }
+                let count = cand.files.len();
+                let s = if count == 1 { "" } else { "s" };
+                let stale = if cand.stale { " [STALE]" } else { "" };
+                out.push(Entry {
+                    kind: "Candidate",
+                    label: format!(
+                        "Promote {} by {} ({} file{}){}",
+                        cand.id, cand.author, count, s, stale
+                    ),
+                    key: String::new(),
+                    pick: Pick::PromoteCandidate(cand.id.clone()),
+                });
+            }
+        }
     }
     if app.selected_item().is_some_and(|i| i.is_task) && app.presence.accounts.len() > 1 {
         for person in &app.presence.accounts {

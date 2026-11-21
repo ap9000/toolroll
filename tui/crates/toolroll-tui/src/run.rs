@@ -179,12 +179,6 @@ async fn open_terminal(
         Err(e) => return fail(e),
     };
     if listed.is_none() {
-        if client.is_remote() {
-            return fail(ApiError::Refused(
-                "No live central terminal is open on this task yet — start one in the browser console first."
-                    .into(),
-            ));
-        }
         if let Err(e) = client.term_start(&task, run, &program).await {
             return fail(e);
         }
@@ -282,10 +276,20 @@ impl Loop {
                     }));
                 }
             }
-            Effect::FetchSteps(task) => drop(tokio::spawn(async move {
-                let r = client.steps(&task).await;
-                let _ = tx.send(Msg::Steps(task, r));
-            })),
+            Effect::FetchSteps(task) => {
+                let c_client = client.clone();
+                let c_tx = tx.clone();
+                let c_task = task.clone();
+                drop(tokio::spawn(async move {
+                    let r = client.steps(&task).await;
+                    let _ = tx.send(Msg::Steps(task, r));
+                }));
+                drop(tokio::spawn(async move {
+                    if let Ok(list) = c_client.list_candidates(&c_task).await {
+                        let _ = c_tx.send(Msg::Candidates(c_task, list));
+                    }
+                }));
+            }
             Effect::FetchApproval(task) => {
                 if remote.is_some() {
                     let _ = tx.send(Msg::Approval(
@@ -316,6 +320,10 @@ impl Loop {
             Effect::AssignTaskPerson { task, person } => drop(tokio::spawn(async move {
                 let r = client.assign_task_person(&task, &person, "").await;
                 let _ = tx.send(Msg::TaskHandedOff(r));
+            })),
+            Effect::PromoteCandidate { task, candidate_id } => drop(tokio::spawn(async move {
+                let r = client.promote_candidate(&task, &candidate_id).await;
+                let _ = tx.send(Msg::CandidatePromoted(r));
             })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;

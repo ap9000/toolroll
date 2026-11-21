@@ -234,7 +234,7 @@ export async function handleHandoffPull(
       patchTruncated = view.patch.truncated;
     }
   }
-  let baseCommit: string | null = latest?.baseRevision ?? null;
+  let baseCommit: string | null = latest?.headRevision ?? latest?.baseRevision ?? null;
   if (baseCommit === null && existsSync(join(repo, ".git"))) {
     const git = teardownGit();
     const head = await git(repo, ["rev-parse", "HEAD"]).catch(() => null);
@@ -366,6 +366,7 @@ export async function handleHandoffPush(
   if (standing.ok) {
     store.fileSteerNote(family.current.id, standing.who.name as unknown as Parameters<Store["fileSteerNote"]>[1], provenance, now);
   }
+  store.bumpWake();
   return sendJson(response, 201, {
     protocol: HANDOFF_PROTOCOL,
     ok: true,

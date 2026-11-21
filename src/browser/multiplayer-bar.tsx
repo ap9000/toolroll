@@ -28,6 +28,7 @@ type Candidate = {
   headCommit?: string | null;
   checkStatus?: "queued" | "not-configured" | "refused" | null;
   checkRequestId?: number | null;
+  liveCheckState?: "waiting" | "running" | "passed" | "failed" | "not-run" | null;
 };
 
 export function TaskMultiplayerBar({
@@ -223,19 +224,39 @@ export function TaskMultiplayerBar({
           <KChip
             word={
               cand.promotedAt
-                ? cand.checkStatus === "queued"
-                  ? "Central checks queued"
-                  : "Promoted to central Run"
+                ? cand.liveCheckState === "passed"
+                  ? "Central checks passed"
+                  : cand.liveCheckState === "failed"
+                    ? "Central checks failed"
+                    : cand.liveCheckState === "running"
+                      ? "Central checks running"
+                      : cand.liveCheckState === "waiting" || cand.checkStatus === "queued"
+                        ? "Central checks queued"
+                        : "Promoted to central Run"
                 : cand.stale
                   ? "Stale — re-pull & rebase"
                   : "Unverified Candidate"
             }
-            tone={cand.promotedAt ? "live" : "needs"}
+            tone={
+              cand.promotedAt
+                ? cand.liveCheckState === "failed"
+                  ? "failed"
+                  : cand.liveCheckState === "passed"
+                    ? "done"
+                    : "live"
+                : "needs"
+            }
           />
           <span>
             <strong>{cand.author}</strong> submitted <code>{cand.id}</code> ({cand.files.length} file
             {cand.files.length === 1 ? "" : "s"}
             {cand.note ? ` · ${cand.note}` : ""})
+            {cand.stale && !cand.promotedAt ? (
+              <>
+                {" · run "}
+                <code>{`toolroll handoff pull ${taskId}`}</code>
+              </>
+            ) : null}
             {cand.runId ? (
               <>
                 {" · "}

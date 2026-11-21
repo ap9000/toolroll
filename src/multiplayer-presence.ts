@@ -12,14 +12,18 @@
  *   privacy-safe `/n/<ref>` link so they can approve in one tap on their phone
  *   or browser without relaxing browser-only approval authority.
  */
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { TERMINAL_PROGRAMS, type TerminalHost } from "./live-terminal.js";
+import { join } from "node:path";
+import { resultRunsOf } from "./engine-reads.js";
+import { TERMINAL_PROGRAMS, TerminalError, type TerminalHost, type TerminalProgram } from "./live-terminal.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
 import { projectName, rowVisible, type ProjectCeiling } from "./project.js";
 import type { Admission } from "./request-budget.js";
 import type { Who } from "./server/session.js";
 import type { Store, TaskFamily } from "./store.js";
 import type { TaskRooms } from "./task-live.js";
+import { teardownGit } from "./teardown-git.js";
 import { admitRemoteTerminalRequest, isRemoteTerminalRequest } from "./terminal-connection.js";
 
 export type TaskPresenceEntry = {
@@ -405,4 +409,188 @@ export function handleRemoteTerminalsHttp(
     projects: [],
     sessions,
   });
+}
+
+const REMOTE_TERMINAL_START_PATH = /^\/api\/handoff\/task\/([^/]+)\/terminal$/;
+const SHA_RE = /^[a-f0-9]{40}$/;
+
+function readSmallJsonBody(request: IncomingMessage, maxBytes = 8 * 1024): Promise<Record<string, unknown> | null> {
+  return new Promise(resolve => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    request.on("data", chunk => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        request.resume();
+        resolve(null);
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    request.on("end", () => {
+      if (chunks.length === 0) return resolve({});
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+        resolve(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null);
+      } catch {
+        resolve(null);
+      }
+    });
+    request.on("error", () => resolve(null));
+  });
+}
+
+/**
+ * `POST /api/handoff/task/:task/terminal` — reuse an active central Live Terminal
+ * on a visible task, or start a fresh isolated central Live Terminal from a pinned
+ * `terminal-remote` act-scoped approver token.
+ */
+export async function handleStartRemoteTerminalHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  options: Omit<PresenceHandlerOptions, "taskRooms" | "identify">,
+): Promise<void> {
+  if (request.method !== "POST") {
+    return sendJson(response, 405, { ok: false, error: "method_not_allowed" }, { allow: "POST" });
+  }
+  const match = REMOTE_TERMINAL_START_PATH.exec(url.pathname);
+  if (match === null) {
+    return sendJson(response, 404, { ok: false, error: "not_found" });
+  }
+  let taskId: string;
+  try { taskId = decodeURIComponent(match[1]!); } catch {
+    return sendJson(response, 400, { ok: false, error: "bad_task", message: "Invalid task id." });
+  }
+
+  const { store, clock, liveCeiling, terminalHost, authenticateBearer, admitBearer } = options;
+  const auth = admitRemoteToken(request, response, store, clock, authenticateBearer, admitBearer);
+  if (auth === null) return;
+  if (auth.scope !== "act") {
+    return sendJson(response, 403, { ok: false, error: "read_only_token", message: "Starting a central Live Terminal requires an act API token." });
+  }
+  const account = store.accountOf(auth.principal.account);
+  if (account === null || account.revokedAt !== null || account.role !== "approver" || store.isDemo()) {
+    return sendJson(response, 403, { ok: false, error: "approver_required", message: "Only an approver can start a central Live Terminal." });
+  }
+
+  const body = await readSmallJsonBody(request);
+  if (body === null) {
+    return sendJson(response, 400, { ok: false, error: "invalid_body", message: "Send a JSON object." });
+  }
+  const requestedProgram = typeof body["program"] === "string" && body["program"].trim() !== "" ? body["program"].trim() : "shell";
+  if (!TERMINAL_PROGRAMS.includes(requestedProgram as TerminalProgram)) {
+    return sendJson(response, 400, { ok: false, error: "bad_program", message: "Choose shell, claude, codex, or antigravity." });
+  }
+  const program = requestedProgram as TerminalProgram;
+
+  const host = terminalHost();
+  if (host === null) {
+    return sendJson(response, 503, { ok: false, error: "terminals_unavailable", message: "Live Terminals are not available on this central server." });
+  }
+
+  const allowedRepos = auth.principal.projects === null
+    ? null
+    : auth.principal.projects.filter(repo => store.accountCanAccess(auth.principal.account, repo));
+  const family = store.taskFamilyOf(taskId, allowedRepos, false);
+  const repo = family?.root.repo ?? family?.current.repo ?? null;
+  const ceiling = liveCeiling();
+  const canSeeRepo = (targetRepo: string): boolean =>
+    rowVisible(ceiling, targetRepo) && store.accountCanAccess(auth.principal.account, targetRepo) && remoteAllows(store, auth.principal, targetRepo);
+  if (family === null || family.problem !== null || repo === null || !canSeeRepo(repo)) {
+    return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
+  }
+
+  if (program !== "shell") {
+    const stopped = store.sessionPolicyRefusal(program, null, "live terminals");
+    if (stopped !== null) {
+      return sendJson(response, 403, { ok: false, error: "policy_refused", message: stopped });
+    }
+  }
+
+  // Reuse an active central Live Terminal on this task if one is already running.
+  const existing = host.listAll().find(
+    one => one.task === family.current.id && one.endedAt === null && one.agent === null && one.localGeneration === null && canSeeRepo(one.repo),
+  );
+  if (existing !== undefined) {
+    return sendJson(response, 200, {
+      ok: true,
+      id: existing.id,
+      branch: existing.branch,
+      program: existing.program,
+      reused: true,
+    });
+  }
+
+  // Resolve commit to check out in the isolated central worktree.
+  const latest = resultRunsOf(store, family)[0] ?? null;
+  let revision: string | null = (latest?.headRevision && SHA_RE.test(latest.headRevision))
+    ? latest.headRevision
+    : (latest?.baseRevision && SHA_RE.test(latest.baseRevision))
+      ? latest.baseRevision
+      : null;
+  if (revision === null && existsSync(join(repo, ".git"))) {
+    const git = teardownGit();
+    const head = await git(repo, ["rev-parse", "HEAD"]).catch(() => null);
+    if (head !== null && head.code === 0 && SHA_RE.test(head.stdout.trim())) revision = head.stdout.trim();
+  }
+  if (revision === null) {
+    return sendJson(response, 409, { ok: false, error: "no_commit", message: "This project has no Git commit to open a Live Terminal on yet." });
+  }
+
+  const stillAllowed = (): string | null => {
+    const live = reproveRemote(store, auth.principal, clock());
+    if (!live.ok || live.scope !== "act") return "Your remote sign-in changed. Reconnect.";
+    const acc = store.accountOf(auth.principal.account);
+    if (acc === null || acc.revokedAt !== null || acc.role !== "approver") return "Your account access changed.";
+    if (!canSeeRepo(repo)) return "That project is no longer available to your account.";
+    return null;
+  };
+  const precheck = stillAllowed();
+  if (precheck !== null) {
+    return sendJson(response, 401, { ok: false, error: "unauthenticated", message: precheck });
+  }
+
+  try {
+    const terminal = await host.start(
+      { name: auth.principal.account, generation: account.generation, localGeneration: null },
+      repo,
+      program,
+      undefined,
+      stillAllowed,
+      { revision, task: family.current.id, run: latest?.id ?? 0 },
+    );
+    const after = stillAllowed();
+    if (after !== null) {
+      await host.close(terminal.id);
+      await host.remove(terminal.id).catch(() => {});
+      return sendJson(response, 403, { ok: false, error: "unauthenticated", message: after });
+    }
+    const now = clock();
+    store.recordAction({
+      at: now.toISOString(),
+      actor: auth.principal.account,
+      repo,
+      taskId: family.current.id,
+      runId: latest?.id ?? null,
+      action: "terminal.remote-start",
+      outcome: "started",
+      source: "api",
+      detail: `started central Live Terminal (${program}) ${terminal.id} on ${terminal.branch}`,
+    });
+    store.bumpWake();
+    return sendJson(response, 200, {
+      ok: true,
+      id: terminal.id,
+      branch: terminal.branch,
+      program: terminal.program,
+      reused: false,
+    });
+  } catch (error) {
+    return sendJson(response, 409, {
+      ok: false,
+      error: "start_failed",
+      message: error instanceof TerminalError ? error.message : "Could not start central Live Terminal.",
+    });
+  }
 }

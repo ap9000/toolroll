@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { withActor } from "./actor.js";
 import { materializePromotedCandidate } from "./candidate-materialize.js";
 import { resultRunsOf } from "./engine-reads.js";
+import { followUpChecksOf } from "./result-follow-ups.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
 import { verifyApproverStanding } from "./principal.js";
 import { rowVisible, type ProjectCeiling } from "./project.js";
@@ -264,6 +265,7 @@ export async function handleAssignTaskPersonHttp(
     source: caller.principal !== null ? "api" : "work",
     detail: `handed to ${person}: ${why}`,
   });
+  options.store.bumpWake();
 
   const recipient = options.store.accountOf(person);
   const warning = recipient?.role === "viewer" && taskNeedsApproval(options.store, found.family)
@@ -298,9 +300,10 @@ export async function handleListCandidatesHttp(
   if (found === null) return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
 
   // GET stays strictly read-only on SQLite + evidenceRoot (never touches repo folder or spawns git).
+  const now = options.clock();
   const currentBaseCommit = currentTaskBaseCommitReadOnly(options.store, found.family);
   const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
-  const candidates: Array<HandoffCandidateMeta & { stale: boolean }> = [];
+  const candidates: Array<HandoffCandidateMeta & { stale: boolean; liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null }> = [];
   if (existsSync(dir)) {
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
@@ -311,7 +314,20 @@ export async function handleListCandidatesHttp(
         const parsed = JSON.parse(readFileSync(join(dir, file), "utf8")) as HandoffCandidateMeta;
         if (parsed && parsed.id === id && typeof parsed.patchSha256 === "string") {
           const stale = parsed.promotedAt === null && parsed.baseCommit !== null && currentBaseCommit !== null && parsed.baseCommit !== currentBaseCommit;
-          candidates.push({ ...parsed, stale });
+          let liveCheckState: "waiting" | "running" | "passed" | "failed" | "not-run" | null = null;
+          if (typeof parsed.runId === "number") {
+            const followUps = followUpChecksOf(options.store, parsed.runId, now, options.evidenceRoot);
+            const latestCheck = followUps.at(-1) ?? null;
+            if (latestCheck !== null) {
+              liveCheckState = latestCheck.state;
+            } else {
+              const rc = options.store.runCheckFor(parsed.runId);
+              if (rc !== null && (rc.status === "passed" || rc.status === "failed" || rc.status === "not-run")) {
+                liveCheckState = rc.status;
+              }
+            }
+          }
+          candidates.push({ ...parsed, stale, liveCheckState });
         }
       } catch { /* skip malformed */ }
     }
@@ -447,6 +463,7 @@ export async function handlePromoteCandidateHttp(
   if (standing.ok) {
     options.store.fileSteerNote(found.family.current.id, standing.who.name as unknown as Parameters<Store["fileSteerNote"]>[1], detail, now);
   }
+  options.store.bumpWake();
 
   return sendJson(response, 200, {
     ok: true,

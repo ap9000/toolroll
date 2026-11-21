@@ -9,8 +9,8 @@ pub use task_builder::{BuilderPicker, TaskBuilder};
 
 pub use client::{
     check_hello, connect_remote, redeem, said_of, ActOutcome, ApiError, ApprovalPingResult,
-    ChatSendOutcome, Client, LiveSignal, PresenceSnapshot, ProposalActOutcome, RemoteInfo,
-    TaskPresence,
+    ChatSendOutcome, Client, HandoffCandidate, LiveSignal, PresenceSnapshot,
+    PromoteCandidateOutcome, ProposalActOutcome, RemoteInfo, TaskPresence,
 };
 pub use connection::{
     parse_connection_refusal, parse_disabled_connection, parse_disabled_metadata,

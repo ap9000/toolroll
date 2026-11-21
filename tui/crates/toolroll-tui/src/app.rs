@@ -846,6 +846,11 @@ pub enum Effect {
         task: String,
         person: String,
     },
+    /// Promote an unverified Local Checkout Candidate into a central Run + queued checks.
+    PromoteCandidate {
+        task: String,
+        candidate_id: String,
+    },
     /// Suspend the TUI, pull the selected remote task into an isolated local worktree (`toolroll handoff pull`), and resume.
     HandoffLocal(String),
     FetchLive {
@@ -1014,6 +1019,10 @@ pub enum Msg {
     ApprovalPinged(Result<toolroll_api::ApprovalPingResult, ApiError>),
     /// Human task handoff response.
     TaskHandedOff(Result<String, ApiError>),
+    /// Local Checkout Candidates for a task (`GET /api/handoff/task/<task>/candidates`).
+    Candidates(String, Vec<toolroll_api::HandoffCandidate>),
+    /// Candidate promotion response (`POST /api/handoff/task/<task>/candidate/<id>/promote`).
+    CandidatePromoted(Result<toolroll_api::PromoteCandidateOutcome, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -1183,6 +1192,8 @@ pub struct App {
     pub remote_badge: Option<String>,
     /// Observational live presence, terminal controller, and human owner map (`GET /api/presence`).
     pub presence: toolroll_api::PresenceSnapshot,
+    /// Uploaded Local Checkout Candidates keyed by task id (`GET /api/handoff/task/<task>/candidates`).
+    pub candidates: std::collections::HashMap<String, Vec<toolroll_api::HandoffCandidate>>,
     /// Where the last run left off, until the first work list has been read (state.rs).
     pub restore: Option<crate::state::Resume>,
     restore_scroll: Option<(String, usize)>,
@@ -1371,6 +1382,7 @@ impl App {
             origin: None,
             remote_badge: None,
             presence: toolroll_api::PresenceSnapshot::default(),
+            candidates: std::collections::HashMap::new(),
             restore: None,
             restore_scroll: None,
             restore_diff: None,
@@ -2245,6 +2257,29 @@ impl App {
                 vec![Effect::FetchWork]
             }
             Msg::TaskHandedOff(Err(e)) => self.read_failed(e),
+            Msg::Candidates(task, list) => {
+                if list.is_empty() {
+                    self.candidates.remove(&task);
+                } else {
+                    self.candidates.insert(task, list);
+                }
+                vec![]
+            }
+            Msg::CandidatePromoted(Ok(outcome)) => {
+                let run_words = outcome
+                    .run_id
+                    .map(|id| format!(" into central Run #{id}"))
+                    .unwrap_or_default();
+                self.say(
+                    Tone::Said,
+                    format!(
+                        "Promoted Candidate {}{} — central checks queued.",
+                        outcome.candidate_id, run_words
+                    ),
+                );
+                vec![Effect::FetchSteps(outcome.task_id), Effect::FetchWork]
+            }
+            Msg::CandidatePromoted(Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -4547,6 +4582,34 @@ impl App {
                 }
                 None => vec![],
             },
+            Pick::PromoteCandidate(candidate_id) => {
+                let Some(task) = self
+                    .selected_item()
+                    .filter(|i| i.is_task)
+                    .map(|i| i.id.clone())
+                else {
+                    return vec![];
+                };
+                if self
+                    .candidates
+                    .get(&task)
+                    .and_then(|list| list.iter().find(|c| c.id == candidate_id))
+                    .is_some_and(|c| c.stale)
+                {
+                    self.say(
+                        Tone::Refused,
+                        format!(
+                            "Candidate {candidate_id} is stale — run `toolroll handoff pull {task}` and rebase before promoting."
+                        ),
+                    );
+                    return vec![];
+                }
+                self.say(
+                    Tone::Said,
+                    format!("Promoting Candidate {candidate_id} into central Run…"),
+                );
+                vec![Effect::PromoteCandidate { task, candidate_id }]
+            }
         }
     }
 
