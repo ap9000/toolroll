@@ -250,6 +250,23 @@ public enum DemoFixtures {
         )
     }
 
+    public static func approvalCard(for taskId: String) -> ApprovalCard? {
+        guard taskId == "t-auth-refresh" else { return nil }
+        return ApprovalCard(
+            version: 1,
+            task: taskId,
+            key: "plan-r3",
+            digest: "sha256:9f82a10c4e2b",
+            nonce: "demo-nonce-1",
+            terms: [
+                ApprovalTerm(label: "Scope", words: "3 files in api-gateway/src/auth/ (cookie.ts, refresh.ts, session.test.ts)"),
+                ApprovalTerm(label: "Change", words: "Set SameSite=Strict on refresh token cookie with a 24h dual-read grace window"),
+                ApprovalTerm(label: "Checks", words: "Run npm run typecheck && vitest src/auth/session.test.ts before ready"),
+                ApprovalTerm(label: "Risk", words: "Existing mobile webview sessions roll forward on next refresh; zero downtime"),
+            ]
+        )
+    }
+
     public static let leadChat = LeadChatResponse(
         leadName: "Lead",
         canSend: true,

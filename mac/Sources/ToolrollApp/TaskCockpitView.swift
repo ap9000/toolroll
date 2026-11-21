@@ -2,10 +2,14 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Center Task Cockpit (--so-paper) — approval ceremony handoff, Candidates strip, Steps timeline, and bottom composer.
+/// Center Task Cockpit (--so-paper) — 100% native in-app approvals, result reviews, agent questions,
+/// plan/retry recovery, Candidates strip, Steps timeline, and bottom composer.
 public struct TaskCockpitView: View {
     @Bindable var store: WorkbenchStore
     @State private var steerDraft: String = ""
+    @State private var approvalPassword: String = ""
+    @State private var sendBackOpen: Bool = false
+    @State private var sendBackNote: String = ""
     @State private var expandedSteps: Set<String> = []
 
     public init(store: WorkbenchStore) {
@@ -18,7 +22,6 @@ public struct TaskCockpitView: View {
                 taskHeader(row)
                 HairlineDivider()
 
-                // In-place notice / refusal banner (never toasts!)
                 if let notice = store.notice {
                     inPlaceNoticeBar(notice)
                     HairlineDivider()
@@ -26,14 +29,44 @@ public struct TaskCockpitView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        if let ask = approvalSummary(for: row) {
-                            approvalCeremonyCard(taskId: row.id, summary: ask)
+                        // 1. Agent Question (answer natively in-app)
+                        if let question = row.need?.question {
+                            questionCard(question)
                         }
 
+                        // 2. Result Review (Accept or Send Back natively in-app)
+                        if let review = store.stepCards?.review {
+                            resultReviewCard(review)
+                        }
+
+                        // 3. Plan Approval (Review terms & Approve natively in-app!)
+                        if let card = store.approvalCard {
+                            inAppApprovalCard(taskId: row.id, card: card)
+                        } else if row.status == .needs,
+                                  row.need?.question == nil,
+                                  store.stepCards?.review == nil,
+                                  store.stepCards?.planStopped == nil {
+                            fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
+                        }
+
+                        // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
+                        if let stopped = store.stepCards?.planStopped {
+                            planStoppedCard(stopped)
+                        } else if let failure = store.stepCards?.failure {
+                            failureCard(failure)
+                        }
+
+                        // 5. Hold Banner (Resume natively in-app)
+                        if let held = store.stepCards?.held {
+                            heldBanner(held)
+                        }
+
+                        // 6. Candidates Strip (Promote / Rebase / Open PR)
                         if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
                             candidatesSection(taskId: row.id, candidates: cands)
                         }
 
+                        // 7. Steps Timeline
                         stepsSection()
                     }
                     .padding(20)
@@ -46,6 +79,11 @@ public struct TaskCockpitView: View {
             }
         }
         .background(ToolrollPalette.paper)
+        .onChange(of: store.selectedTaskId) { _, _ in
+            approvalPassword = ""
+            sendBackOpen = false
+            sendBackNote = ""
+        }
     }
 
     // MARK: - Header
@@ -75,38 +113,40 @@ public struct TaskCockpitView: View {
                 Text(row.id)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
 
-                // Owner & Task Handoff menu
-                Menu {
-                    ForEach(store.presence.accounts, id: \.self) { person in
-                        Button {
-                            Task { await store.handOffTask(taskId: row.id, to: person) }
-                        } label: {
-                            HStack {
-                                Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
-                                if store.selectedTaskOwner == person {
-                                    Image(systemName: "checkmark")
+                if !store.presence.accounts.isEmpty {
+                    Menu {
+                        ForEach(store.presence.accounts, id: \.self) { person in
+                            Button {
+                                Task { await store.handOffTask(taskId: row.id, to: person) }
+                            } label: {
+                                HStack {
+                                    Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
+                                    if store.selectedTaskOwner == person {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "person")
+                                .font(.system(size: 10.5))
+                            Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
+                                .font(.system(size: 11.5, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8.5, weight: .semibold))
+                        }
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person")
-                            .font(.system(size: 10.5))
-                        Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
-                            .font(.system(size: 11.5, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8.5, weight: .semibold))
-                    }
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
 
                 if let presSummary = store.selectedTaskPresence?.summary {
                     HStack(spacing: 5) {
@@ -138,23 +178,51 @@ public struct TaskCockpitView: View {
                 }
                 .buttonStyle(KitButtonStyle(.ghost, compact: true))
 
-                Button {
-                    store.openTaskInBrowser(taskId: row.id)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Browser")
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 10))
+                // Task lifecycle actions menu (all native in-app)
+                Menu {
+                    if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
+                        Button("Plan Again") {
+                            Task { await store.planAgainSelectedTask() }
+                        }
                     }
+                    if store.stepCards?.retry != nil {
+                        Button("Retry Build") {
+                            Task { await store.retrySelectedTask() }
+                        }
+                    }
+                    if store.stepCards?.liveRun != nil {
+                        Button("Stop Active Run") {
+                            Task { await store.stopSelectedTask() }
+                        }
+                    }
+                    Button(store.stepCards?.held != nil ? "Resume Task" : "Pause / Hold Task") {
+                        Task { await store.holdOrResumeSelectedTask() }
+                    }
+                    Divider()
+                    Button("Cancel Task", role: .destructive) {
+                        Task { await store.cancelSelectedTask() }
+                    }
+                    Divider()
+                    Button("Open Web View ↗") {
+                        store.openTaskInBrowser(taskId: row.id)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .frame(width: 26, height: 24)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                 }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
     }
 
-    // MARK: - In-Place Notice (No Toasts)
+    // MARK: - In-Place Notice
 
     private func inPlaceNoticeBar(_ notice: WorkbenchNotice) -> some View {
         HStack(spacing: 8) {
@@ -180,52 +248,92 @@ public struct TaskCockpitView: View {
         .background(notice.kind == .refusal ? ToolrollPalette.danger.opacity(0.06) : ToolrollPalette.raised)
     }
 
-    // MARK: - High-Trust Approval Ceremony Card
+    // MARK: - Native In-App Plan Approval Card
 
-    private func approvalSummary(for row: WorkRow) -> String? {
-        if let ask = row.ask, !ask.isEmpty { return ask }
-        if let needsStep = store.stepCards?.cards.first(where: \.needsYou) {
-            return needsStep.terms?.summary ?? needsStep.sentence
-        }
-        if row.status == .needs {
-            return "High-trust approval required in Browser before the central Run proceeds."
-        }
-        return nil
-    }
-
-    private func approvalCeremonyCard(taskId: String, summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func inAppApprovalCard(taskId: String, card: ApprovalCard) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 StatusChip(tone: .needs, label: "Needs your approval")
-                Text("Digest-bound ceremony")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
+                if let digest = card.digest {
+                    Text(String(digest.prefix(16)))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
                 Spacer()
             }
 
-            Text(summary)
-                .font(.system(size: 13))
-                .foregroundStyle(ToolrollPalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Button {
-                    store.openTaskInBrowser(taskId: taskId)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("Approve in Browser")
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 10.5, weight: .semibold))
+            if !card.terms.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(card.terms.enumerated()), id: \.element.id) { idx, term in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(term.label)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .frame(width: 96, alignment: .leading)
+                            Text(term.words)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(ToolrollPalette.ink)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        if idx < card.terms.count - 1 {
+                            HairlineDivider()
+                        }
                     }
                 }
-                .buttonStyle(KitButtonStyle(.primary))
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
 
-                Button {
-                    Task { await store.pingApproval(taskId: taskId) }
-                } label: {
-                    Text("Ping Phone / Browser")
+            if let prompt = store.approvalPasswordPrompt {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(prompt)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.warning)
+                    HStack(spacing: 8) {
+                        SecureField("Enter your password to confirm…", text: $approvalPassword)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 6)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                            .onSubmit {
+                                let pw = approvalPassword
+                                approvalPassword = ""
+                                Task { await store.approveSelectedTask(password: pw) }
+                            }
+                        Button("Confirm & Approve") {
+                            let pw = approvalPassword
+                            approvalPassword = ""
+                            Task { await store.approveSelectedTask(password: pw) }
+                        }
+                        .buttonStyle(KitButtonStyle(.primary))
+                        .disabled(approvalPassword.isEmpty)
+                    }
                 }
-                .buttonStyle(KitButtonStyle(.ghost))
+            } else {
+                HStack(spacing: 8) {
+                    Button("Approve Plan") {
+                        Task { await store.approveSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+
+                    if store.stepCards?.plan != nil || store.stepCards?.planStopped?.again != nil {
+                        Button("Plan Again") {
+                            Task { await store.planAgainSelectedTask() }
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost))
+                    }
+
+                    Button("Cancel Task") {
+                        Task { await store.cancelSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost))
+                }
             }
         }
         .padding(14)
@@ -234,6 +342,319 @@ public struct TaskCockpitView: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
         )
+    }
+
+    private func fallbackApprovalCard(taskId: String, summary: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                StatusChip(tone: .needs, label: "Needs your approval")
+                Spacer()
+            }
+            Text(summary)
+                .font(.system(size: 13))
+                .foregroundStyle(ToolrollPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                if store.canApproveInApp {
+                    Button("Review & Approve") {
+                        Task { await store.approveSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+                } else {
+                    Button {
+                        store.openTaskInBrowser(taskId: taskId)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("Approve in Browser")
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+
+                    Button("Ping Phone") {
+                        Task { await store.pingApproval(taskId: taskId) }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost))
+                }
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Native In-App Result Review Card (Accept / Send Back)
+
+    private func resultReviewCard(_ review: TaskReview) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                StatusChip(tone: .needs, label: "Ready for review")
+                Text("Run #\(review.run)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Spacer()
+                Button("Inspect Diff") {
+                    store.isInspectorVisible = true
+                    store.inspectorTab = .diff
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+
+            if !review.accept.blockers.isEmpty {
+                ForEach(review.accept.blockers, id: \.self) { blocker in
+                    Text("• \(blocker)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.warning)
+                }
+            } else {
+                Text("Review the diff in the right pane, then accept to complete or send back with notes.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+
+            HStack(spacing: 8) {
+                Button("Accept Result") {
+                    Task { await store.acceptSelectedResult() }
+                }
+                .buttonStyle(KitButtonStyle(.primary))
+
+                Button(sendBackOpen ? "Close Note" : "Send Back…") {
+                    sendBackOpen.toggle()
+                }
+                .buttonStyle(KitButtonStyle(.ghost))
+            }
+
+            if sendBackOpen {
+                HStack(spacing: 8) {
+                    TextField("Tell the agent what to change…", text: $sendBackNote)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        .onSubmit { submitSendBack() }
+
+                    Button("Send Back") { submitSendBack() }
+                        .buttonStyle(KitButtonStyle(.danger))
+                        .disabled(sendBackNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func submitSendBack() {
+        let note = sendBackNote
+        sendBackNote = ""
+        sendBackOpen = false
+        Task { await store.sendBackSelectedResult(note: note) }
+    }
+
+    // MARK: - Native In-App Agent Question Card
+
+    private func questionCard(_ question: TaskQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                StatusChip(tone: .needs, label: "Agent question")
+                Spacer()
+            }
+
+            Text(question.text)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !question.recap.isEmpty {
+                Text(question.recap)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(question.options) { opt in
+                    Button {
+                        Task { await store.answerQuestion(questionId: question.id, optionId: opt.id) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(opt.label)
+                                        .font(.system(size: 12.5, weight: .semibold))
+                                        .foregroundStyle(opt.recommended ? ToolrollPalette.inverseInk : ToolrollPalette.ink)
+                                    if opt.recommended {
+                                        Text("Recommended")
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.inverseInk.opacity(0.8))
+                                    }
+                                }
+                                if !opt.consequence.isEmpty {
+                                    Text(opt.consequence)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(opt.recommended ? ToolrollPalette.inverseInk.opacity(0.8) : ToolrollPalette.muted)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(opt.recommended ? ToolrollPalette.ink : ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: opt.recommended ? 0 : 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Stopped Plan / Failure Recovery Cards
+
+    private func planStoppedCard(_ stopped: PlanStopped) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                StatusChip(tone: .failed, label: "Planning stopped")
+                Spacer()
+            }
+            Text(stopped.line)
+                .font(.system(size: 13))
+                .foregroundStyle(ToolrollPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let said = stopped.agentSaid, !said.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(said, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+
+            HStack(spacing: 8) {
+                if stopped.again != nil {
+                    Button("Plan Again") {
+                        Task { await store.planAgainSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+                }
+                Button("Cancel Task") {
+                    Task { await store.cancelSelectedTask() }
+                }
+                .buttonStyle(KitButtonStyle(.ghost))
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.danger.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(ToolrollPalette.danger.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func failureCard(_ failure: TaskFailure) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                StatusChip(tone: .failed, label: "Failed")
+                if failure.failedInARow > 1 {
+                    Text("\(failure.failedInARow) attempts")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                Spacer()
+            }
+
+            Text(failure.line)
+                .font(.system(size: 13))
+                .foregroundStyle(ToolrollPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let suggestion = failure.suggestion, !suggestion.isEmpty {
+                Text(suggestion)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+
+            if let said = failure.agentSaid, !said.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(said, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+
+            HStack(spacing: 8) {
+                if store.stepCards?.retry != nil {
+                    Button("Retry Build") {
+                        Task { await store.retrySelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+                }
+                if store.stepCards?.plan != nil {
+                    Button("Plan Again") {
+                        Task { await store.planAgainSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost))
+                }
+                Button("Cancel Task") {
+                    Task { await store.cancelSelectedTask() }
+                }
+                .buttonStyle(KitButtonStyle(.ghost))
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.danger.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(ToolrollPalette.danger.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func heldBanner(_ held: TaskHold) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Task paused")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text(held.reason)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            Spacer()
+            Button("Resume") {
+                Task { await store.holdOrResumeSelectedTask() }
+            }
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
+        }
+        .padding(12)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     // MARK: - Candidates Strip
@@ -485,7 +906,7 @@ public struct TaskCockpitView: View {
 
     private func composerBar(taskId: String) -> some View {
         HStack(spacing: 8) {
-            TextField("Steer task or leave a note for the next run…", text: $steerDraft)
+            TextField("Steer task or leave a note for the active run…", text: $steerDraft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5))
                 .foregroundStyle(ToolrollPalette.ink)
@@ -521,9 +942,14 @@ public struct TaskCockpitView: View {
             Text("Select a task from the inbox")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.ink)
-            Text("Press ⌘K to jump across tasks, promote Candidates, or attach a Live Terminal.")
+            Text("Press ⌘N to file a new task, or ⌘K to jump across tasks and actions.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(ToolrollPalette.muted)
+            Button("+ New Task") {
+                store.isNewTaskSheetOpen = true
+            }
+            .buttonStyle(KitButtonStyle(.primary))
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

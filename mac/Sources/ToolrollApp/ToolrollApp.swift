@@ -15,6 +15,11 @@ struct ToolrollMacApp: App {
         .defaultSize(width: 1380, height: 860)
         .commands {
             CommandMenu("Workbench") {
+                Button("New Task…") {
+                    store.isNewTaskSheetOpen = true
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+
                 Button("Command Palette") {
                     store.isCommandPaletteOpen.toggle()
                 }

@@ -37,6 +37,9 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isPairSheetOpen) {
             PairWorkspaceSheet(store: store)
         }
+        .sheet(isPresented: $store.isNewTaskSheetOpen) {
+            NewTaskSheet(store: store)
+        }
         .task {
             await store.start()
         }
@@ -68,6 +71,9 @@ public struct MainWorkbenchView: View {
                     }
                 }
                 Divider()
+                Button("Reconnect Local Toolroll") {
+                    Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
+                }
                 Button("Connect / Pair Remote Workspace…") {
                     store.isPairSheetOpen = true
                 }
@@ -132,6 +138,19 @@ public struct MainWorkbenchView: View {
             }
 
             Spacer()
+
+            // + New Task (⌘N)
+            Button {
+                store.isNewTaskSheetOpen = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("New Task")
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("New Task (⌘N)")
 
             // ⌘K Command Palette pill
             Button {

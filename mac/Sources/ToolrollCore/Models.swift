@@ -87,6 +87,52 @@ public enum TaskStatusTone: String, Codable, Sendable, Equatable {
     }
 }
 
+public struct QuestionOption: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let consequence: String
+    public let recommended: Bool
+
+    public init(id: String, label: String, consequence: String = "", recommended: Bool = false) {
+        self.id = id
+        self.label = label
+        self.consequence = consequence
+        self.recommended = recommended
+    }
+}
+
+public struct TaskQuestion: Codable, Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let text: String
+    public let recap: String
+    public let options: [QuestionOption]
+
+    public init(id: Int, text: String, recap: String = "", options: [QuestionOption] = []) {
+        self.id = id
+        self.text = text
+        self.recap = recap
+        self.options = options
+    }
+}
+
+public struct NeedRow: Codable, Sendable, Equatable {
+    public let id: String
+    public let state: String
+    public let ask: String?
+    public let reason: String?
+    public let line: String?
+    public let question: TaskQuestion?
+
+    public init(id: String, state: String = "", ask: String? = nil, reason: String? = nil, line: String? = nil, question: TaskQuestion? = nil) {
+        self.id = id
+        self.state = state
+        self.ask = ask
+        self.reason = reason
+        self.line = line
+        self.question = question
+    }
+}
+
 public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let title: String
@@ -101,6 +147,7 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
     public let rank: Int
     public let detail: String?
     public let problem: String?
+    public let need: NeedRow?
 
     public init(
         id: String,
@@ -115,7 +162,8 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
         group: String = "",
         rank: Int = 0,
         detail: String? = nil,
-        problem: String? = nil
+        problem: String? = nil,
+        need: NeedRow? = nil
     ) {
         self.id = id
         self.title = title
@@ -130,6 +178,7 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
         self.rank = rank
         self.detail = detail
         self.problem = problem
+        self.need = need
     }
 
     private struct WireWord: Decodable {
@@ -144,7 +193,7 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, href, project, age, status, word, ask, chip, group, rank, detail, problem
+        case id, title, href, project, age, status, word, ask, chip, group, rank, detail, problem, need
     }
 
     public init(from decoder: Decoder) throws {
@@ -160,6 +209,7 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
         chip = try c.decodeIfPresent(String.self, forKey: .chip)
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
         problem = try c.decodeIfPresent(String.self, forKey: .problem)
+        need = try? c.decodeIfPresent(NeedRow.self, forKey: .need)
 
         if let sObj = try? c.decode(WireStatus.self, forKey: .status) {
             let derived = TaskStatusTone(fromWire: sObj.tone)
@@ -381,26 +431,184 @@ public struct StepTaskSummary: Codable, Sendable, Equatable {
     public let state: String?
 }
 
+public struct ApprovalTerm: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { "\(label)-\(words)" }
+    public let label: String
+    public let words: String
+
+    public init(label: String, words: String) {
+        self.label = label
+        self.words = words
+    }
+}
+
+public struct ApprovalCard: Codable, Sendable, Equatable {
+    public let version: Int
+    public let task: String
+    public let key: String?
+    public let digest: String?
+    public let nonce: String?
+    public let terms: [ApprovalTerm]
+    public let problem: String?
+
+    public init(
+        version: Int = 1,
+        task: String,
+        key: String? = nil,
+        digest: String? = nil,
+        nonce: String? = nil,
+        terms: [ApprovalTerm] = [],
+        problem: String? = nil
+    ) {
+        self.version = version
+        self.task = task
+        self.key = key
+        self.digest = digest
+        self.nonce = nonce
+        self.terms = terms
+        self.problem = problem
+    }
+}
+
+public struct TaskReviewAccept: Codable, Sendable, Equatable {
+    public let owed: String?
+    public let blockers: [String]
+    public let needs: String?
+
+    public init(owed: String? = nil, blockers: [String] = [], needs: String? = nil) {
+        self.owed = owed
+        self.blockers = blockers
+        self.needs = needs
+    }
+}
+
+public struct TaskReview: Codable, Sendable, Equatable {
+    public let run: Int
+    public let receipt: String
+    public let source: String
+    public let accept: TaskReviewAccept
+
+    public init(run: Int, receipt: String, source: String, accept: TaskReviewAccept = TaskReviewAccept()) {
+        self.run = run
+        self.receipt = receipt
+        self.source = source
+        self.accept = accept
+    }
+}
+
+public struct TaskFailure: Codable, Sendable, Equatable {
+    public let line: String
+    public let failedInARow: Int
+    public let suggestion: String?
+    public let agentSaid: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case line, suggestion
+        case failedInARow = "failedInARow"
+        case agentSaid = "agentSaid"
+    }
+
+    public init(line: String, failedInARow: Int = 1, suggestion: String? = nil, agentSaid: [String]? = nil) {
+        self.line = line
+        self.failedInARow = failedInARow
+        self.suggestion = suggestion
+        self.agentSaid = agentSaid
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        line = try c.decodeIfPresent(String.self, forKey: .line) ?? ""
+        failedInARow = try c.decodeIfPresent(Int.self, forKey: .failedInARow) ?? 1
+        suggestion = try c.decodeIfPresent(String.self, forKey: .suggestion)
+        agentSaid = try c.decodeIfPresent([String].self, forKey: .agentSaid)
+    }
+}
+
+public struct PlanAsk: Codable, Sendable, Equatable {
+    public let source: String
+    public init(source: String) { self.source = source }
+}
+
+public struct PlanStopped: Codable, Sendable, Equatable {
+    public let incident: Int
+    public let kind: String
+    public let line: String
+    public let problems: [String]?
+    public let agentSaid: [String]?
+    public let again: PlanAsk?
+
+    public init(incident: Int, kind: String = "plan", line: String, problems: [String]? = nil, agentSaid: [String]? = nil, again: PlanAsk? = nil) {
+        self.incident = incident
+        self.kind = kind
+        self.line = line
+        self.problems = problems
+        self.agentSaid = agentSaid
+        self.again = again
+    }
+}
+
+public struct RetryPins: Codable, Sendable, Equatable {
+    public let run: Int
+    public let digest: String
+    public init(run: Int, digest: String) { self.run = run; self.digest = digest }
+}
+
+public struct TaskHold: Codable, Sendable, Equatable {
+    public let id: Int
+    public let reason: String
+    public let lastFailure: String?
+    public init(id: Int, reason: String, lastFailure: String? = nil) {
+        self.id = id
+        self.reason = reason
+        self.lastFailure = lastFailure
+    }
+}
+
 public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let version: Int
     public let task: StepTaskSummary
     public let headline: String?
     public let liveRun: Int?
     public let cards: [StepCard]
+    public let review: TaskReview?
+    public let failure: TaskFailure?
+    public let planStopped: PlanStopped?
+    public let plan: PlanAsk?
+    public let retry: RetryPins?
+    public let held: TaskHold?
 
     enum CodingKeys: String, CodingKey {
-        case version, task, headline, cards
+        case version, task, headline, cards, review, failure, plan, retry, held
         case liveRun = "live_run"
+        case planStopped = "plan_stopped"
     }
 
-    private enum CamelKeys: String, CodingKey { case liveRun }
+    private enum CamelKeys: String, CodingKey { case liveRun, planStopped }
 
-    public init(version: Int = 1, task: StepTaskSummary, headline: String? = nil, liveRun: Int? = nil, cards: [StepCard] = []) {
+    public init(
+        version: Int = 1,
+        task: StepTaskSummary,
+        headline: String? = nil,
+        liveRun: Int? = nil,
+        cards: [StepCard] = [],
+        review: TaskReview? = nil,
+        failure: TaskFailure? = nil,
+        planStopped: PlanStopped? = nil,
+        plan: PlanAsk? = nil,
+        retry: RetryPins? = nil,
+        held: TaskHold? = nil
+    ) {
         self.version = version
         self.task = task
         self.headline = headline
         self.liveRun = liveRun
         self.cards = cards
+        self.review = review
+        self.failure = failure
+        self.planStopped = planStopped
+        self.plan = plan
+        self.retry = retry
+        self.held = held
     }
 
     public init(from decoder: Decoder) throws {
@@ -411,7 +619,14 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         headline = try c.decodeIfPresent(String.self, forKey: .headline)
         liveRun = (try? c.decodeIfPresent(Int.self, forKey: .liveRun))
             ?? (try? alt.decodeIfPresent(Int.self, forKey: .liveRun))
-        cards = try c.decodeIfPresent([StepCard].self, forKey: .cards) ?? []
+        cards = (try? c.decodeIfPresent([StepCard].self, forKey: .cards)) ?? []
+        review = try? c.decodeIfPresent(TaskReview.self, forKey: .review)
+        failure = try? c.decodeIfPresent(TaskFailure.self, forKey: .failure)
+        planStopped = (try? c.decodeIfPresent(PlanStopped.self, forKey: .planStopped))
+            ?? (try? alt.decodeIfPresent(PlanStopped.self, forKey: .planStopped))
+        plan = try? c.decodeIfPresent(PlanAsk.self, forKey: .plan)
+        retry = try? c.decodeIfPresent(RetryPins.self, forKey: .retry)
+        held = try? c.decodeIfPresent(TaskHold.self, forKey: .held)
     }
 }
 

@@ -286,4 +286,15 @@ struct ToolrollCoreTests {
         session.disconnect(clearOutput: true)
         #expect(sawSentinel == true)
     }
+
+    @Test("Auto-discovers live local Toolroll console via Unix socket and redeems /login/once (when TOOLROLL_TEST_LOCAL_DISCOVER=1)")
+    func localConsoleAutoDiscover() async throws {
+        guard ProcessInfo.processInfo.environment["TOOLROLL_TEST_LOCAL_DISCOVER"] == "1" else { return }
+        let creds = await LocalConsoleConnector.discoverAndConnect()
+        #expect(creds != nil)
+        guard let creds else { return }
+        let client = ToolrollClient(localSession: creds)
+        let rows = try await client.fetchWorkRows()
+        #expect(rows.version == 1)
+    }
 }

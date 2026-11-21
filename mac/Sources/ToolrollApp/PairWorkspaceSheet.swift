@@ -15,7 +15,7 @@ public struct PairWorkspaceSheet: View {
     }
 
     @State private var mode: Mode = .pair
-    @State private var origin: String = "http://127.0.0.1:4141"
+    @State private var origin: String = "http://127.0.0.1:4180"
     @State private var profileName: String = "central"
     @State private var account: String = ""
     @State private var token: String = ""

@@ -34,6 +34,7 @@ public final class WorkbenchStore {
     // Profiles & Connection
     public private(set) var profiles: [ConnectionProfile] = []
     public private(set) var activeProfile: ConnectionProfile
+    public private(set) var isLocalSession: Bool = false
     public private(set) var sseConnected: Bool = false
     public private(set) var isLoading: Bool = false
     public private(set) var busyLabel: String?
@@ -47,6 +48,7 @@ public final class WorkbenchStore {
     public var inspectorTab: InspectorTab = .terminal
     public var isCommandPaletteOpen: Bool = false
     public var isPairSheetOpen: Bool = false
+    public var isNewTaskSheetOpen: Bool = false
     public var isFinishedDrawerOpen: Bool = false
 
     // Engine State
@@ -54,6 +56,8 @@ public final class WorkbenchStore {
     public private(set) var presence: PresenceSnapshot = PresenceSnapshot()
     public private(set) var selectedTaskId: String?
     public private(set) var stepCards: StepCardsResponse?
+    public private(set) var approvalCard: ApprovalCard?
+    public var approvalPasswordPrompt: String?
     public private(set) var candidatesResponse: CandidatesListResponse?
     public private(set) var diffResponse: ResultDiffResponse?
     public private(set) var selectedDiffPath: String?
@@ -68,6 +72,7 @@ public final class WorkbenchStore {
     private var client: ToolrollClient?
     private var sseTask: Task<Void, Never>?
     private var sseRooms: [String] = []
+    private var demoApprovedTasks: Set<String> = []
 
     public init(profileStore: ProfileStore = ProfileStore()) {
         self.profileStore = profileStore
@@ -85,6 +90,10 @@ public final class WorkbenchStore {
     }
 
     // MARK: - Computed Views
+
+    public var canApproveInApp: Bool {
+        isLocalSession || activeProfile.isDemo
+    }
 
     public var allProjects: [String] {
         let names = Set(workRowsResponse.rows.compactMap(\.project).filter { !$0.isEmpty })
@@ -161,27 +170,73 @@ public final class WorkbenchStore {
     // MARK: - Lifecycle
 
     public func start() async {
+        // Prefer auto-connecting to a live local Toolroll console on this Mac if no explicit remote profile is active.
+        if activeProfile.isDemo {
+            if await connectToLocalConsoleIfAvailable(silent: true) {
+                return
+            }
+        }
         await refreshAll()
-        if selectedTaskId == nil, let first = needsRows.first ?? runningRows.first ?? workRowsResponse.rows.first {
+        if selectedTaskId == nil, let first = needsRows.first ?? runningRows.first ?? failedRows.first ?? workRowsResponse.rows.first {
             await selectTask(first.id)
         }
         restartSSE()
     }
 
+    @discardableResult
+    public func connectToLocalConsoleIfAvailable(silent: Bool = false) async -> Bool {
+        if let creds = await LocalConsoleConnector.discoverAndConnect() {
+            let localProf = ConnectionProfile(
+                name: "local",
+                origin: creds.origin,
+                account: creds.account,
+                token: "",
+                label: "Local Toolroll (\(creds.origin.replacingOccurrences(of: "http://", with: "")))",
+                isDemo: false
+            )
+            let loaded = profileStore.load()
+            self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
+            self.activeProfile = localProf
+            self.isLocalSession = true
+            self.client = ToolrollClient(localSession: creds)
+            self.terminalSession.disconnect(clearOutput: true)
+            self.selectedTaskId = nil
+            self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
+            await refreshAll()
+            if let first = needsRows.first ?? runningRows.first ?? failedRows.first ?? workRowsResponse.rows.first {
+                await selectTask(first.id)
+            }
+            restartSSE()
+            return true
+        }
+        if !silent {
+            notice = WorkbenchNotice(kind: .refusal, message: "No running local Toolroll console found. Run `toolroll up` or pair a remote workspace.")
+        }
+        return false
+    }
+
     public func switchProfile(name: String) async {
+        if name == "local" {
+            _ = await connectToLocalConsoleIfAvailable(silent: false)
+            return
+        }
         let loaded = profileStore.load()
         if let target = loaded.profiles.first(where: { $0.name == name }) {
             try? profileStore.setActive(name: name)
             profiles = loaded.profiles
             activeProfile = target
+            isLocalSession = false
             client = ToolrollClient(profile: target)
         } else if name == "demo" {
             let demo = ProfileStore.demoProfile()
             activeProfile = demo
+            isLocalSession = false
             client = nil
         }
         terminalSession.disconnect(clearOutput: true)
         selectedTaskId = nil
+        approvalCard = nil
+        approvalPasswordPrompt = nil
         notice = nil
         await start()
     }
@@ -192,21 +247,17 @@ public final class WorkbenchStore {
             let loaded = profileStore.load()
             profiles = loaded.profiles
             activeProfile = profile
+            isLocalSession = false
             client = ToolrollClient(profile: profile)
             isPairSheetOpen = false
             terminalSession.disconnect(clearOutput: true)
             selectedTaskId = nil
+            approvalCard = nil
+            approvalPasswordPrompt = nil
             notice = WorkbenchNotice(kind: .info, message: "Connected to \(profile.displayTitle) as \(profile.account).")
             await start()
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: "Could not save profile: \(error.localizedDescription)")
-        }
-    }
-
-    public func reloadProfilesFromDisk() {
-        let loaded = profileStore.load()
-        if !loaded.profiles.isEmpty {
-            profiles = loaded.profiles
         }
     }
 
@@ -217,9 +268,24 @@ public final class WorkbenchStore {
         defer { isLoading = false }
 
         if activeProfile.isDemo {
-            workRowsResponse = DemoFixtures.workRows
+            let base = DemoFixtures.workRows
+            let rows = base.rows.map { row -> WorkRow in
+                if demoApprovedTasks.contains(row.id) {
+                    return WorkRow(
+                        id: row.id, title: row.title, href: row.href, project: row.project,
+                        age: row.age, status: .running, word: "Running", ask: nil,
+                        chip: "Approved", group: "running", rank: row.rank, detail: "Approved in-app — build running"
+                    )
+                }
+                return row
+            }
+            let needs = rows.filter { $0.status == .needs }.count
+            workRowsResponse = WorkRowsResponse(
+                version: base.version, project: base.project, projectName: base.projectName,
+                needsCount: needs, rows: rows, room: base.room, spend: base.spend
+            )
             presence = DemoFixtures.presence
-            leadChat = DemoFixtures.leadChat
+            if leadChat.messages.isEmpty { leadChat = DemoFixtures.leadChat }
             sseConnected = true
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
@@ -252,6 +318,8 @@ public final class WorkbenchStore {
         selectedTaskId = taskId
         selectedDiffPath = nil
         selectedDiffFile = nil
+        approvalCard = nil
+        approvalPasswordPrompt = nil
         await loadSelectedTaskDetails(taskId: taskId)
         restartSSE()
     }
@@ -259,6 +327,7 @@ public final class WorkbenchStore {
     public func loadSelectedTaskDetails(taskId: String) async {
         if activeProfile.isDemo {
             stepCards = DemoFixtures.steps(for: taskId)
+            approvalCard = demoApprovedTasks.contains(taskId) ? nil : DemoFixtures.approvalCard(for: taskId)
             candidatesResponse = DemoFixtures.candidates(for: taskId)
             diffResponse = DemoFixtures.diff(for: taskId)
             if let firstPath = diffResponse?.files.first?.path {
@@ -276,7 +345,21 @@ public final class WorkbenchStore {
         async let candsReq = client.fetchCandidates(taskId: taskId)
         async let diffReq = client.fetchDiff(taskId: taskId)
 
-        if let steps = try? await stepsReq { stepCards = steps }
+        if let steps = try? await stepsReq {
+            stepCards = steps
+            // Fetch full digest-bound approval card natively in-app whenever approval is waiting
+            let needsApproval = steps.cards.contains(where: { $0.needsYou && $0.terms != nil })
+                || (selectedRow?.status == .needs && steps.review == nil && selectedRow?.need?.question == nil)
+            if needsApproval && isLocalSession {
+                if let card = try? await client.fetchApprovalCard(taskId: taskId), card.digest != nil {
+                    approvalCard = card
+                } else {
+                    approvalCard = nil
+                }
+            } else {
+                approvalCard = nil
+            }
+        }
         if let cands = try? await candsReq { candidatesResponse = cands }
         if let diff = try? await diffReq {
             diffResponse = diff
@@ -301,7 +384,219 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Multiplayer & Task Actions
+    // MARK: - Native In-App Approvals, Reviews, Questions & Lifecycle
+
+    public func approveSelectedTask(password: String = "") async {
+        guard let taskId = selectedTaskId else { return }
+        busyLabel = "Approving plan…"
+        defer { busyLabel = nil }
+
+        if activeProfile.isDemo {
+            demoApprovedTasks.insert(taskId)
+            approvalCard = nil
+            approvalPasswordPrompt = nil
+            notice = WorkbenchNotice(kind: .info, message: "Approved plan for \(taskId). Build started.")
+            await refreshAll()
+            return
+        }
+
+        guard let client else { return }
+        do {
+            // Re-fetch fresh approval card if needed so nonce is live
+            let card: ApprovalCard
+            if let existing = approvalCard, existing.task == taskId, existing.digest != nil, existing.nonce != nil {
+                card = existing
+            } else {
+                card = try await client.fetchApprovalCard(taskId: taskId)
+                approvalCard = card
+            }
+            guard let digest = card.digest, let nonce = card.nonce else {
+                notice = WorkbenchNotice(kind: .refusal, message: card.problem ?? "No pending approval on this task.")
+                return
+            }
+            let reply = try await client.approveTask(taskId: taskId, digest: digest, nonce: nonce, password: password)
+            approvalPasswordPrompt = nil
+            approvalCard = nil
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch ToolrollClientError.passwordRequired(let msg) {
+            approvalPasswordPrompt = msg
+            // Mint a fresh nonce for the password submission
+            if let fresh = try? await client.fetchApprovalCard(taskId: taskId) {
+                approvalCard = fresh
+            }
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func acceptSelectedResult() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId,
+              let review = stepCards?.review
+        else { return }
+        busyLabel = "Accepting result…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.acceptResult(taskId: taskId, runId: review.run, receipt: review.receipt)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func sendBackSelectedResult(note: String) async {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let taskId = stepCards?.task.id ?? selectedTaskId,
+              let review = stepCards?.review
+        else { return }
+        busyLabel = "Sending back…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.sendBackResult(taskId: taskId, runId: review.run, source: review.source, note: trimmed)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func answerQuestion(questionId: Int, optionId: String) async {
+        busyLabel = "Sending answer…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.answerQuestion(questionId: questionId, optionId: optionId)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func planAgainSelectedTask() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId else { return }
+        busyLabel = "Starting plan…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply: String
+            if let stopped = stepCards?.planStopped, let again = stopped.again {
+                reply = try await client.planTask(taskId: taskId, source: again.source, incident: stopped.incident)
+            } else if let ask = stepCards?.plan {
+                reply = try await client.planTask(taskId: taskId, source: ask.source)
+            } else {
+                notice = WorkbenchNotice(kind: .refusal, message: "This task cannot be planned again right now.")
+                return
+            }
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func retrySelectedTask() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId,
+              let retry = stepCards?.retry
+        else { return }
+        busyLabel = "Retrying build…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.retryTask(taskId: taskId, runId: retry.run, digest: retry.digest)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func holdOrResumeSelectedTask() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId else { return }
+        busyLabel = stepCards?.held != nil ? "Resuming…" : "Pausing…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply: String
+            if let hold = stepCards?.held {
+                reply = try await client.resumeHold(taskId: taskId, holdId: hold.id)
+            } else {
+                reply = try await client.holdTask(taskId: taskId)
+            }
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func stopSelectedTask() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId,
+              let runId = stepCards?.liveRun
+        else { return }
+        busyLabel = "Stopping run…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.stopTask(taskId: taskId, runId: runId)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func cancelSelectedTask() async {
+        guard let taskId = stepCards?.task.id ?? selectedTaskId,
+              let state = stepCards?.task.state
+        else { return }
+        busyLabel = "Cancelling task…"
+        defer { busyLabel = nil }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.cancelTask(taskId: taskId, state: state, runId: stepCards?.liveRun)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func createTask(title: String, project: String?, body: String, planFirst: Bool) async {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        busyLabel = "Filing task…"
+        defer { busyLabel = nil }
+
+        if activeProfile.isDemo {
+            isNewTaskSheetOpen = false
+            notice = WorkbenchNotice(kind: .info, message: "Filed demo task \"\(trimmed)\".")
+            return
+        }
+        guard let client else { return }
+        do {
+            let reply = try await client.createTask(title: trimmed, project: project, body: body, planFirst: planFirst)
+            isNewTaskSheetOpen = false
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Multiplayer & Candidate Actions
 
     public func handOffTask(taskId: String, to person: String) async {
         busyLabel = "Handing off to \(person)…"
@@ -333,21 +628,10 @@ public final class WorkbenchStore {
                 let updated = existing.candidates.map { c -> HandoffCandidate in
                     guard c.id == candidateId else { return c }
                     return HandoffCandidate(
-                        id: c.id,
-                        author: c.author,
-                        createdAt: c.createdAt,
-                        files: c.files,
-                        note: c.note,
-                        stale: false,
-                        promotedAt: "just now",
-                        promotedBy: "alex",
-                        runId: 15,
-                        branch: "tr/\(taskId)/c-\(c.id.prefix(6))",
-                        headCommit: "9ab4c102",
-                        checkStatus: "passed",
-                        liveCheckState: "passed",
-                        publication: nil,
-                        canOpenPr: true
+                        id: c.id, author: c.author, createdAt: c.createdAt, files: c.files, note: c.note,
+                        stale: false, promotedAt: "just now", promotedBy: "alex", runId: 15,
+                        branch: "tr/\(taskId)/c-\(c.id.prefix(6))", headCommit: "9ab4c102",
+                        checkStatus: "passed", liveCheckState: "passed", publication: nil, canOpenPr: true
                     )
                 }
                 candidatesResponse = CandidatesListResponse(ok: true, taskId: taskId, currentBaseCommit: existing.currentBaseCommit, candidates: updated)
@@ -375,18 +659,9 @@ public final class WorkbenchStore {
                 let updated = existing.candidates.map { c -> HandoffCandidate in
                     guard c.id == candidateId else { return c }
                     return HandoffCandidate(
-                        id: c.id,
-                        author: c.author,
-                        createdAt: c.createdAt,
-                        files: c.files,
-                        note: c.note,
-                        stale: c.stale,
-                        promotedAt: c.promotedAt,
-                        promotedBy: c.promotedBy,
-                        runId: c.runId,
-                        branch: c.branch,
-                        headCommit: c.headCommit,
-                        checkStatus: c.checkStatus,
+                        id: c.id, author: c.author, createdAt: c.createdAt, files: c.files, note: c.note,
+                        stale: c.stale, promotedAt: c.promotedAt, promotedBy: c.promotedBy, runId: c.runId,
+                        branch: c.branch, headCommit: c.headCommit, checkStatus: c.checkStatus,
                         liveCheckState: c.liveCheckState,
                         publication: CandidatePublication(id: 1, state: "opened", prNumber: 488, prUrl: "https://github.com/ap9000/toolroll/pull/488"),
                         canOpenPr: false
@@ -452,7 +727,7 @@ public final class WorkbenchStore {
         }
         guard let client else { return }
         do {
-            let reply = try await client.steerTask(taskId: taskId, note: trimmed)
+            let reply = try await client.steerTask(taskId: taskId, note: trimmed, liveRun: stepCards?.liveRun)
             notice = WorkbenchNotice(kind: .info, message: reply)
             await loadSelectedTaskDetails(taskId: taskId)
         } catch {
@@ -465,7 +740,7 @@ public final class WorkbenchStore {
         defer { busyLabel = nil }
 
         if activeProfile.isDemo {
-            notice = WorkbenchNotice(kind: .info, message: "Sent approval ping to browser & phone for \(taskId).")
+            notice = WorkbenchNotice(kind: .info, message: "Sent approval ping for \(taskId).")
             return
         }
         guard let client else { return }
@@ -487,7 +762,7 @@ public final class WorkbenchStore {
             var msgs = leadChat.messages
             let nextId = (msgs.last?.id ?? 0) + 1
             msgs.append(LeadMessage(id: nextId, role: "user", text: trimmed, at: "now"))
-            msgs.append(LeadMessage(id: nextId + 1, role: "assistant", text: "Demo mode: connect a live Toolroll workspace (⌘⇧P) to chat with your real central Lead.", at: "now"))
+            msgs.append(LeadMessage(id: nextId + 1, role: "assistant", text: "Demo mode: start local Toolroll (`toolroll up`) or connect a remote workspace (`⌘⇧P`) to chat with your real central Lead.", at: "now"))
             leadChat = LeadChatResponse(leadName: leadChat.leadName, canSend: true, busy: false, messages: msgs)
             return
         }
@@ -504,7 +779,7 @@ public final class WorkbenchStore {
 
     public func openTaskInBrowser(taskId: String) {
         if activeProfile.isDemo {
-            notice = WorkbenchNotice(kind: .info, message: "Demo mode — pair a live workspace to open \(taskId) in your browser.")
+            notice = WorkbenchNotice(kind: .info, message: "Demo mode — connect a workspace to open \(taskId).")
             return
         }
         let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
