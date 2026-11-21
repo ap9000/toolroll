@@ -123,6 +123,7 @@ actions! {
     PingApproval = "ping-approval", Global, Act, "Ping phone for approval", [];
     HandoffLocal = "handoff-local", Global, Act, "Open code locally (handoff pull)", [];
     SwitchWorkspace = "switch-workspace", Global, Setting, "Switch central workspace", [];
+    ReleaseTerminal = "release-terminal", Global, Act, "Release live terminal control", [];
     NextTheme = "next-theme", Global, Setting, "Next theme, for this session", [];
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];

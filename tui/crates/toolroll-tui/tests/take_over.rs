@@ -990,3 +990,103 @@ fn confirm_take_over_cycles_programs_and_tags_opened_agent_pane() {
     assert!(shown.contains("Claude Code"), "{shown}");
     assert!(shown.contains("Typing"), "{shown}");
 }
+
+#[test]
+fn remote_live_terminal_attaches_requires_takeover_confirm_and_releases_control() {
+    let mut app = app_on("t-done");
+    app.remote_badge = Some("acme · sam".into());
+    app.tab = Tab::Terminal;
+
+    // Remote mode launcher prompts to attach to the central Live Terminal without local confirm modal.
+    let launcher = screen(&mut app, 120, 30);
+    assert!(launcher.contains("Central Live Terminal"), "{launcher}");
+    let fx = app.key(key('i'));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(
+        matches!(
+            fx.as_slice(),
+            [Effect::TermOpen { task, .. }] if task == "t-done"
+        ),
+        "{fx:?}"
+    );
+    let run = match fx.as_slice() {
+        [Effect::TermOpen { run, .. }] => *run,
+        _ => unreachable!(),
+    };
+
+    // Opened + Hello + Control frame with another active human Controller ("alex") puts TUI into Observing.
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run,
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
+    });
+    hello(&mut app);
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Control {
+            is_controller: false,
+            controller: Some("alex".into()),
+            viewers: vec!["alex".into(), "sam".into()],
+            epoch: 1,
+        },
+    ));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.as_ref().unwrap().is_observer);
+    let observing = screen(&mut app, 120, 30);
+    assert!(
+        observing.contains("Observing · alex controlling"),
+        "{observing}"
+    );
+
+    // First press of `i` arms inline takeover confirmation without sending TakeControl yet.
+    assert_eq!(app.key(key('i')), vec![]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.as_ref().unwrap().takeover_armed);
+    let armed = screen(&mut app, 120, 30);
+    assert!(armed.contains("Confirm takeover"), "{armed}");
+
+    // Second press of `i` confirms takeover, sends TermSend::TakeControl, and enters Mode::TakeOver.
+    let take_fx = app.key(key('i'));
+    assert_eq!(
+        take_fx,
+        vec![Effect::TermSend {
+            id: ID.into(),
+            send: TermSend::TakeControl,
+        }]
+    );
+    assert_eq!(app.mode, Mode::TakeOver);
+    assert!(!app.term.as_ref().unwrap().takeover_armed);
+
+    // Server grants control with 1 other observer watching.
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Control {
+            is_controller: true,
+            controller: Some("sam".into()),
+            viewers: vec!["alex".into(), "sam".into()],
+            epoch: 2,
+        },
+    ));
+    let controlling = screen(&mut app, 120, 30);
+    assert!(
+        controlling.contains("Controlling · 1 observing"),
+        "{controlling}"
+    );
+
+    // Releasing control via command palette (: → Release live terminal control) emits TermSend::ReleaseControl.
+    app.key(ctrl(']'));
+    assert_eq!(app.mode, Mode::Normal);
+    app.key(key(':'));
+    for ch in "release live".chars() {
+        app.key(key(ch));
+    }
+    let rel_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        rel_fx,
+        vec![Effect::TermSend {
+            id: ID.into(),
+            send: TermSend::ReleaseControl,
+        }]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+}

@@ -4400,7 +4400,13 @@ impl App {
                     .iter()
                     .any(|s| s.action == a && s.group == crate::keys::Group::Layout)
             };
-            if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a)) {
+            let take_agent_ok = action == Some(Action::TakeOverAgent)
+                && self.pane_here().is_some_and(|p| {
+                    p.drawn && (self.remote_badge.is_some() || p.program != "shell")
+                });
+            if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a))
+                && !take_agent_ok
+            {
                 if key.code == KeyCode::Esc {
                     return self.run_action(Action::FocusList);
                 }
@@ -4952,6 +4958,24 @@ impl App {
                     "Switch workspaces with `toolroll connect --list` and `toolroll --remote --profile <name>`.",
                 );
                 vec![]
+            }
+            Action::ReleaseTerminal => {
+                if let Some(id) = self
+                    .pane_here()
+                    .filter(|p| p.link == Link::Live && !p.is_observer)
+                    .and_then(|p| p.id.clone())
+                {
+                    if self.mode == Mode::TakeOver {
+                        self.mode = Mode::Normal;
+                    }
+                    self.say(Tone::Said, "Released Live Terminal control.");
+                    vec![Effect::TermSend {
+                        id,
+                        send: TermSend::ReleaseControl,
+                    }]
+                } else {
+                    vec![]
+                }
             }
             Action::Accept => {
                 let Some(pin) = self.pin_review() else {
@@ -7694,17 +7718,38 @@ impl App {
         if let Some(pane) = self.pane_here() {
             match pane.link {
                 Link::Live => {
-                    let take = if pane.is_observer {
-                        pane.id.clone().map(|id| Effect::TermSend {
-                            id,
-                            send: TermSend::TakeControl,
-                        })
-                    } else {
-                        None
-                    };
+                    if pane.is_observer {
+                        let active_controller = pane.controller.clone();
+                        let armed = pane.takeover_armed;
+                        let id = pane.id.clone();
+                        if let Some(who) = active_controller.filter(|_| !armed) {
+                            if let Some(p) = self.term.as_mut() {
+                                p.takeover_armed = true;
+                            }
+                            self.say(
+                                Tone::Said,
+                                format!(
+                                    "Observing · {who} controlling — press t again to confirm takeover."
+                                ),
+                            );
+                            return vec![];
+                        }
+                        if let Some(p) = self.term.as_mut() {
+                            p.takeover_armed = false;
+                        }
+                        self.mode = Mode::TakeOver;
+                        self.say(Tone::Said, TYPING);
+                        return id
+                            .map(|id| Effect::TermSend {
+                                id,
+                                send: TermSend::TakeControl,
+                            })
+                            .into_iter()
+                            .collect();
+                    }
                     self.mode = Mode::TakeOver;
                     self.say(Tone::Said, TYPING);
-                    return take.into_iter().collect();
+                    return vec![];
                 }
                 Link::Opening | Link::Attaching => {
                     self.shell_opening();
@@ -7712,6 +7757,14 @@ impl App {
                 }
                 Link::Ended { .. } | Link::Closed(_) => {}
             }
+        }
+        if self.remote_badge.is_some() {
+            let run = self
+                .steps
+                .as_ref()
+                .and_then(|s| shell_run_of(s).or(s.live_run))
+                .unwrap_or(0);
+            return self.open_take_over(item.id, run, "shell".into());
         }
         let Some(steps) = self.steps.as_ref() else {
             self.take_over_wanted = Some((item.id.clone(), false));
@@ -7770,20 +7823,41 @@ impl App {
         self.tab = Tab::Terminal;
         self.focus = Focus::Detail;
         if let Some(pane) = self.pane_here() {
-            if pane.program != "shell" {
+            if pane.program != "shell" || self.remote_badge.is_some() {
                 match pane.link {
                     Link::Live => {
-                        let take = if pane.is_observer {
-                            pane.id.clone().map(|id| Effect::TermSend {
-                                id,
-                                send: TermSend::TakeControl,
-                            })
-                        } else {
-                            None
-                        };
+                        if pane.is_observer {
+                            let active_controller = pane.controller.clone();
+                            let armed = pane.takeover_armed;
+                            let id = pane.id.clone();
+                            if let Some(who) = active_controller.filter(|_| !armed) {
+                                if let Some(p) = self.term.as_mut() {
+                                    p.takeover_armed = true;
+                                }
+                                self.say(
+                                    Tone::Said,
+                                    format!(
+                                        "Observing · {who} controlling — press i again to confirm takeover."
+                                    ),
+                                );
+                                return vec![];
+                            }
+                            if let Some(p) = self.term.as_mut() {
+                                p.takeover_armed = false;
+                            }
+                            self.mode = Mode::TakeOver;
+                            self.say(Tone::Said, TYPING);
+                            return id
+                                .map(|id| Effect::TermSend {
+                                    id,
+                                    send: TermSend::TakeControl,
+                                })
+                                .into_iter()
+                                .collect();
+                        }
                         self.mode = Mode::TakeOver;
                         self.say(Tone::Said, TYPING);
-                        return take.into_iter().collect();
+                        return vec![];
                     }
                     Link::Opening | Link::Attaching => {
                         self.shell_opening();
@@ -7792,6 +7866,20 @@ impl App {
                     Link::Ended { .. } | Link::Closed(_) => {}
                 }
             }
+        }
+        if self.remote_badge.is_some() {
+            let run = self
+                .steps
+                .as_ref()
+                .and_then(|s| shell_run_of(s).or(s.live_run))
+                .unwrap_or(0);
+            let program = self
+                .steps
+                .as_ref()
+                .map(default_agent_program)
+                .unwrap_or("claude")
+                .to_string();
+            return self.open_take_over(item.id, run, program);
         }
         let Some(steps) = self.steps.as_ref() else {
             self.take_over_wanted = Some((item.id.clone(), true));
@@ -7942,20 +8030,26 @@ impl App {
                 ..
             } => {
                 pane.is_observer = !is_controller;
+                pane.controller = controller.clone();
+                pane.observer_count = viewers.len().saturating_sub(1);
+                pane.takeover_armed = false;
                 if !is_controller {
                     back = true;
                     let who = controller
                         .as_deref()
-                        .map(|name| format!("{name} is typing"))
-                        .unwrap_or_else(|| "Nobody is typing".into());
+                        .map(|name| format!("{name} controlling"))
+                        .unwrap_or_else(|| "idle".into());
                     said = Some((
                         Tone::Said,
-                        format!("Viewing ({who}) · press i to take control."),
+                        format!("Observing ({who}) · press i to take control."),
                     ));
-                } else if viewers.len() > 1 {
+                } else if pane.observer_count > 0 {
                     said = Some((
                         Tone::Said,
-                        format!("Typing in terminal · {} watching.", viewers.len()),
+                        format!(
+                            "Controlling Live Terminal · {} observing (: release control).",
+                            pane.observer_count
+                        ),
                     ));
                 }
             }

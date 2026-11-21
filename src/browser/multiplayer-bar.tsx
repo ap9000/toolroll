@@ -23,6 +23,11 @@ type Candidate = {
   trust: "unverified";
   promotedAt: string | null;
   promotedBy: string | null;
+  runId?: number | null;
+  branch?: string | null;
+  headCommit?: string | null;
+  checkStatus?: "queued" | "not-configured" | "refused" | null;
+  checkRequestId?: number | null;
 };
 
 export function TaskMultiplayerBar({
@@ -122,11 +127,22 @@ export function TaskMultiplayerBar({
           body: "{}",
         },
       );
-      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null;
+      const json = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        message?: string;
+        runId?: number | null;
+        checks?: { status?: string; level?: string } | null;
+      } | null;
       if (!res.ok || !json?.ok) {
         setNotice(json?.message ?? "Could not promote local candidate.");
       } else {
-        setNotice(`Queued central checks for local candidate ${candidateId}.`);
+        const runPart = json.runId ? ` → Run #${json.runId}` : "";
+        const checkPart = json.checks?.status === "queued"
+          ? ` (${json.checks.level ?? "full"} checks queued)`
+          : json.checks?.status === "not-configured"
+            ? " (no project check configured)"
+            : "";
+        setNotice(`Promoted Candidate ${candidateId}${runPart}${checkPart}.`);
         window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
       }
     } catch {
@@ -205,13 +221,29 @@ export function TaskMultiplayerBar({
           }}
         >
           <KChip
-            word={cand.promotedAt ? "Promoted for central Run" : cand.stale ? "Stale — re-pull & rebase" : "Unverified Candidate"}
+            word={
+              cand.promotedAt
+                ? cand.checkStatus === "queued"
+                  ? "Central checks queued"
+                  : "Promoted to central Run"
+                : cand.stale
+                  ? "Stale — re-pull & rebase"
+                  : "Unverified Candidate"
+            }
             tone={cand.promotedAt ? "live" : "needs"}
           />
           <span>
             <strong>{cand.author}</strong> submitted <code>{cand.id}</code> ({cand.files.length} file
             {cand.files.length === 1 ? "" : "s"}
             {cand.note ? ` · ${cand.note}` : ""})
+            {cand.runId ? (
+              <>
+                {" · "}
+                <a className="k-link" href={`/r/${cand.runId}`}>
+                  Run #{cand.runId}
+                </a>
+              </>
+            ) : null}
           </span>
           {!cand.promotedAt && !cand.stale && (
             <KButton

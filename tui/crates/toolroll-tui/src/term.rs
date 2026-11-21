@@ -78,8 +78,14 @@ pub struct Pane {
     /// The last frame drew this terminal on screen (view.rs sets it each frame). Nothing reaches the terminal while it
     /// isn't drawn — a window too small, another tab, a dialog over it.
     pub drawn: bool,
-    /// Single-controller lease: true while another window/viewer currently holds typing control.
+    /// Single-controller lease: true while another participant currently holds typing control.
     pub is_observer: bool,
+    /// Name of the active Controller when known (None when idle).
+    pub controller: Option<String>,
+    /// Number of other attached Observers watching this Live Terminal.
+    pub observer_count: usize,
+    /// One-step takeover confirmation armed when preempting another active human Controller.
+    pub takeover_armed: bool,
     /// Lines up into the scrollback (0: the live screen).
     pub scroll: usize,
     /// The program said it isn't reading input (typing waits until it does).
@@ -119,6 +125,9 @@ impl Pane {
             branch: String::new(),
             drawn: false,
             is_observer: false,
+            controller: None,
+            observer_count: 0,
+            takeover_armed: false,
             scroll: 0,
             input_full: false,
             parsed: 0,

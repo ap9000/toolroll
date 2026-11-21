@@ -5279,6 +5279,28 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             f.render_widget(Paragraph::new(lines), area);
             return;
         }
+        if app.remote_badge.is_some() {
+            let mut lines: Vec<Line<'static>> = vec![
+                fit_line(
+                    Line::from(vec![Span::styled("Central Live Terminal", ink())]),
+                    w,
+                ),
+                Line::raw(""),
+                fit_line(
+                    Line::from(sheet::act("i", "Attach to live central terminal", true)),
+                    w,
+                ),
+                Line::raw(""),
+            ];
+            for l in wrap(
+                "Press i to attach over WebSocket to a running central terminal on this task (Observing / Controlling handoff). If none is running yet, press w to start one in the browser.",
+                w,
+            ) {
+                lines.push(Line::from(Span::styled(l, dim())));
+            }
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        }
         // Layers 2 & 3: Interactive Terminal Launcher for finished or failed builds.
         let agent_name = crate::term::program_label(default_agent);
         let mut lines: Vec<Line<'static>> = vec![];
@@ -5334,6 +5356,24 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let (state, style) = match &pane.link {
         crate::term::Link::Opening => ("Opening…".to_string(), dim()),
         crate::term::Link::Attaching => ("Attaching…".to_string(), dim()),
+        crate::term::Link::Live if pane.is_observer && pane.takeover_armed => (
+            "Confirm takeover · press i again".to_string(),
+            crate::theme::badge(crate::theme::Role::NeedsYou),
+        ),
+        crate::term::Link::Live if pane.is_observer => (
+            pane.controller
+                .as_deref()
+                .map(|who| format!("Observing · {who} controlling · i take control"))
+                .unwrap_or_else(|| "Observing · Idle · i take control".to_string()),
+            crate::theme::badge(crate::theme::Role::Running),
+        ),
+        crate::term::Link::Live if typing && pane.observer_count > 0 => (
+            format!(
+                "Controlling · {} observing · Ctrl-] back",
+                pane.observer_count
+            ),
+            ink().patch(crate::theme::fill()),
+        ),
         // Keep the Ctrl-] escape hint visible on the terminal header whenever the key bar is off or room allows
         // without clipping the branch name (when key_bar is on, the bottom bar already shows Ctrl-] exclusively).
         crate::term::Link::Live if typing && !app.prefs.settings.key_bar => (

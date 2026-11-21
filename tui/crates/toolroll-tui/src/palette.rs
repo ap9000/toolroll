@@ -49,6 +49,9 @@ fn applies(app: &App, action: Action) -> bool {
                 app.remote_badge.is_some() && app.selected_item().is_some_and(|i| i.is_task)
             }
             Action::SwitchWorkspace => app.remote_badge.is_some(),
+            Action::ReleaseTerminal => app
+                .pane_here()
+                .is_some_and(|p| p.link == crate::term::Link::Live && !p.is_observer),
             _ => true,
         },
     }

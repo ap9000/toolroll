@@ -1028,6 +1028,12 @@
       "reason": "Palette-only remote profile switcher hint; covered by connect-cli/device-pair tests."
     },
     {
+      "action": "release-terminal",
+      "keys": [],
+      "feature": "Release write control of the current shared Live Terminal",
+      "reason": "Palette-only multiplayer lease release action; covered by terminal WebSocket tests."
+    },
+    {
       "action": "change-task-builder",
       "keys": [
         "m"
