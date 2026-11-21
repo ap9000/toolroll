@@ -40,14 +40,17 @@ export function TaskMultiplayerBar({
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof fetch !== "function") return;
+    if (typeof window === "undefined" || typeof document === "undefined" || typeof fetch !== "function") return;
+    if (!document.querySelector("[data-workspace-shell]")) return;
     let alive = true;
     const load = () => {
-      void fetch(`/api/handoff/task/${encodeURIComponent(taskId)}/candidates`, {
+      const req = fetch(`/api/handoff/task/${encodeURIComponent(taskId)}/candidates`, {
         credentials: "same-origin",
-        headers: { accept: "application/json" },
-      })
-        .then(res => (res.ok ? res.json() : null))
+        headers: { accept: "application/json", "x-toolroll-read": "prefetch" },
+      });
+      if (!req || typeof req.then !== "function") return;
+      void req
+        .then(res => (res && res.ok ? res.json() : null))
         .then((data: unknown) => {
           if (!alive || !data || typeof data !== "object") return;
           const obj = data as { ok?: boolean; candidates?: Candidate[] };

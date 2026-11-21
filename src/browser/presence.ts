@@ -60,11 +60,17 @@ export function matchesTeamFilter(
 export function useWorkspacePresence(): WorkspacePresence | null {
   const [presence, setPresence] = useState<WorkspacePresence | null>(null);
   useEffect(() => {
-    if (typeof window === "undefined" || typeof fetch !== "function") return;
+    if (typeof window === "undefined" || typeof document === "undefined" || typeof fetch !== "function") return;
+    if (!document.querySelector("[data-workspace-shell]")) return;
     let alive = true;
     const load = () => {
-      void fetch("/api/presence", { credentials: "same-origin", headers: { accept: "application/json" } })
-        .then(res => res.ok ? res.json() : null)
+      const req = fetch("/api/presence", {
+        credentials: "same-origin",
+        headers: { accept: "application/json", "x-toolroll-read": "prefetch" },
+      });
+      if (!req || typeof req.then !== "function") return;
+      void req
+        .then(res => (res && res.ok ? res.json() : null))
         .then((data: unknown) => {
           if (!alive || data === null || typeof data !== "object") return;
           const obj = data as Partial<WorkspacePresence> & { ok?: boolean };

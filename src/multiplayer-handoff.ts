@@ -181,9 +181,16 @@ function visibleTaskFamily(store: Store, ceiling: ProjectCeiling, caller: Caller
   return { family, repo };
 }
 
-async function currentTaskBaseCommit(store: Store, family: TaskFamily, repo: string): Promise<string | null> {
+function currentTaskBaseCommitReadOnly(store: Store, family: TaskFamily): string | null {
   const latest = resultRunsOf(store, family)[0] ?? null;
+  if (latest?.headRevision && SHA_PATTERN.test(latest.headRevision)) return latest.headRevision;
   if (latest?.baseRevision && SHA_PATTERN.test(latest.baseRevision)) return latest.baseRevision;
+  return null;
+}
+
+async function currentTaskBaseCommit(store: Store, family: TaskFamily, repo: string): Promise<string | null> {
+  const fromStore = currentTaskBaseCommitReadOnly(store, family);
+  if (fromStore !== null) return fromStore;
   if (existsSync(join(repo, ".git"))) {
     const git = teardownGit();
     const head = await git(repo, ["rev-parse", "HEAD"]).catch(() => null);
@@ -284,7 +291,8 @@ export async function handleListCandidatesHttp(
   const found = visibleTaskFamily(options.store, options.liveCeiling(), caller, taskId);
   if (found === null) return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
 
-  const currentBaseCommit = await currentTaskBaseCommit(options.store, found.family, found.repo);
+  // GET stays strictly read-only on SQLite + evidenceRoot (never touches repo folder or spawns git).
+  const currentBaseCommit = currentTaskBaseCommitReadOnly(options.store, found.family);
   const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
   const candidates: Array<HandoffCandidateMeta & { stale: boolean }> = [];
   if (existsSync(dir)) {

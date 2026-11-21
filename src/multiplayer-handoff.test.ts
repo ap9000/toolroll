@@ -189,16 +189,23 @@ describe("human task handoff and local candidate promotion", () => {
     expect(promoted.status).toBe(200);
     expect(promoted.json).toMatchObject({ ok: true, taskId: "t-cand", candidateId, promotedBy: "alex" });
 
-    // Moving the central repo head marks the candidate stale and refuses promotion with 409 stale_candidate (no silent auto-merge).
+    // Moving the central repo head refuses promotion with 409 stale_candidate (no silent auto-merge).
     writeFileSync(join(repo, "other.txt"), "advanced\n");
     execFileSync("git", ["-C", repo, "add", "other.txt"]);
     execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "advance head"]);
-    const staleList = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
-    expect(staleList.status).toBe(200);
-    expect((staleList.json.candidates as Array<{ stale: boolean }>)[0]?.stale).toBe(true);
+    const advancedHead = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const stalePromote = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
     expect(stalePromote.status).toBe(409);
     expect(stalePromote.json.error).toBe("stale_candidate");
+
+    // Once a central run records the advanced head in SQLite, GET .../candidates flags stale: true purely from DB (never spawning git on GET).
+    store.handle.prepare(`
+      INSERT INTO run (task_ref, runner, lease_id, role, started_at, finished_at, outcome, committed, base_revision, head_revision, branch, worktree)
+      VALUES (?, 'builder-1', 'lease-adv', 'builder', ?, ?, 'built', 1, ?, ?, 'toolroll/t-cand', ?)
+    `).run(ref, now.toISOString(), now.toISOString(), baseCommit, advancedHead, repo);
+    const staleList = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
+    expect(staleList.status).toBe(200);
+    expect((staleList.json.candidates as Array<{ stale: boolean }>)[0]?.stale).toBe(true);
 
     // Tampering with the saved patch file causes 409 digest_mismatch.
     writeFileSync(join(evidenceRoot, "handoff-candidates", "t-cand", `${candidateId}.patch`), `${patch}\n# tampered\n`);
