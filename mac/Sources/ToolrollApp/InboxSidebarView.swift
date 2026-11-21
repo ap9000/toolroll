@@ -104,16 +104,16 @@ public struct InboxSidebarView: View {
                 .fixedSize()
                 .help("Filter by project or owner")
 
-                // Add local project folder (⌘⇧O)
+                // Add project (⌘⇧O)
                 Button {
-                    store.pickAndAddLocalFolder()
+                    store.isAddProjectSheetOpen = true
                 } label: {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 12))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
                 .buttonStyle(.plain)
-                .help("Add Local Project Folder (⌘⇧O)")
+                .help("Add Project (⌘⇧O)")
 
                 // New task inline canvas (⌘N)
                 Button {
@@ -277,6 +277,17 @@ public struct InboxSidebarView: View {
             .padding(.vertical, 9)
         }
         .background(ToolrollPalette.ground)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url, url.hasDirectoryPath else { return }
+                    Task { @MainActor in
+                        await store.addLocalProject(path: url.path)
+                    }
+                }
+            }
+            return true
+        }
     }
 
     private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {

@@ -9,7 +9,7 @@ public struct SetupWorkbenchView: View {
     @Bindable var store: WorkbenchStore
     @State private var showMoreAgents: Bool = false
     @State private var isModelPickerOpen: Bool = false
-    @State private var copiedHint: String?
+    @State private var confirmingInstallAgent: AgentRow? = nil
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -219,14 +219,49 @@ public struct SetupWorkbenchView: View {
                     .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                    if let copiedHint {
-                        Text(copiedHint)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.live)
+                    // Live in-app agent Sign-in / Install terminal drawer (zero CLI copy-paste!)
+                    if let setupTitle = store.activeAgentSetupTitle {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
+                                Text(setupTitle)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                Spacer()
+                                Button("Done — Check Status") {
+                                    Task { await store.finishAgentSetupAndRecheck() }
+                                }
+                                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                            }
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(store.terminalSession.renderLines) { line in
+                                        Text(line.plainText)
+                                            .font(.system(size: 11.5, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.ink)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                                .padding(10)
+                            }
+                            .frame(height: 150)
+                            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        }
+                        .padding(14)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1))
                     }
 
-                    // Bottom bar: Subtle remote option + Solid-Ink Enter CTA
+                    // Bottom bar: Start Local Engine (if offline) + Remote Server + Start Building
                     HStack(spacing: 10) {
+                        if !store.isLocalSession && store.activeProfile.isDemo {
+                            Button("Start Local Engine") {
+                                Task { await store.startLocalEngine() }
+                            }
+                            .buttonStyle(KitButtonStyle(.ghost))
+                        }
+
                         Button("Connect Team / Remote Server…") {
                             store.isPairSheetOpen = true
                         }
@@ -317,39 +352,62 @@ public struct SetupWorkbenchView: View {
     }
 
     private func setupAgentRow(_ agent: AgentRow) -> some View {
-        let cmd = agent.setup.signIn ?? agent.setup.install
         let isSignIn = agent.state == "signed-out"
-        return HStack(spacing: 10) {
-            Circle()
-                .fill(isSignIn ? ToolrollPalette.warning : ToolrollPalette.muted.opacity(0.4))
-                .frame(width: 6, height: 6)
+        let confirming = confirmingInstallAgent?.id == agent.id
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(isSignIn ? ToolrollPalette.warning : ToolrollPalette.muted.opacity(0.4))
+                    .frame(width: 6, height: 6)
+
+                VStack(alignment: .leading, spacing: 2) {
                     Text(agent.name)
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(ToolrollPalette.ink)
-                    Text(isSignIn ? "Needs sign-in" : "Not installed")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-                if let cmd, !cmd.isEmpty {
-                    Text("Run in terminal: \(cmd)")
-                        .font(.system(size: 11, design: .monospaced))
+                    Text(isSignIn ? "Installed on this Mac — sign in to enable" : (agent.setup.note ?? "Available to install"))
+                        .font(.system(size: 11))
                         .foregroundStyle(ToolrollPalette.muted)
                         .lineLimit(1)
                 }
+
+                Spacer()
+
+                if isSignIn && agent.setup.canSignIn {
+                    Button("Sign in") {
+                        Task { await store.runAgentSetup(kind: "sign-in", agent: agent) }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                } else if !isSignIn && agent.setup.canInstall {
+                    Button(confirming ? "Cancel" : "Install") {
+                        confirmingInstallAgent = confirming ? nil : agent
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                } else if isSignIn {
+                    Button("Sign in") {
+                        Task { await store.runAgentSetup(kind: "sign-in", agent: agent) }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                } else {
+                    Text("External install")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
             }
 
-            Spacer()
-
-            if let cmd, !cmd.isEmpty {
-                Button(isSignIn ? "Copy sign-in" : "Copy install") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(cmd, forType: .string)
-                    copiedHint = "Copied `\(cmd)` — paste into your terminal to \(isSignIn ? "sign in" : "install") \(agent.name)."
+            if confirming, let installCmd = agent.setup.install {
+                HStack(spacing: 8) {
+                    Text("Install \(agent.name)? (\(installCmd))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Confirm Install") {
+                        confirmingInstallAgent = nil
+                        Task { await store.runAgentSetup(kind: "install", agent: agent) }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
                 }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
             }
         }
         .padding(.horizontal, 12)

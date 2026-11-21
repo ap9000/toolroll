@@ -298,6 +298,57 @@ public actor ToolrollClient {
         try await send(try makeRequest(path: "/engine/agents"), as: AgentsReadResponse.self)
     }
 
+    public func checkAgents() async throws -> AgentsReadResponse {
+        guard case .localSession(let s) = transport else {
+            return try await fetchAgents()
+        }
+        let body = "csrf=\(s.csrf.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s.csrf)"
+        let req = try makeRequest(
+            path: "/engine/agents/check",
+            method: "POST",
+            body: Data(body.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+        return try await send(req, as: AgentsReadResponse.self)
+    }
+
+    /// Starts Toolroll's built-in trusted agent sign-in or install terminal (`POST /term/agent/sign-in` or `/install`).
+    public func startAgentTerminal(kind: String, agentId: String, confirmCommand: String? = nil) async throws -> String {
+        struct TermStartReply: Decodable {
+            let ok: Bool?
+            let id: String?
+            let error: String?
+        }
+        guard case .localSession(let s) = transport else {
+            throw ToolrollClientError.refused("Agent setup requires a local Toolroll session on this Mac.")
+        }
+        var items = [
+            URLQueryItem(name: "csrf", value: s.csrf),
+            URLQueryItem(name: "agent", value: agentId),
+        ]
+        if let confirmCommand {
+            items.append(URLQueryItem(name: "confirm", value: confirmCommand))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let form = comps.percentEncodedQuery ?? ""
+        let req = try makeRequest(
+            path: "/term/agent/\(kind)",
+            method: "POST",
+            body: Data(form.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+        let reply = try await send(req, as: TermStartReply.self)
+        if let id = reply.id, !id.isEmpty {
+            return id
+        }
+        throw ToolrollClientError.refused(reply.error ?? "Could not start agent \(kind).")
+    }
+
     public func fetchModels() async throws -> ModelsReadResponse {
         try await send(try makeRequest(path: "/engine/models"), as: ModelsReadResponse.self)
     }

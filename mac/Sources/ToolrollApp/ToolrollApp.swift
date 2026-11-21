@@ -21,8 +21,8 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("n", modifiers: [.command])
 
-                Button("Add Local Project Folder…") {
-                    store.pickAndAddLocalFolder()
+                Button("Add Project…") {
+                    store.isAddProjectSheetOpen = true
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
 
@@ -32,6 +32,24 @@ struct ToolrollMacApp: App {
                 .keyboardShortcut("k", modifiers: [.command])
 
                 Divider()
+
+                Button("Toggle Canvas Mode") {
+                    store.workspaceMode = (store.workspaceMode == .canvas) ? .workbench : .canvas
+                }
+                .keyboardShortcut("3", modifiers: [.command])
+
+                Button("Zen Focus") {
+                    store.toggleZenFocus()
+                }
+                .keyboardShortcut("\\", modifiers: [.command])
+
+                Button("Balanced 2-Pane Layout") {
+                    store.setLayoutPreset(sidebar: true, inspector: false)
+                }
+
+                Button("Full 3-Pane Multiplexer") {
+                    store.setLayoutPreset(sidebar: true, inspector: true)
+                }
 
                 Button("Toggle Sidebar") {
                     store.isSidebarVisible.toggle()

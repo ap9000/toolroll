@@ -18,6 +18,12 @@ public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum WorkspaceMode: String, CaseIterable, Identifiable, Sendable {
+    case workbench = "Workbench"
+    case canvas = "Canvas"
+    public var id: String { rawValue }
+}
+
 public struct WorkbenchNotice: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case info
@@ -40,20 +46,36 @@ public final class WorkbenchStore {
     public private(set) var busyLabel: String?
     public var notice: WorkbenchNotice?
 
-    // Filters & Layout
+    // Filters & Layout (persisted cleanly across launches)
+    public var workspaceMode: WorkspaceMode = .workbench {
+        didSet { UserDefaults.standard.set(workspaceMode.rawValue, forKey: "toolroll.workspaceMode") }
+    }
     public var selectedProject: String? = nil
     public var teamFilter: TeamFilter = .everyone
     public var sidebarSearch: String = ""
-    public var isSidebarVisible: Bool = true
-    public var isInspectorVisible: Bool = false
+    public var isSidebarVisible: Bool = true {
+        didSet { UserDefaults.standard.set(isSidebarVisible, forKey: "toolroll.sidebarVisible") }
+    }
+    public var isInspectorVisible: Bool = false {
+        didSet { UserDefaults.standard.set(isInspectorVisible, forKey: "toolroll.inspectorVisible") }
+    }
     public var inspectorTab: InspectorTab = .diff
     public var isCommandPaletteOpen: Bool = false
     public var isPairSheetOpen: Bool = false
     public var isNewTaskSheetOpen: Bool = false
+    public var isAddProjectSheetOpen: Bool = false
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
     public var settledDisplayLimit: Int = 10
+    private var preZenSidebar: Bool = true
+    private var preZenInspector: Bool = false
+
+    // Native Toolroll Canvas (youiyoux port)
+    public private(set) var canvasArtboards: [CanvasArtboard] = []
+    public private(set) var canvasPins: [CanvasPin] = []
+    public private(set) var canvasProjectRoot: String? = nil
+    public private(set) var activeAgentSetupTitle: String? = nil
 
     // Navigation History (← / →)
     private var backStack: [String?] = []
@@ -93,6 +115,16 @@ public final class WorkbenchStore {
     public init(profileStore: ProfileStore = ProfileStore()) {
         self.profileStore = profileStore
         self.isSetupOpen = !UserDefaults.standard.bool(forKey: "toolroll.setupCompletedV1")
+        if UserDefaults.standard.object(forKey: "toolroll.sidebarVisible") != nil {
+            self.isSidebarVisible = UserDefaults.standard.bool(forKey: "toolroll.sidebarVisible")
+        }
+        if UserDefaults.standard.object(forKey: "toolroll.inspectorVisible") != nil {
+            self.isInspectorVisible = UserDefaults.standard.bool(forKey: "toolroll.inspectorVisible")
+        }
+        if let savedMode = UserDefaults.standard.string(forKey: "toolroll.workspaceMode"),
+           let parsed = WorkspaceMode(rawValue: savedMode) {
+            self.workspaceMode = parsed
+        }
         let loaded = profileStore.load()
         if let active = loaded.active {
             self.profiles = loaded.profiles
@@ -104,6 +136,252 @@ public final class WorkbenchStore {
             self.activeProfile = demo
             self.client = nil
         }
+    }
+
+    public func toggleZenFocus() {
+        if isSidebarVisible || isInspectorVisible {
+            preZenSidebar = isSidebarVisible
+            preZenInspector = isInspectorVisible
+            isSidebarVisible = false
+            isInspectorVisible = false
+        } else {
+            isSidebarVisible = preZenSidebar
+            isInspectorVisible = preZenInspector
+        }
+    }
+
+    public func setLayoutPreset(sidebar: Bool, inspector: Bool) {
+        isSidebarVisible = sidebar
+        isInspectorVisible = inspector
+    }
+
+    // MARK: - Native Local Engine & 1-Click Agent Setup (Zero CLI Copy-Paste)
+
+    public func startLocalEngine() async {
+        busyLabel = "Starting Local Toolroll Engine…"
+        defer { busyLabel = nil }
+
+        let candidates = ["/opt/homebrew/bin/toolroll", "/usr/local/bin/toolroll"]
+        guard let binPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Could not locate local `toolroll` binary to start.")
+            return
+        }
+        do {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: binPath)
+            let dbPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/nightorders/orders.db").path
+            if FileManager.default.fileExists(atPath: dbPath) {
+                proc.arguments = ["up", "--laptop", "--no-open", "--db", dbPath, "--port", "4180"]
+            } else {
+                proc.arguments = ["up", "--laptop", "--no-open"]
+            }
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try proc.run()
+            // Wait up to 6s for console socket to come online
+            for _ in 0..<12 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if await connectToLocalConsoleIfAvailable(silent: true) {
+                    await refreshSetupState()
+                    return
+                }
+            }
+            notice = WorkbenchNotice(kind: .info, message: "Engine starting… click Rescan in a moment.")
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: "Could not start local engine: \(error.localizedDescription)")
+        }
+    }
+
+    public func runAgentSetup(kind: String, agent: AgentRow) async {
+        guard let client, isLocalSession else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Connect to your local Toolroll engine to \(kind) \(agent.name).")
+            return
+        }
+        busyLabel = kind == "install" ? "Installing \(agent.name)…" : "Signing in to \(agent.name)…"
+        defer { busyLabel = nil }
+
+        do {
+            let confirm = (kind == "install") ? agent.setup.install : nil
+            let termId = try await client.startAgentTerminal(kind: kind, agentId: agent.id, confirmCommand: confirm)
+            activeAgentSetupTitle = "\(kind == "install" ? "Installing" : "Signing in to") \(agent.name)"
+            await terminalSession.attach(
+                client: client,
+                terminalId: termId,
+                taskId: nil,
+                program: agent.id,
+                branch: "setup"
+            )
+            // Automatically take control so the user can interact directly if OAuth/prompts ask
+            _ = terminalSession.requestTakeControl()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func finishAgentSetupAndRecheck() async {
+        activeAgentSetupTitle = nil
+        terminalSession.disconnect(clearOutput: true)
+        guard let client else { return }
+        busyLabel = "Rechecking agents…"
+        defer { busyLabel = nil }
+        if let updated = try? await client.checkAgents() {
+            agentsRead = updated
+        } else if let updated = try? await client.fetchAgents() {
+            agentsRead = updated
+        }
+        if let mods = try? await client.fetchModels() {
+            modelsRead = mods
+        }
+    }
+
+    // MARK: - Native Toolroll Canvas (youiyoux port)
+
+    public func loadCanvasForCurrentProject() {
+        let root = resolveLocalProjectRoot()
+        canvasProjectRoot = root
+
+        var screens: [YouiScreenEntry] = []
+        if let root, let manifest = YouiCanvasStorage.loadManifest(projectRoot: root) {
+            screens = Array(manifest.screens.prefix(9))
+        }
+        if screens.isEmpty {
+            // Crisp default screen starter set
+            screens = [
+                YouiScreenEntry(route: "/work", path: "/work"),
+                YouiScreenEntry(route: "/chat", path: "/chat"),
+                YouiScreenEntry(route: "/agents", path: "/agents"),
+            ]
+        }
+        if canvasArtboards.isEmpty {
+            canvasArtboards = YouiCanvasStorage.layoutArtboards(from: screens, projectRoot: root, columns: 3, viewport: .desktop)
+        }
+        if let root {
+            let loadedPins = YouiCanvasStorage.loadPins(projectRoot: root)
+            if !loadedPins.isEmpty {
+                canvasPins = loadedPins
+            }
+        }
+    }
+
+    public func arrangeCanvasArtboards(viewport: CanvasViewportPreset) {
+        let screens = canvasArtboards.map { YouiScreenEntry(route: $0.route, path: $0.path) }
+        let updated = YouiCanvasStorage.layoutArtboards(from: screens, projectRoot: canvasProjectRoot, columns: 3, viewport: viewport)
+        canvasArtboards = zip(canvasArtboards, updated).map { old, next in
+            var merged = next
+            merged.baselineImagePath = old.baselineImagePath ?? next.baselineImagePath
+            merged.latestImagePath = old.latestImagePath ?? next.latestImagePath
+            merged.isLiveInteractive = old.isLiveInteractive
+            merged.compareSplit = old.compareSplit
+            return merged
+        }
+    }
+
+    public func addCanvasArtboard(route: String, path: String, viewport: CanvasViewportPreset) {
+        let count = canvasArtboards.count
+        let col = count % 3
+        let row = count / 3
+        let board = CanvasArtboard(
+            route: route,
+            path: path,
+            x: 60 + Double(col) * (viewport.width + 44),
+            y: 60 + Double(row) * (viewport.height + 64),
+            width: viewport.width,
+            height: viewport.height,
+            isLiveInteractive: true
+        )
+        canvasArtboards.append(board)
+    }
+
+    public func moveCanvasArtboard(id: String, dx: Double, dy: Double) {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
+        canvasArtboards[idx].x += dx
+        canvasArtboards[idx].y += dy
+    }
+
+    public func toggleArtboardLive(id: String) {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
+        canvasArtboards[idx].isLiveInteractive.toggle()
+    }
+
+    public func setArtboardCompareSplit(id: String, split: Double) {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
+        canvasArtboards[idx].compareSplit = split
+    }
+
+    public func saveArtboardSnapshot(boardId: String, pngData: Data) {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == boardId }) else { return }
+        let root = canvasProjectRoot ?? NSTemporaryDirectory()
+        let slug = canvasArtboards[idx].slug
+        if let saved = YouiCanvasStorage.saveSnapshotPNG(pngData, projectRoot: root, slug: slug) {
+            canvasArtboards[idx].baselineImagePath = saved.baseline
+            canvasArtboards[idx].latestImagePath = saved.latest
+        }
+    }
+
+    public func createCanvasPin(
+        route: String,
+        path: String,
+        xFrac: Double,
+        yFrac: Double,
+        kind: CanvasPinKind,
+        body: String,
+        fileTask: Bool
+    ) async {
+        let pin = CanvasPin(
+            artboardRoute: route,
+            artboardPath: path,
+            xFrac: xFrac,
+            yFrac: yFrac,
+            kind: kind,
+            body: body,
+            author: activeProfile.account.isEmpty ? "alex" : activeProfile.account
+        )
+        canvasPins.append(pin)
+
+        if let root = canvasProjectRoot {
+            _ = YouiCanvasStorage.writeYouiRequest(
+                projectRoot: root,
+                projectName: selectedProject ?? "toolroll",
+                pin: pin
+            )
+        }
+
+        if fileTask {
+            await fileTaskFromCanvasPin(pin)
+        } else {
+            notice = WorkbenchNotice(kind: .info, message: "Pinned feedback on \(route).")
+        }
+        _ = pin
+    }
+
+    public func fileTaskFromCanvasPin(_ pin: CanvasPin) async {
+        let prefix = pin.kind == .options ? "[UI Options A/B/C/D] " : "[UI] "
+        let title = "\(prefix)\(pin.artboardRoute): \(pin.body)"
+        let detail = "Canvas pin \(pin.id) on route `\(pin.artboardPath)` at (\(Int(pin.xFrac * 100))%, \(Int(pin.yFrac * 100))%).\n\n\(pin.body)"
+        await createTask(title: String(title.prefix(118)), project: selectedProject, body: detail, planFirst: true)
+        if let newest = workRowsResponse.rows.first?.id,
+           let idx = canvasPins.firstIndex(where: { $0.id == pin.id }) {
+            canvasPins[idx].linkedTaskId = newest
+        }
+    }
+
+    public func statusTone(forPin pin: CanvasPin) -> TaskStatusTone {
+        if let taskId = pin.linkedTaskId,
+           let row = workRowsResponse.rows.first(where: { $0.id == taskId }) {
+            return row.status
+        }
+        return .queued
+    }
+
+    private func resolveLocalProjectRoot() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/Documents/firstmate/projects/toolroll",
+            "\(home)/Documents/\(selectedProject ?? "")",
+        ]
+        return candidates.first(where: { FileManager.default.fileExists(atPath: "\($0)/.youi/screens/screens.json") })
+            ?? candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
     }
 
     public func completeSetup() {

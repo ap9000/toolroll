@@ -302,4 +302,43 @@ struct ToolrollCoreTests {
         let models = try await client.fetchModels()
         #expect(models.version == 1)
     }
+
+    @Test("YouiCanvasStorage round-trips youi.request/v1 spatial pins and layouts artboards cleanly")
+    func canvasStorageRoundTrip() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-canvas-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let boards = YouiCanvasStorage.layoutArtboards(
+            from: [
+                YouiScreenEntry(route: "/work", path: "/work"),
+                YouiScreenEntry(route: "/chat", path: "/chat"),
+            ],
+            projectRoot: tmpDir.path,
+            columns: 2,
+            viewport: .desktop
+        )
+        #expect(boards.count == 2)
+        #expect(boards[1].x > boards[0].x)
+
+        let pin = CanvasPin(
+            artboardRoute: "/work",
+            artboardPath: "/work",
+            xFrac: 0.42,
+            yFrac: 0.25,
+            kind: .options,
+            body: "Explore tighter header spacing",
+            author: "alex",
+            linkedTaskId: "t-ui-1"
+        )
+        let written = YouiCanvasStorage.writeYouiRequest(projectRoot: tmpDir.path, projectName: "toolroll", pin: pin)
+        #expect(written != nil)
+
+        let loaded = YouiCanvasStorage.loadPins(projectRoot: tmpDir.path)
+        #expect(loaded.count == 1)
+        #expect(loaded[0].id == pin.id)
+        #expect(loaded[0].kind == .options)
+        #expect(loaded[0].linkedTaskId == "t-ui-1")
+        #expect(abs(loaded[0].xFrac - 0.42) < 0.001)
+    }
 }

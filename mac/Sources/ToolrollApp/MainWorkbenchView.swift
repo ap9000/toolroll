@@ -27,7 +27,9 @@ public struct MainWorkbenchView: View {
                         }
 
                         Group {
-                            if store.isComposingNewWork || store.selectedRow == nil {
+                            if store.workspaceMode == .canvas {
+                                CanvasWorkspaceView(store: store)
+                            } else if store.isComposingNewWork || store.selectedRow == nil {
                                 NewWorkCanvasView(store: store)
                             } else {
                                 TaskCockpitView(store: store)
@@ -53,6 +55,9 @@ public struct MainWorkbenchView: View {
         }
         .sheet(isPresented: $store.isNewTaskSheetOpen) {
             NewTaskSheet(store: store)
+        }
+        .sheet(isPresented: $store.isAddProjectSheetOpen) {
+            AddProjectSheet(store: store)
         }
         .task {
             await store.start()
@@ -110,8 +115,8 @@ public struct MainWorkbenchView: View {
                     Button("Setup & Agents…") {
                         store.isSetupOpen = true
                     }
-                    Button("Add Local Project Folder…") {
-                        store.pickAndAddLocalFolder()
+                    Button("Add Project…") {
+                        store.isAddProjectSheetOpen = true
                     }
                     Button("Reconnect Local Toolroll") {
                         Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
@@ -190,6 +195,28 @@ public struct MainWorkbenchView: View {
                 }
 
                 Spacer(minLength: 12)
+
+                // Clean Workbench | Canvas mode pill (⌘3)
+                HStack(spacing: 2) {
+                    ForEach(WorkspaceMode.allCases) { mode in
+                        let active = store.workspaceMode == mode
+                        Button {
+                            store.workspaceMode = mode
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 11, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
                 // Quiet ⌘K trigger
                 Button {
