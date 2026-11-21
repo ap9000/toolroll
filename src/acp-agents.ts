@@ -13,7 +13,7 @@
  */
 import type { ProviderId } from "./contracts/provider.js";
 
-export const ACP_PROVIDER_IDS = ["opencode", "cursor", "cline", "qwen", "goose"] as const satisfies readonly ProviderId[];
+export const ACP_PROVIDER_IDS = ["opencode", "cursor", "cline", "qwen", "goose", "antigravity"] as const satisfies readonly ProviderId[];
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
 /** The providers with their own adapter and key: everything that is not an ACP agent. */
@@ -26,6 +26,8 @@ export type AcpAgent = {
   binary: string;
   /** What starts its ACP server on stdio. */
   argv: readonly string[];
+  /** Optional ACP `authenticate` methodId to run after `initialize` (e.g. `"oauth-personal"` for Antigravity ACP). */
+  authMethod?: string;
   /** What the operator runs to sign in. */
   signIn: string;
   /** Folders under the home directory that hold its own configuration and sign-in (fenced like other agents' homes). */
@@ -75,6 +77,19 @@ export const ACP_AGENTS: Readonly<Record<AcpProviderId, AcpAgent>> = {
     signIn: "goose configure",
     home: [".config/goose"],
     configSurface: ["~/.config/goose (providers, extensions)", "repository .goosehints", "its own sign-in"],
+  },
+  antigravity: {
+    name: "Antigravity",
+    binary: "agy",
+    argv: ["acp"],
+    authMethod: "oauth-personal",
+    signIn: "agy acp --login",
+    home: [".gemini"],
+    configSurface: [
+      "~/.gemini (Antigravity login, rules, skills, MCP servers)",
+      "repository GEMINI.md and AGENTS.md",
+      "its own Google account sign-in (agy acp --login)",
+    ],
   },
 };
 

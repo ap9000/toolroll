@@ -270,6 +270,18 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.team-send": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
   "edge.cli": { local: "deny", why: "bearer only" },
   "edge.terminal-connection": { local: "deny", why: "ordinary person API token only; never a local-owner cookie or credential conversion" },
+  "edge.handoff-pull": { local: "deny", why: "ordinary person API token only for local code handoff export" },
+  "edge.handoff-push": { local: "deny", why: "ordinary person API token only for local code handoff candidate upload" },
+  "edge.presence": { local: "allow", why: "observational read of active task viewers, terminal controllers, and task owners within the caller's visible projects" },
+  "edge.approval-ping": { local: "deny", why: "ordinary person API token only for remote out-of-band approval ping" },
+  "edge.remote-terminals": { local: "deny", why: "ordinary person act API token only for remote terminal relay discovery" },
+  "edge.task-handoff-person": { local: "allow", why: "hand a visible task to a project-authorized teammate (CSRF/key or pinned remote act token)" },
+  "edge.handoff-candidates": { local: "allow", why: "observational read of uploaded local code candidates for a visible task" },
+  "edge.handoff-promote": { local: "allow", why: "queue a SHA-256 verified local code candidate for central worker checks (approver CSRF/key or remote act token)" },
+  "edge.connect-pair-start": { local: "deny", why: "CLI device pairing initiation; never uses a cookie" },
+  "edge.connect-pair-poll": { local: "deny", why: "CLI device pairing one-time token pickup; never uses a cookie" },
+  "edge.connect-pair-page": { local: "deny", why: "browser pairing confirmation requires a full password-authenticated session" },
+  "edge.connect-pair-confirm": { local: "deny", why: "minting an API token is a credential step-up act; refuses local-owner sessions" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -350,6 +362,18 @@ edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bear
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.terminal-connection", "GET", "/engine/connection", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.handoff-pull", "GET", `^\\/api\\/handoff\\/task\\/${TASK}$`, { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one" });
+edge("remote", "edge.handoff-push", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidate" });
+edge("remote", "edge.task-handoff-person", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/assign-person$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/assign-person" });
+edge("remote", "edge.handoff-candidates", "GET", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidates$`, { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidates" });
+edge("remote", "edge.handoff-promote", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate\\/cand-[a-f0-9]{16}\\/promote$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: `/api/handoff/task/one/candidate/cand-${"a".repeat(16)}/promote` });
+edge("remote", "edge.approval-ping", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/approval-ping$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/approval-ping" });
+edge("remote", "edge.remote-terminals", "GET", "/api/handoff/terminals", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.presence", "GET", "/api/presence", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.connect-pair-start", "POST", "/api/connect/pair/start");
+edge("remote", "edge.connect-pair-poll", "POST", "/api/connect/pair/poll");
+edge("remote", "edge.connect-pair-page", "GET", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { sample: "/connect/pair/ABCD-EFGH" });
+edge("remote", "edge.connect-pair-confirm", "POST", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { callers: ["cookie"], scope: "step-up", viewer: true, proof: "adapter", sample: "/connect/pair/ABCD-EFGH" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });
@@ -420,6 +444,8 @@ get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
 get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: ["cookie"], ...free });
 // The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
 get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
+// The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
+get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie", "bearer"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
@@ -459,9 +485,9 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
-// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted exactly as the Live grid's reads.
+// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted as the Live grid's reads (and terminal-remote API tokens).
 // A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
-get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
+get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie", "bearer"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
 // Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.

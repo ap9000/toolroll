@@ -1,14 +1,28 @@
-//! Disabled remote-connection metadata only: no HTTP client, credential, bootstrap or action authority.
+//! Remote-connection metadata and enrolled-profile identity guards.
 //!
 //! The separate connection protocol does not change the local engine handshake. A caller supplies bindings from its
-//! trusted enrolled profile; response values never establish or silently replace those bindings. This slice accepts
-//! only the all-disabled scaffold. Parsing it grants no read, action, approval, local execution or terminal access.
+//! trusted enrolled profile; response values never establish or silently replace those bindings. Capabilities are
+//! validated against a closed allowlist (no browserless approvals, local execution, provider setup or raw PTYs).
 use crate::models::{contract_digest, API_VERSION};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const CONNECTION_PROTOCOL: u32 = 1;
 pub const MAX_CONNECTION_METADATA_BYTES: usize = 16 * 1024;
+
+/// Finite remote TUI commands routed through `POST /api/cli` (matching `src/contracts/terminal-connection.ts`).
+pub const REMOTE_TUI_COMMANDS: &[&str] = &[
+    "task add",
+    "task steer",
+    "task complete",
+    "task revise",
+    "task assign",
+    "task stop",
+    "task resume",
+    "task hold",
+    "task unhold",
+    "task requeue",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionError {
@@ -97,6 +111,8 @@ pub enum ConnectionRefusal {
     Request,
     Unauthenticated,
     CredentialPurpose,
+    WorkspaceMismatch,
+    RecoveryChanged,
     WorkspaceUnavailable,
     ContractUnavailable,
 }
@@ -144,38 +160,60 @@ struct Engine {
     contract: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Capabilities {
-    work_rows: bool,
-    step_cards: bool,
-    result_diff: bool,
-    run_live_window: bool,
-    commands: Vec<String>,
+pub struct RemoteCapabilities {
+    pub work_rows: bool,
+    pub step_cards: bool,
+    pub result_diff: bool,
+    pub run_live_window: bool,
+    pub lead_chat: bool,
+    pub live_stream: bool,
+    pub commands: Vec<String>,
     approval: Approval,
-    provider_setup: bool,
-    local_code: bool,
-    local_execution: bool,
-    interactive: bool,
+    pub provider_setup: bool,
+    pub local_code: bool,
+    pub local_execution: bool,
+    pub interactive: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Approval {
     Browser,
 }
 
-impl Capabilities {
+impl RemoteCapabilities {
     fn disabled(&self) -> bool {
         !self.work_rows
             && !self.step_cards
             && !self.result_diff
             && !self.run_live_window
+            && !self.lead_chat
+            && !self.live_stream
             && self.commands.is_empty()
             && !self.provider_setup
             && !self.local_code
             && !self.local_execution
             && !self.interactive
+    }
+
+    fn allowed(&self) -> bool {
+        !self.provider_setup
+            && !self.local_execution
+            && !self.interactive
+            && self
+                .commands
+                .iter()
+                .all(|cmd| REMOTE_TUI_COMMANDS.contains(&cmd.as_str()))
+    }
+
+    pub fn has_command(&self, cmd: &str) -> bool {
+        self.commands.iter().any(|one| one == cmd)
+    }
+
+    pub fn can_act(&self) -> bool {
+        !self.commands.is_empty()
     }
 }
 
@@ -186,7 +224,62 @@ struct Metadata {
     workspace: Workspace,
     principal: Principal,
     engine: Engine,
-    capabilities: Capabilities,
+    capabilities: RemoteCapabilities,
+}
+
+/// Validated remote connection metadata bound to the caller's enrolled profile and local engine contract.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct RemoteConnection(Metadata);
+
+impl fmt::Debug for RemoteConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RemoteConnection { identity: <held> }")
+    }
+}
+
+impl RemoteConnection {
+    pub fn workspace_id(&self) -> &str {
+        &self.0.workspace.id
+    }
+    pub fn recovery_generation(&self) -> &str {
+        &self.0.workspace.recovery_generation
+    }
+    pub fn label(&self) -> &str {
+        &self.0.workspace.label
+    }
+    pub fn account(&self) -> &str {
+        &self.0.principal.account
+    }
+    pub fn role(&self) -> ConnectionRole {
+        self.0.principal.role
+    }
+    pub fn access(&self) -> ConnectionAccess {
+        self.0.principal.access
+    }
+    pub fn expires_at(&self) -> &str {
+        &self.0.principal.expires_at
+    }
+    pub fn capabilities(&self) -> &RemoteCapabilities {
+        &self.0.capabilities
+    }
+
+    /// Check enrolled identity and exact local engine contract independently.
+    pub fn check_binding(&self, expected: &ConnectionBinding) -> Result<(), ConnectionError> {
+        if self.0.workspace.id != expected.workspace_id {
+            return Err(ConnectionError::WorkspaceMismatch);
+        }
+        if self.0.workspace.recovery_generation != expected.recovery_generation {
+            return Err(ConnectionError::RecoveryChanged);
+        }
+        if self.0.principal.account != expected.account {
+            return Err(ConnectionError::AccountMismatch);
+        }
+        if self.0.engine.contract != contract_digest() {
+            return Err(ConnectionError::InvalidEngine);
+        }
+        Ok(())
+    }
 }
 
 /// Validated identity metadata whose capabilities are all disabled. This type is not an execution/read permit.
@@ -241,19 +334,7 @@ impl DisabledConnection {
     }
 }
 
-/// Parse an all-disabled response and prove it matches the caller's enrolled binding and this build's engine schema.
-/// Timestamp shape is checked, not credential freshness: future transport admission must re-prove current authority.
-pub fn parse_disabled_connection(
-    body: &str,
-    expected: &ConnectionBinding,
-) -> Result<DisabledConnection, ConnectionError> {
-    let metadata = parse_disabled_metadata(body)?;
-    metadata.check_binding(expected)?;
-    Ok(metadata)
-}
-
-/// Validate only the separate metadata schema and all-disabled capabilities. This does not bind an enrolled profile.
-pub fn parse_disabled_metadata(body: &str) -> Result<DisabledConnection, ConnectionError> {
+fn parse_metadata_raw(body: &str) -> Result<Metadata, ConnectionError> {
     if body.len() > MAX_CONNECTION_METADATA_BYTES {
         return Err(ConnectionError::BodyTooLarge);
     }
@@ -276,6 +357,42 @@ pub fn parse_disabled_metadata(body: &str) -> Result<DisabledConnection, Connect
     if metadata.engine.version != API_VERSION || !lower_hex(&metadata.engine.contract, 64) {
         return Err(ConnectionError::InvalidEngine);
     }
+    Ok(metadata)
+}
+
+/// Validate connection metadata including allowed remote read/action capabilities (never local execution/provider setup).
+pub fn parse_remote_metadata(body: &str) -> Result<RemoteConnection, ConnectionError> {
+    let metadata = parse_metadata_raw(body)?;
+    if !metadata.capabilities.allowed() {
+        return Err(ConnectionError::CapabilitiesEnabled);
+    }
+    Ok(RemoteConnection(metadata))
+}
+
+/// Parse a remote connection response and prove it matches the caller's enrolled binding and this build's engine schema.
+pub fn parse_remote_connection(
+    body: &str,
+    expected: &ConnectionBinding,
+) -> Result<RemoteConnection, ConnectionError> {
+    let metadata = parse_remote_metadata(body)?;
+    metadata.check_binding(expected)?;
+    Ok(metadata)
+}
+
+/// Parse an all-disabled response and prove it matches the caller's enrolled binding and this build's engine schema.
+/// Timestamp shape is checked, not credential freshness: future transport admission must re-prove current authority.
+pub fn parse_disabled_connection(
+    body: &str,
+    expected: &ConnectionBinding,
+) -> Result<DisabledConnection, ConnectionError> {
+    let metadata = parse_disabled_metadata(body)?;
+    metadata.check_binding(expected)?;
+    Ok(metadata)
+}
+
+/// Validate only the separate metadata schema and all-disabled capabilities. This does not bind an enrolled profile.
+pub fn parse_disabled_metadata(body: &str) -> Result<DisabledConnection, ConnectionError> {
+    let metadata = parse_metadata_raw(body)?;
     if !metadata.capabilities.disabled() {
         return Err(ConnectionError::CapabilitiesEnabled);
     }

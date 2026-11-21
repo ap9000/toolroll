@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import { WebSocket } from "ws";
 import { openStore, type Store } from "./store.js";
+import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { loadPtySpawn, TerminalHost } from "./live-terminal.js";
@@ -162,5 +163,102 @@ describe.skipIf(spawn === null || process.platform === "win32")("live terminals 
     await until(() => live.controls.some(one => one["t"] === "hello"));
     await fetch(`${base}/logout`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual" });
     expect(await live.closed).toBe(4401);
+  });
+
+  test.skipIf(INSIDE_FENCE)("cross-account full operators share a project terminal with single-controller handoff, while project-excluded accounts get 404", async () => {
+    const sam = addApprover(store, "sam", T0, { name: "alex", token });
+    if (!sam.ok) throw new Error("sam");
+    const outsider = addApprover(store, "outsider", T0, { name: "alex", token });
+    if (!outsider.ok) throw new Error("outsider");
+    expect(store.setAccountProjects("outsider", [join(home, "other-repo")], "alex", T0).ok).toBe(true);
+
+    const alexCookie = await login("alex", token);
+    const samCookie = await login("sam", sam.token);
+    const outsiderCookie = await login("outsider", outsider.token);
+
+    const id = await start(alexCookie);
+    // Sam sees Alex's project terminal in /term/state.
+    const samState = await (await fetch(`${base}/term/state`, { headers: { cookie: samCookie } })).json() as { sessions: Array<{ id: string }> };
+    expect(samState.sessions.some(one => one.id === id)).toBe(true);
+    // Outsider cannot upgrade (project excluded -> 403/404).
+    expect(await upgrade(`/term/${id}/socket`, { cookie: outsiderCookie, origin: base })).toBe(401);
+
+    // Alex attaches first (controller), Sam attaches second (observer).
+    const alexLive = await attach(id, alexCookie);
+    await until(() => alexLive.controls.some(one => one["t"] === "control" && one["role"] === "controller"));
+    const samLive = await attach(id, samCookie);
+    await until(() => samLive.controls.some(one => one["t"] === "control" && one["role"] === "observer" && one["controller"] === "alex"));
+
+    // While observer, Sam's keystrokes are ignored; taking control hands over cleanly.
+    samLive.ws.send(JSON.stringify({ t: "in", d: "ignored-observer-text\r" }));
+    samLive.ws.send(JSON.stringify({ t: "take-control" }));
+    await until(() => samLive.controls.some(one => one["t"] === "control" && one["role"] === "controller" && one["controller"] === "sam"));
+    samLive.ws.send(JSON.stringify({ t: "in", d: "hello-from-sam\r" }));
+    await until(() => alexLive.out().includes("hello-from-sam"));
+    expect(alexLive.out()).not.toContain("ignored-observer-text");
+    alexLive.ws.close();
+    samLive.ws.close();
+  });
+
+  test.skipIf(INSIDE_FENCE)("remote TUI act approver discovers and attaches to live central terminals over WebSocket, and drops on token revocation", async () => {
+    const alexCookie = await login("alex", token);
+    const id = await start(alexCookie);
+
+    const actTok = mintApiToken();
+    store.createApiToken({
+      id: actTok.id, account: "alex", name: "remote-act", secretHash: actTok.hash,
+      access: "act", purpose: "api", by: "alex", projects: [repo],
+      expiresAt: new Date("2027-01-01T00:00:00Z").toISOString(),
+    }, T0);
+    const readTok = mintApiToken();
+    store.createApiToken({
+      id: readTok.id, account: "alex", name: "remote-read", secretHash: readTok.hash,
+      access: "read", purpose: "api", by: "alex", projects: [repo],
+      expiresAt: new Date("2027-01-01T00:00:00Z").toISOString(),
+    }, T0);
+    const identity = store.workspaceIdentity();
+
+    const remoteHeaders = (tok: string) => ({
+      authorization: `Bearer ${tok}`,
+      "x-toolroll-client": "terminal-remote",
+      "x-toolroll-workspace": identity.id,
+      "x-toolroll-recovery": identity.recoveryGeneration,
+    });
+
+    // Read-only token is refused (403) on both discovery and WebSocket attach.
+    expect(await upgrade(`/term/${id}/socket`, remoteHeaders(readTok.token))).toBe(403);
+
+    // Act approver discovers the live terminal via /api/handoff/terminals.
+    const listed = await new Promise<{ status: number; json: { sessions?: Array<{ id: string }> } }>((resolve, reject) => {
+      import("node:http").then(({ request }) => {
+        const req = request({ hostname: "127.0.0.1", port, path: "/api/handoff/terminals", method: "GET", headers: { accept: "application/json", ...remoteHeaders(actTok.token) } }, res => {
+          const chunks: Buffer[] = [];
+          res.on("data", c => chunks.push(Buffer.from(c)));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) as { sessions?: Array<{ id: string }> } }));
+        });
+        req.on("error", reject);
+        req.end();
+      }).catch(reject);
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.json.sessions?.some(one => one.id === id)).toBe(true);
+
+    // Remote WebSocket attach receives hello + control and relays live I/O, then disconnects 4401 on revocation.
+    const remoteWs = new WebSocket(`ws://127.0.0.1:${port}/term/${id}/socket`, ["toolroll"], { headers: remoteHeaders(actTok.token) });
+    let out = "";
+    const controls: Array<Record<string, unknown>> = [];
+    const closed = new Promise<number>(done => remoteWs.on("close", code => done(code)));
+    remoteWs.on("message", (data, binary) => { if (binary) out += (data as Buffer).toString(); else controls.push(JSON.parse(String(data)) as Record<string, unknown>); });
+    await new Promise<void>((resolve, reject) => {
+      remoteWs.on("open", () => resolve());
+      remoteWs.on("unexpected-response", (_r, res) => reject(new Error(`refused ${res.statusCode}`)));
+    });
+    await until(() => controls.some(one => one["t"] === "hello"));
+    remoteWs.send(JSON.stringify({ t: "in", d: "hello-remote-tui\r" }));
+    await until(() => out.includes("hello-remote-tui"));
+
+    // Revoking the API token immediately closes the live remote WebSocket with 4401.
+    store.revokeApiToken(actTok.id, "alex", T0);
+    expect(await closed).toBe(4401);
   });
 });

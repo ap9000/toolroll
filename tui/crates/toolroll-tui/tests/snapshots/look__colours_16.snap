@@ -3,62 +3,62 @@ source: crates/toolroll-tui/tests/look.rs
 expression: "themed(ThemeName::Dark, Depth::Ansi16, None)"
 ---
  Toolroll  · shop  $1.84 today · plan 62%                                 ◐ 2 working   2 need you  
- ╭──────────────────────────────────────────╮ ╭───────────────────────────────────────────────────╮ 
+ ╭─━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─╮ ╭───────────────────────────────────────────────────╮ 
  │ Work  5                                  │ │ Live · Steps · Diff · Terminal                    │ 
- │                                          │ │ Upgrade the test runner  Building                 │ 
- │ Needs you 2                              │ │ $0.31 · Building now · 4m 12s · attempt 1         │ 
- │ ● Fix the login redirect       Question  │ │ Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready │ 
- │   shop · 3m ago                          │ │ Reading the test setup before switching runners.  │ 
- │ ● Add CSV export                 Result  │ │                                                   │ 
- │   shop · 12m ago                         │ │   Worked · 3 steps                                │ 
- │                                          │ │   ✓ Edited vitest.config.ts  +14 −3               │ 
- │ Working 2                                │ │   ✓ Asked a helper: Check the CSV export edge     │ 
- │ ◐ Upgrade the test runner       Building │ │     cases                                         │ 
- │   shop · 2m ago                          │ │     ┌ Helper: Check the CSV export edge cases     │ 
- │ ◐ Rate-limit middleware         Planning │ │     │  Empty rows export as a header line only.   │ 
- │   shop · 7m ago                          │ │     │· Read src/export.ts                         │ 
- │                                          │ │     └ Helper finished                             │ 
- │ Recent 1                                 │ │   ✓ Ran npm test  212 passed (3.1 s)              │ 
- │ ✓ Bump dependencies             Complete │ │                                                   │ 
- │   shop · 3h ago                          │ │ Tests pass on the new runner. Removing the old    │ 
- │                                          │ │ config next.                                      │ 
+ │                                          │ │ Upgrade the test runner                           │ 
+ │ Needs you 2                              │ │ claude sonnet · $0.31 · attempt 1                 │ 
+ │ ● Fix the login redirect       Question  │ │ ◐ Build · 4m 12s                                  │ 
+ │   3m ago                                 │ │                                                   │ 
+ │ ● Add CSV export                 Result  │ │   Worked · 3 steps                                │ 
+ │   12m ago                                │ │   ✓ Edited vitest.config.ts  +14 −3               │ 
+ │                                          │ │   ✓ Asked a helper: Check the CSV export edge     │ 
+ │ Working 2                                │ │     cases                                         │ 
+ │ ◐ Upgrade the test runner       Building │ │     ┌ Helper: Check the CSV export edge cases     │ 
+ │   2m ago                                 │ │     │  Empty rows export as a header line only.   │ 
+ │ ◐ Rate-limit middleware         Planning │ │     │· Read src/export.ts                         │ 
+ │   7m ago                                 │ │     └ Helper finished                             │ 
+ │                                          │ │   ✓ Ran npm test  212 passed (3.1 s)              │ 
+ │ Recent 1                                 │ │                                                   │ 
+ │ ✓ Bump dependencies             Complete │ │ Tests pass on the new runner. Removing the old    │ 
+ │   3h ago                                 │ │ config next.                                      │ 
  │                                          │ │                                                   │ 
+ │                                          │ │ Message the agent (it goes to attempt 1)          │ 
  ╰──────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯ 
                                                                                                     
-  j/k move  ⏎ open  s steer  n new  : all actions                                                   
+  j/k move  ⏎ open  / filter  n new  : all actions                                                  
 
 abbbbbbbbaaaaaaaaaaccccccccccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadddddddddddaaeeeeeeeeeeeea
-accccccccccccccccccccccccccccccccccccccccccccaccccccccccccccccccccccccccccccccccccccccccccccccccccca
-acabbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaffffccccccccccccccccccccccccccaaaaaaaaaaaaaaaaaaaaca
-acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacabbbbbbbbbbbbbbbbbbbbbbbaaddddddddaaaaaaaaaaaaaaaaaca
-acabbbbbbbbbeeeaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacacccccccccccccccccccccccccccccccccccccccccaaaaaaaaaca
-acabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaeeeeeeeeeeacacaaaaaagcccaaaaaaaaagcccaaaaaadccccccccccccccccccccaca
-acacccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaeeeeeeeeacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acaccccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaacacaaahhhhhhhhhhhhhhhhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaggaaaaaaaaaaaaaaaaaaaaaaaccccccccaaaaaaaaaaaaaaaca
-acabbbbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaggaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acaieeeeeeeeeeeeeeeeeeeeeeeejjjjjjjiiiiiiiiacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acacccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbaaaaaca
-acadbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddddddacacaaacccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acacccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaacacaaacccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaacccccccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acabbbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaggaaaaaaaaaaaaccccccccccccccccccccaaaaaaaaaaaaaaca
-acagbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaggggggggacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acacccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+accffffffffffffffffffffffffffffffffffffffffccaccccccccccccccccccccccccccccccccccccccccccccccccccccca
+acabbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaggggccccccccccccccccccccccccccaaaaaaaaaaaaaaaaaaaaca
+acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacabbbbbbbbbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acabbbbbbbbbeeeaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacacccccccccccccccccccccccccccccccccaaaaaaaaaaaaaaaaaca
+acabbbbbbbbbbbbbbbbbbbbbbbbaaaaaaeeeeeeeeeeacacaddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acabbbbbbbbbbbbbbbbaaaaaaaaaaaaaaaaeeeeeeeeacacaaaffffffffffffffffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acacccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaahhaaaaaaaaaaaaaaaaaaaaaaaccccccccaaaaaaaaaaaaaaaca
+acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaahhaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acabbbbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaieeeeeeeeeeeeeeeeeeeeeeeejjjjjjjiiiiiiiiacacaaaccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbaaaaaca
+acaccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaacccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acadbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddddddacacaaacccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaacccccccccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaahhaaaaaaaaaaaaccccccccccccccccccccaaaaaaaaaaaaaaca
+acabbbbbbccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acahbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahhhhhhhhacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
 acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
-acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca
+acaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacacaccccccccccccccccccccccccccccccccccccccccaaaaaaaaaaca
 accccccccccccccccccccccccccccccccccccccccccccaccccccccccccccccccccccccccccccccccccccccccccccccccccca
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aabbbcccccaabcccccaabccccccaabccccaabccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aabbbcccccaabcccccaabcccccccaabccccaabccccccccccccaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = fg terminal bg terminal
 b = fg terminal bg terminal bold
 c = fg terminal bg terminal dim
 d = fg Blue bg terminal
 e = fg terminal bg terminal bold reversed
-f = fg terminal bg terminal bold underlined
-g = fg Green bg terminal
-h = fg terminal bg terminal bold dim
+f = fg terminal bg terminal bold dim
+g = fg terminal bg terminal bold underlined
+h = fg Green bg terminal
 i = fg Blue bg terminal reversed
 j = fg terminal bg terminal reversed

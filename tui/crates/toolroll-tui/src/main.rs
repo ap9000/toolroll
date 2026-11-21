@@ -12,9 +12,7 @@
 use std::io::Write;
 use std::os::fd::FromRawFd;
 use toolroll_tui::app::{EXIT_CLASSIC, EXIT_ENDED, EXIT_UNPROTECTED};
-use toolroll_tui::bootstrap::{
-    self, Bootstrap, BootstrapError, CENTRAL_UNAVAILABLE, EXIT_CENTRAL_UNAVAILABLE,
-};
+use toolroll_tui::bootstrap::{self, Bootstrap, BootstrapError, EXIT_CENTRAL_UNAVAILABLE};
 use toolroll_tui::guard;
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -98,7 +96,7 @@ fn main() {
         },
         read_bootstrap,
     );
-    let link = match started {
+    let boot = match started {
         Err(guard::Startup::Unprotected(why)) => {
             eprintln!("The terminal workbench {why}, so it won't hold a sign-in. Opening the classic screen instead.");
             std::process::exit(EXIT_UNPROTECTED);
@@ -111,11 +109,7 @@ fn main() {
             eprintln!("{error}");
             std::process::exit(EXIT_CENTRAL_UNAVAILABLE);
         }
-        Ok(Ok(Some(Bootstrap::CentralUnavailable))) => {
-            eprintln!("{CENTRAL_UNAVAILABLE}");
-            std::process::exit(EXIT_CENTRAL_UNAVAILABLE);
-        }
-        Ok(Ok(Some(Bootstrap::LocalLink(link)))) => link,
+        Ok(Ok(Some(boot))) => boot,
     };
     toolroll_tui::stats::mark("link_read");
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -123,31 +117,58 @@ fn main() {
         .build()
         .expect("runtime");
     let code = rt.block_on(async move {
-        let client = match toolroll_api::redeem(&link).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("The terminal workbench couldn't sign in: {e}.");
-                return EXIT_CLASSIC;
+        let (client, fatal) = match boot {
+            Bootstrap::LocalLink(link) => {
+                let client = match toolroll_api::redeem(&link).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("The terminal workbench couldn't sign in: {e}.");
+                        return EXIT_CLASSIC;
+                    }
+                };
+                drop(link);
+                toolroll_tui::stats::mark("signed_in");
+                let hello = client.hello().await;
+                toolroll_tui::stats::mark("hello_read");
+                let fatal = match hello {
+                    Ok(hello) => toolroll_api::check_hello(&hello).err().map(|words| {
+                        (
+                            format!("{words} Opening the classic screen instead."),
+                            EXIT_CLASSIC,
+                        )
+                    }),
+                    Err(toolroll_api::ApiError::SessionEnded) => {
+                        Some(("Session ended: run toolroll again.".to_string(), EXIT_ENDED))
+                    }
+                    Err(e) => Some((
+                        format!("{e} Opening the classic screen instead."),
+                        EXIT_CLASSIC,
+                    )),
+                };
+                (client, fatal)
             }
-        };
-        drop(link);
-        toolroll_tui::stats::mark("signed_in");
-        let hello = client.hello().await;
-        toolroll_tui::stats::mark("hello_read");
-        let fatal = match hello {
-            Ok(hello) => toolroll_api::check_hello(&hello).err().map(|words| {
-                (
-                    format!("{words} Opening the classic screen instead."),
-                    EXIT_CLASSIC,
-                )
-            }),
-            Err(toolroll_api::ApiError::SessionEnded) => {
-                Some(("Session ended: run toolroll again.".to_string(), EXIT_ENDED))
+            Bootstrap::CentralToken(central) => {
+                let connected =
+                    toolroll_api::connect_remote(&central.origin, &central.token, &central.binding)
+                        .await;
+                drop(central);
+                match connected {
+                    Ok(client) => {
+                        toolroll_tui::stats::mark("signed_in");
+                        (client, None)
+                    }
+                    Err(toolroll_api::ApiError::SessionEnded) => {
+                        eprintln!(
+                            "Remote session expired or workspace recovery changed; connect again."
+                        );
+                        return EXIT_CENTRAL_UNAVAILABLE;
+                    }
+                    Err(e) => {
+                        eprintln!("Couldn't connect to central workspace: {e}");
+                        return EXIT_CENTRAL_UNAVAILABLE;
+                    }
+                }
             }
-            Err(e) => Some((
-                format!("{e} Opening the classic screen instead."),
-                EXIT_CLASSIC,
-            )),
         };
         let opts = toolroll_tui::run::Options {
             owned: args.iter().any(|a| a == "--owned"),

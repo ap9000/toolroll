@@ -59,9 +59,11 @@ macro_rules! actions {
 }
 
 actions! {
-    MoveDown = "move-down", Global, Move, "Next item in the list", ["j", "down"];
-    MoveUp = "move-up", Global, Move, "Previous item in the list", ["k", "up"];
-    Open = "open", Global, Act, "Open: the changes for a result, else the live output", ["enter"];
+    MoveDown = "move-down", Global, Move, "Next item in the list (or scroll focused panel)", ["j", "down"];
+    MoveUp = "move-up", Global, Move, "Previous item in the list (or scroll focused panel)", ["k", "up"];
+    FocusList = "focus-list", Global, Move, "Focus the task list", ["left"];
+    FocusDetail = "focus-detail", Global, Move, "Focus the task panel", ["right"];
+    Open = "open", Global, Act, "Open and focus: the changes for a result, else the live output", ["enter"];
     NextTab = "next-tab", Global, Move, "Next tab (Live, Steps, Diff, Terminal)", ["tab"];
     PreviousTab = "previous-tab", Global, Move, "Previous tab", ["backtab"];
     Steer = "steer", Global, Act, "Steer: send the running agent a note", ["s"];
@@ -73,8 +75,11 @@ actions! {
     SendBack = "send-back", Global, Act, "Send the result back, with a note (or retry, or plan again)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
     TakeOver = "take-over", Global, Act, "Open build shell", ["t"];
+    TakeOverAgent = "take-over-agent", Global, Act, "Open live agent (Claude / Codex / Antigravity)", ["i"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
+    LeadChat = "lead-chat", Global, Act, "Central Lead chat (open / focus)", ["C"];
+    DockChat = "dock-chat", Global, Layout, "Dock Lead chat beside task", ["D"];
     ThreadReply = "thread-reply", Global, Act, "Reply to the thread (s on a thread)", [];
     ThreadStop = "thread-stop", Global, Act, "Stop the thread's agent (x on a thread)", [];
     ThreadEnd = "thread-end", Global, Act, "End the thread, for good (X on a thread; asks first)", [];
@@ -82,7 +87,7 @@ actions! {
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
     PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
     JumpBack = "jump-back", Global, Move, "Back to where each jump left from (again right away: forward)", ["'"];
-    Search = "search", Global, Act, "Search this pane (Live, Steps, Diff, Terminal)", ["/"];
+    Search = "search", Global, Act, "Filter the list (or search this pane when focused)", ["/"];
     OpenInEditor = "open-in-editor", Global, Act, "Open this pane's text in your $EDITOR", ["ctrl-e"];
     Palette = "palette", Global, Act, "Every action, task, project and setting", [":", "ctrl-k"];
     ScrollUp = "scroll-up", Global, Move, "Scroll up", ["pgup", "u"];
@@ -112,10 +117,18 @@ actions! {
     FilterWorking = "filter-working", Global, Filter, "Needs: working", [];
     FilterFailed = "filter-failed", Global, Filter, "Needs: failed", [];
     FilterDone = "filter-done", Global, Filter, "Needs: done", [];
+    FilterMine = "filter-mine", Global, Filter, "Assigned to me", [];
+    FilterWaitingOnTeam = "filter-team", Global, Filter, "Waiting on team", [];
+    FilterUnassigned = "filter-unassigned", Global, Filter, "Unassigned", [];
+    PingApproval = "ping-approval", Global, Act, "Ping phone for approval", [];
+    HandoffLocal = "handoff-local", Global, Act, "Open code locally (handoff pull)", [];
+    SwitchWorkspace = "switch-workspace", Global, Setting, "Switch central workspace", [];
     NextTheme = "next-theme", Global, Setting, "Next theme, for this session", [];
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];
     Settings = "settings", Global, Setting, "Settings in use", [];
+    TaskBuilder = "change-task-builder", Global, Act, "Change builder for this task", ["m"];
+    Models = "models", Global, Setting, "Models for new tasks: change role assignments", ["M"];
     Agents = "agents", Global, Act, "Agents: add one, sign in, choose models", ["A"];
     LineDown = "line-down", Diff, Diff, "Next line", ["j", "down"];
     LineUp = "line-up", Diff, Diff, "Previous line", ["k", "up"];
@@ -211,7 +224,28 @@ impl Preset {
 
 /// Actions help shows as one row ("j/k  Move through the list"): the pair, and the row's words.
 const PAIRS: &[(Action, Action, &str)] = &[
-    (Action::MoveDown, Action::MoveUp, "Move through the list"),
+    (
+        Action::TakeOver,
+        Action::TakeOverAgent,
+        "Open build shell / live agent",
+    ),
+    (Action::Agents, Action::Models, "Agents / model assignments"),
+    (
+        Action::LeadChat,
+        Action::DockChat,
+        "Central Lead chat / dock beside task",
+    ),
+    (
+        Action::Stop,
+        Action::CancelTask,
+        "Stop build or retries / cancel task",
+    ),
+    (
+        Action::MoveDown,
+        Action::MoveUp,
+        "Move in list / scroll panel",
+    ),
+    (Action::FocusList, Action::FocusDetail, "Focus list / panel"),
     (
         Action::NextNeedsYou,
         Action::PreviousNeedsYou,
@@ -258,6 +292,7 @@ pub struct HelpRow {
     pub keys: String,
     pub words: String,
     pub scope: Scope,
+    pub group: Group,
     pub actions: Vec<Action>,
 }
 
@@ -286,6 +321,7 @@ pub fn help_rows(map: &Keymap) -> Vec<HelpRow> {
             keys: keys.join("/"),
             words,
             scope: spec.scope,
+            group: spec.group,
             actions,
         });
     }
@@ -295,12 +331,12 @@ pub fn help_rows(map: &Keymap) -> Vec<HelpRow> {
 /// Shorter words for help's two columns, where the palette's label runs long.
 fn help_words(a: Action) -> Option<&'static str> {
     Some(match a {
-        Action::Open => "Open the changes, else the live output",
+        Action::Open => "Open & focus changes, else live output",
         Action::Stop => "Stop the build, or its retries",
         Action::SendBack => "Send back with a note; retry if failed",
         Action::TakeOver => "Open build shell",
         Action::JumpBack => "Jump back (again: forward)",
-        Action::Search => "Search this pane",
+        Action::Search => "Filter list / search focused pane",
         Action::OpenInEditor => "Open this pane in $EDITOR",
         Action::Equalize => "Even splits, usual list width",
         Action::ListCycle => "List: full, rail, hidden",

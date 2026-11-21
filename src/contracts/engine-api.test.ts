@@ -32,6 +32,7 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "agents.json": "agents",
   "agents-none-signed-in.json": "agents",
   "models.json": "models",
+  "lead-chat.json": "leadChat",
   "work-rows-every-kind.json": "workRows",
   "term-state.json": "termState",
   "term-started.json": "termStarted",

@@ -11,7 +11,7 @@ let dir: string, store: Store | undefined;
 afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recursive: true, force: true }); });
 
 const OLD_PROVIDERS = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
-const NEW_PROVIDERS = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose'))";
+const NEW_PROVIDERS = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity'))";
 const OLD_MODES = "CHECK (auth_mode IN ('subscription', 'api-key'))";
 const NEW_MODES = "CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login'))";
 const WIDENED: readonly (readonly [string, string, string])[] = [

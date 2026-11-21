@@ -11,6 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
+import { mintApiToken } from "./api-tokens.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import { backupDue, backupFiles, backupNow, backupOwner, backupPass, databaseTag, onlineCopy, pruneBackups, restoreDatabase } from "./backup.js";
@@ -377,4 +378,121 @@ test("restore refuses a backup that is sound and the right version but doesn't o
   expect(tasksIn(file)).toEqual(["kept", "later"]);
   expect(readdirSync(dir).filter(name => name.startsWith(".restore-"))).toEqual([]);
   store = openStore(file);
+});
+
+test("restore rotates recovery_generation while preserving workspace_id, and retires restored API tokens, sessions, and OAuth grants before swap", async () => {
+  const alex = addApprover(store, "alex", NOW);
+  if (!alex.ok) throw new Error("alex");
+  const beforeIdentity = store.workspaceIdentity();
+
+  // Mint an active API token, durable browser session, and OAuth grant BEFORE taking the backup.
+  const token = mintApiToken();
+  store.createApiToken({
+    id: token.id,
+    account: "alex",
+    name: "laptop",
+    secretHash: token.hash,
+    access: "act",
+    purpose: "api",
+    by: "alex",
+    projects: null,
+    expiresAt: new Date("2027-01-01T00:00:00Z").toISOString(),
+  }, NOW);
+  store.saveWebSession({
+    idHash: "a".repeat(64),
+    account: "alex",
+    role: "approver",
+    generation: 1,
+    csrf: "b".repeat(64),
+    createdAt: NOW.toISOString(),
+    lastSeen: NOW.toISOString(),
+    project: null,
+    projectRevision: 0,
+    ssoAt: null,
+    agent: null,
+    address: null,
+    authority: "full",
+    localGeneration: null,
+    keyEpoch: null,
+    keyHash: null,
+  });
+  store.handle.prepare(`
+    INSERT INTO oauth_client (id, name, redirect_json, created_at, source_hash)
+    VALUES ('c1', 'test-client', '["http://127.0.0.1/cb"]', ?, 'src-hash')
+  `).run(NOW.toISOString());
+  store.handle.prepare(`
+    INSERT INTO oauth_grant (token, client, account, generation, projects_json, resource, access_expires_at, renew_hash)
+    VALUES (?, 'c1', 'alex', 1, '[]', 'https://toolroll.example/mcp', ?, 'renew-hash')
+  `).run(token.id, new Date("2027-01-01T00:00:00Z").toISOString());
+
+  const made = await backupNow(store, file, "manual", () => NOW);
+  if (!made.ok) throw new Error(made.error);
+
+  // Revoke the API token on live DB AFTER the backup — restoring the older backup must NOT revive it.
+  store.revokeApiToken(token.id, "alex", at(1), "compromised");
+  store.close();
+
+  // 1. Even if interrupted immediately after swap (`afterPublish`), retirement already happened pre-swap.
+  await expect(restoreDatabase({
+    databaseFile: file,
+    file: made.file,
+    dryRun: false,
+    now: at(2),
+    afterPublish: () => { throw new Error("interrupted right after swap"); },
+  })).rejects.toThrow("interrupted right after swap");
+
+  store = openStore(file);
+  const afterCrashIdentity = store.workspaceIdentity();
+  expect(afterCrashIdentity.id).toBe(beforeIdentity.id);
+  expect(afterCrashIdentity.recoveryGeneration).not.toBe(beforeIdentity.recoveryGeneration);
+  expect(store.apiTokens(null).every(one => one.revokedAt !== null)).toBe(true);
+  expect(store.webSessions(null)).toEqual([]);
+  expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_grant").get()?.["n"])).toBe(0);
+
+  // 2. Normal restore from the same backup succeeds, rotates recovery_generation distinct from BOTH backup and live DB,
+  //    and a live HTTP connection attempt with the backed-up API token is rejected (401).
+  store.close();
+  const done = await restoreDatabase({ databaseFile: file, file: made.file, dryRun: false, now: at(3) });
+  expect(done.ok).toBe(true);
+  expect(done.retired).toMatchObject({
+    workspaceId: beforeIdentity.id,
+    previousRecoveryGeneration: beforeIdentity.recoveryGeneration,
+    apiTokens: 1,
+    webSessions: 1,
+    oauthRows: 1,
+  });
+  expect(done.retired!.recoveryGeneration).not.toBe(beforeIdentity.recoveryGeneration);
+  expect(done.retired!.recoveryGeneration).not.toBe(afterCrashIdentity.recoveryGeneration);
+
+  store = openStore(file);
+  expect(store.workspaceIdentity().id).toBe(beforeIdentity.id);
+  expect(store.workspaceIdentity().recoveryGeneration).toBe(done.retired!.recoveryGeneration);
+  expect(store.ledgerChain({ full: true }).ok).toBe(true);
+
+  const server = createDecisionServer({ store, configDir: dir, evidenceRoot: join(dir, "evidence"), repos: [], clock: () => at(3), terminalHost: null });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address();
+  if (addr === null || typeof addr !== "object") throw new Error("listen");
+  try {
+    const res = await new Promise<number>((resolve, reject) => {
+      import("node:http").then(({ request }) => {
+        const req = request({
+          hostname: "127.0.0.1",
+          port: addr.port,
+          path: "/engine/connection",
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${token.token}`,
+            "x-toolroll-client": "terminal-remote",
+            accept: "application/json",
+          },
+        }, r => { r.resume(); r.on("end", () => resolve(r.statusCode ?? 0)); });
+        req.on("error", reject);
+        req.end();
+      }).catch(reject);
+    });
+    expect(res).toBe(401);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

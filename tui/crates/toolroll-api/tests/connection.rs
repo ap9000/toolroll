@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use toolroll_api::{
     contract_digest, parse_connection_refusal, parse_disabled_connection, parse_disabled_metadata,
-    ConnectionAccess, ConnectionBinding, ConnectionError, ConnectionRefusal, ConnectionRole,
-    MAX_CONNECTION_METADATA_BYTES,
+    parse_remote_connection, parse_remote_metadata, ConnectionAccess, ConnectionBinding,
+    ConnectionError, ConnectionRefusal, ConnectionRole, MAX_CONNECTION_METADATA_BYTES,
 };
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -40,9 +40,9 @@ fn bound(value: &Value) -> Result<toolroll_api::DisabledConnection, ConnectionEr
 #[test]
 fn matches_shared_schema_cases_and_round_trips_without_silently_dropping_fields() {
     let cases: Vec<Case> = serde_json::from_str(CASES).unwrap();
-    assert!(cases.len() >= 17);
+    assert!(cases.len() >= 19);
     for case in cases {
-        let result = parse_disabled_metadata(&case.value.to_string());
+        let result = parse_remote_metadata(&case.value.to_string());
         assert_eq!(result.is_ok(), case.valid, "{}: {result:?}", case.name);
         if let Ok(metadata) = result {
             assert_eq!(
@@ -53,6 +53,18 @@ fn matches_shared_schema_cases_and_round_trips_without_silently_dropping_fields(
             );
         }
     }
+    // Live read/action capabilities are accepted by parse_remote_connection when bound, while forbidden commands refuse.
+    let mut enabled = fixture();
+    enabled["capabilities"]["workRows"] = json!(true);
+    enabled["capabilities"]["leadChat"] = json!(true);
+    enabled["capabilities"]["liveStream"] = json!(true);
+    enabled["capabilities"]["commands"] = json!(["task add", "task steer"]);
+    let conn = parse_remote_connection(&enabled.to_string(), &binding()).unwrap();
+    assert!(conn.capabilities().work_rows);
+    assert!(conn.capabilities().lead_chat);
+    assert!(conn.capabilities().live_stream);
+    assert!(conn.capabilities().has_command("task steer"));
+    assert!(!conn.capabilities().has_command("backup restore"));
 }
 
 #[test]

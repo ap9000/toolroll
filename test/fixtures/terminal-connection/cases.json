@@ -24,6 +24,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -58,6 +60,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -92,6 +96,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -126,6 +132,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -160,6 +168,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -194,6 +204,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -228,6 +240,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -262,6 +276,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -296,6 +312,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -330,6 +348,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -364,6 +384,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -375,7 +397,7 @@
   },
   {
     "name": "enabled-read",
-    "valid": false,
+    "valid": true,
     "value": {
       "protocol": 1,
       "workspace": {
@@ -395,9 +417,11 @@
       },
       "capabilities": {
         "workRows": true,
-        "stepCards": false,
-        "resultDiff": false,
-        "runLiveWindow": false,
+        "stepCards": true,
+        "resultDiff": true,
+        "runLiveWindow": true,
+        "leadChat": true,
+        "liveStream": true,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -409,6 +433,45 @@
   },
   {
     "name": "enabled-command",
+    "valid": true,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "act",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": true,
+        "stepCards": true,
+        "resultDiff": true,
+        "runLiveWindow": true,
+        "leadChat": true,
+        "liveStream": true,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": false,
+        "interactive": false,
+        "commands": [
+          "task add",
+          "task steer"
+        ],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "disallowed-command",
     "valid": false,
     "value": {
       "protocol": 1,
@@ -420,7 +483,7 @@
       "principal": {
         "account": "alice",
         "role": "approver",
-        "access": "read",
+        "access": "act",
         "expiresAt": "2026-12-20T00:00:00.000Z"
       },
       "engine": {
@@ -428,17 +491,55 @@
         "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       },
       "capabilities": {
-        "workRows": false,
-        "stepCards": false,
-        "resultDiff": false,
-        "runLiveWindow": false,
+        "workRows": true,
+        "stepCards": true,
+        "resultDiff": true,
+        "runLiveWindow": true,
+        "leadChat": true,
+        "liveStream": true,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
         "interactive": false,
         "commands": [
-          "task add"
+          "backup restore"
         ],
+        "approval": "browser"
+      }
+    }
+  },
+  {
+    "name": "enabled-local-execution",
+    "valid": false,
+    "value": {
+      "protocol": 1,
+      "workspace": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "recoveryGeneration": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": "Toolroll"
+      },
+      "principal": {
+        "account": "alice",
+        "role": "approver",
+        "access": "act",
+        "expiresAt": "2026-12-20T00:00:00.000Z"
+      },
+      "engine": {
+        "version": 1,
+        "contract": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "capabilities": {
+        "workRows": true,
+        "stepCards": true,
+        "resultDiff": true,
+        "runLiveWindow": true,
+        "leadChat": true,
+        "liveStream": true,
+        "providerSetup": false,
+        "localCode": false,
+        "localExecution": true,
+        "interactive": false,
+        "commands": [],
         "approval": "browser"
       }
     }
@@ -468,6 +569,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -502,6 +605,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -537,6 +642,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,
@@ -571,6 +678,8 @@
         "stepCards": false,
         "resultDiff": false,
         "runLiveWindow": false,
+        "leadChat": false,
+        "liveStream": false,
         "providerSetup": false,
         "localCode": false,
         "localExecution": false,

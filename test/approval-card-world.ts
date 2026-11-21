@@ -72,9 +72,9 @@ export function workbenchApprovalReadHeaders(creds: { cookie: string; key: strin
   const approval = /pub async fn approval\([\s\S]*?\n {4}\}/.exec(source)?.[0] ?? "";
   const read = /async fn read<[\s\S]*?\.send\(\)/.exec(source)?.[0] ?? "";
   expect(approval, "client.rs approval").toContain("/approval");
-  expect(read).toContain('.header("cookie", self.creds.cookie.as_str())');
+  expect(read).toContain('.header("cookie", creds.cookie.as_str())');
   expect(read).toContain('.header("accept", "application/json")');
   const keyedRead = /self\.get_keyed::</.test(approval);
-  const keySent = /if keyed \{\s*req = req\.header\("x-toolroll-key", self\.creds\.key\.as_str\(\)\);/.test(read);
+  const keySent = /if keyed \{\s*req = req\.header\("x-toolroll-key", creds\.key\.as_str\(\)\);/.test(read);
   return { cookie: creds.cookie, accept: "application/json", ...(keyedRead && keySent ? { "x-toolroll-key": creds.key } : {}) };
 }

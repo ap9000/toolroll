@@ -145,10 +145,13 @@ fn narrow_shows_the_list_then_the_task_with_where_you_are() {
     let mut app = on(steps("queued"));
     let shown = screen(&mut app, 60, 26);
     assert!(app.narrow);
-    // The task, where it is in the list, and the way back.
+    // The task, where it is in the list, and the universal Esc way back.
     let at = app.selected + 1;
     let n = app.items.len();
-    assert!(shown.contains(&format!("{at} of {n} · b list")), "{shown}");
+    assert!(
+        shown.contains(&format!("{at} of {n} · Esc list")),
+        "{shown}"
+    );
     // b: the list, across the whole column, and the toast says so.
     app.key(key('b'));
     assert!(app.narrow_list);
@@ -165,7 +168,7 @@ fn narrow_shows_the_list_then_the_task_with_where_you_are() {
     assert!(!app.narrow_list);
     let shown = screen(&mut app, 60, 26);
     assert!(
-        shown.contains(&format!("{} of {n} · b list", picked + 1)),
+        shown.contains(&format!("{} of {n} · Esc list", picked + 1)),
         "{shown}"
     );
     insta::assert_snapshot!("nine1_narrow_task", shown);
@@ -190,6 +193,7 @@ fn search_finds_what_live_draws_above_the_output() {
     assert_eq!(app.tab, Tab::Live);
     let shown = screen(&mut app, 140, 34);
     assert!(shown.contains("STUB-AGENT"), "{shown}");
+    app.key(code(KeyCode::Right));
     app.key(key('/'));
     for c in "stub".chars() {
         app.key(key(c));

@@ -68,6 +68,21 @@ pub fn outline_focus(buf: &mut Buffer, r: Rect) {
     buf[(x1, y1)].set_symbol("┛").set_style(style);
 }
 
+/// The focused sheet's top accent bar (List vs. Detail): a crisp heavy rule across its top padding row in bold ink,
+/// costing zero content rows and reading clearly in every theme and without colour.
+pub fn focus_bar(buf: &mut Buffer, r: Rect) {
+    let r = r.intersection(buf.area);
+    if r.width < 6 || r.height < 2 {
+        return;
+    }
+    let style = theme::ink().add_modifier(Modifier::BOLD);
+    let x0 = r.x + 2;
+    let x1 = r.right().saturating_sub(2);
+    for x in x0..x1 {
+        buf[(x, r.y)].set_symbol("━").set_style(style);
+    }
+}
+
 /// A sheet: paper filled (or, without fills, outlined in the line colour). Returns the area inside it: one row and two
 /// columns in from its edge either way, so the layout is the same at every depth.
 pub fn sheet(buf: &mut Buffer, r: Rect) -> Rect {

@@ -110,6 +110,16 @@ describe("what detection says about each agent", () => {
     expect(firstRunAgentLines([], null, true)).toEqual(["Looking for agents on this computer…"]);
   });
 
+  test("an installed forwarding launcher missing its executable reports a PATH issue", async () => {
+    stub("codex", "exec toolroll-test-missing-codex");
+    const detection = await detect();
+    const codex = detection.agents.find(one => one.id === "codex")!;
+    expect(codex).toMatchObject({ state: "unknown", ready: false });
+    expect(codex.next).toContain("127");
+    expect(detectionLines(detection)).toContain(`Codex: ${codex.next}`);
+    expect(detection.firstTask).toBeNull();
+  });
+
   test("a status command that hangs reads unknown at the deadline, and the rest still answer", async () => {
     // By its absolute path: the stand-ins' PATH has no `sleep`. It answers nothing until it is ended.
     stub("claude", "exec /bin/sleep 30");

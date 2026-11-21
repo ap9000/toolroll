@@ -16,17 +16,29 @@ pub const EXIT_CENTRAL_UNAVAILABLE: i32 = 44;
 pub const CENTRAL_UNAVAILABLE: &str =
     "Central terminal connections are not available in this build.";
 
+pub struct CentralToken {
+    pub origin: String,
+    pub binding: ConnectionBinding,
+    pub token: Zeroizing<String>,
+}
+
+impl fmt::Debug for CentralToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CentralToken { origin: <held>, binding: <held>, token: <held> }")
+    }
+}
+
 pub enum Bootstrap {
     LocalLink(Zeroizing<String>),
-    /// No credential or response metadata survives this disabled outcome.
-    CentralUnavailable,
+    /// Verified central-workspace token bootstrap, held in zeroizing memory until connected and dropped.
+    CentralToken(CentralToken),
 }
 
 impl fmt::Debug for Bootstrap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::LocalLink(_) => "Bootstrap::LocalLink(<held>)",
-            Self::CentralUnavailable => "Bootstrap::CentralUnavailable",
+            Self::CentralToken(_) => "Bootstrap::CentralToken(<held>)",
         })
     }
 }
@@ -143,21 +155,20 @@ pub fn parse(input: &str) -> Result<Option<Bootstrap>, BootstrapError> {
             return Err(BootstrapError::Unsupported);
         }
         let _kind = (&central.kind, &central.binding.kind);
-        if !canonical_https_origin(&central.origin)
-            || !person_token(&central.token)
-            || ConnectionBinding::new(
-                &central.binding.workspace_id,
-                &central.binding.recovery_generation,
-                &central.binding.account,
-            )
-            .is_err()
-        {
+        if !canonical_https_origin(&central.origin) || !person_token(&central.token) {
             return Err(BootstrapError::Invalid);
         }
-        // No network request, enrolled-profile mutation, client creation or UI entry. Explicitly drop before main
-        // eventually uses process::exit (which does not run destructors).
-        drop(central);
-        return Ok(Some(Bootstrap::CentralUnavailable));
+        let binding = ConnectionBinding::new(
+            &central.binding.workspace_id,
+            &central.binding.recovery_generation,
+            &central.binding.account,
+        )
+        .map_err(|_| BootstrapError::Invalid)?;
+        return Ok(Some(Bootstrap::CentralToken(CentralToken {
+            origin: central.origin,
+            binding,
+            token: central.token,
+        })));
     }
     // Preserve the current plain-link handoff's first-line/trim semantics and leave link validation to local redeem.
     let first = input.lines().next().unwrap_or("").trim();

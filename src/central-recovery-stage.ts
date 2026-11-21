@@ -12,14 +12,14 @@ import { openStore, type Store } from "./store.js";
 import { holdAutoPublish, autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import { revokeCoordinator } from "./coordinator.js";
 
-// Exact fresh v178 schema, compiled from this source (709 non-internal objects).
+// Exact fresh v179 schema, compiled from this source (709 non-internal objects).
 // Variants/unknown schemas remain unsupported; no caller can supply or widen this inventory.
 // This unreachable scaffold supports backups up to128MiB; larger files require a reviewed streaming design.
 // This is an input byte bound, never an agent/model runtime deadline.
 export const MAX_STAGE_BYTES = 128 * 1024 * 1024;
-const SUPPORTED_SCHEMA = 178;
+const SUPPORTED_SCHEMA = 179;
 const SCHEMA_OBJECT_COUNT = 709;
-const SCHEMA_DIGEST = "5bb7086106532c361835d2612e34c6fe93e6956af527787d0db02cca0864947e";
+const SCHEMA_DIGEST = "ec9eae7314693cc70c617545c88e0b0d72454574cbac7ce81571610b5dbdb2d7";
 const INVENTORY = [
   ["person-credentials", "store.ts:revokeApiToken", "credential", true],
   ["lead-credentials", "store.ts:revokeLeadCredentials", "credential", true],

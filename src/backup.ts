@@ -26,6 +26,7 @@ import { verifyLedgerChain } from "./ledger-chain.js";
 import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, type BackupSettings, type Database, type Store } from "./store.js";
 import { resetFlexibleSignInsForRestore } from "./flexible-sign-in.js";
+import { retireRestoredAuthority, type RestoreRetirementSummary } from "./restore-retirement.js";
 
 /** A scheduled backup's name: the database it came from (see `databaseTag`), then when it was made. Backups made
  * before the tag was added have none, and ones made before 0.9.105 start `standing-orders-` (still listed and pruned).
@@ -238,6 +239,8 @@ export type RestoreReport = {
   ledger: { entries: number; through: number | null } | null;
   /** Where the database as it was before the restore is kept (null on a dry run or a refusal). */
   savedAs: string | null;
+  /** Credentials/sessions retired and recovery generation rotated before putting the restored DB in service. */
+  retired?: RestoreRetirementSummary;
 };
 
 /**
@@ -315,17 +318,30 @@ export async function restoreDatabase(options: { databaseFile: string; file: str
     // knows, so the restored one can retire them too (their secrets are then deleted by the upkeep).
     const store = openStore(databaseFile);
     let carried: { person: string; generation: string; accountGeneration: number }[];
+    let replacedRecoveryGeneration: string | null = null;
     try {
       const running = runningNow(store, new Date());
       if (running.length > 0) return refuse("running", `Toolroll started (${running.join(" and ")}). Stop it first, then restore. The database is unchanged.`);
       carried = store.handle.prepare("SELECT person, generation, account_generation FROM flexible_sign_in").all()
         .map(row => ({ person: String(row["person"]), generation: String(row["generation"]), accountGeneration: Number(row["account_generation"]) }));
+      try { replacedRecoveryGeneration = store.workspaceIdentity().recoveryGeneration; } catch { /* older live db */ }
     } finally { store.close(); }
-    // The restored database is brought up to this build and every Claude sign-in in it retired BEFORE it is put in
-    // service: an interruption at any point after the swap finds no sign-in a restored record still points at.
+    // The restored database is brought up to this build, every Claude sign-in retired, and all restored remote/browser
+    // credentials/sessions/grants retired with a fresh recovery_generation BEFORE it is put in service: an interruption
+    // at any point after the swap finds no revived API token, session, OAuth grant, or stale recovery generation.
+    let retired: RestoreRetirementSummary | undefined;
     try {
       const prepared = openStore(staged);
-      try { prepared.transact(() => { resetFlexibleSignInsForRestore(prepared, { now, carried }); }); } finally { prepared.close(); }
+      try {
+        prepared.transact(() => {
+          resetFlexibleSignInsForRestore(prepared, { now, carried });
+          retired = retireRestoredAuthority(prepared, {
+            now,
+            actor: options.actor ?? "command line",
+            replacedRecoveryGeneration,
+          });
+        });
+      } finally { prepared.close(); }
       const folded = connect(staged);
       try { folded.exec("PRAGMA wal_checkpoint(TRUNCATE)"); folded.exec("PRAGMA journal_mode = DELETE"); } finally { folded.close(); }
       for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${staged}${suffix}`, { force: true });
@@ -333,6 +349,7 @@ export async function restoreDatabase(options: { databaseFile: string; file: str
       for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${staged}${suffix}`, { force: true });
       return refuse("schema", `That backup doesn't open as a Toolroll database (${firstLine(error)}). The database is unchanged.`);
     }
+    if (retired !== undefined) report.retired = retired;
     // Fold the write-ahead log in and drop it, so nothing of the old database is left beside the new one.
     const live = connect(databaseFile);
     try { live.exec("PRAGMA wal_checkpoint(TRUNCATE)"); live.exec("PRAGMA journal_mode = DELETE"); } finally { live.close(); }

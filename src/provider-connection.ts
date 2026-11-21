@@ -14,6 +14,7 @@ export type ProviderConnection = {
   email?: string;
   plan?: string;
   method?: string;
+  launchIssue?: "command-not-found";
   checkedAt: string;
 };
 export type ConnectionChecker = (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
@@ -30,6 +31,7 @@ export function signInFacts(provider: ProviderId, result: ExecResult, now = new 
   const base = { mode: "subscription" as const, checkedAt: now.toISOString() };
   if (result.notFound) return { ...base, state: "not-installed" };
   if (result.timedOut) return { ...base, state: "unverified" };
+  if (result.code === 127) return { ...base, state: "unverified", launchIssue: "command-not-found" };
   if (provider === "claude") {
     try {
       const value = JSON.parse(result.stdout) as Record<string, unknown> | null;

@@ -164,8 +164,9 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
   const local = setting.loopback === "any"
     ? note("On a Mac, builds may reach this Mac's local services: test servers, and anything else listening here.")
     : note("On a Mac, builds reach no local services. A project whose tests start a local server needs them on.");
+  const codexNote = note("Codex's own command sandbox runs offline unless the network is Open with Full access; use Worktree setup to install dependencies before a Codex build starts.");
   return settingsSection({ id: "network", title: "Network", state: setting.mode === "open" ? " · Open" : "", lead: reach,
-    body: joinHtml([local, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
+    body: joinHtml([local, codexNote, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
       body: joinHtml([
         formRow("This Mac's local services", "Local test servers work, and so does anything else listening on this Mac (a local database, a dev proxy). Linux builds always have local services of their own.",
           switchInput({ id: "network-local", name: "local", label: "Allowed", on: setting.loopback === "any", attrs: { value: "any", "aria-label": "Builds may reach this Mac's local services" } }), "inline"),
