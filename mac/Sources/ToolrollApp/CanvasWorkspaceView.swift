@@ -31,6 +31,7 @@ public struct CanvasWorkspaceView: View {
     @State private var draftPin: PendingPinDraft? = nil
     @State private var draftPinText: String = ""
     @State private var selectedPinId: String? = nil
+    @State private var focusedArtboardId: String? = nil
 
     private struct PendingPinDraft: Equatable {
         let artboardId: String
@@ -89,6 +90,18 @@ public struct CanvasWorkspaceView: View {
                         floatingDock()
                             .padding(.bottom, 18)
                     }
+
+                    // Studio Screen Focus Lightbox (zoomable high-res view + edit/task creation side rail)
+                    if let focusId = focusedArtboardId,
+                       let focusBoard = store.canvasArtboards.first(where: { $0.id == focusId }) {
+                        ScreenFocusLightboxView(
+                            store: store,
+                            board: focusBoard,
+                            onClose: { focusedArtboardId = nil },
+                            onSelectBoard: { nextId in focusedArtboardId = nextId }
+                        )
+                        .transition(.opacity)
+                    }
                 }
                 .clipped()
                 .gesture(
@@ -111,6 +124,10 @@ public struct CanvasWorkspaceView: View {
         .onKeyPress("o") { tool = .options; return .handled }
         .onKeyPress("d") { tool = .compare; return .handled }
         .onKeyPress(.escape) {
+            if focusedArtboardId != nil {
+                focusedArtboardId = nil
+                return .handled
+            }
             draftPin = nil
             selectedPinId = nil
             tool = .select
@@ -547,8 +564,12 @@ public struct CanvasWorkspaceView: View {
                         lineWidth: 1
                     )
             )
-            .onTapGesture(count: 2) {
-                store.toggleArtboardLive(id: board.id)
+            .onTapGesture {
+                if tool == .select {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        focusedArtboardId = board.id
+                    }
+                }
             }
         }
     }

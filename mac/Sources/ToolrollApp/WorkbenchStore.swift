@@ -270,8 +270,9 @@ public final class WorkbenchStore {
 
         if projectChanged || canvasArtboards.isEmpty || forceRefresh {
             hydratingBoardIds.removeAll()
-            let discovered = root.map { YouiCanvasStorage.discoverRoutes(projectRoot: $0) }
+            let rawDiscovered = root.map { YouiCanvasStorage.discoverRoutes(projectRoot: $0) }
                 ?? [YouiScreenEntry(route: "/", path: "/")]
+            let discovered = resolveDynamicTaskRoutes(rawDiscovered)
             discoveredCanvasRoutes = discovered
             // Cap initial canvas to 8 clean artboards (remaining routes live in `+ Screen`)
             let initial = Array(discovered.prefix(8))
@@ -394,6 +395,21 @@ public final class WorkbenchStore {
         canvasArtboards[idx].y += dy
     }
 
+    public func removeCanvasArtboard(id: String) {
+        hydratingBoardIds.remove(id)
+        canvasArtboards.removeAll { $0.id == id }
+    }
+
+    public func updateCanvasArtboardPath(id: String, newPath: String) {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
+        let clean = newPath.hasPrefix("/") ? newPath : "/\(newPath)"
+        canvasArtboards[idx].path = clean
+        canvasArtboards[idx].route = clean
+        canvasArtboards[idx].cachedStateKey = nil
+        canvasArtboards[idx].latestImagePath = nil
+        Task { await wakePreviewServerAndHydrate(forceAll: false) }
+    }
+
     public func toggleArtboardLive(id: String) {
         guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
         let turningOn = !canvasArtboards[idx].isLiveInteractive
@@ -437,6 +453,32 @@ public final class WorkbenchStore {
         pumpHydrationPool()
     }
 
+    private func resolveDynamicTaskRoutes(_ entries: [YouiScreenEntry]) -> [YouiScreenEntry] {
+        let rows = workRowsResponse.rows
+        guard !rows.isEmpty else { return entries }
+        let knownIds = Set(rows.map(\.id))
+        return entries.map { entry in
+            guard entry.path.hasPrefix("/t/") else { return entry }
+            let slugPart = String(entry.path.dropFirst(3)).split(separator: "/").first.map(String.init) ?? ""
+            if knownIds.contains(slugPart) { return entry }
+            let lower = entry.route.lowercased()
+            let matched: WorkRow?
+            if lower.contains("decision") || lower.contains("needs") {
+                matched = rows.first(where: { $0.status == .needs }) ?? rows.first
+            } else if lower.contains("running") {
+                matched = rows.first(where: { $0.status == .running }) ?? rows.first
+            } else if lower.contains("done") || lower.contains("finished") {
+                matched = rows.first(where: { $0.status == .finished }) ?? rows.first
+            } else if lower.contains("failed") {
+                matched = rows.first(where: { $0.status == .failed }) ?? rows.first
+            } else {
+                matched = rows.first
+            }
+            guard let task = matched else { return entry }
+            return YouiScreenEntry(route: entry.route, path: "/t/\(task.id)", sourceFile: entry.sourceFile)
+        }
+    }
+
     public func createCanvasPin(
         route: String,
         path: String,
@@ -448,7 +490,8 @@ public final class WorkbenchStore {
         elementSelector: String? = nil,
         elementFile: String? = nil,
         elementLine: Int? = nil,
-        fileImmediately: Bool
+        fileImmediately: Bool,
+        planFirst: Bool = true
     ) async {
         let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile
         let pin = CanvasPin(
@@ -476,7 +519,7 @@ public final class WorkbenchStore {
         }
 
         if fileImmediately {
-            await submitPins([pin], grouping: .perPin)
+            await submitPins([pin], grouping: .perPin, planFirst: planFirst)
         } else {
             notice = WorkbenchNotice(kind: .info, message: "Saved draft pin on \(route) — click Create Tasks when ready.")
         }
@@ -492,7 +535,7 @@ public final class WorkbenchStore {
         await submitPins(drafts, grouping: grouping)
     }
 
-    public func submitPins(_ pins: [CanvasPin], grouping: PinBatchGrouping) async {
+    public func submitPins(_ pins: [CanvasPin], grouping: PinBatchGrouping, planFirst: Bool = true) async {
         let groups: [(String, [CanvasPin])]
         switch grouping {
         case .perScreen:
@@ -524,7 +567,7 @@ public final class WorkbenchStore {
                 return "\(idx + 1). \(kindTag)\(p.body) (\(meta))"
             }.joined(separator: "\n")
 
-            await createTask(title: title, project: targetProj, body: details, planFirst: true)
+            await createTask(title: title, project: targetProj, body: details, planFirst: planFirst)
             let createdTaskId = workRowsResponse.rows.first?.id
             for p in batch {
                 if let i = canvasPins.firstIndex(where: { $0.id == p.id }) {
