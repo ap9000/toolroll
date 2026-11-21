@@ -4,6 +4,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { fakePid } from "../test/fake-pid.js";
 import { mintApiToken } from "./api-tokens.js";
 import { TerminalHost, type Pty, type PtySpawn } from "./live-terminal.js";
 import { runFollowUpCheck } from "./result-follow-ups.js";
@@ -23,9 +24,9 @@ function tempDir(prefix: string): string {
 }
 
 function makeFakePtySpawn(): PtySpawn {
-  let nextPid = 91000;
+  let offset = 0;
   return () => {
-    const pid = nextPid++;
+    const pid = fakePid(offset++);
     const exitListeners: Array<(exit: { exitCode: number; signal?: number }) => void> = [];
     let exited = false;
     const pty: Pty = {
