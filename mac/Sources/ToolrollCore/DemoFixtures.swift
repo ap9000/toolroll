@@ -280,13 +280,40 @@ public enum DemoFixtures {
         lines: ["Claude Code and Codex are signed in and ready to run."]
     )
 
+    private static let demoModelChoices: [ModelChoice] = [
+        ModelChoice(
+            provider: "claude",
+            label: "Claude",
+            models: [
+                ModelOption(value: "claude|claude-sonnet-4-5", label: "Claude Sonnet 4.5"),
+                ModelOption(value: "claude|claude-opus-4-1", label: "Claude Opus 4.1"),
+                ModelOption(value: "claude|claude-haiku-4-5", label: "Claude Haiku 4.5"),
+            ]
+        ),
+        ModelChoice(
+            provider: "codex",
+            label: "Codex",
+            models: [
+                ModelOption(value: "codex|gpt-5.3-codex", label: "GPT-5.3 Codex"),
+                ModelOption(value: "codex|gpt-5.2-codex", label: "GPT-5.2 Codex"),
+                ModelOption(value: "codex|o4-mini", label: "o4-mini"),
+            ]
+        ),
+    ]
+
     public static let models = ModelsReadResponse(
         version: 1,
+        canChange: true,
+        digest: "demo-models-digest",
         defaultAgent: "claude",
         roles: [
-            ModelRoleSummary(key: "plan", label: "Plan", current: "claude|sonnet-4", words: "Claude Sonnet 4"),
-            ModelRoleSummary(key: "build", label: "Build", current: "codex|gpt-5", words: "Codex GPT-5"),
-            ModelRoleSummary(key: "review", label: "Review", current: "claude|sonnet-4", words: "Claude Sonnet 4"),
+            ModelRoleSummary(key: "plan", label: "Planner", current: "claude|claude-sonnet-4-5", words: "Claude Sonnet 4.5", choices: demoModelChoices),
+            ModelRoleSummary(key: "build", label: "Builder", current: "codex|gpt-5.3-codex", words: "GPT-5.3 Codex", choices: demoModelChoices),
+            ModelRoleSummary(key: "review", label: "Reviewer", current: "claude|claude-sonnet-4-5", words: "Claude Sonnet 4.5", choices: demoModelChoices),
+        ],
+        presets: [
+            AgentPreset(agent: "claude", name: "Claude Code", words: "Claude Sonnet 4.5", fields: ["plan": "claude|claude-sonnet-4-5", "build": "claude|claude-sonnet-4-5", "review": "claude|claude-sonnet-4-5"]),
+            AgentPreset(agent: "codex", name: "Codex", words: "GPT-5.3 Codex", fields: ["plan": "codex|gpt-5.3-codex", "build": "codex|gpt-5.3-codex", "review": "codex|gpt-5.3-codex"]),
         ]
     )
 

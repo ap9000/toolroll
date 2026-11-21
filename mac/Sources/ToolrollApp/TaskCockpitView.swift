@@ -12,6 +12,7 @@ public struct TaskCockpitView: View {
     @State private var sendBackNote: String = ""
     @State private var expandedSteps: Set<String> = []
     @State private var showAllSteps: Bool = false
+    @State private var isModelPickerOpen: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -966,6 +967,12 @@ public struct TaskCockpitView: View {
 
     // MARK: - Composer Bar
 
+    private var activeBuilderModelLabel: String {
+        store.modelsRead.roles.first(where: { $0.key == "build" })?.words
+            ?? store.modelsRead.roles.first?.words
+            ?? "Models"
+    }
+
     private func composerBar(taskId: String) -> some View {
         HStack(spacing: 8) {
             TextField("Steer task or leave a note for the active run…", text: $steerDraft)
@@ -976,17 +983,51 @@ public struct TaskCockpitView: View {
                     submitSteer(taskId: taskId)
                 }
 
-            Button("Send") {
-                submitSteer(taskId: taskId)
+            Button {
+                isModelPickerOpen.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 10))
+                    Text(activeBuilderModelLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 7.5, weight: .semibold))
+                }
+                .foregroundStyle(ToolrollPalette.muted)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .buttonStyle(.plain)
+            .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
+                ModelPickerPopover(store: store, initialRoleKey: "build", onDismiss: { isModelPickerOpen = false })
+            }
+
+            Button {
+                submitSteer(taskId: taskId)
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(ToolrollPalette.inverseInk)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? ToolrollPalette.muted.opacity(0.35)
+                            : ToolrollPalette.ink,
+                        in: Circle()
+                    )
+            }
+            .buttonStyle(.plain)
             .disabled(steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(ToolrollPalette.composer, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.vertical, 8)
+        .background(ToolrollPalette.composer, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
         )
         .padding(.horizontal, 16)

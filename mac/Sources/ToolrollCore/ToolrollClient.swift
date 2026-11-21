@@ -302,6 +302,22 @@ public actor ToolrollClient {
         try await send(try makeRequest(path: "/engine/models"), as: ModelsReadResponse.self)
     }
 
+    public func updateModels(digest: String, fields: [String: String], password: String = "") async throws -> String {
+        var formFields: [(String, String)] = [
+            ("digest", digest),
+            ("scope", "installation"),
+            ("password", password),
+        ]
+        for (k, v) in fields.sorted(by: { $0.key < $1.key }) {
+            formFields.append((k, v))
+        }
+        return try await sendFormAct(
+            path: "/settings/models/agent",
+            fields: formFields,
+            defaultDone: "Updated model selection."
+        )
+    }
+
     public func fetchLiveRunWindow(runId: Int, cursor: String? = nil) async throws -> LiveRunWindowResponse {
         var path = "/agents/live/run/\(runId)?file=main"
         if let cursor, !cursor.isEmpty,

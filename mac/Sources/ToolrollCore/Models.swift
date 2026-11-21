@@ -1199,37 +1199,107 @@ public struct AgentsReadResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct ModelOption: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { value }
+    public let value: String
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
+public struct ModelChoice: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { provider }
+    public let provider: String
+    public let label: String
+    public let models: [ModelOption]
+
+    public init(provider: String, label: String, models: [ModelOption] = []) {
+        self.provider = provider
+        self.label = label
+        self.models = models
+    }
+}
+
+public struct AgentPreset: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { agent }
+    public let agent: String
+    public let name: String
+    public let words: String
+    public let fields: [String: String]
+
+    public init(agent: String, name: String, words: String, fields: [String: String] = [:]) {
+        self.agent = agent
+        self.name = name
+        self.words = words
+        self.fields = fields
+    }
+}
+
 public struct ModelRoleSummary: Codable, Sendable, Equatable, Identifiable {
     public var id: String { key }
     public let key: String
     public let label: String
     public let current: String
     public let words: String
+    public let choices: [ModelChoice]
 
-    public init(key: String, label: String, current: String, words: String) {
+    public init(key: String, label: String, current: String, words: String, choices: [ModelChoice] = []) {
         self.key = key
         self.label = label
         self.current = current
         self.words = words
+        self.choices = choices
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? key
+        current = try c.decodeIfPresent(String.self, forKey: .current) ?? ""
+        words = try c.decodeIfPresent(String.self, forKey: .words) ?? ""
+        choices = try c.decodeIfPresent([ModelChoice].self, forKey: .choices) ?? []
     }
 }
 
 public struct ModelsReadResponse: Codable, Sendable, Equatable {
     public let version: Int
+    public let canChange: Bool
+    public let digest: String
+    public let problem: String?
     public let defaultAgent: String?
     public let roles: [ModelRoleSummary]
+    public let presets: [AgentPreset]
 
-    public init(version: Int = 1, defaultAgent: String? = nil, roles: [ModelRoleSummary] = []) {
+    public init(
+        version: Int = 1,
+        canChange: Bool = true,
+        digest: String = "",
+        problem: String? = nil,
+        defaultAgent: String? = nil,
+        roles: [ModelRoleSummary] = [],
+        presets: [AgentPreset] = []
+    ) {
         self.version = version
+        self.canChange = canChange
+        self.digest = digest
+        self.problem = problem
         self.defaultAgent = defaultAgent
         self.roles = roles
+        self.presets = presets
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        canChange = try c.decodeIfPresent(Bool.self, forKey: .canChange) ?? false
+        digest = try c.decodeIfPresent(String.self, forKey: .digest) ?? ""
+        problem = try c.decodeIfPresent(String.self, forKey: .problem)
         defaultAgent = try c.decodeIfPresent(String.self, forKey: .defaultAgent)
         roles = try c.decodeIfPresent([ModelRoleSummary].self, forKey: .roles) ?? []
+        presets = try c.decodeIfPresent([AgentPreset].self, forKey: .presets) ?? []
     }
 }
 

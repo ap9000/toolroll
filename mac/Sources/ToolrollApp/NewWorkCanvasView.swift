@@ -16,6 +16,7 @@ public struct NewWorkCanvasView: View {
     @State private var promptText: String = ""
     @State private var mode: ComposeMode = .planFirst
     @State private var targetProject: String? = nil
+    @State private var isModelPickerOpen: Bool = false
     @FocusState private var promptFocused: Bool
 
     public init(store: WorkbenchStore) {
@@ -151,9 +152,31 @@ public struct NewWorkCanvasView: View {
 
                         Spacer()
 
-                        Text(activeModelBadge)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.muted)
+                        Button {
+                            isModelPickerOpen.toggle()
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "cpu")
+                                    .font(.system(size: 10.5))
+                                Text(activeModelBadge)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
+                            .foregroundStyle(ToolrollPalette.ink)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
+                            ModelPickerPopover(
+                                store: store,
+                                initialRoleKey: mode == .planFirst ? "plan" : "build",
+                                onDismiss: { isModelPickerOpen = false }
+                            )
+                        }
 
                         Button {
                             submit()

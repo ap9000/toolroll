@@ -2,12 +2,13 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Distinctively Toolroll first-run & setup studio (Signal 1.0.0 monochrome hairlines).
-/// Shows live Engine connection, detected coding agents + role routing (`GET /engine/agents` & `/engine/models`),
-/// active repositories, a concise 3-step builder orientation, and optional remote team pairing.
+/// Distinctively Toolroll Setup & Agents Studio (Signal 1.0.0 monochrome hairlines).
+/// Calm, minimal, zero cryptic buttons: shows Ready agents up front, tucks unavailable CLIs cleanly
+/// with explicit commands, lets you pick models right inline via `ModelPickerPopover`, and keeps remote pairing subtle.
 public struct SetupWorkbenchView: View {
     @Bindable var store: WorkbenchStore
     @State private var showMoreAgents: Bool = false
+    @State private var isModelPickerOpen: Bool = false
     @State private var copiedHint: String?
 
     public init(store: WorkbenchStore) {
@@ -18,19 +19,12 @@ public struct SetupWorkbenchView: View {
         Host.current().localizedName ?? "this Mac"
     }
 
-    private var primaryAgents: [AgentRow] {
-        let all = store.agentsRead.agents
-        let active = all.filter { $0.ready || $0.state == "signed-in" || $0.state == "signed-out" }
-        return active.isEmpty ? Array(all.prefix(4)) : active
+    private var readyAgents: [AgentRow] {
+        store.agentsRead.agents.filter(\.ready)
     }
 
     private var otherAgents: [AgentRow] {
-        let primaryIds = Set(primaryAgents.map(\.id))
-        return store.agentsRead.agents.filter { !primaryIds.contains($0.id) }
-    }
-
-    private var readyCount: Int {
-        store.agentsRead.agents.filter(\.ready).count
+        store.agentsRead.agents.filter { !$0.ready }
     }
 
     public var body: some View {
@@ -39,12 +33,12 @@ public struct SetupWorkbenchView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Editorial header
-                    VStack(alignment: .leading, spacing: 8) {
+                    // Header
+                    VStack(alignment: .leading, spacing: 7) {
                         HStack(spacing: 8) {
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(ToolrollPalette.ink)
-                                .frame(width: 12, height: 12)
+                                .frame(width: 11, height: 11)
                             Text("TOOLROLL")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 .tracking(1.4)
@@ -63,18 +57,28 @@ public struct SetupWorkbenchView: View {
                     }
                     .padding(.top, 12)
 
-                    // 1. Coding Agents & Role Routing
+                    // Card 1: Agents & Interactive Model Routing
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
-                            Text("AGENTS ON THIS MAC")
+                            Text("AGENTS & MODELS")
                                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                 .tracking(0.8)
                                 .foregroundStyle(ToolrollPalette.muted)
                             Spacer()
-                            if let first = store.agentsRead.firstTask {
-                                Text("Default · \(first.name)")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
+                            Button {
+                                isModelPickerOpen.toggle()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text("Change models")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                }
+                                .foregroundStyle(ToolrollPalette.ink)
+                            }
+                            .buttonStyle(.plain)
+                            .popover(isPresented: $isModelPickerOpen, arrowEdge: .bottom) {
+                                ModelPickerPopover(store: store, initialRoleKey: "all", onDismiss: { isModelPickerOpen = false })
                             }
                         }
                         .padding(.horizontal, 16)
@@ -82,22 +86,18 @@ public struct SetupWorkbenchView: View {
 
                         HairlineDivider()
 
-                        if primaryAgents.isEmpty {
+                        if readyAgents.isEmpty {
                             HStack(spacing: 10) {
-                                Text("Start your local engine to inspect installed agents, or connect a remote workspace.")
+                                Text("No signed-in coding agents detected yet. Expand below to see sign-in commands.")
                                     .font(.system(size: 12.5))
                                     .foregroundStyle(ToolrollPalette.muted)
                                 Spacer()
-                                Button("Copy `toolroll up`") {
-                                    copyCommand("toolroll up")
-                                }
-                                .buttonStyle(KitButtonStyle(.ghost, compact: true))
                             }
                             .padding(16)
                         } else {
                             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                                ForEach(primaryAgents) { agent in
-                                    agentTile(agent)
+                                ForEach(readyAgents) { agent in
+                                    readyAgentTile(agent)
                                 }
                             }
                             .padding(14)
@@ -107,14 +107,14 @@ public struct SetupWorkbenchView: View {
                             HairlineDivider()
                             VStack(alignment: .leading, spacing: 8) {
                                 Button {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                    withAnimation(.easeInOut(duration: 0.14)) {
                                         showMoreAgents.toggle()
                                     }
                                 } label: {
                                     HStack(spacing: 6) {
                                         Image(systemName: showMoreAgents ? "chevron.down" : "plus")
                                             .font(.system(size: 10, weight: .semibold))
-                                        Text(showMoreAgents ? "Hide other supported agents" : "More supported agents (\(otherAgents.count))")
+                                        Text(showMoreAgents ? "Hide other agents" : "Add another agent (\(otherAgents.count) available)")
                                             .font(.system(size: 12, weight: .medium))
                                         Spacer()
                                     }
@@ -124,9 +124,9 @@ public struct SetupWorkbenchView: View {
                                 .buttonStyle(.plain)
 
                                 if showMoreAgents {
-                                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 8) {
+                                    VStack(spacing: 8) {
                                         ForEach(otherAgents) { agent in
-                                            agentTile(agent)
+                                            setupAgentRow(agent)
                                         }
                                     }
                                     .padding(.top, 4)
@@ -136,80 +136,83 @@ public struct SetupWorkbenchView: View {
                             .padding(.vertical, 10)
                         }
 
+                        // Clickable live role routing bar (Planner · Builder · Reviewer)
                         if !store.modelsRead.roles.isEmpty {
                             HairlineDivider()
-                            HStack(spacing: 16) {
-                                ForEach(store.modelsRead.roles) { role in
-                                    HStack(spacing: 5) {
-                                        Text(role.label)
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(ToolrollPalette.muted)
-                                        Text(role.words)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundStyle(ToolrollPalette.ink)
-                                            .lineLimit(1)
+                            Button {
+                                isModelPickerOpen.toggle()
+                            } label: {
+                                HStack(spacing: 16) {
+                                    ForEach(store.modelsRead.roles) { role in
+                                        HStack(spacing: 5) {
+                                            Text(role.label)
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .foregroundStyle(ToolrollPalette.muted)
+                                            Text(role.words)
+                                                .font(.system(size: 11, design: .monospaced))
+                                                .foregroundStyle(ToolrollPalette.ink)
+                                                .lineLimit(1)
+                                        }
                                     }
+                                    Spacer()
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(ToolrollPalette.muted)
                                 }
-                                Spacer()
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(ToolrollPalette.raised)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(ToolrollPalette.raised)
+                            .buttonStyle(.plain)
                         }
                     }
                     .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                    // 2. Projects & How Toolroll Flows
+                    // Card 2: Repositories (with 1-click native Finder Add Folder)
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
-                            Text("REPOSITORIES & WORKFLOW")
+                            Text("PROJECTS")
                                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                 .tracking(0.8)
                                 .foregroundStyle(ToolrollPalette.muted)
                             Spacer()
-                            Text("\(store.workRowsResponse.rows.count) active task\(store.workRowsResponse.rows.count == 1 ? "" : "s")")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
+                            Button {
+                                store.pickAndAddLocalFolder()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder.badge.plus")
+                                        .font(.system(size: 11))
+                                    Text("Add folder…")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                }
+                                .foregroundStyle(ToolrollPalette.ink)
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 11)
 
                         HairlineDivider()
 
-                        VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
                             if !store.allProjects.isEmpty {
-                                HStack(spacing: 6) {
-                                    ForEach(store.allProjects, id: \.self) { project in
-                                        Text(project)
-                                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                            .foregroundStyle(ToolrollPalette.ink)
-                                            .padding(.horizontal, 9)
-                                            .padding(.vertical, 4)
-                                            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
-                                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                                    }
-                                    Spacer()
+                                ForEach(store.allProjects, id: \.self) { project in
+                                    Text(project)
+                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.ink)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
+                                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                                 }
                             } else {
-                                HStack {
-                                    Text("Add any repository with `toolroll init` inside your project folder.")
-                                        .font(.system(size: 12.5))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                    Spacer()
-                                    Button("Copy `toolroll init`") {
-                                        copyCommand("toolroll init")
-                                    }
-                                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                                }
+                                Text("Add a local Git repository folder to start building.")
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(ToolrollPalette.muted)
                             }
-
-                            // Crisp 3-step Toolroll orientation
-                            HStack(spacing: 10) {
-                                workflowPill(step: "01", title: "File (⌘N)", detail: "Plan first or jump straight to code")
-                                workflowPill(step: "02", title: "Approve In-App", detail: "Review digest-bound terms & diffs")
-                                workflowPill(step: "03", title: "Ship / Hand Off", detail: "Open PR or share Live Terminal (⌘K)")
-                            }
+                            Spacer()
                         }
                         .padding(14)
                     }
@@ -222,9 +225,9 @@ public struct SetupWorkbenchView: View {
                             .foregroundStyle(ToolrollPalette.live)
                     }
 
-                    // Bottom bar: Remote option + Solid-Ink CTA
+                    // Bottom bar: Subtle remote option + Solid-Ink Enter CTA
                     HStack(spacing: 10) {
-                        Button("Connect Remote Team Workspace…") {
+                        Button("Connect Team / Remote Server…") {
                             store.isPairSheetOpen = true
                         }
                         .buttonStyle(KitButtonStyle(.ghost))
@@ -240,7 +243,7 @@ public struct SetupWorkbenchView: View {
                             store.completeSetup()
                         } label: {
                             HStack(spacing: 6) {
-                                Text("Enter Workbench")
+                                Text("Start Building")
                                 Image(systemName: "arrow.right")
                                     .font(.system(size: 11, weight: .semibold))
                             }
@@ -250,7 +253,7 @@ public struct SetupWorkbenchView: View {
                     }
                     .padding(.top, 4)
                 }
-                .frame(maxWidth: 680)
+                .frame(maxWidth: 660)
                 .padding(.horizontal, 28)
                 .padding(.vertical, 36)
                 .frame(maxWidth: .infinity)
@@ -266,12 +269,9 @@ public struct SetupWorkbenchView: View {
             return firstLine
         }
         if store.isLocalSession {
-            return "\(readyCount) coding agent\(readyCount == 1 ? "" : "s") ready · connected directly to your local Toolroll engine."
+            return "\(readyAgents.count) agent\(readyAgents.count == 1 ? "" : "s") ready on this Mac."
         }
-        if !store.activeProfile.isDemo {
-            return "Connected to \(store.activeProfile.displayTitle) as @\(store.activeProfile.account)."
-        }
-        return "Previewing locally — start `toolroll up` or connect a remote workspace anytime."
+        return "Connected to \(store.activeProfile.displayTitle)."
     }
 
     private var engineStatusBadge: some View {
@@ -281,7 +281,7 @@ public struct SetupWorkbenchView: View {
                 .frame(width: 6, height: 6)
             Text(store.isLocalSession
                  ? "Local Engine · \(store.activeProfile.origin.replacingOccurrences(of: "http://", with: ""))"
-                 : (store.activeProfile.isDemo ? "Demo Preview" : store.activeProfile.displayTitle))
+                 : store.activeProfile.displayTitle)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(ToolrollPalette.ink)
         }
@@ -291,38 +291,24 @@ public struct SetupWorkbenchView: View {
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    private func agentTile(_ agent: AgentRow) -> some View {
+    private func readyAgentTile(_ agent: AgentRow) -> some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(agent.ready ? ToolrollPalette.success : (agent.state == "signed-out" ? ToolrollPalette.warning : ToolrollPalette.muted.opacity(0.45)))
-                .frame(width: 7, height: 7)
-
+            Circle().fill(ToolrollPalette.success).frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.name)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
-                Text(agentSubtitle(agent))
-                    .font(.system(size: 11))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
-            if agent.ready {
-                Text("Ready")
-                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.success)
-            } else if let cmd = agent.setup.signIn ?? agent.setup.install, !cmd.isEmpty {
-                Button("Copy cmd") {
-                    copyCommand(cmd)
+                if let how = agent.how, !how.isEmpty {
+                    Text(how)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
                 }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            } else {
-                Text(agent.state.replacingOccurrences(of: "-", with: " "))
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
             }
+            Spacer()
+            Text("Ready")
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.success)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -330,38 +316,45 @@ public struct SetupWorkbenchView: View {
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    private func agentSubtitle(_ agent: AgentRow) -> String {
-        if let how = agent.how, !how.isEmpty { return how }
-        if let next = agent.next, !next.isEmpty { return next }
-        if agent.state == "signed-out" { return "Installed · sign in to enable" }
-        if agent.state == "not-installed" { return agent.setup.install ?? "Not installed" }
-        return agent.state
-    }
+    private func setupAgentRow(_ agent: AgentRow) -> some View {
+        let cmd = agent.setup.signIn ?? agent.setup.install
+        let isSignIn = agent.state == "signed-out"
+        return HStack(spacing: 10) {
+            Circle()
+                .fill(isSignIn ? ToolrollPalette.warning : ToolrollPalette.muted.opacity(0.4))
+                .frame(width: 6, height: 6)
 
-    private func workflowPill(step: String, title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Text(step)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Text(title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(agent.name)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Text(isSignIn ? "Needs sign-in" : "Not installed")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                if let cmd, !cmd.isEmpty {
+                    Text("Run in terminal: \(cmd)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                }
             }
-            Text(detail)
-                .font(.system(size: 11))
-                .foregroundStyle(ToolrollPalette.muted)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-    }
 
-    private func copyCommand(_ cmd: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(cmd, forType: .string)
-        copiedHint = "Copied `\(cmd)` to clipboard."
+            Spacer()
+
+            if let cmd, !cmd.isEmpty {
+                Button(isSignIn ? "Copy sign-in" : "Copy install") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(cmd, forType: .string)
+                    copiedHint = "Copied `\(cmd)` — paste into your terminal to \(isSignIn ? "sign in" : "install") \(agent.name)."
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 }

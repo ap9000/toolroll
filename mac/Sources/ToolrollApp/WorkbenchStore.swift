@@ -71,6 +71,8 @@ public final class WorkbenchStore {
     public private(set) var liveRunRecords: [LiveAgentRecord] = []
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
+    public var modelPasswordPrompt: String?
+    private var pendingModelFields: [String: String]?
     public private(set) var candidatesResponse: CandidatesListResponse?
     public private(set) var diffResponse: ResultDiffResponse?
     public private(set) var selectedDiffPath: String?
@@ -240,6 +242,66 @@ public final class WorkbenchStore {
             let reply = try await client.openLocalProject(path: folderPath)
             notice = WorkbenchNotice(kind: .info, message: reply)
             await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Live Model Selection (POST /settings/models/agent)
+
+    public func selectModel(value: String, label: String, forRoleKey roleKey: String) async {
+        var fields: [String: String] = [:]
+        for role in modelsRead.roles {
+            if roleKey == "all" || role.key == roleKey {
+                fields[role.key] = value
+            } else {
+                fields[role.key] = role.current
+            }
+        }
+        await submitModelFields(fields, friendlyLabel: label)
+    }
+
+    public func applyModelPreset(_ preset: AgentPreset) async {
+        await submitModelFields(preset.fields, friendlyLabel: preset.name)
+    }
+
+    public func retryPendingModelChange(password: String) async {
+        guard let fields = pendingModelFields else { return }
+        await submitModelFields(fields, friendlyLabel: "model selection", password: password)
+    }
+
+    private func submitModelFields(_ fields: [String: String], friendlyLabel: String, password: String = "") async {
+        busyLabel = "Switching to \(friendlyLabel)…"
+        defer { busyLabel = nil }
+
+        if activeProfile.isDemo {
+            let updatedRoles = modelsRead.roles.map { role -> ModelRoleSummary in
+                guard let nextVal = fields[role.key] else { return role }
+                let nextLabel = role.choices.flatMap(\.models).first(where: { $0.value == nextVal })?.label ?? friendlyLabel
+                return ModelRoleSummary(key: role.key, label: role.label, current: nextVal, words: nextLabel, choices: role.choices)
+            }
+            modelsRead = ModelsReadResponse(
+                version: modelsRead.version, canChange: modelsRead.canChange, digest: modelsRead.digest,
+                problem: nil, defaultAgent: modelsRead.defaultAgent, roles: updatedRoles, presets: modelsRead.presets
+            )
+            modelPasswordPrompt = nil
+            pendingModelFields = nil
+            notice = WorkbenchNotice(kind: .info, message: "Switched to \(friendlyLabel).")
+            return
+        }
+
+        guard let client else { return }
+        do {
+            let reply = try await client.updateModels(digest: modelsRead.digest, fields: fields, password: password)
+            modelPasswordPrompt = nil
+            pendingModelFields = nil
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            if let refreshed = try? await client.fetchModels() {
+                modelsRead = refreshed
+            }
+        } catch ToolrollClientError.passwordRequired(let msg) {
+            pendingModelFields = fields
+            modelPasswordPrompt = msg
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
