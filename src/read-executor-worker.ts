@@ -10,7 +10,7 @@ function connection(): Store {
   if (store !== null) return store;
   const opened = openStoreReadOnly(String((workerData as { file: string }).file));
   if (opened === null) throw new Error('The read worker could not open the database read-only at the current schema.');
-  opened.handle.exec('PRAGMA query_only=1');
+  opened.handle.exec('PRAGMA query_only=1; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000;');
   return store = opened;
 }
 
