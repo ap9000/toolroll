@@ -1036,8 +1036,21 @@ details.result-request-open > summary::marker { content: ""; }
   .so-task-tools .k-btn:not(.k-btn-icon) .k-face { font-size: 13px; }
 }
 
+/* Above-the-fold task vitals strip (views/task-view.tsx, views/work-view.tsx): agent, base, PR, blockers, usage
+ * visible without opening the Details drawer or scrolling. Hairlines and quiet tokens only. */
+.so-task-vitals { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 10px 0; border-top: 1px solid var(--so-line); border-bottom: 1px solid var(--so-line); font-size: 12.5px; line-height: 1.4; }
+.so-task-vital { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
+.so-task-vital > dt { margin: 0; color: var(--so-muted); flex: none; }
+.so-task-vital > dd { margin: 0; color: var(--so-ink); min-width: 0; overflow-wrap: anywhere; }
+.so-task-vital > dd a { color: var(--so-ink); text-decoration: underline; text-decoration-color: var(--so-field-line); text-underline-offset: 3px; }
+.so-task-vital > dd a:hover { text-decoration-color: var(--so-ink); }
+
 /* The result inside a task page (views/result-view.tsx): hairlines, no sheets or shadows (src/design/KIT.md). */
 .so-result-panel { display: grid; gap: 0; }
+@media (min-width: 901px) {
+  /* Keep Summary / Changes / Checks reachable while scrolling a long diff. */
+  .so-result-panel > .k-tabs { position: sticky; top: 0; z-index: 2; background: var(--so-paper); }
+}
 .so-result-body { padding: 14px 0 var(--so-space-xs); }
 .so-result-request-box { border-top: 1px solid var(--so-line); padding-top: 14px; display: grid; gap: 10px; scroll-margin-top: 16px; }
 .so-result-request-box.is-quiet:not(:has(details[open])) { display: none; }

@@ -9,6 +9,7 @@
  *
  * Add tests files a small task, unapproved like any other filing, to write
  * tests for that change. */
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
 import type { CheckAccess } from "./check-access.js";
 import { widerThan } from "./check-access.js";
 import { recheckStanding } from "./check-only-standing.js";
@@ -163,6 +164,8 @@ function checkTarget(store: Store, runId: number, level: RunLevel): { ok: true; 
 export function requestFollowUpChecks(store: Store, input: { runId: number; level: RunLevel; actor: string; why?: "person" | "pull-request" | "recheck" }, now: Date):
   { ok: true; request: number; level: RunLevel; existing: boolean } | Refusal {
   return store.transact(() => {
+    const blocked = recoveryCheckBlock(store, input.runId);
+    if (blocked !== null) return refuse("recovery-held", CHECK_RECOVERY_MESSAGE);
     const target = checkTarget(store, input.runId, input.level);
     if (!target.ok) return target;
     const open = followUpChecksOf(store, input.runId, now).find(one => one.level === target.level && one.head === target.head && (one.state === "waiting" || one.state === "running"));
@@ -183,45 +186,64 @@ export function waitingRequestsOfAnyKind(store: Store, now: Date): FollowUpCheck
   const runs = store.handle.prepare(`SELECT DISTINCT r.run_id AS run FROM action_ledger r WHERE r.action = ? AND r.run_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM action_ledger s WHERE s.run_id = r.run_id AND s.action = ? AND s.outcome = CAST(r.id AS TEXT)) ORDER BY r.id`)
     .all(CHECKS_REQUESTED, CHECKS_STARTED).map(row => Number(row["run"]));
-  return runs.flatMap(runId => followUpChecksOf(store, runId, now).filter(one => one.state === "waiting"));
+  return runs.flatMap(runId => recoveryCheckBlock(store, runId) !== null ? [] : followUpChecksOf(store, runId, now).filter(one => one.state === "waiting"));
 }
 
 export type CheckRunDeps = { runner?: Runner; git?: Runner; now?: () => Date; scratch?: string };
 
 /** Run one waiting request: claim it, check out its commit, run the approved
  * setup (when the project has one) and the check, seal the log and receipt. */
-export async function runFollowUpCheck(store: Store, root: string, request: number, deps: CheckRunDeps = {}): Promise<FollowUpCheck | null> {
+export async function runFollowUpCheck(store: Store, root: string, request: number, deps: CheckRunDeps = {}): Promise<FollowUpCheck | RecoveryHeldCheck | null> {
   const now = deps.now ?? (() => new Date());
   const runner = deps.runner ?? execRun;
   // The project's repository and a checkout of a build's commit, both agent-writable: the hardened git (teardown-git.ts).
-  const git = deps.git ?? hardenedGit(execRun);
+  const cleanupGit = deps.git ?? hardenedGit(execRun);
   const asked = store.handle.prepare("SELECT run_id FROM action_ledger WHERE id = ? AND action = ?").get(request, CHECKS_REQUESTED);
   if (asked === undefined) return null;
   const runId = Number(asked["run_id"]);
   const wanted = followUpChecksOf(store, runId, now()).find(one => one.request === request);
-  if (wanted === undefined || wanted.state !== "waiting") return wanted ?? null;
+  if (wanted === undefined) return null;
+  const heldNow = (): RecoveryHeldCheck | null => {
+    const evidence = recoveryCheckBlock(store, runId);
+    return evidence === null ? null : { ...wanted, state: "recovery-held", priorState: wanted.state, note: CHECK_RECOVERY_MESSAGE, recovery: evidence, priorExecution: "unverified" };
+  };
+  const initiallyHeld = heldNow();
+  if (initiallyHeld !== null) return initiallyHeld;
+  if (wanted.state !== "waiting") return wanted;
   const target = checkTarget(store, runId, wanted.level);
-  const finish = (status: "passed" | "failed" | "not-run", detail: string) => {
-    store.recordAction({ at: now().toISOString(), actor: "system", repo: target.ok ? target.repo : null, taskId: target.ok ? target.taskId : null, runId,
+  const finish = (status: "passed" | "failed" | "not-run", detail: string, stamp?: Date): RecoveryHeldCheck | null => store.transact(() => {
+    const at = (stamp ?? now()).toISOString(), held = heldNow();
+    if (held !== null) return held;
+    store.recordAction({ at, actor: "system", repo: target.ok ? target.repo : null, taskId: target.ok ? target.taskId : null, runId,
       action: CHECKS_FINISHED, outcome: `${request}:${status}`, source: "work", detail });
     store.bumpWake();
-  };
+    return null;
+  });
   // The claim: one started entry per request, written only while none exists.
   const claimed = store.transact(() => {
+    const at = now().toISOString(), held = heldNow();
+    if (held !== null) return held;
     if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE run_id = ? AND action = ? AND outcome = ?").get(runId, CHECKS_STARTED, String(request)) !== undefined) return false;
-    store.recordAction({ at: now().toISOString(), actor: "system", repo: target.ok ? target.repo : null, taskId: target.ok ? target.taskId : null, runId,
+    store.recordAction({ at, actor: "system", repo: target.ok ? target.repo : null, taskId: target.ok ? target.taskId : null, runId,
       action: CHECKS_STARTED, outcome: String(request), source: "work", detail: `limit ${target.ok ? target.command.timeoutMs : 0}` });
     return true;
   });
-  if (!claimed) return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null;
-  if (!target.ok) { finish("not-run", target.message); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  if (typeof claimed === "object") return claimed;
+  if (!claimed) { const stamp = now(); return heldNow() ?? followUpChecksOf(store, runId, stamp, root).find(one => one.request === request) ?? null; }
+  if (!target.ok) { const held = finish("not-run", target.message); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   // The commit asked about is the one checked, even if the result changed since.
-  if (target.head !== wanted.head) { finish("not-run", "The result's commit changed after checks were asked for."); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  if (target.head !== wanted.head) { const held = finish("not-run", "The result's commit changed after checks were asked for."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   // An automatic recheck runs only on its check-only authorization, read again now (check-only.ts): no record, no run.
   const authorized = wanted.why === "recheck" ? recheckStanding(store, { request, runId, head: target.head, digest: wanted.digest }) : null;
-  if (wanted.why === "recheck" && !authorized?.ok) { finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  if (wanted.why === "recheck" && !authorized?.ok) { const held = finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   /** Every command of an automatic recheck, refused at the moment it would run wider than the build's own access. */
-  const launched = (inner: Runner): Runner => !authorized?.ok ? inner : (file, args, options) => {
+  const proveLaunch = (): void => { const held = heldNow(); if (held !== null) throw new CheckRecoveryBlocked(held); };
+  const guardedRunner: Runner = (file, args, options) => { proveLaunch(); return runner(file, args, options); };
+  // Hardened Git may issue more than one inner command; reprove at each actual launch too.
+  const git = deps.git ?? hardenedGit((file, args, options) => { proveLaunch(); return execRun(file, args, options); });
+  const launched = (inner: Runner): Runner => (file, args, options) => {
+    proveLaunch();
+    if (!authorized?.ok) return inner(file, args, options);
     if (widerThan(actualCheckAccess(store, checkoutLaunchOf(store, target.repo, [runId]).access), authorized.access)) return Promise.resolve({ code: 126, stdout: "", stderr: "", notFound: true, timedOut: false });
     return inner(file, args, options);
   };
@@ -235,10 +257,14 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   const note = (label: string, command: string, result: ExecResult) =>
     log.push(`=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n${bound(result.stdout)}\n\n--- stderr ---\n${bound(result.stderr)}`);
   let result: { ran: true; exitCode: number } | { ran: false; failure: string };
+  let heldControl: RecoveryHeldCheck | null = null, checkoutCreated = false;
   try {
+    proveLaunch();
     const added = await git("git", ["-C", target.repo, "worktree", "add", "--detach", checkout, target.head], { timeoutMs: 120_000 });
+    checkoutCreated = added.code === 0;
+    note("Checkout", `git worktree add --detach <fresh folder> ${target.head}`, added);
+    proveLaunch();
     if (added.code !== 0) {
-      note("Checkout", `git worktree add --detach <fresh folder> ${target.head}`, added);
       result = { ran: false, failure: "The commit couldn't be checked out. It may have been removed from this computer." };
     } else {
       const setup = store.liveWorktreeSetup(target.repo);
@@ -246,8 +272,9 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       let ready = true;
       if (setup !== null) {
         const shell = approvedCommandShell(setup.command);
-        const prepared = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note("Approved project setup", setup.command, prepared);
+        proveLaunch();
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) { ready = false; result = { ran: false, failure: "The project's setup failed, so the check didn't run." }; }
       }
       if (ready) {
@@ -257,29 +284,46 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           result = { ran: false, failure: "The approved check changed before it started." };
         } else {
           const shell = approvedCommandShell(live.command);
-          const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+          const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
+          proveLaunch();
           result = ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code };
         }
       } else result ??= { ran: false, failure: "The project's setup failed, so the check didn't run." };
     }
+  } catch (error) {
+    if (!(error instanceof CheckRecoveryBlocked)) throw error;
+    heldControl = error.control;
   } finally {
-    await git("git", ["-C", target.repo, "worktree", "remove", "--force", checkout], { timeoutMs: 120_000 }).catch(() => null);
+    // Exact already-owned scratch cleanup is allowed; never launch remove if add never succeeded.
+    if (checkoutCreated) await cleanupGit("git", ["-C", target.repo, "worktree", "remove", "--force", checkout], { timeoutMs: 120_000 }).catch(() => null);
     rmSync(folder, { recursive: true, force: true });
   }
   const at = now();
-  const ranLine = ranAtLine(widestRan(ranAt));
-  if (ranLine !== null) log.push(ranLine);
-  const text = log.length === 0 ? "No command started." : log.join("\n\n");
-  const logId = storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
-  const logArtifact = store.getArtifact(logId)!;
-  const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, tested: target.head, level: target.level, checkAccess: widestRan(ranAt),
-    command: { repo: target.command.repo, command: target.command.command, digest: target.command.digest, approvedBy: target.command.approvedBy },
-    result, log: { artifactId: logArtifact.id, sha256: logArtifact.sha256, bytesStored: logArtifact.bytesStored, truncated: logArtifact.truncated } }, null, 1);
-  storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.json`, Buffer.from(receipt, "utf8"), FOLLOW_UP_RECEIPT, at, { captureStatus: "ok" });
-  if (result.ran) finish(result.exitCode === 0 ? "passed" : "failed", `${CHECK_LEVEL_WORDS[target.level]} checks on ${target.head.slice(0, 7)} · exit ${result.exitCode}`);
-  else finish("not-run", result.failure);
-  return followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null;
+  // Both the post-command read and final transaction can discover a hold. Preserve
+  // observed output in either case without manufacturing an outcome or receipt.
+  const saveHeldLog = (held: RecoveryHeldCheck): RecoveryHeldCheck => {
+    const logArtifactId = log.length === 0 ? null : storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}-held.log`, Buffer.from(log.join("\n\n"), "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
+    return { ...held, logArtifactId };
+  };
+  heldControl ??= heldNow();
+  if (heldControl !== null) return saveHeldLog(heldControl);
+  return store.transact(() => {
+    const settledHeld = heldNow();
+    if (settledHeld !== null) return saveHeldLog(settledHeld);
+    const ranLine = ranAtLine(widestRan(ranAt));
+    if (ranLine !== null) log.push(ranLine);
+    const text = log.length === 0 ? "No command started." : log.join("\n\n");
+    const logId = storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
+    const logArtifact = store.getArtifact(logId)!;
+    const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, tested: target.head, level: target.level, checkAccess: widestRan(ranAt),
+      command: { repo: target.command.repo, command: target.command.command, digest: target.command.digest, approvedBy: target.command.approvedBy },
+      result, log: { artifactId: logArtifact.id, sha256: logArtifact.sha256, bytesStored: logArtifact.bytesStored, truncated: logArtifact.truncated } }, null, 1);
+    storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.json`, Buffer.from(receipt, "utf8"), FOLLOW_UP_RECEIPT, at, { captureStatus: "ok" });
+    if (result!.ran) finish(result!.exitCode === 0 ? "passed" : "failed", `${CHECK_LEVEL_WORDS[target.level]} checks on ${target.head.slice(0, 7)} · exit ${result!.exitCode}`, at);
+    else finish("not-run", result!.failure, at);
+    return followUpChecksOf(store, runId, at, root).find(one => one.request === request) ?? null;
+  });
 }
 
 /** The worker's pass: run every waiting request, one at a time. */
@@ -287,7 +331,8 @@ export async function runWaitingChecks(store: Store, root: string, deps: CheckRu
   let ran = 0;
   for (const one of waitingCheckRequests(store, (deps.now ?? (() => new Date()))())) {
     if (deps.shouldStop?.() === true) break;
-    if ((await runFollowUpCheck(store, root, one.request, deps))?.state !== "waiting") ran++;
+    const done = await runFollowUpCheck(store, root, one.request, deps);
+    if (done !== null && done.state !== "waiting" && done.state !== "recovery-held") ran++;
   }
   return ran;
 }
@@ -324,8 +369,10 @@ export function resultCheckLevel(store: Store, runId: number, now: Date): CheckL
 /** Before a Quick or Off result merges: the project's full check on its exact
  * commit. Clear when the build already ran the full check, when the project has
  * no full command (its CI covers it), or when a follow-up full check passed. */
-export type FullCheckGate = { state: "clear" } | { state: "not-requested" | "waiting" | "failed" | "not-run"; message: string };
+export type FullCheckGate = { state: "clear" } | { state: "recovery-held"; message: string; recovery: ReadCheckRecoveryHolds; priorExecution: "unverified" } | { state: "not-requested" | "waiting" | "failed" | "not-run"; message: string };
 export function fullCheckGate(store: Store, runId: number, now: Date): FullCheckGate {
+  const held = recoveryCheckBlock(store, runId);
+  if (held !== null) return { state: "recovery-held", message: CHECK_RECOVERY_MESSAGE, recovery: held, priorExecution: "unverified" };
   const level = runCheckLevel(store, runId);
   const repo = repoOfRun(store, runId);
   const run = store.getRun(runId);
@@ -409,4 +456,15 @@ function changedFilesOf(store: Store, root: string, runId: number): string[] {
     const parsed = JSON.parse(read.content.toString("utf8")) as { files?: { path?: unknown }[] };
     return (parsed.files ?? []).map(one => one.path).filter((one): one is string => typeof one === "string" && one.length < 300);
   } catch { return []; }
+}
+
+// CH1a direct-road guard only; batch/check-only/merge/custody/projections remain separate unsupported slices.
+const CHECK_RECOVERY_MESSAGE = "Checks are on hold after recovery. Earlier execution is unverified.";
+export type RecoveryHeldCheck = Omit<FollowUpCheck, "state"> & { state: "recovery-held"; priorState: FollowUpCheck["state"]; recovery: ReadCheckRecoveryHolds; priorExecution: "unverified" };
+class CheckRecoveryBlocked extends Error { constructor(readonly control: RecoveryHeldCheck) { super(CHECK_RECOVERY_MESSAGE); } }
+function recoveryCheckBlock(store: Store, runId: number): ReadCheckRecoveryHolds | null {
+  // No new event anywhere preserves the existing personal road, including legacy lineage.
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  const evidence = readCheckRecoveryHoldsForRun(store, runId);
+  return evidence.kind === "no-evidence" ? null : evidence;
 }

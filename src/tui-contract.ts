@@ -132,7 +132,7 @@ export interface TuiSource {
 /** What only the process that opened the screen knows: whether quitting stops its agents, the browser, the ask-once. */
 /** The console pages the terminal may ask the browser to land on after its one-time sign-in, by name. The console maps
  * each name to its own fixed address (people-tokens.ts LINK_LANDINGS); nothing else is ever a landing. */
-export const TUI_PAGES = Object.freeze(["flexible", "flexible-sign-in", "project"] as const);
+export const TUI_PAGES = Object.freeze(["flexible", "flexible-sign-in", "project", "lead-providers", "projects"] as const);
 export type TuiPage = (typeof TUI_PAGES)[number];
 export const isTuiPage = (value: unknown): value is TuiPage => typeof value === "string" && (TUI_PAGES as readonly string[]).includes(value);
 
@@ -143,6 +143,7 @@ export interface TuiSession {
   stopped?(): string | null;
   /** Open this computer's browser on the console, signed in (on one of TUI_PAGES when named). Resolves with what to say. */
   openBrowser(page?: TuiPage): Promise<string>;
+  openBuilderPassword?(task: string, setup: boolean): Promise<string>;
   /** Whether to ask, now, "Keep Toolroll running in the background?" (once per installation). */
   shouldAskBackground(): boolean;
   /** Record the answer; yes moves Toolroll to the background service. Resolves with what to say. */

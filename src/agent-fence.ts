@@ -496,6 +496,7 @@ export function grantFolder(path: string, create = true): string | null {
 const ACP_DATA: Readonly<Record<string, readonly string[]>> = {
   goose: [".local/share/goose", ".local/state/goose"],
   qwen: [".qwen/tmp", ".qwen/history"],
+  antigravity: [".gemini/antigravity-cli", ".gemini/tmp", ".gemini/logs"],
 };
 
 /** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */

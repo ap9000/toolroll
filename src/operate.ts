@@ -131,6 +131,7 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
@@ -143,7 +144,7 @@ import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
 import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
-import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
+import { deleteProject, holdingsWords, projectHoldings, projectRunning, PROJECT_RECOVERY_DELETE_MESSAGE } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
 import { BRANCH_PREFIX, envValue, existingOrFirst, taskBranches } from "./names.js";
@@ -8920,6 +8921,7 @@ async function publishCommand(
       // other — a moved head refuses rather than authorizing the unseen.
       const released = store.authorizeMergeIntent(intent.id, intent.headSha, acting.name, clock());
       if (!released.ok) {
+        if (released.reason === "recovery-held") return fail(write, json, "publish merge", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
         return fail(
           write, json, "publish merge",
           released.reason,
@@ -8936,6 +8938,7 @@ async function publishCommand(
     }
     const refired = store.refireMergeIntent(intent.id, acting.name, clock());
     if (!refired.ok) {
+      if (refired.reason === "recovery-held") return fail(write, json, "publish refire", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
       return fail(
         write, json, "publish refire",
         refired.reason,
@@ -8970,6 +8973,7 @@ async function publishCommand(
       ]);
     }
     const rearmed = store.rearmMergeIntent(publication.id);
+    if (rearmed === "recovery-held") return fail(write, json, "publish rearm", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
     store.resolveEpisodes(`merge-attn:${publication.id}`, context.clock());
     return succeed(write, json, "publish rearm", { pr, rearmed }, () => [
       rearmed
@@ -9714,6 +9718,7 @@ async function addTask(
   // Re-filing: the new task replaces an earlier one, which is cancelled and reads "Replaced by <id>".
   const replaces = text(flags, "replaces");
   if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) return fail(write, json, "task add", "unknown-task", `no task \`${replaces}\` to replace`, EXIT.refused);
+  if (replaces !== undefined && builtinReplacementHeld(store, replaces, id)) return fail(write, json, "task add", "recovery-held", "This task can't be replaced while earlier check execution is unverified after recovery.", EXIT.refused);
   noteActingPerson(flags, context);
 
   // The existence check goes *inside* the replayed body. Outside it, a retry
@@ -9729,12 +9734,17 @@ async function addTask(
       // The deliverable rides the SAME transaction as the filing (v4
       // review, finding 2): a crash can never leave a scout ask as a
       // branch task.
+      if (replaces !== undefined) return createBuiltinReplacement(store, { id, title, report: flags.has("report"), repo: text(flags, "repo") ?? null, replaces, now });
       return { ok: true as const, task: store.createTask({ id, title, ...(flags.has("report") ? { deliverable: "report" as const } : {}) }, now) };
     },
     result => result.ok,
   );
 
-  if (!outcome.ok) return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
+  if (!outcome.ok) {
+    if ("reason" in outcome) return fail(write, json, "task add", outcome.reason,
+      outcome.reason === "recovery-held" ? "This task can't be replaced while earlier check execution is unverified after recovery." : "The replacement couldn't be filed. Nothing was changed.", EXIT.refused);
+    return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
+  }
 
   const filedId = outcome.task.id;
   const remote = activeRemote();
@@ -9746,17 +9756,15 @@ async function addTask(
     }
   }
   remote?.noteTask(filedId);
-  store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
+  if (replaces === undefined) store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
 
   // Placement is explicit, never inferred from where the command happened to
   // run: a task filed from the wrong directory would silently bind to it.
   const placedIn = text(flags, "repo");
-  if (placedIn !== undefined) {
+  if (placedIn !== undefined && replaces === undefined) {
     const placed = store.placeTask(store.refFor(BUILT_IN, filedId).id, canonicalProject(placedIn) ?? resolve(placedIn));
     if (typeof placed === "object" && !placed.ok) return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
   }
-
-  if (replaces !== undefined) store.setTaskState(replaces, "cancelled", now, {}, undefined, outcome.task.id);
 
   if (checks !== undefined) {
     const chosen = setTaskCheckLevel(store, outcome.task.id, checks, "cli", now);
@@ -9833,6 +9841,7 @@ async function runTaskChecks(positional: readonly string[], flags: Map<string, s
   const asked = requestFollowUpChecks(store, { runId: result.runId, level, actor: "cli" }, clock());
   if (!asked.ok) return fail(write, json, "task checks", asked.reason, asked.message, EXIT.refused);
   const done = await runFollowUpCheck(store, context.evidenceRoot, asked.request, { now: clock });
+  if (done?.state === "recovery-held") return fail(write, json, "task checks", "recovery-held", done.note!, EXIT.refused);
   const state = done?.state ?? "waiting";
   const words = `${CHECK_LEVEL_WORDS[asked.level]} checks`;
   const payload = { task: taskId, run: result.runId, head: result.head, request: asked.request, level: asked.level, state, exitCode: done?.exitCode ?? null };
@@ -10456,6 +10465,7 @@ async function stateTask(
   noteActingPerson(flags, context);
   const moved = store.setTaskState(id, state as TaskState, now, mutationFrom(flags, now), text(flags, "reason"), replacedBy);
   if (!moved.ok) {
+    if (moved.reason === "recovery-held") return fail(write, json, "task state", "recovery-held", "This task can't be replaced while earlier check execution is unverified after recovery.", EXIT.refused);
     if (moved.reason === "reason-required" || moved.reason === "bad-reason") {
       return fail(write, json, "task state", moved.reason,
         moved.reason === "reason-required"
@@ -12086,6 +12096,7 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
   if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator deletes projects: pass --as and --token (or use the remembered login).", EXIT.refused);
   const holdings = projectHoldings(store, repo);
   const running = projectRunning(store, repo, context.clock());
+  if (running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)) return fail(context.write, context.json, command, "recovery-held", PROJECT_RECOVERY_DELETE_MESSAGE, EXIT.refused);
   if (running.length > 0) return fail(context.write, context.json, command, "running", `Nothing was deleted: ${running.join(", ")}. Stop it, then try again.`, EXIT.refused);
   if (!flags.has("yes")) {
     return succeed(context.write, context.json, command, { repo, deleted: false, holdings }, () => [
@@ -12094,7 +12105,7 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
     ]);
   }
   const done = await deleteProject(store, repo, { actor: acting.name, via: "command line", now: context.clock(), evidenceRoot: context.evidenceRoot ?? join(dirname(context.databaseFile), "evidence"), poolRoot: join(dirname(context.databaseFile), "worktrees") });
-  if (!done.ok) return fail(context.write, context.json, command, done.reason, done.said, done.reason === "running" ? EXIT.refused : EXIT.failed);
+  if (!done.ok) return fail(context.write, context.json, command, done.reason, done.said, (done.reason === "running" || done.reason === "recovery-held") ? EXIT.refused : EXIT.failed);
   if (!("error" in registered) && registered.repos.includes(repo)) await updateRepos(registryFile, repos => removeRepos(repos, [repo])).catch(() => undefined);
   return succeed(context.write, context.json, command, { repo, deleted: true, removed: done.removed, left: done.left, ledgerEntry: done.ledgerId }, () => [
     `Deleted ${repo}: ${holdingsWords(done.removed)}.`, ...done.left.map(one => `Git kept ${one}.`), `The ledger records it as entry #${done.ledgerId}.`,
@@ -15636,4 +15647,36 @@ export function threadStateWord(one: { ended: boolean; turn: string | null; ship
 export function shipOutcomeWord(ship: string | null): string {
   const word = ship === "merged" ? "Merged" : ship === "sent-back" ? "sent back" : null;
   return word === null ? "" : ` · Ship: ${word}`;
+}
+
+// Replacement helpers stay at EOF: existing password-proof function ordinals must not move.
+class BuiltinReplacementRefused extends Error { constructor(readonly reason: string) { super(reason); } }
+function createBuiltinReplacement(store: Store, input: { id: string; title: string; report: boolean; repo: string | null; replaces: string; now: Date }):
+  { ok: true; task: ReturnType<Store["createTask"]> } | { ok: false; reason: string } {
+  try {
+    return store.transact(() => store.savepoint(() => {
+      if (store.getTask(input.replaces) === null) return { ok: false as const, reason: "unknown-task" };
+      const task = store.createTask({ id: input.id, title: input.title, ...(input.report ? { deliverable: "report" as const } : {}) }, input.now);
+      const ref = store.refFor(BUILT_IN, task.id).id;
+      store.stampFiledVia(ref, "cli");
+      if (input.repo !== null) {
+        const placed = store.placeTask(ref, canonicalProject(input.repo) ?? resolve(input.repo));
+        if (typeof placed === "object" && !placed.ok) throw new BuiltinReplacementRefused("scoped");
+      }
+      const moved = store.setTaskState(input.replaces, "cancelled", input.now, {}, undefined, task.id);
+      if (!moved.ok) throw new BuiltinReplacementRefused(moved.reason);
+      return { ok: true as const, task };
+    }));
+  } catch (error) {
+    if (error instanceof BuiltinReplacementRefused) return { ok: false, reason: error.reason };
+    throw error;
+  }
+}
+function builtinReplacementHeld(store: Store, source: string, target: string): boolean {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return false;
+  for (const taskId of [source, target]) {
+    const ref = store.lookupRef(taskId);
+    if (ref === null ? store.getTask(taskId) !== null : readCheckRecoveryHoldsForTaskRef(store, ref.id).kind !== "no-evidence") return true;
+  }
+  return false;
 }

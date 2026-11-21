@@ -590,7 +590,7 @@ fn the_step_strip_ticks() {
     let head = |s: String| s.lines().take(6).collect::<Vec<_>>().join("\n");
     insta::assert_snapshot!("step_strip", head(screen(&mut app, 120, 30)));
     app.now += 60;
-    assert!(screen(&mut app, 120, 30).contains("Build ◐ 5m"));
+    assert!(screen(&mut app, 120, 30).contains("◐ Build · 5m 12s"));
 }
 
 #[test]
@@ -782,12 +782,13 @@ fn watch_running_at_120_columns_keeps_titles_and_shows_cost_first() {
         "{words}\n{shown}"
     );
     assert!(!shown.contains("Document add in REA…"), "{shown}");
-    // The focused panel at this width: its cost first, then its state; the model's name gives way.
+    // The focused panel at this width: its cost first, then its attempt; the model's name gives way,
+    // while the pipeline strip directly below carries the live Build stage.
     let facts = shown
         .lines()
         .find_map(|l| l.split('┃').nth(1).filter(|c| c.contains("$0.31")))
         .expect("cost shown");
     let at = facts.find("$0.31").unwrap();
-    assert!(facts[at..].contains("Building now"), "{facts}");
+    assert!(facts[at..].contains("attempt 1"), "{facts}");
     assert!(!facts.contains("claude sonnet"), "{facts}");
 }

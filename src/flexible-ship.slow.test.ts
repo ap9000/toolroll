@@ -15,6 +15,7 @@ import { cancelFlexibleShip, flexibleArmedPass, flexibleShipsOf, flexibleShipTas
 import { flexibleImportRef, importFlexibleCandidate } from "./flexible-import.js";
 import { enableFlexible, proposedFlexibleTerms, turnFlexibleOff } from "./flexible.js";
 import { addApprover, approvalOf, APPROVAL_PROOF } from "./scope.js";
+import { CHECK_RECOVERY_HELD, checkRequestDigest, representCheckHoldDetail } from "./check-recovery-hold.js";
 import { withActor } from "./actor.js";
 import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { register } from "./runner.js";
@@ -649,5 +650,91 @@ describe("crashes and removal", () => {
     // Left: only the check task's own branch (it belongs to the task, not the thread).
     expect(projectRefs()).toBe([...before.split("\n").filter(line => !line.startsWith(`refs/toolroll/threads/${thread.id}/`)), `refs/heads/${taskBranch(one.taskId)} ${world.second}`].sort().join("\n"));
     expect(store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'flexible thread repository removed'").get()!["detail"]).toContain("ship refs removed 2");
+  });
+});
+
+
+/** Synthetic event only: no production writer or recovery-ready claim. */
+function holdShipRun(taskId: string, runId: number, invalid = false): void {
+  const ref = store.lookupRef(taskId)!, detail = `${store.getRun(runId)!.headRevision} · person · ${store.liveVerifyCommand(ref.repo!)!.digest}`;
+  const id = store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: ref.repo, taskId, runId, action: "checks requested", outcome: "full", source: "work", detail });
+  const q = checkRequestDigest({ id, repo: ref.repo, taskId, runId, action: "checks requested", outcome: "full", detail })!;
+  store.recordAction({ at: NOW.toISOString(), actor: "toolroll", repo: ref.repo, taskId, runId, action: CHECK_RECOVERY_HELD, outcome: String(id), source: "work", detail: invalid ? "{}" : representCheckHoldDetail({ v: 1, q, g: "e".repeat(32), r: ref.id })! });
+}
+const shipRow = (id: string) => store.handle.prepare("SELECT * FROM flexible_ship WHERE id=?").get(id);
+
+describe("CH2b Ship recovery barriers", () => {
+  test.each(["armed", "completed", "invalid"] as const)("CH2b initially held %s bound Ship performs zero prospective calls and keeps its phase", async phase => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), gh = github(one.candidate);
+    if (phase === "completed") expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    holdShipRun(one.taskId, runId, phase === "invalid"); const before = shipRow(one.ship), calls: string[] = [];
+    expect(await mergeArmedFlexible(store, { taskId: one.taskId, root, clock: () => NOW,
+      runner: async file => { calls.push(file); throw Error("Unexpected held Git command"); }, exec: async file => { calls.push(file); throw Error("Unexpected held GH command"); } })).toMatchObject({ ok: false, reason: "recovery-held" });
+    expect(calls).toEqual([]); expect(shipRow(one.ship)).toEqual(before);
+  });
+  test.each(["missing-ref", "missing-run"] as const)("CH2b global hold plus %s bound evidence refuses before dispatch or phase mutation", async missing => {
+    const one = await shipped(); const taskId = one.taskId;
+    if (missing === "missing-ref") {
+      // Existing FK/Ship immutability guards prohibit manufacturing this damaged binding by ordinary writes.
+      // Narrow fault injection makes only this trusted task lookup unavailable; the Store and Ship row remain real.
+      const lookup = store.lookupRef.bind(store);
+      vi.spyOn(store, "lookupRef").mockImplementation(id => id === taskId ? null : lookup(id));
+    }
+    store.recordAction({ at: NOW.toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "work", action: CHECK_RECOVERY_HELD, outcome: "unrelated", detail: "{}" });
+    const before = shipRow(one.ship), calls: string[] = [];
+    expect(await mergeArmedFlexible(store, { taskId, root, clock: () => NOW, runner: async file => { calls.push(file); throw Error("unexpected dispatch"); }, exec: async file => { calls.push(file); throw Error("unexpected dispatch"); } })).toMatchObject({ ok: false, reason: "recovery-held" });
+    expect(calls).toEqual([]); expect(shipRow(one.ship)).toEqual(before);
+  });
+  test("CH2b hold at automatic cancellation transaction preserves armed custody", async () => {
+    const one = await shipped(), runId = built(one.taskId, world.first), before = shipRow(one.ship); let inserted = false;
+    expect(await mergeArmedFlexible(store, { taskId: one.taskId, root, clock: () => { if (!inserted) { inserted = true; holdShipRun(one.taskId, runId); } return NOW; }, exec: async () => { throw Error("unexpected GH dispatch"); } })).toMatchObject({ ok: false, reason: "recovery-held" });
+    expect(inserted).toBe(true); expect(shipRow(one.ship)).toEqual(before); expect(actions(one.taskId)).not.toContain("flexible merge cancelled");
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action=?").get(CHECK_RECOVERY_HELD)?.["n"]).toBe(1);
+  });
+  test("CH2b hold after async base read does not complete, cancel or owe a pull request", async () => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), before = shipRow(one.ship); let inserted = false;
+    const result = await mergeArmedFlexible(store, { taskId: one.taskId, root, clock: () => NOW, runner: async (file, args, options) => {
+      const answer = await run(file, args, options); if (args.includes("merge-base") && !inserted) { inserted = true; holdShipRun(one.taskId, runId); } return answer;
+    } });
+    expect(result).toMatchObject({ ok: false, reason: "recovery-held" }); expect(inserted).toBe(true); expect(shipRow(one.ship)).toEqual(before); expect(store.publicationForRun(runId)).toBeNull();
+  });
+  test("CH2b same-transaction hold before armed completion rolls back prospective completion and publication", async () => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), before = shipRow(one.ship); let inserted = false;
+    const result = await mergeArmedFlexible(store, { taskId: one.taskId, root, clock: () => {
+      if (!inserted && store.publicationForRun(runId) !== null && state(one.ship) === "armed") { inserted = true; holdShipRun(one.taskId, runId); } return NOW;
+    } });
+    expect(inserted).toBe(true); expect(result).toMatchObject({ ok: false, reason: "recovery-held" }); expect(shipRow(one.ship)).toEqual(before); expect(store.publicationForRun(runId)).toBeNull();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action=?").get(CHECK_RECOVERY_HELD)?.["n"]).toBe(0); // Test callback's own uncommitted event rolled back too, never reinserted.
+  });
+  test("CH2b hold after proceed reservation rolls back unissued Ship phase and merge reservation atomically", async () => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), gh = github(one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" }); await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    const before = shipRow(one.ship), prior = actions(one.taskId); let inserted = false;
+    await mergeArmedFlexible(store, { taskId: one.taskId, root, exec: gh.exec, clock: () => {
+      if (!inserted && state(one.ship) === "merging") { inserted = true; holdShipRun(one.taskId, runId); } return NOW;
+    } });
+    expect(inserted).toBe(true); expect(gh.merges()).toEqual([]); expect(shipRow(one.ship)).toEqual(before); expect(actions(one.taskId)).toEqual(prior); expect(store.handle.prepare("SELECT * FROM merge_in_flight").all()).toEqual([]);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action=?").get(CHECK_RECOVERY_HELD)?.["n"]).toBe(0); // Same outer transaction: no claim that this fixture hold committed.
+  });
+  test("CH2b hold arriving during issued merge preserves custody when GitHub reports another destination", async () => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate); let reserved: unknown;
+    const gh = github(one.candidate, { baseOnMerge: "other-base", merge: () => { reserved = shipRow(one.ship); holdShipRun(one.taskId, runId); } });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" }); await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "waiting" });
+    expect(reserved).toMatchObject({ state: "merging", merge_token: expect.any(String) }); expect(shipRow(one.ship)).toEqual(reserved); expect(gh.merges()).toHaveLength(1);
+    expect(actions(one.taskId)).not.toContain("flexible merge cancelled"); expect(actions(one.taskId)).not.toContain("flexible merged");
+    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action=?").get(CHECK_RECOVERY_HELD)?.["n"]).toBe(1);
+  });
+  test.each(["OPEN", "CLOSED", "MOVED", "UNREADABLE", "MERGED-WRONG-HEAD", "MERGED-WRONG-BASE"] as const)("CH2b held uncertain merge retains issued custody after %s observation", async observed => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), dies = github(one.candidate, { mergeDies: "before" });
+    expect(await step(one.taskId, dies.exec)).toMatchObject({ ok: true, state: "completed" }); await publishPass(store, { repo: world.project, exec: dies.exec, clock: () => NOW, evidenceRoot: root }); await pass(dies.exec); expect(state(one.ship)).toBe("merging");
+    holdShipRun(one.taskId, runId); const before = shipRow(one.ship), prior = actions(one.taskId), calls: string[][] = [];
+    const exec: PublishExec = async (file, args) => { calls.push([file, ...args]); return { code: observed === "UNREADABLE" ? 1 : 0, stdout: JSON.stringify({ state: observed.startsWith("MERGED-") ? "MERGED" : observed === "CLOSED" ? "CLOSED" : "OPEN", headRefOid: observed === "MOVED" || observed === "MERGED-WRONG-HEAD" ? "f".repeat(40) : one.candidate, baseRefName: observed === "MERGED-WRONG-BASE" ? "other-base" : "main", url: "https://github.com/alex/shop/pull/7" }), stderr: "", timedOut: false, notFound: false }; };
+    await pass(exec, new Date(NOW.getTime() + 16 * 60_000)); expect(shipRow(one.ship)).toEqual(before); expect(actions(one.taskId)).toEqual(prior); expect(calls.some(call => call.includes("merge"))).toBe(false);
+  });
+  test("CH2b held uncertain merge may settle only genuine MERGED at signed destination/head without retry", async () => {
+    const one = await shipped(), runId = built(one.taskId, one.candidate), dies = github(one.candidate, { mergeDies: "after" });
+    expect(await step(one.taskId, dies.exec)).toMatchObject({ ok: true, state: "completed" }); await publishPass(store, { repo: world.project, exec: dies.exec, clock: () => NOW, evidenceRoot: root }); await pass(dies.exec); expect(state(one.ship)).toBe("merging");
+    holdShipRun(one.taskId, runId); const issued = dies.merges().length; await pass(dies.exec, new Date(NOW.getTime() + 16 * 60_000)); expect(state(one.ship)).toBe("merged"); expect(dies.merges()).toHaveLength(issued);
   });
 });

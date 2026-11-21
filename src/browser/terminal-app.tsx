@@ -17,13 +17,25 @@ import { termsOf } from "../design/kit.js";
 import { installKitBehavior, KActs, KApprove, KButton, KChip, KEmpty, KField, KIcon, KLinkButton, KNote, KOverlay, KRadios, KSelect } from "./kit/index.js";
 import { keyed, socketProtocols } from "./mutation-key.js";
 
-type Program = "claude" | "codex" | "shell";
-type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null };
+type Program = "claude" | "codex" | "antigravity" | "shell";
+type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null; task: string | null; run: number | null };
 type State = { available: boolean; problem: string | null; sessions: Session[]; projects: { path: string; name: string }[]; programs: Program[] };
 type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline" | "busy";
+type ControlState = { role: "controller" | "observer"; controller: string | null; viewers: string[]; epoch: number };
+type TaskTarget = { task: string; run: number; program: Program };
 
-const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-const PROGRAM_TEXT: Record<Program, string> = { claude: "An agent you drive by hand", codex: "An agent you drive by hand", shell: "A plain terminal" };
+const INITIAL_TARGET: TaskTarget | null = (() => {
+  const q = new URLSearchParams(location.search);
+  const task = q.get("task")?.trim() ?? "";
+  const runRaw = q.get("run")?.trim() ?? "";
+  if (task === "" || task.length > 200 || !/^[1-9][0-9]{0,14}$/.test(runRaw)) return null;
+  const progRaw = q.get("program")?.trim() ?? "";
+  const program: Program = progRaw === "claude" || progRaw === "codex" || progRaw === "antigravity" || progRaw === "shell" ? progRaw : "claude";
+  return { task, run: Number(runRaw), program };
+})();
+
+const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", antigravity: "Antigravity", shell: "Shell" };
+const PROGRAM_TEXT: Record<Program, string> = { claude: "An agent you drive by hand", codex: "An agent you drive by hand", antigravity: "Gemini models via Antigravity", shell: "A plain terminal" };
 const LINK_WORDS: Record<Link, string> = {
   connecting: "Connecting…", live: "Live", ended: "Ended", behind: "Catching up…",
   "signed-out": "Signed out. Sign in again to keep typing", gone: "This terminal is gone", offline: "Reconnecting…",
@@ -66,7 +78,13 @@ function themeOf(): ITheme {
 }
 
 /** One live terminal: xterm on a WebSocket, refitted to its box and to the phone's keyboard. */
-function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (link: Link) => void; keys: (send: (data: string) => void) => void }) {
+function TerminalPane({ session, onLink, onControl, keys, controls }: {
+  session: Session;
+  onLink: (link: Link) => void;
+  onControl: (control: ControlState | null) => void;
+  keys: (send: (data: string) => void) => void;
+  controls: (actions: { take: () => void; release: () => void }) => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const term = new Terminal({
@@ -92,16 +110,21 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
       term.loadAddon(webgl);
     } catch { webgl = null; }
     let socket: WebSocket | null = null;
-    let stopped = false, ended = false, retry = 0, timer: number | undefined, busyTimer: number | undefined;
+    let stopped = false, ended = false, isController = true, retry = 0, timer: number | undefined, busyTimer: number | undefined;
     const send = (frame: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame)); };
-    const input = (data: string) => send({ t: "in", d: data });
+    const input = (data: string) => { if (isController) send({ t: "in", d: data }); };
     keys(input);
     const refit = () => {
       try { fit.fit(); } catch { return; }
-      send({ t: "resize", cols: term.cols, rows: term.rows });
+      if (isController) send({ t: "resize", cols: term.cols, rows: term.rows });
     };
+    controls({
+      take: () => { send({ t: "take-control" }); term.focus(); },
+      release: () => { send({ t: "release-control" }); },
+    });
     const connect = () => {
       onLink(retry === 0 ? "connecting" : "offline");
+      onControl(null);
       const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/term/${session.id}/socket`;
       const ws = new WebSocket(url, socketProtocols());
       socket = ws;
@@ -110,9 +133,16 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
       ws.onmessage = event => {
         if (firstFrame) { term.reset(); firstFrame = false; }
         if (typeof event.data !== "string") { term.write(new Uint8Array(event.data as ArrayBuffer)); return; }
-        let control: { t?: string; ended?: boolean };
+        let control: { t?: string; ended?: boolean; role?: "controller" | "observer"; controller?: string | null; viewers?: string[]; epoch?: number };
         try { control = JSON.parse(event.data) as typeof control; } catch { return; }
         if (control.t === "hello") { retry = 0; ended = control.ended === true; onLink(ended ? "ended" : "live"); if (!ended) refit(); }
+        else if (control.t === "control" && (control.role === "controller" || control.role === "observer")) {
+          const next = { role: control.role, controller: control.controller ?? null, viewers: Array.isArray(control.viewers) ? control.viewers : [], epoch: control.epoch ?? 0 };
+          const becameController = !isController && next.role === "controller";
+          isController = next.role === "controller";
+          onControl(next);
+          if (becameController && !ended) refit();
+        }
         else if (control.t === "exit") { ended = true; onLink("ended"); }
         else if (control.t === "input-full") { onLink("busy"); window.clearTimeout(busyTimer); busyTimer = window.setTimeout(() => { if (!ended) onLink("live"); }, 2500); }
       };
@@ -166,27 +196,47 @@ function KeyBar({ sendRef }: { sendRef: { current: ((data: string) => void) | nu
   </div>;
 }
 
-/** New terminal: a project and a program, then Start (step-up: the password unless Passwordless). */
-function NewSession({ state, onStarted, onCancel }: { state: State; onStarted: (id: string) => void; onCancel: (() => void) | null }) {
+/** New terminal: either bound to a task's build (`target`) or a standalone project worktree, then Start (step-up). */
+function NewSession({ state, target, onClearTarget, onStarted, onCancel }: {
+  state: State;
+  target: TaskTarget | null;
+  onClearTarget: () => void;
+  onStarted: (id: string) => void;
+  onCancel: (() => void) | null;
+}) {
   const [repo, setRepo] = useState(state.projects[0]?.path ?? "");
-  const [program, setProgram] = useState<Program>(state.programs[0] ?? "claude");
-  if (state.projects.length === 0) return <div className="term-form"><KEmpty title="No projects yet." text="Add a project in the console first, then start a terminal in it." action={<KLinkButton sm href="/projects" label="Open Projects" />} /></div>;
+  const [program, setProgram] = useState<Program>(target?.program ?? state.programs[0] ?? "claude");
+  if (target === null && state.projects.length === 0) return <div className="term-form"><KEmpty title="No projects yet." text="Add a project in the console first, then start a terminal in it." action={<KLinkButton sm href="/projects" label="Open Projects" />} /></div>;
   const project = state.projects.find(one => one.path === repo)?.name ?? "";
-  // The approval covers exactly what was shown: the project and program as they stand when Start is pressed.
+  // The approval covers exactly what was shown: the task build (or project) and program as they stand when Start is pressed.
   const start = async (password: string | null): Promise<string | null> => {
-    const answer = await post("/term/start", { repo, program, password: password ?? "" });
+    const fields: Record<string, string> = target !== null
+      ? { task: target.task, run: String(target.run), program, password: password ?? "" }
+      : { repo, program, password: password ?? "" };
+    const answer = await post("/term/start", fields);
     if (answer.ok && answer.id !== undefined) { onStarted(answer.id); return null; }
     return answer.error ?? "The terminal didn't start. Nothing changed.";
   };
+  const summary = target !== null
+    ? `${PROGRAM_WORDS[program]} · task ${target.task} (build #${target.run}) · separate copy${program === "shell" ? "" : " with task context"}`
+    : `${PROGRAM_WORDS[program]} · ${project} · a fresh worktree on its own branch`;
+  const terms = target !== null
+    ? `${PROGRAM_WORDS[program]} on a separate copy of task ${target.task} (build #${target.run}).`
+    : `${PROGRAM_WORDS[program]} in ${project}, a fresh worktree on its own branch.`;
   return <section className="term-form" aria-labelledby="term-new-title" data-term-new>
     <h2 id="term-new-title" className="k-sr">New terminal</h2>
-    <KField label="Project">{ids => <KSelect id={ids.id} wide value={repo} onChange={event => setRepo(event.target.value)} items={state.projects.map(one => [one.path, one.name] as const)} />}</KField>
+    {target !== null
+      ? <div className="k-field">
+        <span className="k-label">Task build</span>
+        <p className="term-terms"><a className="k-link" href={`/t/${encodeURIComponent(target.task)}`}>{target.task}</a> · build #{target.run} · <KButton variant="ghost" sm label="Use a project instead" onClick={onClearTarget} /></p>
+      </div>
+      : <KField label="Project">{ids => <KSelect id={ids.id} wide value={repo} onChange={event => setRepo(event.target.value)} items={state.projects.map(one => [one.path, one.name] as const)} />}</KField>}
     <div className="k-field term-radios"><span className="k-label">Program</span>
       <KRadios name="program" legend="Program" current={program} onChange={value => setProgram(value as Program)} items={state.programs.map(one => ({ value: one, label: PROGRAM_WORDS[one], text: PROGRAM_TEXT[one] }))} />
     </div>
-    <p className="term-terms">{PROGRAM_WORDS[program]} · {project} · a fresh worktree on its own branch</p>
+    <p className="term-terms">{summary}</p>
     <KActs>
-      <KApprove kind="step-up" facts={FACTS} label="Start terminal" terms={`${PROGRAM_WORDS[program]} in ${project}, a fresh worktree on its own branch.`} onApprove={start} />
+      <KApprove kind="step-up" facts={FACTS} label="Start terminal" terms={terms} onApprove={start} />
       {onCancel !== null && <KButton variant="ghost" label="Cancel" onClick={onCancel} />}
     </KActs>
     <KNote>{`${termsOf("step-up", FACTS)} A terminal can do anything you can on this computer. Your default branch is never touched.`}</KNote>
@@ -221,28 +271,50 @@ function EndControl({ session, onDone }: { session: Session; onDone: () => Promi
 function App() {
   const [state, setState] = useState<State | null>(null);
   const [selected, setSelected] = useState<string | null>(INITIAL);
-  const [creating, setCreating] = useState(false);
-  const [listing, setListing] = useState(INITIAL === null);
+  const [target, setTarget] = useState<TaskTarget | null>(INITIAL === null ? INITIAL_TARGET : null);
+  const [creating, setCreating] = useState(INITIAL === null && INITIAL_TARGET !== null);
+  const [listing, setListing] = useState(INITIAL === null && INITIAL_TARGET === null);
   const [link, setLink] = useState<Link>("connecting");
+  const [control, setControl] = useState<ControlState | null>(null);
+  const [confirmTakeover, setConfirmTakeover] = useState(false);
+  const targetApplied = useRef(false);
   const sendRef = useRef<((data: string) => void) | null>(null);
+  const controlRef = useRef<{ take: () => void; release: () => void } | null>(null);
   const refresh = useCallback(async () => { const next = await readState(); if (next !== null) setState(next); }, []);
   useEffect(() => { void refresh(); const timer = window.setInterval(() => { void refresh(); }, 5000); return () => window.clearInterval(timer); }, [refresh]);
   useEffect(() => {
     if (state === null) return;
+    if (target !== null && !targetApplied.current) {
+      targetApplied.current = true;
+      const existing = state.sessions.find(one => one.endedAt === null && one.task === target.task && one.run === target.run && one.program === target.program)
+        ?? state.sessions.find(one => one.endedAt === null && one.task === target.task && one.run === target.run);
+      if (existing !== undefined) {
+        setSelected(existing.id);
+        setCreating(false);
+        setListing(false);
+        setTarget(null);
+        return;
+      }
+      setCreating(true);
+      setListing(false);
+      return;
+    }
     if (selected !== null && !state.sessions.some(one => one.id === selected)) setSelected(state.sessions[0]?.id ?? null);
     if (selected === null && state.sessions.length > 0 && !creating) setSelected(state.sessions[0]!.id);
-  }, [state, selected, creating]);
+  }, [state, selected, creating, target]);
   useEffect(() => {
+    if (target !== null && selected === null) return;
     const path = selected === null ? "/term" : `/term/${selected}`;
-    if (location.pathname !== path) history.replaceState(null, "", path);
-  }, [selected]);
+    if (location.pathname !== path || location.search !== "") history.replaceState(null, "", path);
+  }, [selected, target]);
   useEffect(() => { if (link === "ended") void refresh(); }, [link, refresh]);
+  useEffect(() => { setConfirmTakeover(false); }, [selected, control?.controller, control?.role]);
 
   if (state === null) return <div className="term-app term-app--loading"><p className="k-note">Loading…</p></div>;
   const current = state.sessions.find(one => one.id === selected) ?? null;
   const running = state.sessions.filter(one => one.endedAt === null).length;
-  const choose = (id: string) => { setSelected(id); setCreating(false); setListing(false); };
-  const newOne = () => { setCreating(true); setListing(false); };
+  const choose = (id: string) => { setSelected(id); setCreating(false); setListing(false); setTarget(null); };
+  const newOne = () => { setTarget(null); setCreating(true); setListing(false); };
   // On a phone, one thing at a time: the list, a terminal, or the new-terminal form.
   const phonePane = creating || (!listing && current !== null);
 
@@ -268,15 +340,36 @@ function App() {
 
   let pane;
   if (!state.available) pane = <div className="term-form"><KEmpty title="Terminals aren't available." text={state.problem ?? "This install can't run terminals."} /></div>;
-  else if (creating || current === null) pane = <NewSession state={state} onCancel={current === null && state.sessions.length === 0 ? null : () => setCreating(false)} onStarted={id => { setCreating(false); setSelected(id); setListing(false); void refresh(); }} />;
+  else if (creating || current === null) pane = <NewSession state={state} target={target} onClearTarget={() => setTarget(null)} onCancel={current === null && state.sessions.length === 0 ? null : () => { setCreating(false); setTarget(null); }} onStarted={id => { setCreating(false); setTarget(null); setSelected(id); setListing(false); void refresh(); }} />;
   else pane = <section className="term-pane" aria-label={`${PROGRAM_WORDS[current.program]} terminal`}>
     <header className="term-ph">
       <div><b>{PROGRAM_WORDS[current.program]} · {current.project}</b>
-        <span className="term-ph-m"><span className="k-mono">{current.branch}</span> · started {new Date(current.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
+        <span className="term-ph-m">{current.task !== null && <><a className="k-link" href={`/t/${encodeURIComponent(current.task)}`}>{current.task}</a> · </>}<span className="k-mono">{current.branch}</span> · started {new Date(current.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
+      {current.endedAt === null && control !== null && (control.role === "observer"
+        ? <span className="term-link" role="status">
+            {control.controller ? `Observing · ${control.controller} controlling` : "Observing · Idle"}
+            {" "}
+            {confirmTakeover && control.controller !== null
+              ? <>
+                  <KButton sm variant="primary" label={`Confirm takeover from ${control.controller}`} onClick={() => { setConfirmTakeover(false); controlRef.current?.take(); }} />
+                  {" "}
+                  <KButton sm variant="ghost" label="Cancel" onClick={() => setConfirmTakeover(false)} />
+                </>
+              : <KButton sm variant="primary" label="Take control" onClick={() => {
+                  if (control.controller !== null) setConfirmTakeover(true);
+                  else controlRef.current?.take();
+                }} />}
+          </span>
+        : control.viewers.length > 1
+          ? <span className="term-link term-link--live" role="status">
+              Controlling · {control.viewers.length - 1} observing{" "}
+              <KButton sm variant="ghost" label="Release" onClick={() => controlRef.current?.release()} />
+            </span>
+          : null)}
       <span className={`term-link term-link--${link}`} role="status">{LINK_WORDS[link]}</span>
       <EndControl key={current.id} session={current} onDone={refresh} />
     </header>
-    <TerminalPane key={current.id} session={current} onLink={setLink} keys={send => { sendRef.current = send; }} />
+    <TerminalPane key={current.id} session={current} onLink={setLink} onControl={setControl} keys={send => { sendRef.current = send; }} controls={actions => { controlRef.current = actions; }} />
     {current.endedAt === null ? <KeyBar sendRef={sendRef} /> : <KNote>Ended. Its branch stays; Remove takes it off this list.</KNote>}
   </section>;
 

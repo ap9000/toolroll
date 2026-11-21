@@ -135,11 +135,20 @@ struct Loop {
     term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
     /// A pane's text to open in the editor: run at the top of the loop (the key reader stopped while it runs).
     editor: Option<(String, String)>,
+    /// A remote task to pull into an isolated local worktree (`toolroll handoff pull <task>`): run at the top of the loop.
+    handoff_task: Option<String>,
 }
 
-/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
-/// again (it must still be this session's) before it is attached; its frames come back as messages until it closes.
-async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
+/// Take over: this session's own terminal on that task's build for `program` (the console lists only its own), else a
+/// new one; listed again (it must still be this session's) before it is attached; its frames come back as messages until
+/// it closes.
+async fn open_terminal(
+    client: Client,
+    tx: mpsc::UnboundedSender<Msg>,
+    task: String,
+    run: i64,
+    program: String,
+) {
     let fail = |e: ApiError| {
         let _ = tx.send(Msg::TermOpened {
             task: task.clone(),
@@ -154,7 +163,14 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
             .find(|one| {
                 one.task.as_deref() == Some(task.as_str())
                     && one.run == Some(run)
+                    && one.program == program
                     && one.ended_at.is_none()
+            })
+            .or_else(|| {
+                // In shared/remote mode, also attach to any active terminal open on this task.
+                state.sessions.iter().find(|one| {
+                    one.task.as_deref() == Some(task.as_str()) && one.ended_at.is_none()
+                })
             })
             .map(|one| (one.id.clone(), one.branch.clone()))
     };
@@ -163,7 +179,7 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
         Err(e) => return fail(e),
     };
     if listed.is_none() {
-        if let Err(e) = client.term_start(&task, run, "shell").await {
+        if let Err(e) = client.term_start(&task, run, &program).await {
             return fail(e);
         }
     }
@@ -237,21 +253,77 @@ impl Loop {
     ) -> Option<i32> {
         let client = self.client.clone();
         let tx = self.tx.clone();
+        let remote = self.client.remote_info();
         match fx {
             Effect::OpenInEditor { name, text } => self.editor = Some((name, text)),
-            Effect::FetchWork => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Work(client.work_rows().await));
+            Effect::HandoffLocal(task) => self.handoff_task = Some(task),
+            Effect::FetchWork => {
+                let p_client = client.clone();
+                let p_tx = tx.clone();
+                drop(tokio::spawn(async move {
+                    let _ = tx.send(Msg::Work(client.work_rows().await));
+                }));
+                drop(tokio::spawn(async move {
+                    if let Ok(snapshot) = p_client.presence().await {
+                        let _ = p_tx.send(Msg::Presence(snapshot));
+                    }
+                }));
+            }
+            Effect::FetchAgents => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Agents(client.agents().await));
+                    }));
+                }
+            }
+            Effect::FetchSteps(task) => {
+                let c_client = client.clone();
+                let c_tx = tx.clone();
+                let c_task = task.clone();
+                drop(tokio::spawn(async move {
+                    let r = client.steps(&task).await;
+                    let _ = tx.send(Msg::Steps(task, r));
+                }));
+                drop(tokio::spawn(async move {
+                    if let Ok(list) = c_client.list_candidates(&c_task).await {
+                        let _ = c_tx.send(Msg::Candidates(c_task, list));
+                    }
+                }));
+            }
+            Effect::FetchApproval(task) => {
+                if remote.is_some() {
+                    let _ = tx.send(Msg::Approval(
+                        task.clone(),
+                        Ok(toolroll_api::ApprovalCard {
+                            version: toolroll_api::API_VERSION,
+                            task,
+                            key: None,
+                            digest: None,
+                            nonce: None,
+                            terms: vec![],
+                            problem: Some(
+                                "Remote approvals open in your browser — press w.".into(),
+                            ),
+                        }),
+                    ));
+                } else {
+                    drop(tokio::spawn(async move {
+                        let r = client.approval(&task).await;
+                        let _ = tx.send(Msg::Approval(task, r));
+                    }));
+                }
+            }
+            Effect::PingApproval(task) => drop(tokio::spawn(async move {
+                let r = client.ping_approval(&task).await;
+                let _ = tx.send(Msg::ApprovalPinged(r));
             })),
-            Effect::FetchAgents => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Agents(client.agents().await));
+            Effect::AssignTaskPerson { task, person } => drop(tokio::spawn(async move {
+                let r = client.assign_task_person(&task, &person, "").await;
+                let _ = tx.send(Msg::TaskHandedOff(r));
             })),
-            Effect::FetchSteps(task) => drop(tokio::spawn(async move {
-                let r = client.steps(&task).await;
-                let _ = tx.send(Msg::Steps(task, r));
-            })),
-            Effect::FetchApproval(task) => drop(tokio::spawn(async move {
-                let r = client.approval(&task).await;
-                let _ = tx.send(Msg::Approval(task, r));
+            Effect::PromoteCandidate { task, candidate_id } => drop(tokio::spawn(async move {
+                let r = client.promote_candidate(&task, &candidate_id).await;
+                let _ = tx.send(Msg::CandidatePromoted(r));
             })),
             Effect::FetchLive { run, file, cursor } => drop(tokio::spawn(async move {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
@@ -265,20 +337,28 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
-            Effect::FetchThreads => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Threads(client.threads().await));
-            })),
+            Effect::FetchThreads => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Threads(client.threads().await));
+                    }));
+                }
+            }
             Effect::FetchThread {
                 thread,
                 cursor,
                 known,
                 wait,
-            } => drop(tokio::spawn(async move {
-                let r = client
-                    .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
-                    .await;
-                let _ = tx.send(Msg::Thread(thread, r));
-            })),
+            } => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let r = client
+                            .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
+                            .await;
+                        let _ = tx.send(Msg::Thread(thread, r));
+                    }));
+                }
+            }
             Effect::FetchContext(ask) => drop(tokio::spawn(async move {
                 let r = client
                     .diff_context(&ask.task, ask.run, ask.file, ask.from, ask.count)
@@ -330,6 +410,9 @@ impl Loop {
                 let _ = tx.send(Msg::Acted(client.act(&path, &pairs, &done).await));
             })),
             Effect::Watch(rooms) => {
+                if remote.as_ref().is_some_and(|r| !r.capabilities.live_stream) {
+                    return None;
+                }
                 if rooms != self.watching {
                     if let Some(h) = self.watch.take() {
                         h.abort();
@@ -357,6 +440,29 @@ impl Loop {
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
+            Effect::OpenBuilderPassword { task, setup } => {
+                let page = format!("/t/{}", toolroll_api::client::encode(&task));
+                let door = if setup {
+                    "/password/set?next="
+                } else {
+                    "/login?return="
+                };
+                let url = format!(
+                    "{}{door}{}",
+                    self.client.origin(),
+                    toolroll_api::client::encode(&page)
+                );
+                let ask =
+                    serde_json::json!({ "want": "builder-password", "task": task, "setup": setup });
+                let opened = opts.control.as_mut().is_some_and(|control| {
+                    writeln!(control, "{ask}")
+                        .and_then(|_| control.flush())
+                        .is_ok()
+                });
+                if !opened {
+                    app.update(Msg::Said(format!("Open {url} to change the builder.")));
+                }
+            }
             Effect::OpenPage(page) => match opts.control.as_mut() {
                 Some(control) => {
                     let ask = format!(
@@ -374,7 +480,12 @@ impl Loop {
                     }
                 }
                 None => {
-                    let words = format!("Open {} in your browser.", self.client.origin());
+                    let path = match page {
+                        "lead-providers" => "/settings/lead#lead-config",
+                        "projects" => "/projects",
+                        _ => "",
+                    };
+                    let words = format!("Open {}{path} in your browser.", self.client.origin());
                     app.status = Some((crate::app::Tone::Said, words));
                 }
             },
@@ -388,23 +499,115 @@ impl Loop {
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
-            Effect::TermOpen { task, run } => {
-                drop(tokio::spawn(open_terminal(client, tx, task, run)));
+            Effect::TermOpen { task, run, program } => {
+                if remote.is_some() {
+                    let _ = tx.send(Msg::TermOpened {
+                        task,
+                        run,
+                        result: Err(ApiError::Refused(
+                            "Interactive build terminals are local-only for now.".into(),
+                        )),
+                    });
+                } else {
+                    drop(tokio::spawn(open_terminal(client, tx, task, run, program)));
+                }
             }
-            Effect::FetchModels => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Models(client.models().await));
+            Effect::FetchTaskBuilder { root, task } => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let result = client.task_builder(&root, &task).await;
+                        let _ = tx.send(Msg::TaskBuilder(task, result));
+                    }));
+                }
+            }
+            Effect::FetchModels => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Models(client.models().await));
+                    }));
+                }
+            }
+            Effect::CheckLeadProviders => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::LeadProvidersChecked(client.agents_check().await));
+                    }));
+                }
+            }
+            Effect::SwitchLead(plan) => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let result = client
+                            .act(
+                                "/settings/lead/on",
+                                &[("agent", plan.id()), ("return", "/chat")],
+                                "Lead membership saved.",
+                            )
+                            .await;
+                        let _ = tx.send(Msg::LeadSwitched(plan, result));
+                    }));
+                }
+            }
+            Effect::FetchLeadChat => {
+                if remote.as_ref().is_some_and(|r| !r.capabilities.lead_chat) {
+                    let _ = tx.send(Msg::LeadChat(Ok(toolroll_api::LeadChat {
+                        version: toolroll_api::API_VERSION,
+                        room: "chat".into(),
+                        session: None,
+                        lead_name: "Lead".into(),
+                        can_send: false,
+                        problem: Some("Lead chat is unavailable for this remote account.".into()),
+                        project: None,
+                        busy: false,
+                        pending_proposals: 0,
+                        queued: vec![],
+                        messages: vec![],
+                    })));
+                } else {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::LeadChat(client.chat(None).await));
+                    }));
+                }
+            }
+            Effect::ChatSend {
+                message,
+                request,
+                session,
+                project,
+            } => drop(tokio::spawn(async move {
+                let res = client
+                    .chat_send(&message, &request, session, project.as_deref())
+                    .await;
+                let _ = tx.send(Msg::ChatSent(res));
             })),
-            Effect::CheckAgents => drop(tokio::spawn(async move {
-                let _ = tx.send(Msg::Agents(client.agents_check().await));
+            Effect::ProposalAct {
+                id,
+                op,
+                confirm_yes,
+            } => drop(tokio::spawn(async move {
+                let result = client.proposal_act(id, op, confirm_yes).await;
+                let _ = tx.send(Msg::ProposalActed { id, op, result });
             })),
+            Effect::QueuedRemove(id) => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Acted(client.queued_remove(id).await));
+            })),
+            Effect::CheckAgents => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let _ = tx.send(Msg::Agents(client.agents_check().await));
+                    }));
+                }
+            }
             Effect::AgentTerm {
                 kind,
                 agent,
                 confirm,
             } => {
-                drop(tokio::spawn(open_agent_terminal(
-                    client, tx, kind, agent, confirm,
-                )));
+                if remote.is_none() {
+                    drop(tokio::spawn(open_agent_terminal(
+                        client, tx, kind, agent, confirm,
+                    )));
+                }
             }
             Effect::TermSend { id, send } => {
                 // Only the terminal the pane shows: anything else is dropped.
@@ -516,6 +719,7 @@ async fn event_loop(
         watching: vec![],
         term: None,
         editor: None,
+        handoff_task: None,
     };
     // The launcher's answers on descriptor 4 (one JSON line each, capped): read on a thread of their own.
     if let Some(reader) = opts.control.as_ref().and_then(|c| c.try_clone().ok()) {
@@ -542,8 +746,21 @@ async fn event_loop(
     app.utc_offset_secs = local_utc_offset();
     app.now = now_secs();
     app.origin = Some(client.origin().to_string());
-    // Where the last run left off (state.rs): our own small file, read only when it is safe to.
-    let state_path = crate::state::path(env);
+    if let Some(info) = client.remote_info() {
+        let mode = if info.capabilities.can_act() {
+            ""
+        } else {
+            " · read-only"
+        };
+        app.remote_badge = Some(format!("Remote · {} · {}{mode}", info.label, info.account));
+    }
+    // Where the last run left off (state.rs): isolated per (workspaceId, account) for central sessions,
+    // keeping legacy tui-state.toml / view.json untouched for personal local sessions.
+    let remote_info = client.remote_info();
+    let state_path = match &remote_info {
+        Some(info) => crate::state::remote_path(env, &info.workspace_id, &info.account),
+        None => crate::state::path(env),
+    };
     app.restore = state_path.as_deref().and_then(crate::state::load);
     let mut saved = app.restore.clone();
     let mut last_save = Instant::now();
@@ -552,12 +769,22 @@ async fn event_loop(
     app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
     app.split = prefs.settings.list_width();
     app.side = prefs.settings.list_side;
-    // This project's view (viewstate.rs), keyed by a hash of the project the console runs for this terminal.
-    let view_path = crate::viewstate::path(env);
+    // This project's view (viewstate.rs), keyed by a hash of the project (or central workspace+account+project).
+    let view_path = match &remote_info {
+        Some(info) => crate::viewstate::remote_path(env, &info.workspace_id, &info.account),
+        None => crate::viewstate::path(env),
+    };
     // Where a pane's text may go for the editor (editor.rs), and any export left by a screen that ended abruptly.
     let export_places = crate::editor::places(env);
     crate::editor::reclaim(&export_places);
-    let view_key = crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)"));
+    let view_key = match &remote_info {
+        Some(info) => crate::viewstate::remote_project_key(
+            &info.workspace_id,
+            &info.account,
+            opts.project.as_deref().unwrap_or("(all)"),
+        ),
+        None => crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)")),
+    };
     let mut views = view_path
         .as_deref()
         .map(|p| crate::viewstate::load(p, env.home.as_deref()))
@@ -580,13 +807,16 @@ async fn event_loop(
     let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
-    let mut pending: Vec<Effect> = vec![Effect::FetchWork];
+    let mut pending: Vec<Effect> = vec![Effect::FetchWork, Effect::FetchLeadChat];
     app.fetching_work = true;
+    app.chat.loading = true;
     if let Some((words, code)) = opts.fatal.take() {
         app.mode = crate::app::Mode::Fatal(words, code);
         pending.clear();
     }
     let mut events = EventStream::new();
+    let mut animation = tokio::time::interval(Duration::from_millis(150));
+    animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frames = Samples::default();
@@ -687,6 +917,20 @@ async fn event_loop(
             last_frame = Some(draw(term, &mut app, &mut frames)?);
             dirty = false;
         }
+        if let Some(task) = lp.handoff_task.take() {
+            drop(std::mem::replace(&mut events, EventStream::new()));
+            let said = run_local_handoff(term, &task);
+            app.say(
+                if said.is_ok() {
+                    crate::app::Tone::Said
+                } else {
+                    crate::app::Tone::Refused
+                },
+                said.unwrap_or_else(|e| e),
+            );
+            last_frame = Some(draw(term, &mut app, &mut frames)?);
+            dirty = false;
+        }
         keep_place(&app, false);
         keep_view(&app, false);
         if exit.is_some() {
@@ -747,6 +991,10 @@ async fn event_loop(
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
                 dirty = app.highlight_pending;
                 pending.extend(app.term_resize());
+            }
+            _ = animation.tick(), if app.areas.spinner_visible => {
+                app.spinner_frame = (app.spinner_frame + 1) % 4;
+                dirty = true;
             }
             _ = tick.tick() => {
                 for k in late.flush(Instant::now()) {
@@ -924,4 +1172,92 @@ fn edit(
     _places: &[std::path::PathBuf],
 ) -> Result<String, String> {
     Err("Opening an editor isn't supported here.".into())
+}
+
+#[cfg(unix)]
+fn run_local_handoff(term: &mut Term, task: &str) -> Result<String, String> {
+    let kitty = KITTY.swap(false, Ordering::SeqCst);
+    {
+        let out = term.backend_mut();
+        if kitty {
+            let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
+        }
+        let _ = crossterm::execute!(
+            out,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+    }
+    let _ = terminal::disable_raw_mode();
+
+    let output = std::process::Command::new("toolroll")
+        .args(["handoff", "pull", task])
+        .output();
+    let result = match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if !out.status.success() {
+                let first = stderr
+                    .lines()
+                    .chain(stdout.lines())
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("toolroll handoff pull failed.");
+                Err(first.trim().to_string())
+            } else {
+                let worktree = stdout
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("cd "))
+                    .map(|p| p.trim().to_string());
+                if let Some(dir) = worktree {
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                    println!("Toolroll local handoff ready in {dir}");
+                    println!("Edit locally, run `toolroll handoff push` when ready, then `exit` to return to Toolroll.");
+                    let _ = std::process::Command::new(shell).current_dir(&dir).status();
+                    Ok(format!("Returned from local handoff ({dir})."))
+                } else {
+                    Ok(stdout
+                        .lines()
+                        .next()
+                        .unwrap_or("Local handoff finished.")
+                        .trim()
+                        .to_string())
+                }
+            }
+        }
+        Err(_) => Err("Couldn't run `toolroll handoff pull`: ensure `toolroll` is on PATH.".into()),
+    };
+
+    let _ = terminal::enable_raw_mode();
+    {
+        let out = term.backend_mut();
+        let _ = crossterm::execute!(
+            out,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        );
+        if kitty {
+            let _ = crossterm::execute!(
+                out,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+            KITTY.store(true, Ordering::SeqCst);
+        }
+    }
+    let _ = term.draw(|f| {
+        let area = f.area();
+        f.buffer_mut().set_style(
+            area,
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
+        );
+    });
+    result
+}
+
+#[cfg(not(unix))]
+fn run_local_handoff(_term: &mut Term, _task: &str) -> Result<String, String> {
+    Err("In-TUI local handoff isn't supported on this platform yet — run `toolroll handoff pull` directly.".into())
 }

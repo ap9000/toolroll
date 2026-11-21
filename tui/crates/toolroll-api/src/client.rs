@@ -9,6 +9,10 @@
 //!   the key in `x-toolroll-key`, the console's own Origin, and `x-toolroll-act: in-place` + `x-toolroll-client: terminal`
 //!   so a refusal comes back as its words (`{ outcome, words }`) instead of a page.
 //! - A session the console no longer holds (signed out, expired after 12 idle hours, a restart) is `SessionEnded`.
+use crate::connection::{
+    parse_connection_refusal, parse_remote_connection, ConnectionAccess, ConnectionBinding,
+    ConnectionRefusal, ConnectionRole, RemoteCapabilities,
+};
 use crate::models::*;
 use crate::sse::{SseEvent, SseParser};
 use futures_util::StreamExt;
@@ -53,6 +57,10 @@ pub enum ActOutcome {
         task: String,
     },
     Refused(String),
+    BuilderPassword {
+        task: String,
+        setup: bool,
+    },
     /// New task's offer (POST /tasks/add for a small task): the exact terms Build would approve, and the preview and
     /// digest Build posts (POST /tasks/fast).
     Terms {
@@ -115,11 +123,45 @@ impl fmt::Debug for Creds {
     }
 }
 
+struct RemoteCreds {
+    bearer: Zeroizing<String>,
+    workspace_id: String,
+    recovery_generation: String,
+    label: String,
+    role: ConnectionRole,
+    access: ConnectionAccess,
+    capabilities: RemoteCapabilities,
+}
+
+impl fmt::Debug for RemoteCreds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RemoteCreds { bearer: <held>, workspace: <held> }")
+    }
+}
+
+#[derive(Debug)]
+enum ClientAuth {
+    Local(Creds),
+    Remote(RemoteCreds),
+}
+
+/// Non-secret summary of an active remote connection for the TUI header and capability gating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteInfo {
+    pub origin: String,
+    pub workspace_id: String,
+    pub label: String,
+    pub account: String,
+    pub role: ConnectionRole,
+    pub access: ConnectionAccess,
+    pub capabilities: RemoteCapabilities,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     origin: String,
     http: reqwest::Client,
-    creds: Arc<Creds>,
+    auth: Arc<ClientAuth>,
     pub account: String,
 }
 
@@ -175,6 +217,26 @@ pub fn encode(s: &str) -> String {
         }
     }
     out
+}
+
+fn percent_decode_simple(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Redeem the one-time link (`POST /login/once`, the code in the body): the session, in memory.
@@ -238,12 +300,95 @@ pub async fn redeem(link: &str) -> Result<Client, ApiError> {
     Ok(Client {
         origin,
         http,
-        creds: Arc::new(Creds {
+        auth: Arc::new(ClientAuth::Local(Creds {
             cookie: Zeroizing::new(format!("{}={}", r.cookie.name, value.as_str())),
             csrf,
             key,
-        }),
+        })),
         account: r.account,
+    })
+}
+
+/// Connect to a remote central Toolroll server with a person API token (`so_...`) and enrolled binding.
+/// Performs `GET /engine/connection`, verifies the workspace/recovery/account binding and engine contract digest,
+/// and holds the bearer token in zeroizing memory only.
+pub async fn connect_remote(
+    origin: &str,
+    token: &str,
+    expected: &ConnectionBinding,
+) -> Result<Client, ApiError> {
+    let origin = origin.trim().trim_end_matches('/').to_string();
+    let loopback_http =
+        origin.starts_with("http://127.0.0.1:") || origin.starts_with("http://[::1]:");
+    if !origin.starts_with("https://") && !loopback_http {
+        return Err(ApiError::Refused(
+            "Remote connections require an HTTPS origin.".into(),
+        ));
+    }
+    let http = http_client()?;
+    let bearer = Zeroizing::new(format!("Bearer {token}"));
+    let res = http
+        .get(format!("{origin}/engine/connection"))
+        .header("authorization", bearer.as_str())
+        .header("x-toolroll-client", "terminal-remote")
+        .header("accept", "application/json")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+    let status = res.status().as_u16();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+    if status != 200 {
+        if let Ok(code) = parse_connection_refusal(&text) {
+            return Err(match code {
+                ConnectionRefusal::Unauthenticated | ConnectionRefusal::RecoveryChanged => {
+                    ApiError::SessionEnded
+                }
+                ConnectionRefusal::CredentialPurpose => {
+                    ApiError::Refused("Use an ordinary API token (not an MCP OAuth token).".into())
+                }
+                ConnectionRefusal::WorkspaceMismatch => {
+                    ApiError::Refused("This server is not the enrolled workspace.".into())
+                }
+                ConnectionRefusal::WorkspaceUnavailable => {
+                    ApiError::Refused("The remote workspace identity is unavailable.".into())
+                }
+                ConnectionRefusal::ContractUnavailable => {
+                    ApiError::Contract("The remote server's contract is unavailable.".into())
+                }
+                ConnectionRefusal::Request => {
+                    ApiError::Refused("The remote server refused the connection request.".into())
+                }
+            });
+        }
+        return Err(if status == 401 {
+            ApiError::SessionEnded
+        } else {
+            ApiError::Refused(format!("The remote server answered status {status}."))
+        });
+    }
+    let conn = parse_remote_connection(&text, expected).map_err(|e| match e {
+        crate::connection::ConnectionError::InvalidEngine => ApiError::Contract(e.to_string()),
+        crate::connection::ConnectionError::RecoveryChanged => ApiError::SessionEnded,
+        other => ApiError::Refused(other.to_string()),
+    })?;
+    let account = conn.account().to_string();
+    Ok(Client {
+        origin,
+        http,
+        auth: Arc::new(ClientAuth::Remote(RemoteCreds {
+            bearer,
+            workspace_id: conn.workspace_id().to_string(),
+            recovery_generation: conn.recovery_generation().to_string(),
+            label: conn.label().to_string(),
+            role: conn.role(),
+            access: conn.access(),
+            capabilities: conn.capabilities().clone(),
+        })),
+        account,
     })
 }
 
@@ -258,18 +403,64 @@ pub fn check_hello(hello: &Hello) -> Result<(), String> {
     Ok(())
 }
 
-/// A `/live` signal: a room changed, the stream asked to be reopened, or a room is gone from view.
+/// A `/live` signal: a room changed, a Lead turn streamed a snapshot, the stream asked to be reopened, or a room is gone.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveSignal {
     Change(String),
+    Turn { room: String, turn: LiveTurn },
     Gone(String),
     Reload,
     Ended,
 }
 
+/// What `POST /chat` answered in JSON (`accept: application/json`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatSendOutcome {
+    Accepted { session: i64, queued: bool },
+    Refused(String),
+}
+
+/// What `POST /chat/proposal/<id>/(confirm|dismiss)` answered in JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProposalActOutcome {
+    Done {
+        said: String,
+        task_id: Option<String>,
+    },
+    Refused(String),
+}
+
 impl Client {
     pub fn origin(&self) -> &str {
         &self.origin
+    }
+
+    pub fn is_remote(&self) -> bool {
+        matches!(&*self.auth, ClientAuth::Remote(_))
+    }
+
+    pub fn remote_info(&self) -> Option<RemoteInfo> {
+        match &*self.auth {
+            ClientAuth::Local(_) => None,
+            ClientAuth::Remote(r) => Some(RemoteInfo {
+                origin: self.origin.clone(),
+                workspace_id: r.workspace_id.clone(),
+                label: r.label.clone(),
+                account: self.account.clone(),
+                role: r.role,
+                access: r.access,
+                capabilities: r.capabilities.clone(),
+            }),
+        }
+    }
+
+    fn local_creds(&self) -> Result<&Creds, ApiError> {
+        match &*self.auth {
+            ClientAuth::Local(c) => Ok(c),
+            ClientAuth::Remote(_) => Err(ApiError::Refused(
+                "This action is only available in a local Toolroll session.".into(),
+            )),
+        }
     }
 
     pub(crate) async fn get_json<T: DeserializeOwned>(
@@ -281,8 +472,24 @@ impl Client {
     }
 
     /// The cookie pair and the mutation key, for the terminal socket's handshake (term.rs) only.
-    pub(crate) fn creds_for_socket(&self) -> (&str, &str) {
-        (self.creds.cookie.as_str(), self.creds.key.as_str())
+    pub(crate) fn creds_for_socket(&self) -> Result<(&str, &str), ApiError> {
+        match &*self.auth {
+            ClientAuth::Local(c) => Ok((c.cookie.as_str(), c.key.as_str())),
+            ClientAuth::Remote(_) => Err(ApiError::Refused(
+                "Interactive build terminals are local-only for now.".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn remote_creds_for_socket(&self) -> Option<(&str, &str, &str)> {
+        match &*self.auth {
+            ClientAuth::Remote(r) => Some((
+                r.bearer.as_str(),
+                r.workspace_id.as_str(),
+                r.recovery_generation.as_str(),
+            )),
+            ClientAuth::Local(_) => None,
+        }
     }
 
     /// A form POST like `act`, whose JSON answer the caller reads itself (any status but an ended session).
@@ -291,7 +498,8 @@ impl Client {
         path: &str,
         fields: &[(&str, &str)],
     ) -> Result<String, ApiError> {
-        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        let creds = self.local_creds()?;
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
         for (k, v) in fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -301,11 +509,11 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
+            .header("cookie", creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-key", creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(60))
@@ -349,10 +557,26 @@ impl Client {
         let mut req = self
             .http
             .get(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "application/json");
-        if keyed {
-            req = req.header("x-toolroll-key", self.creds.key.as_str());
+        match &*self.auth {
+            ClientAuth::Local(creds) => {
+                req = req.header("cookie", creds.cookie.as_str());
+                if keyed {
+                    req = req.header("x-toolroll-key", creds.key.as_str());
+                }
+            }
+            ClientAuth::Remote(remote) => {
+                if keyed {
+                    return Err(ApiError::Refused(
+                        "Approvals open in your browser — press w.".into(),
+                    ));
+                }
+                req = req
+                    .header("authorization", remote.bearer.as_str())
+                    .header("x-toolroll-client", "terminal-remote")
+                    .header("x-toolroll-workspace", remote.workspace_id.as_str())
+                    .header("x-toolroll-recovery", remote.recovery_generation.as_str());
+            }
         }
         let res = req
             .timeout(Duration::from_secs(30))
@@ -371,6 +595,14 @@ impl Client {
             .await
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;
         if status != 200 {
+            if let Ok(code) = parse_connection_refusal(&text) {
+                return Err(match code {
+                    ConnectionRefusal::Unauthenticated
+                    | ConnectionRefusal::RecoveryChanged
+                    | ConnectionRefusal::WorkspaceMismatch => ApiError::SessionEnded,
+                    other => ApiError::Refused(format!("Couldn't read {what} ({other:?}).")),
+                });
+            }
             let word = serde_json::from_str::<Refusal>(&text)
                 .map(|r| r.error)
                 .unwrap_or_else(|_| format!("status {status}"));
@@ -408,6 +640,139 @@ impl Client {
         )
     }
 
+    /// The person's central Lead conversation (GET /engine/chat[?project=]).
+    pub async fn chat(&self, project: Option<&str>) -> Result<LeadChat, ApiError> {
+        let path = match project {
+            Some(p) if !p.is_empty() => format!("/engine/chat?project={}", encode(p)),
+            _ => "/engine/chat".to_string(),
+        };
+        versioned(
+            self.get::<LeadChat>(&path, "the Lead conversation").await?,
+            |r| r.version,
+        )
+    }
+
+    /// Send a message to the central Lead (`POST /chat`, `accept: application/json`).
+    pub async fn chat_send(
+        &self,
+        message: &str,
+        request: &str,
+        session: Option<i64>,
+        project: Option<&str>,
+    ) -> Result<ChatSendOutcome, ApiError> {
+        let mut fields: Vec<(&str, String)> = vec![
+            ("message", message.to_string()),
+            ("request", request.to_string()),
+        ];
+        if let Some(s) = session {
+            fields.push(("request-session", s.to_string()));
+        }
+        if let Some(p) = project.filter(|p| !p.is_empty()) {
+            fields.push(("project", p.to_string()));
+        }
+        let borrowed: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let text = match self.post_form_json("/chat", &borrowed).await {
+            Ok(t) => t,
+            Err(ApiError::Refused(words)) => return Ok(ChatSendOutcome::Refused(words)),
+            Err(e) => return Err(e),
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if v["ok"] == true {
+                let session = v["session"].as_i64().unwrap_or(0);
+                let queued = v["queued"].as_bool().unwrap_or(false);
+                return Ok(ChatSendOutcome::Accepted { session, queued });
+            }
+            if let Some(said) = v["said"].as_str().or_else(|| v["error"].as_str()) {
+                return Ok(ChatSendOutcome::Refused(said.to_string()));
+            }
+        }
+        Ok(ChatSendOutcome::Refused(
+            "Couldn't read the reply from Lead chat.".into(),
+        ))
+    }
+
+    /// Confirm or dismiss a Lead proposal (`POST /chat/proposal/<id>/(confirm|dismiss)`).
+    pub async fn proposal_act(
+        &self,
+        id: i64,
+        op: &str,
+        confirm_yes: bool,
+    ) -> Result<ProposalActOutcome, ApiError> {
+        let mut fields: Vec<(&str, &str)> = Vec::new();
+        if confirm_yes {
+            fields.push(("confirm", "yes"));
+        }
+        let creds = match self.local_creds() {
+            Ok(c) => c,
+            Err(ApiError::Refused(words)) => return Ok(ProposalActOutcome::Refused(words)),
+            Err(e) => return Err(e),
+        };
+        let path = format!("/chat/proposal/{id}/{op}");
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
+        for (k, v) in &fields {
+            body.push('&');
+            body.push_str(&encode(k));
+            body.push('=');
+            body.push_str(&encode(v));
+        }
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("cookie", creds.cookie.as_str())
+            .header("origin", &self.origin)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .header("x-toolroll-key", creds.key.as_str())
+            .header("x-toolroll-act", "in-place")
+            .header("x-toolroll-client", "terminal")
+            .timeout(Duration::from_secs(30))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if session_gone(
+            status,
+            res.headers().get("location").and_then(|v| v.to_str().ok()),
+        ) {
+            return Err(ApiError::SessionEnded);
+        }
+        let text = res.text().await.unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let said = v["said"]
+                .as_str()
+                .or_else(|| v["words"].as_str())
+                .or_else(|| v["error"].as_str())
+                .unwrap_or("")
+                .to_string();
+            if v["ok"] == true {
+                return Ok(ProposalActOutcome::Done {
+                    said: if said.is_empty() {
+                        if op == "dismiss" {
+                            "Dismissed.".into()
+                        } else {
+                            "Confirmed.".into()
+                        }
+                    } else {
+                        said
+                    },
+                    task_id: v["taskId"].as_str().map(str::to_owned),
+                });
+            }
+            return Ok(ProposalActOutcome::Refused(non_empty(said, status)));
+        }
+        Ok(ProposalActOutcome::Refused(non_empty(
+            String::new(),
+            status,
+        )))
+    }
+
+    /// Remove a queued follow-up message (`POST /chat/queued/<id>/remove`).
+    pub async fn queued_remove(&self, id: i64) -> Result<ActOutcome, ApiError> {
+        self.act(&format!("/chat/queued/{id}/remove"), &[], "Removed.")
+            .await
+    }
+
     /// Look for this computer's agents again (POST /engine/agents/check: the console's bounded status checks, no model
     /// call), and its answer: the agents read.
     pub async fn agents_check(&self) -> Result<AgentsRead, ApiError> {
@@ -423,6 +788,236 @@ impl Client {
             self.get::<WorkRows>("/work/rows", "your tasks").await?,
             |r| r.version,
         )
+    }
+
+    /// Observational live presence, terminal controller, and human ownership snapshot (`GET /api/presence`).
+    pub async fn presence(&self) -> Result<PresenceSnapshot, ApiError> {
+        self.get::<PresenceSnapshot>("/api/presence", "workspace presence")
+            .await
+    }
+
+    /// Hand a task off to a teammate (`POST /api/handoff/task/<task>/assign-person`), recording `task_act`
+    /// and sending them a personal notification. Works in both local cookie and remote bearer sessions.
+    pub async fn assign_task_person(
+        &self,
+        task: &str,
+        person: &str,
+        why: &str,
+    ) -> Result<String, ApiError> {
+        let path = format!("/api/handoff/task/{}/assign-person", encode(task));
+        let body = serde_json::json!({ "person": person, "why": why }).to_string();
+        let req = match &*self.auth {
+            ClientAuth::Remote(r) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("authorization", r.bearer.as_str())
+                .header("x-toolroll-client", "terminal-remote")
+                .header("x-toolroll-workspace", &r.workspace_id)
+                .header("x-toolroll-recovery", &r.recovery_generation),
+            ClientAuth::Local(c) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("cookie", c.cookie.as_str())
+                .header("origin", &self.origin)
+                .header("x-csrf-token", c.csrf.as_str())
+                .header("x-toolroll-key", c.key.as_str())
+                .header("x-toolroll-client", "terminal"),
+        };
+        let res = req
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body(body)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Hand-off refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        let warning = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["warning"].as_str().map(str::to_string));
+        Ok(match warning {
+            Some(w) if !w.is_empty() => format!("{person} — {w}"),
+            _ => person.to_string(),
+        })
+    }
+
+    /// List uploaded Local Checkout Candidates for a task (`GET /api/handoff/task/<task>/candidates`).
+    pub async fn list_candidates(&self, task: &str) -> Result<Vec<HandoffCandidate>, ApiError> {
+        let path = format!("/api/handoff/task/{}/candidates", encode(task));
+        let parsed = self
+            .get::<HandoffCandidatesResponse>(&path, "task candidates")
+            .await?;
+        Ok(parsed.candidates)
+    }
+
+    /// Promote a Local Checkout Candidate into a central Run and queue central checks
+    /// (`POST /api/handoff/task/<task>/candidate/<id>/promote`).
+    pub async fn promote_candidate(
+        &self,
+        task: &str,
+        candidate_id: &str,
+    ) -> Result<PromoteCandidateOutcome, ApiError> {
+        let path = format!(
+            "/api/handoff/task/{}/candidate/{}/promote",
+            encode(task),
+            encode(candidate_id)
+        );
+        let req = match &*self.auth {
+            ClientAuth::Remote(r) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("authorization", r.bearer.as_str())
+                .header("x-toolroll-client", "terminal-remote")
+                .header("x-toolroll-workspace", &r.workspace_id)
+                .header("x-toolroll-recovery", &r.recovery_generation),
+            ClientAuth::Local(c) => self
+                .http
+                .post(format!("{}{}", self.origin, path))
+                .header("cookie", c.cookie.as_str())
+                .header("origin", &self.origin)
+                .header("x-csrf-token", c.csrf.as_str())
+                .header("x-toolroll-key", c.key.as_str())
+                .header("x-toolroll-client", "terminal"),
+        };
+        let res = req
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body("{}")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Candidate promotion refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<PromoteCandidateOutcome>(&text).map_err(|_| {
+            ApiError::Contract("The promotion answer isn't what this version expects.".into())
+        })
+    }
+
+    /// Start or reuse a central Live Terminal on a task in remote mode (`POST /api/handoff/task/<task>/terminal`).
+    pub(crate) async fn remote_term_start(
+        &self,
+        task: &str,
+        program: &str,
+    ) -> Result<String, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Remote terminal start requires a remote session.".into(),
+                ));
+            }
+        };
+        let path = format!("/api/handoff/task/{}/terminal", encode(task));
+        let body = serde_json::json!({ "program": program }).to_string();
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("authorization", remote.bearer.as_str())
+            .header("x-toolroll-client", "terminal-remote")
+            .header("x-toolroll-workspace", &remote.workspace_id)
+            .header("x-toolroll-recovery", &remote.recovery_generation)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body(body)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| {
+                    format!("Central Live Terminal refused to start (status {status}).")
+                });
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["id"].as_str().map(str::to_string))
+            .ok_or_else(|| {
+                ApiError::Contract("The terminal start answer had no terminal id.".into())
+            })
+    }
+
+    /// Trigger an out-of-band approval ping to the calling approver's paired phone/chat channels
+    /// (`POST /api/handoff/task/<task>/approval-ping`). Remote API token only.
+    pub async fn ping_approval(&self, task: &str) -> Result<ApprovalPingResult, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Approval pings are only used in remote TUI sessions.".into(),
+                ));
+            }
+        };
+        let path = format!("/api/handoff/task/{}/approval-ping", encode(task));
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("authorization", remote.bearer.as_str())
+            .header("x-toolroll-client", "terminal-remote")
+            .header("x-toolroll-workspace", &remote.workspace_id)
+            .header("x-toolroll-recovery", &remote.recovery_generation)
+            .header("accept", "application/json")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res
+            .text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        if status != 200 {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("Approval ping refused (status {status})."));
+            return Err(ApiError::Refused(msg));
+        }
+        serde_json::from_str::<ApprovalPingResult>(&text).map_err(|_| {
+            ApiError::Contract("The approval ping answer isn't what this version expects.".into())
+        })
     }
 
     pub async fn steps(&self, task: &str) -> Result<StepCards, ApiError> {
@@ -550,14 +1145,97 @@ impl Client {
         )
     }
 
-    /// One act: the browser's form POST to `path` (the form token added), answered in place.
+    /// Execute a supported remote TUI command via `POST /api/cli` using the remote API token.
+    pub async fn remote_cli(
+        &self,
+        command_name: &str,
+        argv: &[String],
+        done: &str,
+    ) -> Result<ActOutcome, ApiError> {
+        let remote = match &*self.auth {
+            ClientAuth::Remote(r) => r,
+            ClientAuth::Local(_) => {
+                return Err(ApiError::Refused(
+                    "Remote CLI transport is only used in remote mode.".into(),
+                ))
+            }
+        };
+        if !remote.capabilities.can_act() {
+            return Ok(ActOutcome::Refused(
+                "This remote connection is read-only. Use an act token to make changes.".into(),
+            ));
+        }
+        if !remote.capabilities.has_command(command_name) {
+            return Ok(ActOutcome::Refused(
+                "Open this task in the browser (press w) for this action.".into(),
+            ));
+        }
+        let payload = serde_json::json!({ "argv": argv, "files": [] });
+        let res = self
+            .http
+            .post(format!("{}/api/cli", self.origin))
+            .header("authorization", remote.bearer.as_str())
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .timeout(Duration::from_secs(30))
+            .body(payload.to_string())
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if status == 401 {
+            return Err(ApiError::SessionEnded);
+        }
+        let text = res.text().await.unwrap_or_default();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let exit = v["exit"]
+                .as_i64()
+                .unwrap_or(if status < 300 { 0 } else { 1 });
+            let out = v["stdout"].as_str().unwrap_or("").trim();
+            let err = v["stderr"].as_str().unwrap_or("").trim();
+            let msg = v["message"]
+                .as_str()
+                .or_else(|| v["error"].as_str())
+                .unwrap_or("")
+                .trim();
+            if status < 300 && exit == 0 {
+                let words = if !out.is_empty() {
+                    out.lines().next().unwrap_or(done).to_string()
+                } else {
+                    done.to_string()
+                };
+                return Ok(ActOutcome::Done(words));
+            }
+            let reason = if !err.is_empty() {
+                err.lines().next().unwrap_or(err).to_string()
+            } else if !msg.is_empty() {
+                msg.to_string()
+            } else if !out.is_empty() {
+                out.lines().next().unwrap_or(out).to_string()
+            } else {
+                format!("Remote server refused the command (status {status}).")
+            };
+            return Ok(ActOutcome::Refused(reason));
+        }
+        Ok(if status < 300 {
+            ActOutcome::Done(done.to_string())
+        } else {
+            ActOutcome::Refused(format!("Remote server answered status {status}."))
+        })
+    }
+
+    /// One act: in local mode, the browser's form POST to `path`; in remote mode, translated to `POST /api/cli`.
     pub async fn act(
         &self,
         path: &str,
         fields: &[(&str, &str)],
         done: &str,
     ) -> Result<ActOutcome, ApiError> {
-        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        if self.is_remote() {
+            return self.act_remote(path, fields, done).await;
+        }
+        let creds = self.local_creds()?;
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&creds.csrf)));
         for (k, v) in fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -567,11 +1245,11 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", self.creds.cookie.as_str())
+            .header("cookie", creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-key", creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(30))
@@ -588,6 +1266,20 @@ impl Client {
         if session_gone(status, location.as_deref()) {
             return Err(ApiError::SessionEnded);
         }
+        if path == "/settings/lead/on" {
+            return Ok(
+                if (300..400).contains(&status) && location.as_deref() == Some("/chat") {
+                    ActOutcome::Done(done.to_string())
+                } else {
+                    ActOutcome::Refused(location.as_deref().and_then(said_of).map(|(_, words)| words)
+                    .unwrap_or_else(|| "The console could not switch Lead. Check the membership sign-in or open Lead settings.".into()))
+                },
+            );
+        }
+        let local_refusal = res
+            .headers()
+            .get("x-toolroll-refused")
+            .is_some_and(|v| v == "local-owner");
         let json = res
             .headers()
             .get("content-type")
@@ -596,9 +1288,15 @@ impl Client {
         let text = res.text().await.unwrap_or_default();
         if json {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if status == 403 && local_refusal {
+                    if let Some(step) = builder_password_step(path, v["href"].as_str()) {
+                        return Ok(step);
+                    }
+                }
                 let words = v["words"]
                     .as_str()
                     .or_else(|| v["error"].as_str())
+                    .or_else(|| v["said"].as_str())
                     .unwrap_or("")
                     .to_string();
                 if v["outcome"] == "thread-terms" && status == 200 {
@@ -722,6 +1420,85 @@ impl Client {
         })
     }
 
+    async fn act_remote(
+        &self,
+        path: &str,
+        fields: &[(&str, &str)],
+        done: &str,
+    ) -> Result<ActOutcome, ApiError> {
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.trim())
+                .filter(|v| !v.is_empty())
+        };
+        if path == "/tasks/add" {
+            let Some(title) = field("title") else {
+                return Ok(ActOutcome::Refused("Enter a task title.".into()));
+            };
+            let mut argv = vec!["task".into(), "add".into(), title.into()];
+            if let Some(repo) = field("repo") {
+                argv.push("--repo".into());
+                argv.push(repo.into());
+            }
+            if let Some(body) = field("body") {
+                argv.push("--body".into());
+                argv.push(body.into());
+            }
+            return self.remote_cli("task add", &argv, done).await;
+        }
+        if let Some(rest) = path.strip_prefix("/t/") {
+            if let Some((task, op)) = rest.split_once('/') {
+                let task = percent_decode_simple(task);
+                match op {
+                    "steer" => {
+                        let Some(msg) = field("message").or_else(|| field("text")) else {
+                            return Ok(ActOutcome::Refused("Enter steering notes.".into()));
+                        };
+                        let argv = vec!["task".into(), "steer".into(), task, msg.into()];
+                        return self.remote_cli("task steer", &argv, done).await;
+                    }
+                    "complete" => {
+                        let argv = vec!["task".into(), "complete".into(), task];
+                        return self.remote_cli("task complete", &argv, done).await;
+                    }
+                    "revise" => {
+                        let Some(msg) = field("feedback").or_else(|| field("message")) else {
+                            return Ok(ActOutcome::Refused("Enter revision notes.".into()));
+                        };
+                        let argv = vec!["task".into(), "revise".into(), task, msg.into()];
+                        return self.remote_cli("task revise", &argv, done).await;
+                    }
+                    "stop" | "cancel" => {
+                        let argv = vec!["task".into(), "stop".into(), task];
+                        return self.remote_cli("task stop", &argv, done).await;
+                    }
+                    "resume" => {
+                        let argv = vec!["task".into(), "resume".into(), task];
+                        return self.remote_cli("task resume", &argv, done).await;
+                    }
+                    "hold" => {
+                        let argv = vec!["task".into(), "hold".into(), task];
+                        return self.remote_cli("task hold", &argv, done).await;
+                    }
+                    "unhold" => {
+                        let argv = vec!["task".into(), "unhold".into(), task];
+                        return self.remote_cli("task unhold", &argv, done).await;
+                    }
+                    "requeue" => {
+                        let argv = vec!["task".into(), "requeue".into(), task];
+                        return self.remote_cli("task requeue", &argv, done).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(ActOutcome::Refused(
+            "Open this task in the browser (press w) for approvals and local-only actions.".into(),
+        ))
+    }
+
     /// `GET /live` for these rooms: signals until the stream ends (then `Ended`).
     pub async fn live(
         &self,
@@ -732,12 +1509,24 @@ impl Client {
             .iter()
             .map(|r| format!("room={}", encode(r)))
             .collect();
-        let res = self
+        let mut req = self
             .http
             .get(format!("{}/live?{}", self.origin, query.join("&")))
-            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "text/event-stream")
-            .header("x-toolroll-live", "1")
+            .header("x-toolroll-live", "1");
+        match &*self.auth {
+            ClientAuth::Local(creds) => {
+                req = req.header("cookie", creds.cookie.as_str());
+            }
+            ClientAuth::Remote(remote) => {
+                req = req
+                    .header("authorization", remote.bearer.as_str())
+                    .header("x-toolroll-client", "terminal-remote")
+                    .header("x-toolroll-workspace", remote.workspace_id.as_str())
+                    .header("x-toolroll-recovery", remote.recovery_generation.as_str());
+            }
+        }
+        let res = req
             .send()
             .await
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;
@@ -771,13 +1560,16 @@ impl Client {
 }
 
 fn signal_of(ev: &SseEvent) -> Option<LiveSignal> {
-    let room = || {
-        serde_json::from_str::<serde_json::Value>(&ev.data)
-            .ok()
-            .and_then(|v| v["room"].as_str().map(str::to_owned))
-    };
+    let parsed = || serde_json::from_str::<serde_json::Value>(&ev.data).ok();
+    let room = || parsed().and_then(|v| v["room"].as_str().map(str::to_owned));
     match ev.event.as_str() {
         "change" => room().map(LiveSignal::Change),
+        "turn" => {
+            let v = parsed()?;
+            let room = v["room"].as_str()?.to_owned();
+            let turn = serde_json::from_value::<LiveTurn>(v).ok()?;
+            Some(LiveSignal::Turn { room, turn })
+        }
         "gone" => room().map(LiveSignal::Gone),
         "reload" => Some(LiveSignal::Reload),
         _ => None,
@@ -833,6 +1625,24 @@ fn session_gone(status: u16, location: Option<&str>) -> bool {
         || ((300..400).contains(&status) && location.is_some_and(|l| l.starts_with("/login")))
 }
 
+// The console names its password step. Build the destination ourselves from this request.
+pub(crate) fn builder_password_step(path: &str, href: Option<&str>) -> Option<ActOutcome> {
+    let page = path.strip_suffix("/route")?;
+    let task = filed_task(page)?;
+    if page != format!("/t/{task}") {
+        return None;
+    }
+    let back = encode(page);
+    let setup = if href == Some(&format!("/login?return={back}")) {
+        false
+    } else if href == Some(&format!("/password/set?next={back}")) {
+        true
+    } else {
+        return None;
+    };
+    Some(ActOutcome::BuilderPassword { task, setup })
+}
+
 fn non_empty(words: String, status: u16) -> String {
     if words.trim().is_empty() {
         format!("Refused (status {status}).")
@@ -850,9 +1660,158 @@ fn versioned<T>(value: T, version: impl Fn(&T) -> u32) -> Result<T, ApiError> {
     Ok(value)
 }
 
+/// Live presence for a single task (viewers + live terminal controller).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPresence {
+    #[serde(default)]
+    pub viewers: Vec<String>,
+    #[serde(default)]
+    pub terminal_controller: Option<String>,
+    #[serde(default)]
+    pub terminal_program: Option<String>,
+    #[serde(default)]
+    pub terminal_viewers: usize,
+}
+
+impl TaskPresence {
+    /// Short single-line summary for task headers/rows (`None` when nobody else is active).
+    pub fn summary(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(ctrl) = &self.terminal_controller {
+            let prog = match self.terminal_program.as_deref() {
+                Some("claude") => "Claude",
+                Some("codex") => "Codex",
+                Some("antigravity") => "Antigravity",
+                Some("shell") | None => "terminal",
+                Some(other) => other,
+            };
+            parts.push(format!("{ctrl} typing in {prog}"));
+        }
+        if self.viewers.len() == 1 {
+            parts.push(format!("{} viewing", self.viewers[0]));
+        } else if self.viewers.len() > 1 {
+            parts.push(format!(
+                "{} + {} viewing",
+                self.viewers[0],
+                self.viewers.len() - 1
+            ));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+}
+
+/// Workspace-wide observational presence & task ownership snapshot (`GET /api/presence`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceSnapshot {
+    #[serde(default)]
+    pub me: String,
+    #[serde(default)]
+    pub tasks: std::collections::HashMap<String, TaskPresence>,
+    #[serde(default)]
+    pub owners: std::collections::HashMap<String, Option<String>>,
+    #[serde(default)]
+    pub accounts: Vec<String>,
+}
+
+/// Outcome of `POST /api/handoff/task/<task>/approval-ping`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalPingResult {
+    pub task_id: String,
+    #[serde(default)]
+    pub enqueued: bool,
+    #[serde(default)]
+    pub channels: Vec<String>,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// One Local Checkout Candidate listed by `GET /api/handoff/task/<task>/candidates`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffCandidate {
+    pub id: String,
+    pub author: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub promoted_at: Option<String>,
+    #[serde(default)]
+    pub promoted_by: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
+    #[serde(default)]
+    pub check_status: Option<String>,
+    #[serde(default)]
+    pub live_check_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffCandidatesResponse {
+    #[serde(default)]
+    candidates: Vec<HandoffCandidate>,
+}
+
+/// Outcome of `POST /api/handoff/task/<task>/candidate/<id>/promote`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteCandidateOutcome {
+    pub task_id: String,
+    pub candidate_id: String,
+    #[serde(default)]
+    pub run_id: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builder_password_handoff_matches_only_this_tasks_password_door() {
+        let path = "/t/homepage-nameplate/route";
+        for (href, setup) in [
+            ("/login?return=%2Ft%2Fhomepage-nameplate", false),
+            ("/password/set?next=%2Ft%2Fhomepage-nameplate", true),
+        ] {
+            assert_eq!(
+                builder_password_step(path, Some(href)),
+                Some(ActOutcome::BuilderPassword {
+                    task: "homepage-nameplate".into(),
+                    setup
+                })
+            );
+        }
+        assert_eq!(
+            builder_password_step(path, Some("/login?return=%2Ft%2Fother")),
+            None
+        );
+        assert_eq!(
+            builder_password_step("/t/homepage-nameplate/requeue", None),
+            None
+        );
+    }
 
     #[test]
     fn only_local_one_time_links() {
@@ -918,5 +1877,35 @@ mod tests {
     fn encodes_reserved_characters() {
         assert_eq!(encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
         assert_eq!(encode("t-1_x.y~"), "t-1_x.y~");
+    }
+
+    #[test]
+    fn parses_live_turn_sse_frame() {
+        let ev = SseEvent {
+            event: "turn".into(),
+            data: r#"{"room":"chat","phase":"writing","status":"Writing…","text":"Checking t-done","done":false,"ok":false,"steps":[{"tools":["read tasks"],"toolCalls":[{"id":"tc1","label":"read tasks","state":"ok","summary":"5 tasks"}]}]}"#.into(),
+        };
+        let Some(LiveSignal::Turn { room, turn }) = signal_of(&ev) else {
+            panic!("expected LiveSignal::Turn");
+        };
+        assert_eq!(room, "chat");
+        assert_eq!(turn.phase, "writing");
+        assert_eq!(turn.status, "Writing…");
+        assert_eq!(turn.text, "Checking t-done");
+        assert_eq!(turn.steps.len(), 1);
+        assert_eq!(turn.steps[0].tool_calls[0].label, "read tasks");
+        assert!(!turn.is_idle());
+
+        let idle = SseEvent {
+            event: "turn".into(),
+            data: r#"{"room":"chat","state":"idle"}"#.into(),
+        };
+        let Some(LiveSignal::Turn {
+            turn: idle_turn, ..
+        }) = signal_of(&idle)
+        else {
+            panic!("expected idle LiveSignal::Turn");
+        };
+        assert!(idle_turn.is_idle());
     }
 }

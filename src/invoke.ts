@@ -649,8 +649,8 @@ export async function invokeAgent(
     },
     ...(stdin === undefined ? {} : { stdin }),
     ...(liveInput === null ? {} : { liveInput }),
-    // One ACP conversation: the brief, the sealed model, and who the check says the agent is.
-    ...(acpLaunch === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation?.agent ?? null, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
+    // One ACP conversation: the brief, the sealed model, its auth method (when needed), and who the check says the agent is.
+    ...(acpLaunch === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation?.agent ?? null, authMethod: isAcpProvider(spec.provider) ? (ACP_AGENTS[spec.provider].authMethod ?? null) : null, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
     ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
     ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),

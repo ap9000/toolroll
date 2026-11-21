@@ -24,7 +24,7 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v108 to v138 are update-safe, from the v107 baseline up", () => {
+  test("every schema version is explicitly classed update-safe from the v107 baseline up", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
     // v108 (sign-in pauses) and v109 (the pause a task waits on) each only add a table or a column.
@@ -85,7 +85,11 @@ describe("update-safe migrations", () => {
     // v168 only adds Flexible threads' Send for checks and the refs snapshot each import compares with (tables): no saved row changes.
     // v174 only adds Flexible threads' stop requests, turn dispatch facts, thread titles and ends, and Ships' laptop consents (tables): no saved row changes.
     // v175 adds runtime and interactive authority tables; existing threads gain a stream-json runtime without changing their records.
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176]);
+    // v177 only adds workspace_identity and its guards, then seeds one identity when absent.
+    // No saved pre-v177 row is changed; a resumed identity is retained.
+    // v178 adds only action_ledger(action,id), preserving history, identity and authority.
+    // v179 only widens provider CHECK constraints to include 'antigravity': every saved row carries over untouched.
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 

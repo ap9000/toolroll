@@ -1,4 +1,5 @@
 import { advancedShownNow } from "../advanced-view.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest, sendTerminalConnectionRefusal } from "../terminal-connection.js";
 import { spendLineOf } from "../limits-ui.js";
 import { projectOutcomes } from '../project-outcomes.js';
 import { steerControlsFor } from "../steer-controls.js";
@@ -1275,7 +1276,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
     if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
     const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
@@ -1451,9 +1452,13 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   /** GET /work/rows: Work's list as data (contracts/engine-api.ts workRows), the same address keys, grouping and
    * Needs-you facts as the page, admitted as Work is; the room to follow is the workspace's. */
   async function workRows(ctx: HandlerContext): Promise<void> {
-    const { response, who, now } = ctx;
+    const { request, response, who, now } = ctx;
     const built = await workViewOf(ctx);
     if (built === null) return;
+    if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
+      const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);
+    }
     const { view } = built, list = view.list;
     // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
     const spend = (() => {

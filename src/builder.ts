@@ -2715,7 +2715,8 @@ async function settleProof(
     verifyCommand = { configured: false };
   } else if (batched && repo !== null) {
     verifyCommand = { configured: false };
-    queueBatchCheck(store, { runId, taskId: request.taskId, repo, head: sealedHead, base: captured.baseRevision, command: configured }, now());
+    const queued = queueBatchCheck(store, { runId, taskId: request.taskId, repo, head: sealedHead, base: captured.baseRevision, command: configured }, now());
+    if (typeof queued !== "number") recordCheckNote("Checks are on hold after recovery. Earlier execution is unverified.");
   } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
     verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
     recordCheckNote("Verification did not start: this worker no longer owned the build.");

@@ -216,3 +216,36 @@ test("chrome completed before another worker job is revalidated at render after 
     expect(workspace.navigation.find((one: { label: string }) => one.label === "Work").count).toBe(workCountsByProject(store, now, { ...access, repos: [project], viewer: "alex" }).filter(one => one.repo === project).reduce((n, one) => n + one.totals["needs-you"], 0));
   } finally { release?.(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test("read cache isolates different project scopes, clones results, and invalidates immediately on commit", async () => {
+  const otherProject = join(dir, "other-project");
+  mkdirSync(otherProject);
+  store.transact(() => {
+    store.handle.prepare("INSERT INTO project(path,name,added_at,last_opened_at) VALUES(?,?,?,?)").run(otherProject, "Other", stamp, stamp);
+    store.handle.prepare("INSERT INTO task(id,title,state,created_at,updated_at) VALUES(?,?,?,?,?)").run("other-only-1", "Secret other task", "queued", stamp, stamp);
+    store.handle.prepare("INSERT INTO task_ref(backend,external_id,repo) VALUES('built-in',?,?)").run("other-only-1", otherProject);
+  });
+  const reads = new ReadExecutor(file, 2);
+  try {
+    const scopeA = { principal: "operator" as const, repos: [project], includeUnplaced: false };
+    const scopeB = { principal: "operator" as const, repos: [otherProject], includeUnplaced: false };
+    const [a1, a2, b1] = await Promise.all([
+      reads.workIndexPage(now, scopeA, { limit: 100 }),
+      reads.workIndexPage(now, scopeA, { limit: 100 }),
+      reads.workIndexPage(now, scopeB, { limit: 100 }),
+    ]);
+    expect(a1).toEqual(a2);
+    expect(a1.items.some(one => one.rootId === "other-only-1")).toBe(false);
+    expect(b1.items.map(one => one.rootId)).toEqual(["other-only-1"]);
+
+    // Mutating a returned object must not pollute the cache for subsequent callers.
+    a1.items[0]!.title = "MUTATED_BY_CALLER";
+    const a3 = await reads.workIndexPage(now, scopeA, { limit: 100 });
+    expect(a3.items[0]!.title).not.toBe("MUTATED_BY_CALLER");
+
+    // Any committed write invalidates the completed cache immediately via PRAGMA data_version.
+    store.handle.prepare("UPDATE task SET title='Fresh after commit' WHERE id='other-only-1'").run();
+    const b2 = await reads.workIndexPage(now, scopeB, { limit: 100 });
+    expect(b2.items[0]!.title).toBe("Fresh after commit");
+  } finally { await reads.close(); }
+});

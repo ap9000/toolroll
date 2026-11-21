@@ -400,7 +400,7 @@ describe("where freshness may be honoured", () => {
       // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
       "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
-    expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
+    expect(using(/freshFacts\.run\(/)).toEqual(["src/device-pair.ts", "src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
     expect(chatRuns).toEqual(["freshFacts.run(null,"]);
@@ -414,7 +414,7 @@ describe("where freshness may be honoured", () => {
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
     for (const line of files.find(one => one.path === "src/server/settings.ts")!.text.split("\n").filter(one => one.includes("authenticateAccount("))) expect(line).toMatch(/body\.get\("(token|password)"\)/);
-    expect(hits["proveAccountNow()"]).toEqual({ "src/scope.ts": 1, "src/server/people-tokens.ts": 1, "src/server/remote.ts": 1 });
+    expect(hits["proveAccountNow()"]).toEqual({ "src/device-pair.ts": 1, "src/scope.ts": 1, "src/server/people-tokens.ts": 1, "src/server/remote.ts": 1 });
     // The two known empty-password branches: starting chat stands on the signed-in session's standing by design (no
     // password stand-in), and a Telegram log redaction. Anything new that branches on one must be reviewed.
     expect(using(/(typed|token|password)\s*===\s*""\s*\?/)).toEqual(["src/server/chat.ts", "src/telegram.ts"]);
@@ -436,6 +436,7 @@ describe("where freshness may be honoured", () => {
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {
+    "src/device-pair.ts#<module>": 3,
     "src/scope.ts#<module>": 2,
     "src/serve.ts#<module>": 2,
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
@@ -704,11 +705,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
     // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
-    "src/store.ts#enrollOwnerPassword@1173": 1,
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
     // `toolroll password reset`: the new hash for an account that already signs in with a password (eight pw).
-    "src/store.ts#resetAccountPassword@1219": 1,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#resetAccountPassword@1220": 1,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 1,
   },
   "credential_hash": {
@@ -724,13 +725,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
     // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
-    "src/store.ts#initLocalMode@1172>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1173>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
     // Eight pw: `toolroll password reset` proves the account has a password of its own (not an identity-provider-only
     // placeholder) and writes the new hash guarded by it; the sign-in footer asks only whether any password exists.
-    "src/store.ts#passwordResetRefusal@1218": 2,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#passwordResetRefusal@1219": 2,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/server/login-help.ts#anyPasswordSet@4": 1,
     // Easy-start D: the Linux update reads a runner's stored hash to authenticate its process record (never a password).
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 2,
@@ -842,6 +843,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-carry.ts#preflightCarry@21": 3,
   },
   "freshFacts": {
+    "src/device-pair.ts#<module>": 2,
+    "src/device-pair.ts#createDevicePairHandlers@7>confirm@6": 1,
     // B of a sign-in save proved by a one-use re-check: that same request's session still live as this person; A binds the
     // save's capability to that very request's facts.
     "src/flexible-sign-in.ts#<module>": 2,
@@ -913,6 +916,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "proveAccountNow": {
+    "src/device-pair.ts#<module>": 2,
+    "src/device-pair.ts#createDevicePairHandlers@7>confirm@6>proved:freshFacts.run(freshFactsOf(request,who),_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/server/people-tokens.ts#<module>": 2,

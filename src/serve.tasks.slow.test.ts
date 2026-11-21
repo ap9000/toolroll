@@ -2101,6 +2101,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     const cookie = await loginAs("alex", approverToken);
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
+    // The native task picker consumes the same configured form from the signed-in workspace view.
+    const workspace = await fetch(url("/t/payouts?format=workspace&version=payouts"), { headers: { cookie, accept: "application/json" } });
+    const data = await workspace.json() as { version: number; view: { kind: string; sections: { id: string; html: string }[] } };
+    expect(data.version).toBe(1);
+    expect(data.view.kind).toBe("task");
+    expect(agentsCardOf(data.view.sections.find(section => section.id === "scope")?.html ?? "")).toContain('action="/t/payouts/route"');
     const change = /<details class="agents-change">(.*?)<\/details>/s.exec(card)?.[1] ?? "";
     // One form per role, a select of exact configured pairs, no free text.
     expect(change).not.toContain('name="model"');

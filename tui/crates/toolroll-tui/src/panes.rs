@@ -436,7 +436,7 @@ impl App {
 }
 
 /// A watched panel: its task's title, its step strip, and the tail of its live output. It takes no keys.
-pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
+pub fn draw_watch(f: &mut Frame, app: &mut App, slot: usize, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -526,7 +526,17 @@ pub fn draw_watch(f: &mut Frame, app: &App, slot: usize, area: Rect) {
             .map(|l| Line::from(Span::styled(l, dim()))),
     );
     if let Some(steps) = &watch.steps {
-        lines.push(crate::view::strip(app, steps, w));
+        let row = lines.len() as u16;
+        let rect = Rect::new(
+            area.x,
+            area.y + row,
+            area.width,
+            u16::from(row < area.height),
+        );
+        let (line, targets) =
+            crate::view::pipeline_at(app, steps, rect, crate::theme::marks().running);
+        app.areas.steps.extend(targets);
+        lines.push(line);
     }
     let h = (area.height as usize).saturating_sub(lines.len());
     let t = &watch.transcript;

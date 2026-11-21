@@ -128,11 +128,13 @@ ${models.map(model => html`<option value="${model}">${labels.get(model) ?? ""}</
       : `${data.openrouterModels.length} models live from OpenRouter's catalog. Saving pins today's price; save again to pin it again.`),
     currentSubscription
       ? note("No dollar maximum. Membership chat uses the plan of the signed-in CLI; the conversation stays live until you end it, and the daily turn limit still applies.")
-      : formRow("Weekly ceiling", "Direct API only, in dollars. Leave blank when choosing a membership.", input({ id: "lead-weekly", name: "weekly-usd", value: current === null ? "" : (current.weeklyCeilingMicrousd / 1_000_000).toFixed(2), attrs: { inputmode: "decimal", "aria-label": "Weekly ceiling" } })),
+      : "",
+    formRow("Weekly ceiling", "Direct API only, in dollars. Leave blank when choosing a membership.", input({ id: "lead-weekly", name: "weekly-usd", value: current === null || currentSubscription ? "" : (current.weeklyCeilingMicrousd / 1_000_000).toFixed(2), attrs: { inputmode: "decimal", "aria-label": "Weekly ceiling" } })),
     formRow("Daily turns", "50 when left blank.", input({ id: "lead-turns", name: "daily-turns", value: current === null ? "" : String(current.dailyTurns), attrs: { inputmode: "numeric", "aria-label": "Daily turns" } })),
     currentSubscription
       ? note(html`Sign in on this computer first with ${current?.provider === "codex-subscription" ? html`<span class="k-mono">codex login</span>` : html`the <span class="k-mono">claude</span> CLI`}. Toolroll reuses that sign-in and never stores it.`)
-      : formRow("The lead's own key", `Direct API only. Leave empty to keep the one you have. ${keyWords}.`,
+      : "",
+    formRow("The lead's own key", `Direct API only. Leave empty to keep the one you have. ${keyWords}.`,
         html`<input class="k-input" id="lead-own-key" type="password" name="key" autocomplete="off" spellcheck="false" autocapitalize="none" data-so-secret data-1p-ignore data-lpignore="${SECRET_OPT_OUTS["data-lpignore"]}" data-bwignore data-form-type="other" aria-label="The lead's own key" placeholder="Paste a key">`),
   ]);
   return settingsSection({ id: "lead-config", title: "Model and limits",
