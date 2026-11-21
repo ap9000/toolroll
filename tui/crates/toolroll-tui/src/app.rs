@@ -3006,10 +3006,7 @@ impl App {
                 let finished = turn.done;
                 let idle = turn.is_idle();
                 self.chat.apply_turn(turn);
-                if finished {
-                    self.chat.loading = true;
-                    vec![Effect::FetchLeadChat]
-                } else if !idle && self.chat.optimistic_sent.is_some() {
+                if finished || (!idle && self.chat.optimistic_sent.is_some()) {
                     self.chat.loading = true;
                     vec![Effect::FetchLeadChat]
                 } else {
@@ -5407,10 +5404,10 @@ impl App {
             KeyCode::Char('u') if ctrl => {
                 q.clear();
             }
-            KeyCode::Char(c) if !ctrl && !c.is_control() => {
-                if q.chars().count() < crate::search::MAX_QUERY {
-                    q.push(c);
-                }
+            KeyCode::Char(c)
+                if !ctrl && !c.is_control() && q.chars().count() < crate::search::MAX_QUERY =>
+            {
+                q.push(c);
             }
             _ => {}
         }

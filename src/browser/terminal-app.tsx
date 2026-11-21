@@ -276,6 +276,7 @@ function App() {
   const [listing, setListing] = useState(INITIAL === null && INITIAL_TARGET === null);
   const [link, setLink] = useState<Link>("connecting");
   const [control, setControl] = useState<ControlState | null>(null);
+  const [confirmTakeover, setConfirmTakeover] = useState(false);
   const targetApplied = useRef(false);
   const sendRef = useRef<((data: string) => void) | null>(null);
   const controlRef = useRef<{ take: () => void; release: () => void } | null>(null);
@@ -307,6 +308,7 @@ function App() {
     if (location.pathname !== path || location.search !== "") history.replaceState(null, "", path);
   }, [selected, target]);
   useEffect(() => { if (link === "ended") void refresh(); }, [link, refresh]);
+  useEffect(() => { setConfirmTakeover(false); }, [selected, control?.controller, control?.role]);
 
   if (state === null) return <div className="term-app term-app--loading"><p className="k-note">Loading…</p></div>;
   const current = state.sessions.find(one => one.id === selected) ?? null;
@@ -345,13 +347,22 @@ function App() {
         <span className="term-ph-m">{current.task !== null && <><a className="k-link" href={`/t/${encodeURIComponent(current.task)}`}>{current.task}</a> · </>}<span className="k-mono">{current.branch}</span> · started {new Date(current.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
       {current.endedAt === null && control !== null && (control.role === "observer"
         ? <span className="term-link" role="status">
-            {control.controller ? `Viewing · ${control.controller} typing` : "Viewing · Idle"}
+            {control.controller ? `Observing · ${control.controller} controlling` : "Observing · Idle"}
             {" "}
-            <KButton sm variant="primary" label="Take control" onClick={() => controlRef.current?.take()} />
+            {confirmTakeover && control.controller !== null
+              ? <>
+                  <KButton sm variant="primary" label={`Confirm takeover from ${control.controller}`} onClick={() => { setConfirmTakeover(false); controlRef.current?.take(); }} />
+                  {" "}
+                  <KButton sm variant="ghost" label="Cancel" onClick={() => setConfirmTakeover(false)} />
+                </>
+              : <KButton sm variant="primary" label="Take control" onClick={() => {
+                  if (control.controller !== null) setConfirmTakeover(true);
+                  else controlRef.current?.take();
+                }} />}
           </span>
         : control.viewers.length > 1
           ? <span className="term-link term-link--live" role="status">
-              Typing · {control.viewers.length} watching{" "}
+              Controlling · {control.viewers.length - 1} observing{" "}
               <KButton sm variant="ghost" label="Release" onClick={() => controlRef.current?.release()} />
             </span>
           : null)}

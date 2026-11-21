@@ -15,6 +15,8 @@ type Candidate = {
   id: string;
   author: string;
   createdAt: string;
+  baseCommit?: string | null;
+  stale?: boolean;
   files: string[];
   note: string;
   patchSha256: string;
@@ -85,11 +87,11 @@ export function TaskMultiplayerBar({
         }),
         body: JSON.stringify({ person: assignee }),
       });
-      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null;
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; warning?: string } | null;
       if (!res.ok || !json?.ok) {
         setNotice(json?.message ?? "Could not hand off this task.");
       } else {
-        setNotice(`Handed off to ${assignee}.`);
+        setNotice(json.warning ? `Handed off to ${assignee}. Note: ${json.warning}` : `Handed off to ${assignee}.`);
         window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
       }
     } catch {
@@ -199,18 +201,21 @@ export function TaskMultiplayerBar({
             fontSize: "13px",
           }}
         >
-          <KChip word={cand.promotedAt ? "Queued for checks" : "Unverified local diff"} tone={cand.promotedAt ? "live" : "needs"} />
+          <KChip
+            word={cand.promotedAt ? "Promoted for central Run" : cand.stale ? "Stale — re-pull & rebase" : "Unverified Candidate"}
+            tone={cand.promotedAt ? "live" : "needs"}
+          />
           <span>
-            <strong>{cand.author}</strong> uploaded <code>{cand.id}</code> ({cand.files.length} file
+            <strong>{cand.author}</strong> submitted <code>{cand.id}</code> ({cand.files.length} file
             {cand.files.length === 1 ? "" : "s"}
             {cand.note ? ` · ${cand.note}` : ""})
           </span>
-          {!cand.promotedAt && (
+          {!cand.promotedAt && !cand.stale && (
             <KButton
               sm
               variant="primary"
-              label="Queue central check"
-              busy={busy === cand.id ? "Queueing…" : false}
+              label="Promote to central Run"
+              busy={busy === cand.id ? "Promoting…" : false}
               onClick={() => {
                 void promote(cand.id);
               }}

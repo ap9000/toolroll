@@ -15,19 +15,22 @@ import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { withActor } from "./actor.js";
+import { resultRunsOf } from "./engine-reads.js";
 import { remoteAllows, reproveRemote, type Principal } from "./operate-remote.js";
 import { verifyApproverStanding } from "./principal.js";
 import { rowVisible, type ProjectCeiling } from "./project.js";
 import type { Admission } from "./request-budget.js";
 import type { BrowserKeys } from "./server/mutation-key.js";
 import type { Who } from "./server/session.js";
-import type { Store } from "./store.js";
+import type { Store, TaskFamily } from "./store.js";
+import { teardownGit } from "./teardown-git.js";
 import { admitRemoteTerminalRequest, isRemoteTerminalRequest } from "./terminal-connection.js";
 
 const ASSIGN_PATH = /^\/api\/handoff\/task\/([^/]+)\/assign-person$/;
 const CANDIDATES_PATH = /^\/api\/handoff\/task\/([^/]+)\/candidates$/;
 const PROMOTE_PATH = /^\/api\/handoff\/task\/([^/]+)\/candidate\/(cand-[a-f0-9]{16})\/promote$/;
 const CANDIDATE_ID = /^cand-[a-f0-9]{16}$/;
+const SHA_PATTERN = /^[0-9a-f]{40,64}$/;
 const MAX_SMALL_BODY = 8 * 1024;
 
 export type HandoffCandidateMeta = {
@@ -178,6 +181,23 @@ function visibleTaskFamily(store: Store, ceiling: ProjectCeiling, caller: Caller
   return { family, repo };
 }
 
+async function currentTaskBaseCommit(store: Store, family: TaskFamily, repo: string): Promise<string | null> {
+  const latest = resultRunsOf(store, family)[0] ?? null;
+  if (latest?.baseRevision && SHA_PATTERN.test(latest.baseRevision)) return latest.baseRevision;
+  if (existsSync(join(repo, ".git"))) {
+    const git = teardownGit();
+    const head = await git(repo, ["rev-parse", "HEAD"]).catch(() => null);
+    if (head !== null && head.code === 0 && SHA_PATTERN.test(head.stdout.trim())) return head.stdout.trim();
+  }
+  return null;
+}
+
+function taskNeedsApproval(store: Store, family: TaskFamily): boolean {
+  const scope = store.getScope(family.current.id);
+  if (scope === null) return family.current.state === "queued";
+  return scope.approvedAt === null || scope.approvedDigest === null || scope.approvedDigest !== scope.digest;
+}
+
 /** POST /api/handoff/task/:task/assign-person — hand a task to a teammate (`store.askPerson`). */
 export async function handleAssignTaskPersonHttp(
   request: IncomingMessage,
@@ -232,16 +252,27 @@ export async function handleAssignTaskPersonHttp(
     detail: `handed to ${person}: ${why}`,
   });
 
-  return sendJson(response, 200, { ok: true, taskId: found.family.current.id, person, why });
+  const recipient = options.store.accountOf(person);
+  const warning = recipient?.role === "viewer" && taskNeedsApproval(options.store, found.family)
+    ? `${person} is a Viewer and cannot approve this Task — an Approver will still need to approve it.`
+    : null;
+
+  return sendJson(response, 200, {
+    ok: true,
+    taskId: found.family.current.id,
+    person,
+    why,
+    ...(warning === null ? {} : { warning }),
+  });
 }
 
-/** GET /api/handoff/task/:task/candidates — list uploaded local code handoff candidates for a visible task. */
-export function handleListCandidatesHttp(
+/** GET /api/handoff/task/:task/candidates — list uploaded Local Checkout Candidates for a visible Task. */
+export async function handleListCandidatesHttp(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
   options: MultiplayerHandoffOptions,
-): void {
+): Promise<void> {
   if (request.method !== "GET") return sendJson(response, 405, { ok: false, error: "method_not_allowed" }, { allow: "GET" });
   const match = CANDIDATES_PATH.exec(url.pathname);
   if (match === null) return sendJson(response, 404, { ok: false, error: "not_found" });
@@ -253,8 +284,9 @@ export function handleListCandidatesHttp(
   const found = visibleTaskFamily(options.store, options.liveCeiling(), caller, taskId);
   if (found === null) return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
 
+  const currentBaseCommit = await currentTaskBaseCommit(options.store, found.family, found.repo);
   const dir = join(options.evidenceRoot, "handoff-candidates", found.family.root.id);
-  const candidates: HandoffCandidateMeta[] = [];
+  const candidates: Array<HandoffCandidateMeta & { stale: boolean }> = [];
   if (existsSync(dir)) {
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
@@ -263,7 +295,10 @@ export function handleListCandidatesHttp(
       if (!existsSync(join(dir, `${id}.patch`))) continue;
       try {
         const parsed = JSON.parse(readFileSync(join(dir, file), "utf8")) as HandoffCandidateMeta;
-        if (parsed && parsed.id === id && typeof parsed.patchSha256 === "string") candidates.push(parsed);
+        if (parsed && parsed.id === id && typeof parsed.patchSha256 === "string") {
+          const stale = parsed.baseCommit !== null && currentBaseCommit !== null && parsed.baseCommit !== currentBaseCommit;
+          candidates.push({ ...parsed, stale });
+        }
       } catch { /* skip malformed */ }
     }
   }
@@ -272,7 +307,7 @@ export function handleListCandidatesHttp(
   if (caller.principal !== null && !reproveRemote(options.store, caller.principal, options.clock()).ok) {
     return sendJson(response, 401, { ok: false, error: "unauthenticated", message: "Your access changed." });
   }
-  return sendJson(response, 200, { ok: true, taskId: found.family.current.id, candidates });
+  return sendJson(response, 200, { ok: true, taskId: found.family.current.id, currentBaseCommit, candidates });
 }
 
 /** POST /api/handoff/task/:task/candidate/:id/promote — verify SHA-256 and queue candidate for central checks. */
@@ -311,6 +346,16 @@ export async function handlePromoteCandidateHttp(
   const actualSha = createHash("sha256").update(patch, "utf8").digest("hex");
   if (actualSha !== meta.patchSha256) {
     return sendJson(response, 409, { ok: false, error: "digest_mismatch", message: "Saved candidate patch digest did not match its metadata." });
+  }
+  const currentBaseCommit = await currentTaskBaseCommit(options.store, found.family, found.repo);
+  if (meta.baseCommit !== null && currentBaseCommit !== null && meta.baseCommit !== currentBaseCommit) {
+    return sendJson(response, 409, {
+      ok: false,
+      error: "stale_candidate",
+      baseCommit: meta.baseCommit,
+      currentBaseCommit,
+      message: `Task head moved from ${meta.baseCommit.slice(0, 8)} to ${currentBaseCommit.slice(0, 8)}. Re-pull your Local Checkout and rebase before promoting.`,
+    });
   }
 
   const now = options.clock();

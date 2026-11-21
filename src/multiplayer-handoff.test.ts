@@ -81,6 +81,9 @@ describe("human task handoff and local candidate promotion", () => {
     if (!alex.ok) throw new Error("alex");
     const sam = addApprover(store, "sam", now, { name: "alex", token: alex.token });
     if (!sam.ok) throw new Error("sam");
+    const pat = addApprover(store, "pat", now, { name: "alex", token: alex.token });
+    if (!pat.ok) throw new Error("pat");
+    store.handle.prepare("UPDATE approver SET role = 'viewer' WHERE name = ?").run("pat");
     const outsider = addApprover(store, "outsider", now, { name: "alex", token: alex.token });
     if (!outsider.ok) throw new Error("outsider");
     expect(store.setAccountProjects("outsider", [repoB], "alex", now).ok).toBe(true);
@@ -114,11 +117,22 @@ describe("human task handoff and local candidate promotion", () => {
     const ok = await rawReq(origin, "POST", "/api/handoff/task/t-collab/assign-person", headers(actTok.token), { person: "sam", why: "Can you sanity check?" });
     expect(ok.status).toBe(200);
     expect(ok.json).toMatchObject({ ok: true, taskId: "t-collab", person: "sam", why: "Can you sanity check?" });
+    expect(ok.json.warning).toBeUndefined();
+
+    // Handing an unapproved task to a project-authorized Viewer succeeds as a coordination signal with a clear warning.
+    const toViewer = await rawReq(origin, "POST", "/api/handoff/task/t-collab/assign-person", headers(actTok.token), { person: "pat", why: "Take a look" });
+    expect(toViewer.status).toBe(200);
+    expect(toViewer.json).toMatchObject({ ok: true, taskId: "t-collab", person: "pat" });
+    expect(String(toViewer.json.warning ?? "")).toContain("Viewer");
+    expect(String(toViewer.json.warning ?? "")).toContain("cannot approve");
+
+    // Re-hand back to sam so presence check verifies latest owner cleanly.
+    expect((await rawReq(origin, "POST", "/api/handoff/task/t-collab/assign-person", headers(actTok.token), { person: "sam", why: "Back to you" })).status).toBe(200);
 
     const presence = await rawReq(origin, "GET", "/api/presence", headers(actTok.token));
     expect((presence.json.owners as Record<string, string>)["t-collab"]).toBe("sam");
     const asks = store.listNotifications("pending").filter(n => n.kind === "task-ask" && n.recipient === "sam");
-    expect(asks.length).toBe(1);
+    expect(asks.length).toBeGreaterThanOrEqual(1);
   });
 
   test("local candidates are listed, promoted with SHA-256 verification, and refused on digest tampering", async () => {
@@ -164,20 +178,32 @@ describe("human task handoff and local candidate promotion", () => {
     const listed = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
     expect(listed.status).toBe(200);
     expect(listed.json.candidates).toEqual([
-      expect.objectContaining({ id: candidateId, author: "alex", trust: "unverified", promotedAt: null }),
+      expect.objectContaining({ id: candidateId, author: "alex", trust: "unverified", promotedAt: null, stale: false }),
     ]);
 
     // Read-only token refused on promote (403).
     expect((await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(readTok.token), {})).status).toBe(403);
 
-    // Act approver promotes cleanly.
+    // Act approver promotes cleanly while base commit matches.
     const promoted = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
     expect(promoted.status).toBe(200);
     expect(promoted.json).toMatchObject({ ok: true, taskId: "t-cand", candidateId, promotedBy: "alex" });
+
+    // Moving the central repo head marks the candidate stale and refuses promotion with 409 stale_candidate (no silent auto-merge).
+    writeFileSync(join(repo, "other.txt"), "advanced\n");
+    execFileSync("git", ["-C", repo, "add", "other.txt"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "advance head"]);
+    const staleList = await rawReq(origin, "GET", "/api/handoff/task/t-cand/candidates", headers(readTok.token));
+    expect(staleList.status).toBe(200);
+    expect((staleList.json.candidates as Array<{ stale: boolean }>)[0]?.stale).toBe(true);
+    const stalePromote = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
+    expect(stalePromote.status).toBe(409);
+    expect(stalePromote.json.error).toBe("stale_candidate");
 
     // Tampering with the saved patch file causes 409 digest_mismatch.
     writeFileSync(join(evidenceRoot, "handoff-candidates", "t-cand", `${candidateId}.patch`), `${patch}\n# tampered\n`);
     const tampered = await rawReq(origin, "POST", `/api/handoff/task/t-cand/candidate/${candidateId}/promote`, headers(actTok.token), {});
     expect(tampered.status).toBe(409);
+    expect(tampered.json.error).toBe("digest_mismatch");
   });
 });
