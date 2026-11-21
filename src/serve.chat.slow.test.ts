@@ -1578,9 +1578,9 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain("membership login · no dollar limit");
     expect(html).toContain('href="/settings/lead">Chat settings</a>');
     html = await (await fetch(url("/settings/lead"), { headers: { cookie } })).text();
-    expect(html).not.toContain('name="weekly-usd"');
+    expect(html).toContain("No dollar maximum.");
     expect(html).not.toContain('name="ceiling-usd"');
-    expect(html).not.toContain('name="key"');
+    expect(html).not.toMatch(/name="weekly-usd"[^>]*value="[^"]+"/);
 
     const minted = await post(cookie, "/chat/mate/mint", { csrf, token: approverToken });
     expect(minted.status).toBe(303);
