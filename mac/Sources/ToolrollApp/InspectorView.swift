@@ -398,6 +398,8 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
 
 private struct DiffInspectorView: View {
     @Bindable var store: WorkbenchStore
+    @State private var commentingLine: Int? = nil
+    @State private var commentDraft: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -487,7 +489,7 @@ private struct DiffInspectorView: View {
                                         .background(ToolrollPalette.raised)
 
                                     ForEach(hunk.lines) { line in
-                                        diffLineRow(line)
+                                        diffLineRow(line, filePath: file.path)
                                     }
                                 }
                                 .overlay(RoundedRectangle(cornerRadius: 0).strokeBorder(ToolrollPalette.line, lineWidth: 0.5))
@@ -512,7 +514,7 @@ private struct DiffInspectorView: View {
         }
     }
 
-    private func diffLineRow(_ line: DiffLine) -> some View {
+    private func diffLineRow(_ line: DiffLine, filePath: String) -> some View {
         let isAdd = line.kind == "add" || line.kind == "+"
         let isDel = line.kind == "del" || line.kind == "-"
         let prefix = isAdd ? "+" : (isDel ? "-" : " ")
@@ -522,25 +524,87 @@ private struct DiffInspectorView: View {
         let fg: Color = isAdd
             ? ToolrollPalette.success
             : (isDel ? ToolrollPalette.danger : ToolrollPalette.ink)
+        let targetLine = line.newLine ?? line.oldLine
+        let existingComments = targetLine.map { ln in
+            store.inlineDiffComments.filter { $0.path == filePath && $0.line == ln }
+        } ?? []
 
-        return HStack(spacing: 8) {
-            Text(line.oldLine.map(String.init) ?? "")
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(ToolrollPalette.muted)
-                .frame(width: 30, alignment: .trailing)
-            Text(line.newLine.map(String.init) ?? "")
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(ToolrollPalette.muted)
-                .frame(width: 30, alignment: .trailing)
-            Text("\(prefix)\(line.text)")
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(fg)
-                .textSelection(.enabled)
-            Spacer(minLength: 8)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(line.oldLine.map(String.init) ?? "")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 28, alignment: .trailing)
+                Text(line.newLine.map(String.init) ?? "")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 28, alignment: .trailing)
+                Text("\(prefix)\(line.text)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(fg)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                if let ln = targetLine {
+                    Button {
+                        commentingLine = (commentingLine == ln) ? nil : ln
+                        commentDraft = ""
+                    } label: {
+                        Image(systemName: "plus.bubble")
+                            .font(.system(size: 10))
+                            .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Comment on line \(ln)")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 2)
+            .background(bg)
+
+            if let ln = targetLine, commentingLine == ln {
+                HStack(spacing: 6) {
+                    Text("L\(ln)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    TextField("Add inline review note…", text: $commentDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .onSubmit {
+                            let text = commentDraft
+                            commentDraft = ""
+                            commentingLine = nil
+                            Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+                        }
+                    Button("Save") {
+                        let text = commentDraft
+                        commentDraft = ""
+                        commentingLine = nil
+                        Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(ToolrollPalette.raised)
+            }
+
+            ForEach(existingComments) { note in
+                HStack(spacing: 6) {
+                    Image(systemName: "text.bubble.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(ToolrollPalette.live)
+                    Text("L\(note.line): \(note.text)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(ToolrollPalette.raised)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 2)
-        .background(bg)
     }
 }
 

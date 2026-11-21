@@ -44,24 +44,29 @@ public final class WorkbenchStore {
     public var selectedProject: String? = nil
     public var teamFilter: TeamFilter = .everyone
     public var sidebarSearch: String = ""
-    public var isInspectorVisible: Bool = true
-    public var inspectorTab: InspectorTab = .terminal
+    public var isInspectorVisible: Bool = false
+    public var inspectorTab: InspectorTab = .diff
     public var isCommandPaletteOpen: Bool = false
     public var isPairSheetOpen: Bool = false
     public var isNewTaskSheetOpen: Bool = false
+    public var isSetupOpen: Bool = false
     public var isFinishedDrawerOpen: Bool = false
 
     // Engine State
     public private(set) var workRowsResponse: WorkRowsResponse = WorkRowsResponse()
     public private(set) var presence: PresenceSnapshot = PresenceSnapshot()
+    public private(set) var agentsRead: AgentsReadResponse = AgentsReadResponse()
+    public private(set) var modelsRead: ModelsReadResponse = ModelsReadResponse()
     public private(set) var selectedTaskId: String?
     public private(set) var stepCards: StepCardsResponse?
+    public private(set) var liveRunRecords: [LiveAgentRecord] = []
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
     public private(set) var candidatesResponse: CandidatesListResponse?
     public private(set) var diffResponse: ResultDiffResponse?
     public private(set) var selectedDiffPath: String?
     public private(set) var selectedDiffFile: ResultDiffFileResponse?
+    public private(set) var inlineDiffComments: [InlineDiffComment] = []
     public private(set) var terminalsResponse: TermStateResponse?
     public private(set) var leadChat: LeadChatResponse = LeadChatResponse()
 
@@ -76,6 +81,7 @@ public final class WorkbenchStore {
 
     public init(profileStore: ProfileStore = ProfileStore()) {
         self.profileStore = profileStore
+        self.isSetupOpen = !UserDefaults.standard.bool(forKey: "toolroll.setupCompletedV1")
         let loaded = profileStore.load()
         if let active = loaded.active {
             self.profiles = loaded.profiles
@@ -87,6 +93,32 @@ public final class WorkbenchStore {
             self.activeProfile = demo
             self.client = nil
         }
+    }
+
+    public func completeSetup() {
+        UserDefaults.standard.set(true, forKey: "toolroll.setupCompletedV1")
+        isSetupOpen = false
+    }
+
+    public func refreshSetupState() async {
+        if activeProfile.isDemo {
+            // Try connecting to a newly started local Toolroll engine too!
+            if await connectToLocalConsoleIfAvailable(silent: true) {
+                return
+            }
+            agentsRead = DemoFixtures.agents
+            modelsRead = DemoFixtures.models
+            return
+        }
+        guard let client else { return }
+        async let aReq = client.fetchAgents()
+        async let mReq = client.fetchModels()
+        if let a = try? await aReq { agentsRead = a }
+        if let m = try? await mReq { modelsRead = m }
+    }
+
+    public var isTeamWorkspace: Bool {
+        presence.accounts.count > 1
     }
 
     // MARK: - Computed Views
@@ -299,11 +331,15 @@ public final class WorkbenchStore {
             async let presReq = client.fetchPresence()
             async let termsReq = client.fetchTerminals()
             async let leadReq = client.fetchLeadChat(project: selectedProject)
+            async let agentsReq = client.fetchAgents()
+            async let modelsReq = client.fetchModels()
 
             workRowsResponse = try await rowsReq
             if let pres = try? await presReq { presence = pres }
             if let terms = try? await termsReq { terminalsResponse = terms }
             if let chat = try? await leadReq { leadChat = chat }
+            if let ag = try? await agentsReq { agentsRead = ag }
+            if let mod = try? await modelsReq { modelsRead = mod }
 
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
@@ -327,6 +363,7 @@ public final class WorkbenchStore {
     public func loadSelectedTaskDetails(taskId: String) async {
         if activeProfile.isDemo {
             stepCards = DemoFixtures.steps(for: taskId)
+            liveRunRecords = (taskId == "t-handoff-rebase") ? DemoFixtures.liveRunRecords : []
             approvalCard = demoApprovedTasks.contains(taskId) ? nil : DemoFixtures.approvalCard(for: taskId)
             candidatesResponse = DemoFixtures.candidates(for: taskId)
             diffResponse = DemoFixtures.diff(for: taskId)
@@ -347,6 +384,14 @@ public final class WorkbenchStore {
 
         if let steps = try? await stepsReq {
             stepCards = steps
+            // Load live streaming agent records for the active or latest run
+            let targetRun = steps.liveRun ?? steps.review?.run ?? steps.cards.flatMap(\.runs).max()
+            if let runId = targetRun, let live = try? await client.fetchLiveRunWindow(runId: runId) {
+                liveRunRecords = live.records
+            } else {
+                liveRunRecords = []
+            }
+
             // Fetch full digest-bound approval card natively in-app whenever approval is waiting
             let needsApproval = steps.cards.contains(where: { $0.needsYou && $0.terms != nil })
                 || (selectedRow?.status == .needs && steps.review == nil && selectedRow?.need?.question == nil)
@@ -366,6 +411,23 @@ public final class WorkbenchStore {
             if let first = diff.files.first?.path, selectedDiffPath == nil || !diff.files.contains(where: { $0.path == selectedDiffPath }) {
                 await selectDiffFile(path: first)
             }
+        }
+    }
+
+    public func addInlineDiffComment(path: String, line: Int, text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        inlineDiffComments.append(InlineDiffComment(path: path, line: line, text: trimmed))
+        if activeProfile.isDemo {
+            notice = WorkbenchNotice(kind: .info, message: "Saved review note on \(path):\(line).")
+            return
+        }
+        guard let client, let runId = diffResponse?.run ?? stepCards?.review?.run else { return }
+        do {
+            let reply = try await client.saveRunComment(runId: runId, note: trimmed, path: path, line: line)
+            notice = WorkbenchNotice(kind: .info, message: "\(reply) (\(path):\(line))")
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
     }
 

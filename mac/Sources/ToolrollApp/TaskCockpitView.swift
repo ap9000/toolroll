@@ -11,6 +11,7 @@ public struct TaskCockpitView: View {
     @State private var sendBackOpen: Bool = false
     @State private var sendBackNote: String = ""
     @State private var expandedSteps: Set<String> = []
+    @State private var showAllSteps: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -61,12 +62,17 @@ public struct TaskCockpitView: View {
                             heldBanner(held)
                         }
 
-                        // 6. Candidates Strip (Promote / Rebase / Open PR)
+                        // 6. Live Agent Stream (what the agent is actually doing right now)
+                        if !store.liveRunRecords.isEmpty {
+                            liveStreamSection(records: store.liveRunRecords)
+                        }
+
+                        // 7. Candidates Strip (Promote / Rebase / Open PR)
                         if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
                             candidatesSection(taskId: row.id, candidates: cands)
                         }
 
-                        // 7. Steps Timeline
+                        // 8. Steps Timeline (quietly collapsed unless needed or toggled)
                         stepsSection()
                     }
                     .padding(20)
@@ -167,13 +173,30 @@ public struct TaskCockpitView: View {
                         .foregroundStyle(ToolrollPalette.muted)
                 }
 
+                if let diff = store.diffResponse, !diff.files.isEmpty {
+                    Button {
+                        store.isInspectorVisible = true
+                        store.inspectorTab = .diff
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Diff")
+                            if let totals = diff.totals {
+                                Text("+\(totals.added)")
+                                    .foregroundStyle(ToolrollPalette.success)
+                                    .font(.system(size: 10.5, design: .monospaced))
+                            }
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                }
+
                 Button {
                     Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell") }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "terminal")
                             .font(.system(size: 11))
-                        Text("Live Terminal")
+                        Text("Terminal")
                     }
                 }
                 .buttonStyle(KitButtonStyle(.ghost, compact: true))
@@ -804,44 +827,127 @@ public struct TaskCockpitView: View {
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    // MARK: - Steps Timeline
+    // MARK: - Live Agent Stream (GET /agents/live/run/<run>)
 
-    private func stepsSection() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Steps")
+    private func liveStreamSection(records: [LiveAgentRecord]) -> some View {
+        let visible = records.filter { $0.k == "say" || $0.k == "step" || $0.k == "done" }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(store.selectedRow?.status == .running ? ToolrollPalette.live : ToolrollPalette.muted)
+                    .frame(width: 6, height: 6)
+                Text("Agent Activity")
                     .font(.system(size: 11, weight: .semibold))
                     .textCase(.uppercase)
                     .tracking(0.6)
                     .foregroundStyle(ToolrollPalette.muted)
                 Spacer()
-                if let headline = store.stepCards?.headline, !headline.isEmpty {
-                    Text(headline)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                }
             }
 
-            if let cards = store.stepCards?.cards, !cards.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
-                        stepRow(card)
-                        if idx < cards.count - 1 {
-                            HairlineDivider()
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(visible.suffix(24)) { rec in
+                    if rec.k == "say", !rec.textLines.isEmpty {
+                        Text(rec.textLines.joined(separator: "\n"))
+                            .font(.system(size: 13))
+                            .foregroundStyle(ToolrollPalette.ink)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if rec.k == "step" {
+                        HStack(spacing: 8) {
+                            Text(rec.kind ?? "tool")
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                            Text(rec.target ?? "")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.ink)
+                                .lineLimit(1)
+                            Spacer()
                         }
+                    } else if rec.k == "done", !rec.out.isEmpty {
+                        HStack(spacing: 6) {
+                            Text(rec.ok == false ? "✗" : "✓")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(rec.ok == false ? ToolrollPalette.danger : ToolrollPalette.success)
+                            Text(rec.out.prefix(2).joined(separator: " · "))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(1)
+                        }
+                        .padding(.leading, 8)
                     }
                 }
-                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(ToolrollPalette.line, lineWidth: 1)
-                )
-            } else {
-                Text("No step timeline recorded yet.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .padding(.vertical, 10)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+    }
+
+    // MARK: - Steps Timeline
+
+    private func stepsSection() -> some View {
+        let cards = store.stepCards?.cards ?? []
+        let hasAttentionStep = cards.contains(where: \.needsYou)
+        let isExpanded = showAllSteps || hasAttentionStep || cards.count <= 2
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.14)) {
+                    showAllSteps.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Text("Steps (\(cards.count))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+                        .foregroundStyle(ToolrollPalette.muted)
+                    if !isExpanded && !cards.isEmpty {
+                        Text("· " + cards.map(\.label).joined(separator: " → "))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if let headline = store.stepCards?.headline, !headline.isEmpty, isExpanded {
+                        Text(headline)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                if !cards.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                            stepRow(card)
+                            if idx < cards.count - 1 {
+                                HairlineDivider()
+                            }
+                        }
+                    }
+                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(ToolrollPalette.line, lineWidth: 1)
+                    )
+                } else {
+                    Text("No step timeline recorded yet.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .padding(.vertical, 6)
+                }
             }
         }
     }

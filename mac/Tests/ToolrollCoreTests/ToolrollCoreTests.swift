@@ -296,5 +296,10 @@ struct ToolrollCoreTests {
         let client = ToolrollClient(localSession: creds)
         let rows = try await client.fetchWorkRows()
         #expect(rows.version == 1)
+        let agents = try await client.fetchAgents()
+        #expect(agents.version == 1)
+        #expect(!agents.agents.isEmpty)
+        let models = try await client.fetchModels()
+        #expect(models.version == 1)
     }
 }

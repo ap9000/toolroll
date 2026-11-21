@@ -1088,6 +1088,256 @@ public struct DevicePairPollResponse: Codable, Sendable, Equatable {
     public let label: String?
 }
 
+// MARK: - Agents & Models (GET /engine/agents, GET /engine/models)
+
+public struct AgentSetup: Codable, Sendable, Equatable {
+    public let install: String?
+    public let canInstall: Bool
+    public let signIn: String?
+    public let canSignIn: Bool
+    public let key: String?
+    public let note: String?
+
+    public init(
+        install: String? = nil,
+        canInstall: Bool = false,
+        signIn: String? = nil,
+        canSignIn: Bool = false,
+        key: String? = nil,
+        note: String? = nil
+    ) {
+        self.install = install
+        self.canInstall = canInstall
+        self.signIn = signIn
+        self.canSignIn = canSignIn
+        self.key = key
+        self.note = note
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        install = try c.decodeIfPresent(String.self, forKey: .install)
+        canInstall = try c.decodeIfPresent(Bool.self, forKey: .canInstall) ?? false
+        signIn = try c.decodeIfPresent(String.self, forKey: .signIn)
+        canSignIn = try c.decodeIfPresent(Bool.self, forKey: .canSignIn) ?? false
+        key = try c.decodeIfPresent(String.self, forKey: .key)
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+    }
+}
+
+public struct AgentRow: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let state: String // signed-in | signed-out | unknown | not-installed
+    public let how: String?
+    public let signIn: String?
+    public let ready: Bool
+    public let next: String?
+    public let setup: AgentSetup
+
+    public init(
+        id: String,
+        name: String,
+        state: String,
+        how: String? = nil,
+        signIn: String? = nil,
+        ready: Bool = false,
+        next: String? = nil,
+        setup: AgentSetup = AgentSetup()
+    ) {
+        self.id = id
+        self.name = name
+        self.state = state
+        self.how = how
+        self.signIn = signIn
+        self.ready = ready
+        self.next = next
+        self.setup = setup
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "unknown"
+        how = try c.decodeIfPresent(String.self, forKey: .how)
+        signIn = try c.decodeIfPresent(String.self, forKey: .signIn)
+        ready = try c.decodeIfPresent(Bool.self, forKey: .ready) ?? false
+        next = try c.decodeIfPresent(String.self, forKey: .next)
+        setup = (try? c.decodeIfPresent(AgentSetup.self, forKey: .setup)) ?? AgentSetup()
+    }
+}
+
+public struct FirstTaskAgent: Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public init(id: String, name: String) { self.id = id; self.name = name }
+}
+
+public struct AgentsReadResponse: Codable, Sendable, Equatable {
+    public let version: Int
+    public let checkedAt: String?
+    public let agents: [AgentRow]
+    public let firstTask: FirstTaskAgent?
+    public let lines: [String]
+
+    public init(version: Int = 1, checkedAt: String? = nil, agents: [AgentRow] = [], firstTask: FirstTaskAgent? = nil, lines: [String] = []) {
+        self.version = version
+        self.checkedAt = checkedAt
+        self.agents = agents
+        self.firstTask = firstTask
+        self.lines = lines
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        checkedAt = try c.decodeIfPresent(String.self, forKey: .checkedAt)
+        agents = try c.decodeIfPresent([AgentRow].self, forKey: .agents) ?? []
+        firstTask = try c.decodeIfPresent(FirstTaskAgent.self, forKey: .firstTask)
+        lines = try c.decodeIfPresent([String].self, forKey: .lines) ?? []
+    }
+}
+
+public struct ModelRoleSummary: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { key }
+    public let key: String
+    public let label: String
+    public let current: String
+    public let words: String
+
+    public init(key: String, label: String, current: String, words: String) {
+        self.key = key
+        self.label = label
+        self.current = current
+        self.words = words
+    }
+}
+
+public struct ModelsReadResponse: Codable, Sendable, Equatable {
+    public let version: Int
+    public let defaultAgent: String?
+    public let roles: [ModelRoleSummary]
+
+    public init(version: Int = 1, defaultAgent: String? = nil, roles: [ModelRoleSummary] = []) {
+        self.version = version
+        self.defaultAgent = defaultAgent
+        self.roles = roles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        defaultAgent = try c.decodeIfPresent(String.self, forKey: .defaultAgent)
+        roles = try c.decodeIfPresent([ModelRoleSummary].self, forKey: .roles) ?? []
+    }
+}
+
+// MARK: - Live Agent Run Records (GET /agents/live/run/<run>?file=main)
+
+public struct LiveAgentRecord: Codable, Sendable, Equatable, Identifiable {
+    public let id = UUID()
+    public let k: String // open | start | say | step | done | cut | cap | child | end | over
+    public let at: String?
+    public let detail: String?
+    public let textLines: [String]
+    public let stepId: String?
+    public let kind: String?
+    public let target: String?
+    public let ok: Bool?
+    public let out: [String]
+    public let desc: String?
+
+    enum CodingKeys: String, CodingKey {
+        case k, at, detail, kind, target, ok, out, desc
+        case textLines = "t"
+        case stepId = "id"
+    }
+
+    public init(k: String, at: String? = nil, detail: String? = nil, textLines: [String] = [], stepId: String? = nil, kind: String? = nil, target: String? = nil, ok: Bool? = nil, out: [String] = [], desc: String? = nil) {
+        self.k = k
+        self.at = at
+        self.detail = detail
+        self.textLines = textLines
+        self.stepId = stepId
+        self.kind = kind
+        self.target = target
+        self.ok = ok
+        self.out = out
+        self.desc = desc
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        k = try c.decodeIfPresent(String.self, forKey: .k) ?? ""
+        at = try c.decodeIfPresent(String.self, forKey: .at)
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+        textLines = (try? c.decodeIfPresent([String].self, forKey: .textLines)) ?? []
+        stepId = try c.decodeIfPresent(String.self, forKey: .stepId)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        target = try c.decodeIfPresent(String.self, forKey: .target)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok)
+        out = (try? c.decodeIfPresent([String].self, forKey: .out)) ?? []
+        desc = try c.decodeIfPresent(String.self, forKey: .desc)
+    }
+}
+
+public struct LiveRunWindowResponse: Codable, Sendable, Equatable {
+    public let version: Int
+    public let live: Bool
+    public let records: [LiveAgentRecord]
+    public let cursor: String?
+
+    private struct WindowInner: Decodable {
+        let ok: Bool?
+        let records: [LiveAgentRecord]?
+        let cursor: String?
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version, live, window
+    }
+
+    public init(version: Int = 1, live: Bool = false, records: [LiveAgentRecord] = [], cursor: String? = nil) {
+        self.version = version
+        self.live = live
+        self.records = records
+        self.cursor = cursor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
+        if let inner = try? c.decode(WindowInner.self, forKey: .window) {
+            records = inner.records ?? []
+            cursor = inner.cursor
+        } else {
+            records = []
+            cursor = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encode(live, forKey: .live)
+    }
+}
+
+public struct InlineDiffComment: Sendable, Equatable, Identifiable {
+    public let id = UUID()
+    public let path: String
+    public let line: Int
+    public let text: String
+
+    public init(path: String, line: Int, text: String) {
+        self.path = path
+        self.line = line
+        self.text = text
+    }
+}
+
 // MARK: - SSE Signal
 
 public enum LiveSignal: Sendable, Equatable {

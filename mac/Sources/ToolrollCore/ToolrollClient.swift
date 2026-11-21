@@ -294,6 +294,36 @@ public actor ToolrollClient {
         return try await send(try makeRequest(path: path), as: LeadChatResponse.self)
     }
 
+    public func fetchAgents() async throws -> AgentsReadResponse {
+        try await send(try makeRequest(path: "/engine/agents"), as: AgentsReadResponse.self)
+    }
+
+    public func fetchModels() async throws -> ModelsReadResponse {
+        try await send(try makeRequest(path: "/engine/models"), as: ModelsReadResponse.self)
+    }
+
+    public func fetchLiveRunWindow(runId: Int, cursor: String? = nil) async throws -> LiveRunWindowResponse {
+        var path = "/agents/live/run/\(runId)?file=main"
+        if let cursor, !cursor.isEmpty,
+           let enc = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&cursor=\(enc)"
+        }
+        return try await send(try makeRequest(path: path), as: LiveRunWindowResponse.self)
+    }
+
+    public func saveRunComment(runId: Int, note: String, path filePath: String = "", line: Int? = nil) async throws -> String {
+        return try await sendFormAct(
+            path: "/r/\(runId)/comment",
+            fields: [
+                ("note", note),
+                ("request", UUID().uuidString.lowercased()),
+                ("path", filePath),
+                ("line", line.map(String.init) ?? ""),
+            ],
+            defaultDone: "Review note saved."
+        )
+    }
+
     public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
         if case .localSession(let s) = transport {
             var fields = [

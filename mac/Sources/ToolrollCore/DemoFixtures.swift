@@ -267,6 +267,37 @@ public enum DemoFixtures {
         )
     }
 
+    public static let agents = AgentsReadResponse(
+        version: 1,
+        checkedAt: "just now",
+        agents: [
+            AgentRow(id: "claude", name: "Claude Code", state: "signed-in", how: "subscription", ready: true),
+            AgentRow(id: "codex", name: "Codex", state: "signed-in", how: "subscription", ready: true),
+            AgentRow(id: "antigravity", name: "Antigravity", state: "signed-out", ready: false, setup: AgentSetup(signIn: "agy login")),
+            AgentRow(id: "opencode", name: "OpenCode", state: "not-installed", ready: false, setup: AgentSetup(install: "brew install opencode")),
+        ],
+        firstTask: FirstTaskAgent(id: "claude", name: "Claude Code"),
+        lines: ["Claude Code and Codex are signed in and ready to run."]
+    )
+
+    public static let models = ModelsReadResponse(
+        version: 1,
+        defaultAgent: "claude",
+        roles: [
+            ModelRoleSummary(key: "plan", label: "Plan", current: "claude|sonnet-4", words: "Claude Sonnet 4"),
+            ModelRoleSummary(key: "build", label: "Build", current: "codex|gpt-5", words: "Codex GPT-5"),
+            ModelRoleSummary(key: "review", label: "Review", current: "claude|sonnet-4", words: "Claude Sonnet 4"),
+        ]
+    )
+
+    public static let liveRunRecords: [LiveAgentRecord] = [
+        LiveAgentRecord(k: "say", at: "14:02", textLines: ["Checking multi-hop handoff patch chains and verifying candidate materialization."]),
+        LiveAgentRecord(k: "step", at: "14:02", stepId: "s1", kind: "read", target: "src/handoff-cli.ts"),
+        LiveAgentRecord(k: "done", at: "14:02", stepId: "s1", ok: true),
+        LiveAgentRecord(k: "step", at: "14:03", stepId: "s2", kind: "bash", target: "vitest run src/local-handoff.test.ts"),
+        LiveAgentRecord(k: "done", at: "14:03", stepId: "s2", ok: true, out: ["3 passed (3)"]),
+    ]
+
     public static let leadChat = LeadChatResponse(
         leadName: "Lead",
         canSend: true,

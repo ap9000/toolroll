@@ -68,6 +68,11 @@ struct ToolrollMacApp: App {
                     store.isPairSheetOpen = true
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Button("Setup & Agents…") {
+                    store.isSetupOpen.toggle()
+                }
+                .keyboardShortcut(",", modifiers: [.command])
             }
         }
 
