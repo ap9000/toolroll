@@ -228,7 +228,7 @@ function NewSession({ state, target, onClearTarget, onStarted, onCancel }: {
     {target !== null
       ? <div className="k-field">
         <span className="k-label">Task build</span>
-        <p className="term-terms"><a className="k-link" href={`/t/${encodeURIComponent(target.task)}`}>{target.task}</a> · build #{target.run} · <button type="button" className="k-link" onClick={onClearTarget}>Use a project instead</button></p>
+        <p className="term-terms"><a className="k-link" href={`/t/${encodeURIComponent(target.task)}`}>{target.task}</a> · build #{target.run} · <KButton variant="ghost" sm label="Use a project instead" onClick={onClearTarget} /></p>
       </div>
       : <KField label="Project">{ids => <KSelect id={ids.id} wide value={repo} onChange={event => setRepo(event.target.value)} items={state.projects.map(one => [one.path, one.name] as const)} />}</KField>}
     <div className="k-field term-radios"><span className="k-label">Program</span>

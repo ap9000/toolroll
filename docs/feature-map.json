@@ -950,6 +950,98 @@
       "keys": [],
       "feature": "Watch running tasks",
       "reason": "Palette-only local layout action. Rust tests cover filtering, selection and empty slots; the PTY feature harness does not yet dispatch it."
+    },
+    {
+      "action": "focus-list",
+      "keys": [
+        "left"
+      ],
+      "feature": "Focus the task list",
+      "reason": "Outside this runtime slice; covered by Rust workbench unit/snapshot tests."
+    },
+    {
+      "action": "focus-detail",
+      "keys": [
+        "right"
+      ],
+      "feature": "Focus the task detail pane",
+      "reason": "Outside this runtime slice; covered by Rust workbench unit/snapshot tests."
+    },
+    {
+      "action": "take-over-agent",
+      "keys": [
+        "i"
+      ],
+      "feature": "Open or attach to an interactive coding agent terminal on this task",
+      "reason": "Requires an interactive coding agent terminal session; covered by server and Rust TUI tests."
+    },
+    {
+      "action": "lead-chat",
+      "keys": [
+        "C"
+      ],
+      "feature": "Open Lead chat pane",
+      "reason": "Covered by Rust lead_chat integration tests; outside this PTY feature slice."
+    },
+    {
+      "action": "dock-chat",
+      "keys": [
+        "D"
+      ],
+      "feature": "Dock or undock Lead chat beside Work",
+      "reason": "Covered by Rust lead_chat layout tests; outside this PTY feature slice."
+    },
+    {
+      "action": "filter-mine",
+      "keys": [],
+      "feature": "Filter tasks assigned to me",
+      "reason": "Palette-only multiplayer inbox filter; covered by Rust and server presence tests."
+    },
+    {
+      "action": "filter-team",
+      "keys": [],
+      "feature": "Filter tasks waiting on teammates",
+      "reason": "Palette-only multiplayer inbox filter; covered by Rust and server presence tests."
+    },
+    {
+      "action": "filter-unassigned",
+      "keys": [],
+      "feature": "Filter unassigned tasks",
+      "reason": "Palette-only multiplayer inbox filter; covered by Rust and server presence tests."
+    },
+    {
+      "action": "ping-approval",
+      "keys": [],
+      "feature": "Send an out-of-band approval ping to phone/browser",
+      "reason": "Palette-only remote multiplayer action; covered by server approval-ping tests."
+    },
+    {
+      "action": "handoff-local",
+      "keys": [],
+      "feature": "Open task code locally via Local Checkout (handoff pull)",
+      "reason": "Palette-only remote action that suspends the TUI into an interactive local worktree shell."
+    },
+    {
+      "action": "switch-workspace",
+      "keys": [],
+      "feature": "Switch remote central workspace profile",
+      "reason": "Palette-only remote profile switcher hint; covered by connect-cli/device-pair tests."
+    },
+    {
+      "action": "change-task-builder",
+      "keys": [
+        "m"
+      ],
+      "feature": "Change the task's coding agent/model",
+      "reason": "Covered by Rust workbench picker tests; outside this PTY feature slice."
+    },
+    {
+      "action": "models",
+      "keys": [
+        "M"
+      ],
+      "feature": "Configure default agent models",
+      "reason": "Covered by Rust agents/models snapshot tests; outside this PTY feature slice."
     }
   ]
 }

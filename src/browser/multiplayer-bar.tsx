@@ -163,7 +163,7 @@ export function TaskMultiplayerBar({
             style={{
               padding: "3px 8px",
               borderRadius: "6px",
-              border: "1px solid var(--border, #333)",
+              border: "1px solid var(--so-line)",
               background: "transparent",
               color: "inherit",
               fontSize: "13px",
@@ -197,7 +197,7 @@ export function TaskMultiplayerBar({
             gap: "8px",
             padding: "8px 10px",
             borderRadius: "8px",
-            border: "1px solid var(--border, #333)",
+            border: "1px solid var(--so-line)",
             fontSize: "13px",
           }}
         >

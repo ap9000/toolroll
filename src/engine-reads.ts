@@ -181,7 +181,7 @@ function failureOf(store: Store, taskRef: number | null, repo: string | null, bu
   const failedInARow = taskRef === null ? 0
     : Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(taskRef)?.["strikes"] ?? 0);
   const agentSaid = last === null ? null : agentSaidOf(store, last.id);
-  const codexHint = last === null ? null : codexOfflineDependencySuggestion({
+  const codexHint = last === null || last.provider !== "codex" ? null : codexOfflineDependencySuggestion({
     provider: last.provider,
     agentSaid,
     hasSetup: repo !== null && store.liveWorktreeSetup(repo) !== null,

@@ -86,11 +86,11 @@ describe("toolroll chat in a terminal (responsive chat slice 4)", () => {
     expect({ plain, json, failedPlain, failedJson, markdown }).toMatchInlineSnapshot(`
       {
         "failedJson": [
-          "{"command":"chat","ok":false,"turn":4,"reason":"provider-error","unknownSpend":false,"message":"The chat provider couldn't answer. Check the membership sign-in and plan usage, or choose another provider in Settings → Lead."}",
+          "{"command":"chat","ok":false,"turn":4,"reason":"provider-error","unknownSpend":false,"message":"The chat provider couldn't answer; its sign-in may have expired. Nothing was kept. Sign in to it again on this computer, then send your message again."}",
         ],
         "failedPlain": [
           "lead conversation live: subscription usage (no dollar limit) — live until you end it",
-          "The chat provider couldn't answer. Check the membership sign-in and plan usage, or choose another provider in Settings → Lead.",
+          "The chat provider couldn't answer; its sign-in may have expired. Nothing was kept. Sign in to it again on this computer, then send your message again.",
         ],
         "json": [
           "{"command":"chat","ok":true,"turn":2,"reply":"Still building: the limit check is next.","activity":"read 0 · proposed 0 · 1 step","steps":1,"settledMicrousd":0,"proposals":[]}",

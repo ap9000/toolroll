@@ -1100,11 +1100,17 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
   if (view.historical != null) return <HistoricalResult view={view} loaded={loadedResult.current} csrf={csrf} result={result} />;
+  const earlierRunMatch = view.earlier?.attempts.map(a => /^\/r\/(\d+)\b/.exec(a.href)?.[1]).find(Boolean);
   const terminalRunId = view.result?.selected.build
     ?? view.status?.attempts.find(a => a.runId !== null)?.runId
-    ?? view.earlier?.attempts.find(a => a.runId !== null)?.runId
-    ?? null;
-  const terminalAgent = view.details?.find(d => d.label === "Agent" || d.label === "Builder")?.value.toLowerCase() ?? "";
+    ?? (earlierRunMatch ? Number(earlierRunMatch) : null);
+  const agentFact = (view.details ?? [])
+    .flatMap(g => g.facts)
+    .find(f => f.label === "Agent" || f.label === "Builder");
+  const terminalAgent = (agentFact?.parts ?? [])
+    .map(p => (typeof p === "string" ? p : "label" in p ? p.label : ""))
+    .join(" ")
+    .toLowerCase();
   const terminalProgram = terminalAgent.includes("antigravity") || terminalAgent.includes("gemini")
     ? "antigravity"
     : terminalAgent.includes("codex")

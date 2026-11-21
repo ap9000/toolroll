@@ -203,7 +203,7 @@ export const LEAD_FAILURE_COPY = {
   notStarted: "The reply couldn't be started. Nothing was kept or charged. Send your message again.",
   notInstalled: "The chat app the lead uses isn't installed on this computer, so it couldn't answer. Nothing was kept. Install it, or choose another provider in Settings → Lead.",
   unreadable: "The chat provider sent back an answer that couldn't be read, so it was thrown away. Nothing was kept. Send your message again.",
-  signIn: "The chat provider couldn't answer. Check the membership sign-in and plan usage, or choose another provider in Settings → Lead.",
+  signIn: "The chat provider couldn't answer; its sign-in may have expired. Nothing was kept. Sign in to it again on this computer, then send your message again.",
   refused: "The chat provider turned the request down. Nothing was kept or charged. Try again in a minute; if it keeps happening, check the provider in Settings → Lead.",
   tooLongUnknownCost: leadTimeoutNotice(false, true),
   lostUnknownCost: "The chat provider stopped responding partway through, and the cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",

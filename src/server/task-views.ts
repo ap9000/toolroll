@@ -805,12 +805,15 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         suggestion: missedRequirementSuggestion(missed.statement), link: see };
     }
     const internal = isInternalErrorReason(run.reason);
-    const repo = taskId === "" ? null : runtime.store.lookupRef(taskId)?.repo ?? null;
-    const codexHint = codexOfflineDependencySuggestion({
-      provider: run.provider,
-      agentSaid: agentSaidOf(runtime.store, run.id),
-      hasSetup: repo !== null && runtime.store.liveWorktreeSetup(repo) !== null,
-    });
+    let codexHint: string | null = null;
+    if (run.provider === "codex") {
+      const repo = taskId === "" ? null : runtime.store.lookupRef(taskId)?.repo ?? null;
+      codexHint = codexOfflineDependencySuggestion({
+        provider: run.provider,
+        agentSaid: agentSaidOf(runtime.store, run.id),
+        hasSetup: repo !== null && runtime.store.liveWorktreeSetup(repo) !== null,
+      });
+    }
     return { kind: "reason", line: failedAttemptSentence(run.reason), evidence: null, suggestion: codexHint ?? stopSuggestionOf(run.reason),
       link: internal ? { label: "The recorded error", href: `/r/${run.id}?record=1#run-reason-detail` } : see };
   }
