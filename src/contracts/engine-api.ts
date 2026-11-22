@@ -579,6 +579,9 @@ export const linkRedemptionSchema = z.object({
   /** The mutation key (header x-toolroll-key), bound to this console start (`epoch`). */
   key: z.string().regex(/^[0-9a-f]{64}$/),
   epoch: z.string(),
+  /** Whether the account has a password yet (password-onboarding.md): the Mac app offers to set one when it hasn't.
+   * Optional: an older console doesn't say. */
+  passwordSet: z.boolean().optional(),
 });
 /** What a terminal client posts to `POST /login/once`: the link's code, nothing else. */
 export const linkRedemptionRequestSchema = z.strictObject({ code: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });

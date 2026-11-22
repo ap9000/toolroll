@@ -486,7 +486,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (key === null) return refused(403, "host", "not this console's own address");
     const id = randomBytes(32).toString("hex"), csrf = randomBytes(32).toString("hex");
     if (!saveLinkSession(runtime, request, admitted.held, "terminal", { id, csrf, keys: fields })) return refusal(response, 410, "used");
-    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: admitted.held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: runtime.keyEpoch };
+    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: admitted.held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: runtime.keyEpoch,
+      passwordSet: runtime.store.accountOf(admitted.held.account)?.passwordSet === true };
     return sendChecked(response, 200, "linkRedemption", body);
   }
 

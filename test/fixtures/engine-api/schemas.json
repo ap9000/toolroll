@@ -1,5 +1,5 @@
 {
-  "digest": "37bde0023b6bc2deec8bba0c19de7f8a5b05dafad3f084712abc28dc316be030",
+  "digest": "e21d29319b6b8176a4c7167670807b3b7e7d709817980b5d5af7ba8fc52a7b39",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2712,6 +2712,9 @@
         },
         "epoch": {
           "type": "string"
+        },
+        "passwordSet": {
+          "type": "boolean"
         }
       },
       "required": [

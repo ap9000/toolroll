@@ -516,6 +516,8 @@ describe("the local owner reads them with the session a terminal client redeems"
     const link = world.server.mintLocalLink()!;
     const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
     const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    // The app learns whether a password is set yet (password-onboarding.md): none on a fresh laptop install.
+    expect(body.passwordSet).toBe(false);
     const cookie = `${body.cookie.name}=${body.cookie.value}`;
     const get = async (path: string) => { const answer = await world.send(path, "GET", { cookie, accept: "application/json" }); return { status: answer.status, body: JSON.parse(answer.body) as unknown }; };
     expect((await get("/engine/hello")).status).toBe(200);
