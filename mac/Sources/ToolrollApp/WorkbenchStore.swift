@@ -92,6 +92,8 @@ public final class WorkbenchStore {
     public var projectSettingsTargetName: String? = nil
     public private(set) var projectSettingsSnapshot: ToolrollClient.ProjectSettingsSnapshot? = nil
     public var taskViewMode: TaskViewMode = .activity
+    /// The attached shell is a scratch shell at the project's own branch, not a copy of this task's build.
+    public var terminalIsScratch: Bool = false
     private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
@@ -1943,11 +1945,14 @@ public final class WorkbenchStore {
                 program: started.program,
                 branch: started.branch
             )
-            let isRepoScratch = started.branch.hasPrefix("toolroll/live/") || started.branch == "main"
+            // Said by the client from how it opened the shell, never guessed from the branch name.
+            let isRepoScratch = started.scratch ?? (started.branch == "main")
+            terminalIsScratch = isRepoScratch
             if isRepoScratch {
+                let why = started.note.map { " \($0)" } ?? " This task has no saved build to open yet."
                 notice = WorkbenchNotice(
                     kind: .info,
-                    message: "Opened scratch \(started.program) shell on \(targetProject ?? "repo") (task has no committed build to take over yet — live agent logs are in Activity)."
+                    message: "Opened a scratch shell on \(targetProject ?? "the project")'s own branch.\(why) Agents run in the background; watch them in Activity."
                 )
             } else {
                 notice = WorkbenchNotice(
@@ -2013,8 +2018,9 @@ public final class WorkbenchStore {
 
     public func setTaskViewMode(_ mode: TaskViewMode) {
         taskViewMode = mode
+        // Again on a scratch shell too: once the build has saved its work, Shell opens a copy of it instead.
         if mode == .terminal, let taskId = selectedTaskId,
-           terminalSession.taskId != taskId || terminalSession.connectionState != .connected {
+           terminalSession.taskId != taskId || terminalSession.connectionState != .connected || terminalIsScratch {
             Task { await attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: false) }
         }
     }
@@ -2022,7 +2028,7 @@ public final class WorkbenchStore {
     public func activeWorktreeBranch(for row: WorkRow) -> String {
         if terminalSession.taskId == row.id,
            !terminalSession.branch.isEmpty,
-           (taskViewMode == .terminal || !terminalSession.branch.hasPrefix("toolroll/live/")) {
+           (taskViewMode == .terminal || !terminalIsScratch) {
             return terminalSession.branch
         }
         if let candBranch = candidatesResponse?.candidates.first(where: { $0.branch != nil })?.branch, !candBranch.isEmpty {

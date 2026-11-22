@@ -973,7 +973,8 @@ public actor ToolrollClient {
                     id: existingForTask.id,
                     branch: existingForTask.branch,
                     program: existingForTask.program,
-                    reused: true
+                    reused: true,
+                    scratch: existingForTask.run == nil
                 )
             }
 
@@ -987,10 +988,15 @@ public actor ToolrollClient {
             }()
 
             // 2. Always try task+run take-over FIRST when a build run exists so Shell opens on the agent's exact build commit!
+            // A refusal (no committed build yet, a plan or review run) is kept in the server's words, never swallowed.
+            var takeOverRefusal: String?
             if let runId {
-                if let started = try? await postLocalTermStart(csrf: s.csrf, program: program, taskId: taskId, runId: runId, repo: nil) {
+                do {
+                    let started = try await postLocalTermStart(csrf: s.csrf, program: program, taskId: taskId, runId: runId, repo: nil)
                     let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == started })?.branch) ?? "tr/\(taskId)"
-                    return StartRemoteTerminalResponse(ok: true, id: started, branch: branch, program: program, reused: false)
+                    return StartRemoteTerminalResponse(ok: true, id: started, branch: branch, program: program, reused: false, scratch: false)
+                } catch {
+                    takeOverRefusal = error.localizedDescription
                 }
             }
 
@@ -1003,7 +1009,9 @@ public actor ToolrollClient {
                     id: existingForProject.id,
                     branch: existingForProject.branch,
                     program: existingForProject.program,
-                    reused: true
+                    reused: true,
+                    scratch: true,
+                    note: takeOverRefusal
                 )
             }
 
@@ -1012,7 +1020,7 @@ public actor ToolrollClient {
             }
             let startedId = try await postLocalTermStart(csrf: s.csrf, program: program, taskId: nil, runId: nil, repo: repo)
             let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == startedId })?.branch) ?? "main"
-            return StartRemoteTerminalResponse(ok: true, id: startedId, branch: branch, program: program, reused: false)
+            return StartRemoteTerminalResponse(ok: true, id: startedId, branch: branch, program: program, reused: false, scratch: true, note: takeOverRefusal)
 
         case .remoteBearer:
             let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId

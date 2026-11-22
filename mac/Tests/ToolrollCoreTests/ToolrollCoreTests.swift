@@ -827,4 +827,15 @@ struct ToolrollCoreTests {
         #expect(snap.networkHosts == "api.stripe.com\n*.github.com")
         #expect(snap.concurrency == 3)
     }
+
+    @Test("A shell start says whether it is a scratch shell and why; an older server's reply still decodes")
+    func shellStartScratchAndNote() throws {
+        let legacy = try JSONDecoder().decode(StartRemoteTerminalResponse.self, from: Data(#"{"ok":true,"id":"t1","branch":"toolroll/live-1","program":"shell","reused":false}"#.utf8))
+        #expect(legacy.scratch == nil)
+        #expect(legacy.note == nil)
+        let scratch = StartRemoteTerminalResponse(ok: true, id: "t2", branch: "toolroll/live-2", program: "shell", reused: false, scratch: true, note: "This build has no saved commit yet.")
+        let round = try JSONDecoder().decode(StartRemoteTerminalResponse.self, from: JSONEncoder().encode(scratch))
+        #expect(round == scratch)
+        #expect(round.scratch == true)
+    }
 }

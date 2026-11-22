@@ -1187,6 +1187,20 @@ public struct StartRemoteTerminalResponse: Codable, Sendable, Equatable {
     public let branch: String
     public let program: String
     public let reused: Bool
+    /// A scratch shell at the project's own branch (not a copy of this task's build). Nil: the server didn't say.
+    public let scratch: Bool?
+    /// Why the task's build couldn't be taken over, in the server's own words, when a scratch shell opened instead.
+    public let note: String?
+
+    public init(ok: Bool, id: String, branch: String, program: String, reused: Bool, scratch: Bool? = nil, note: String? = nil) {
+        self.ok = ok
+        self.id = id
+        self.branch = branch
+        self.program = program
+        self.reused = reused
+        self.scratch = scratch
+        self.note = note
+    }
 }
 
 // MARK: - Lead Chat (GET /engine/chat)
