@@ -119,10 +119,10 @@ public struct CanvasWorkspaceView: View {
         .task(id: "\(store.selectedProject ?? "")::\(store.selectedRow?.project ?? "")") {
             await store.loadCanvasForCurrentProject()
         }
-        .onKeyPress("v") { tool = .select; return .handled }
-        .onKeyPress("c") { tool = .pin; return .handled }
-        .onKeyPress("o") { tool = .options; return .handled }
-        .onKeyPress("d") { tool = .compare; return .handled }
+        .onKeyPress("v") { handleCanvasToolShortcut(.select) }
+        .onKeyPress("c") { handleCanvasToolShortcut(.pin) }
+        .onKeyPress("o") { handleCanvasToolShortcut(.options) }
+        .onKeyPress("d") { handleCanvasToolShortcut(.compare) }
         .onKeyPress(.escape) {
             if focusedArtboardId != nil {
                 focusedArtboardId = nil
@@ -133,6 +133,17 @@ public struct CanvasWorkspaceView: View {
             tool = .select
             return .handled
         }
+    }
+
+    private func handleCanvasToolShortcut(_ next: CanvasTool) -> KeyPress.Result {
+        guard focusedArtboardId == nil,
+              draftPin == nil,
+              !isAddingRoute,
+              !isSubmitBatchOpen,
+              !(NSApp.keyWindow?.firstResponder is NSTextView)
+        else { return .ignored }
+        tool = next
+        return .handled
     }
 
     // MARK: - Top Control Strip
