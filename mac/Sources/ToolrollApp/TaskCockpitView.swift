@@ -434,11 +434,11 @@ public struct TaskCockpitView: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.ink)
-                .frame(width: 26, height: 26)
-                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .frame(width: 26, height: 26)
+        .contentShape(Circle())
         .toolrollGlassCapsule(interactive: true)
         .fixedSize()
         .help("More Task Actions")

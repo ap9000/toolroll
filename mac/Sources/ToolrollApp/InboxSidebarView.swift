@@ -257,8 +257,8 @@ public struct InboxSidebarView: View {
             }
             .frame(maxHeight: .infinity)
 
-            // Single ultra-clean Liquid Glass footer (replaces 6-icon clutter strip)
-            HStack(spacing: 6) {
+            // Balanced Liquid Glass footer (matched 28pt height controls, no stretched lozenge)
+            HStack(spacing: 8) {
                 Menu {
                     if let spend = store.workRowsResponse.spend {
                         Text(String(format: "Today's spend: $%.2f", spend.todayUsd))
@@ -281,36 +281,40 @@ public struct InboxSidebarView: View {
                         Task { await store.refreshAll() }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Image(systemName: "gearshape")
-                            .font(.system(size: 11))
+                            .font(.system(size: 11.5))
                             .foregroundStyle(ToolrollPalette.muted)
                         Text("Settings")
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(ToolrollPalette.ink)
                             .lineLimit(1)
-                        Spacer(minLength: 4)
-                        if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
-                            Text(String(format: "$%.2f", spend.todayUsd))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .lineLimit(1)
-                        }
                     }
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .contentShape(Capsule())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .fixedSize()
+                .padding(.horizontal, 11)
+                .frame(height: 28)
+                .contentShape(Capsule())
                 .toolrollGlassCapsule(interactive: true)
                 .help("Workspace Settings, Spend & Projects")
+
+                Spacer(minLength: 4)
+
+                if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
+                    Text(String(format: "$%.2f", spend.todayUsd))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .help("Today's total spend")
+                }
 
                 Button {
                     store.isAppearanceSheetOpen = true
                 } label: {
                     Image(systemName: "paintbrush")
-                        .font(.system(size: 11))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                         .frame(width: 28, height: 28)
                         .contentShape(Circle())

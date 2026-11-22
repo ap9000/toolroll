@@ -587,14 +587,14 @@ public struct NewWorkCanvasView: View {
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.muted)
             }
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .toolrollGlassCapsule(interactive: true)
         .fixedSize()
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+        .contentShape(Capsule())
+        .toolrollGlassCapsule(interactive: true)
         .help("Launch an interactive Shell, Claude, or Codex PTY on \(activeProjectLabel)")
     }
 

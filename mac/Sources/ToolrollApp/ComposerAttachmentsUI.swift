@@ -501,13 +501,13 @@ public struct ComposerAttachMenuButton: View {
             Image(systemName: "plus")
                 .font(.system(size: compact ? 11.5 : 12, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.muted)
-                .frame(width: compact ? 24 : 26, height: compact ? 24 : 26)
-                .background(Color.white.opacity(0.07), in: Circle())
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
-                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .frame(width: compact ? 24 : 26, height: compact ? 24 : 26)
+        .background(Color.white.opacity(0.07), in: Circle())
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .contentShape(Circle())
         .fixedSize()
         .help("Add folder as context, attach image, or paste screenshot (⌘V)")
     }
