@@ -1922,7 +1922,10 @@ public final class WorkbenchStore {
         }
         guard let client else { return }
         let targetProject = selectedRow?.project ?? selectedProject ?? allProjects.first
-        let targetRun = stepCards?.liveRun ?? stepCards?.review?.run ?? stepCards?.cards.flatMap(\.runs).max()
+        let buildStepRun = stepCards?.cards
+            .first(where: { $0.label.lowercased().contains("build") })?
+            .runs.max()
+        let targetRun = stepCards?.review?.run ?? buildStepRun ?? stepCards?.liveRun ?? stepCards?.cards.flatMap(\.runs).max()
         do {
             let started = try await client.startOrReuseTerminal(
                 taskId: taskId,
@@ -1937,10 +1940,20 @@ public final class WorkbenchStore {
                 program: started.program,
                 branch: started.branch
             )
-            notice = WorkbenchNotice(
-                kind: .info,
-                message: started.reused ? "Attached to existing \(started.program) Live Terminal." : "Started \(started.program) Live Terminal on \(started.branch)."
-            )
+            let isRepoScratch = started.branch.hasPrefix("toolroll/live/") || started.branch == "main"
+            if isRepoScratch {
+                notice = WorkbenchNotice(
+                    kind: .info,
+                    message: "Opened scratch \(started.program) shell on \(targetProject ?? "repo") (task has no committed build to take over yet — live agent logs are in Activity)."
+                )
+            } else {
+                notice = WorkbenchNotice(
+                    kind: .info,
+                    message: started.reused
+                        ? "Attached to \(started.program) take-over shell on \(started.branch)."
+                        : "Opened \(started.program) take-over shell on \(started.branch)."
+                )
+            }
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
@@ -2004,7 +2017,9 @@ public final class WorkbenchStore {
     }
 
     public func activeWorktreeBranch(for row: WorkRow) -> String {
-        if terminalSession.taskId == row.id, !terminalSession.branch.isEmpty {
+        if terminalSession.taskId == row.id,
+           !terminalSession.branch.isEmpty,
+           (taskViewMode == .terminal || !terminalSession.branch.hasPrefix("toolroll/live/")) {
             return terminalSession.branch
         }
         if let candBranch = candidatesResponse?.candidates.first(where: { $0.branch != nil })?.branch, !candBranch.isEmpty {

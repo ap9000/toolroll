@@ -789,16 +789,17 @@ public actor ToolrollClient {
     ) async throws -> StartRemoteTerminalResponse {
         switch transport {
         case .localSession(let s):
-            // 1. Check /term/state to reuse an existing live session OR resolve the project's full repo path
+            // 1. Check /term/state for an existing live session bound specifically to THIS task
             let state = try? await fetchTerminals()
-            if let existing = state?.sessions.first(where: {
-                $0.endedAt == nil && $0.program == program && ($0.task == taskId || (project != nil && $0.project == project))
+            if let existingForTask = state?.sessions.first(where: {
+                $0.endedAt == nil && $0.program == program && $0.task == taskId
+                    && (runId == nil || $0.run == nil || $0.run == runId)
             }) {
                 return StartRemoteTerminalResponse(
                     ok: true,
-                    id: existing.id,
-                    branch: existing.branch,
-                    program: existing.program,
+                    id: existingForTask.id,
+                    branch: existingForTask.branch,
+                    program: existingForTask.program,
                     reused: true
                 )
             }
@@ -812,12 +813,25 @@ public actor ToolrollClient {
                 return projects.first?.path
             }()
 
-            // 2. Try task+run take-over first when a build run exists; fall back cleanly to project repo terminal!
+            // 2. Always try task+run take-over FIRST when a build run exists so Shell opens on the agent's exact build commit!
             if let runId {
                 if let started = try? await postLocalTermStart(csrf: s.csrf, program: program, taskId: taskId, runId: runId, repo: nil) {
                     let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == started })?.branch) ?? "tr/\(taskId)"
                     return StartRemoteTerminalResponse(ok: true, id: started, branch: branch, program: program, reused: false)
                 }
+            }
+
+            // 3. No committed build available to take over yet: reuse or start a repo-level scratch shell
+            if let existingForProject = state?.sessions.first(where: {
+                $0.endedAt == nil && $0.program == program && $0.task == nil && project != nil && $0.project == project
+            }) {
+                return StartRemoteTerminalResponse(
+                    ok: true,
+                    id: existingForProject.id,
+                    branch: existingForProject.branch,
+                    program: existingForProject.program,
+                    reused: true
+                )
             }
 
             guard let repo = resolvedRepo else {
