@@ -524,7 +524,7 @@ export async function invokeAgent(
   // Codex inside the OS fence: its own run home read and written as this launch's, its operator sign-in and sessions
   // exactly (codexOwnState), and trustd, which its TLS verification needs (measured, as signInGrants).
   if (fence.length > 0 && codexHarness && !codexProfile && codexHome !== null) {
-    const own = codexOwnState(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()));
+    const own = codexOwnState(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), { signIn: spec.provider === "codex" });
     grants.runFolders = { ...(grants.runFolders ?? runFolders(ownTools)), alsoOwn: [realpathSync(codexHome.dir)] };
     if (own !== null) grants.codexState = own;
     if (process.platform === "darwin") grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];

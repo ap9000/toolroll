@@ -724,14 +724,15 @@ export const CODEX_CONFIG_NAMES: readonly string[] = ["config.toml", "AGENTS.md"
 /** A Codex build's own state inside the OS fence (FenceGrants.codexState), from Toolroll's own resolution of the
  * operator's Codex folder (provider-home.ts codexHomeDir: never the build's environment). Only a real folder counts;
  * the sign-in and sessions are granted only as what they are now (resolved, the sign-in a regular file). */
-export function codexOwnState(codexHome: string): CodexState | null {
+export function codexOwnState(codexHome: string, options: { signIn: boolean } = { signIn: true }): CodexState | null {
   let base: string;
   try { if (!lstatSync(codexHome).isDirectory()) return null; base = realpathSync(codexHome); } catch { return null; }
   const write: string[] = [];
   const read: string[] = [];
-  try { const auth = realpathSync(join(base, "auth.json")); if (lstatSync(auth).isFile()) { read.push(auth); write.push(auth); } } catch { /* signed in some other way */ }
+  // Only a Codex build signs in with it: an OpenRouter build carries its own key, and never reaches the ChatGPT sign-in.
+  if (options.signIn) try { const auth = realpathSync(join(base, "auth.json")); if (lstatSync(auth).isFile()) { read.push(auth); write.push(auth); } } catch { /* signed in some other way */ }
   try { const sessions = realpathSync(join(base, "sessions")); if (lstatSync(sessions).isDirectory()) write.push(sessions); } catch { /* none yet */ }
-  const kept = new Set(["auth.json", "sessions"]);
+  const kept = new Set(options.signIn ? ["auth.json", "sessions"] : ["sessions"]);
   let entries: string[] = [];
   try { entries = readdirSync(base); } catch { entries = []; }
   const denyWrite = new Set<string>();

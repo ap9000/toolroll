@@ -69,6 +69,13 @@ describe.runIf(macosFenceAvailable())("a Codex build inside the macOS sandbox", 
     expect(inside(`cat "${run.dir}/auth.json"`, grants("proxy-only", false)).status).not.toBe(0);
   });
 
+  test("an OpenRouter build gets the sessions, never the ChatGPT sign-in", () => {
+    const given: FenceGrants = { ...grants("proxy-only"), codexState: codexOwnState(codex, { signIn: false })! };
+    expect(inside(`touch "${codex}/sessions/openrouter.jsonl"`, given).status).toBe(0);
+    expect(inside(`cat "${codex}/auth.json"`, given).status).not.toBe(0);
+    expect(inside(`printf ' ' >> "${codex}/auth.json"`, given).status).not.toBe(0);
+  });
+
   test("the project's local-services setting decides a loopback listen", () => {
     expect(inside("", grants("any"), process.execPath, ["-e", LISTEN]).stdout).toContain("LISTEN OK");
     const refused = inside("", grants("proxy-only"), process.execPath, ["-e", LISTEN]);
