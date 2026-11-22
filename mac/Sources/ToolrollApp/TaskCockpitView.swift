@@ -23,6 +23,7 @@ public struct TaskCockpitView: View {
     @State private var showStandardSandboxDetails: Bool = false
     @State private var expandedCheckIds: Set<String> = []
     @State private var highlightedSection: String? = nil
+    @State private var selectedAgentStepKey: String? = nil
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -98,13 +99,9 @@ public struct TaskCockpitView: View {
                                     heldBanner(held)
                                 }
 
-                                // 6. Explicit Active Agent Banner + Live Agent Activity Stream
-                                activeAgentStatusBanner(row: row)
+                                // 6. Explicit Multi-Agent Steps, Run Switcher & Live Activity Stream
+                                multiAgentActivitySection(row: row)
                                     .id("agent-activity")
-
-                                if !store.liveRunRecords.isEmpty {
-                                    liveStreamSection(records: store.liveRunRecords)
-                                }
 
                                 // 7. Candidates Strip (Promote / Rebase / Open PR)
                                 if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
@@ -142,6 +139,7 @@ public struct TaskCockpitView: View {
             showApprovalFiles = false
             showStandardSandboxDetails = false
             expandedCheckIds.removeAll()
+            selectedAgentStepKey = nil
         }
     }
 
@@ -224,7 +222,7 @@ public struct TaskCockpitView: View {
         .padding(2)
         .toolrollGlassCapsule(interactive: true)
         .fixedSize()
-        .help("Switch between Activity and raw Worktree Terminal (⌘T)")
+        .help("Activity: multi-agent runs, plan & approvals · Shell: interactive worktree shell (⌘T)")
     }
 
     private func branchCopyPill(branch: String, maxWidth: CGFloat) -> some View {
@@ -1344,6 +1342,7 @@ public struct TaskCockpitView: View {
                     let isAttention = card.needsYou
                     let isDone = (card.mark.isEmpty ? card.state : card.mark).lowercased().contains("done")
                     let isRunning = card.state.lowercased().contains("run") || card.mark.lowercased().contains("run")
+                    let isSelectedAgentStep = selectedAgentStepKey == card.key
                     let iconColor: Color = isAttention ? ToolrollPalette.ink : (isRunning ? ToolrollPalette.live : (isDone ? ToolrollPalette.ink.opacity(0.65) : ToolrollPalette.muted.opacity(0.6)))
                     Button {
                         handlePipelineStepTap(card, proxy: proxy)
@@ -1353,10 +1352,10 @@ public struct TaskCockpitView: View {
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .foregroundStyle(iconColor)
                             Text(card.label)
-                                .font(.system(size: 11.5, weight: isAttention || isRunning ? .semibold : .medium))
-                                .foregroundStyle(isAttention || isRunning ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .font(.system(size: 11.5, weight: isAttention || isRunning || isSelectedAgentStep ? .semibold : .medium))
+                                .foregroundStyle(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.ink : ToolrollPalette.muted)
                                 .lineLimit(1)
-                            if let agent = card.agent, isAttention || isRunning {
+                            if let agent = card.agent {
                                 Text("· \(agent.displayLabel)")
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(ToolrollPalette.muted)
@@ -1366,17 +1365,17 @@ public struct TaskCockpitView: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4.5)
                         .background(
-                            isAttention || isRunning ? Color.white.opacity(0.08) : Color.clear,
+                            isAttention || isRunning || isSelectedAgentStep ? Color.white.opacity(0.08) : Color.clear,
                             in: Capsule()
                         )
                         .overlay(
                             Capsule()
-                                .strokeBorder(isAttention || isRunning ? ToolrollPalette.inputLine : Color.clear, lineWidth: 1)
+                                .strokeBorder(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.inputLine : Color.clear, lineWidth: 1)
                         )
                         .toolrollHoverSurface(cornerRadius: 12, isSelected: false)
                     }
                     .buttonStyle(.plain)
-                    .help(card.sentence.isEmpty ? "Jump to \(card.label)" : "\(card.label): \(card.sentence)")
+                    .help(stepTooltip(for: card))
 
                     if idx < cards.count - 1 {
                         Image(systemName: "chevron.right")
@@ -1391,30 +1390,43 @@ public struct TaskCockpitView: View {
         .background(ToolrollPalette.paper)
     }
 
+    private func stepTooltip(for card: StepCard) -> String {
+        var parts: [String] = [card.label]
+        if let agent = card.agent {
+            parts.append(agent.displayLabel)
+        }
+        if !card.runs.isEmpty {
+            parts.append("Run #\(card.runs.last ?? 0)")
+        }
+        if !card.sentence.isEmpty {
+            parts.append(card.sentence)
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func handlePipelineStepTap(_ card: StepCard, proxy: ScrollViewProxy) {
         let label = card.label.lowercased()
         let targetId: String
         if label.contains("approv") {
             targetId = "approval-card"
+        } else if !card.runs.isEmpty || card.agent != nil {
+            selectedAgentStepKey = card.key
+            if let latestRun = card.runs.last {
+                Task { await store.selectLiveRun(latestRun) }
+            }
+            targetId = "agent-activity"
         } else if label.contains("ready") || label.contains("review") {
             if store.stepCards?.review != nil {
                 targetId = "review-card"
             } else {
-                store.toggleInspector(tab: .diff)
-                return
-            }
-        } else if label.contains("plan") {
-            if !store.liveRunRecords.isEmpty {
+                selectedAgentStepKey = card.key
                 targetId = "agent-activity"
-            } else {
-                store.openTaskArtifact()
-                return
             }
         } else if label.contains("build") {
+            selectedAgentStepKey = card.key
             targetId = store.approvalCard != nil ? "approval-card" : "agent-activity"
-        } else if label.contains("check") {
-            targetId = store.stepCards?.review != nil ? "review-card" : "approval-card"
         } else {
+            selectedAgentStepKey = card.key
             targetId = "agent-activity"
         }
 
@@ -1428,6 +1440,271 @@ public struct TaskCockpitView: View {
                 highlightedSection = nil
             }
         }
+    }
+
+    /// Unified Multi-Agent Activity panel: shows every step's assigned/executed agent side-by-side,
+    /// lets you switch across Planner / Builder / Reviewer runs & attempts, and NEVER goes blank.
+    private func multiAgentActivitySection(row: WorkRow) -> some View {
+        let cards = store.stepCards?.cards ?? []
+        let agentSteps = cards.filter { card in
+            let l = card.label.lowercased()
+            if l.contains("approv") && card.agent == nil && card.runs.isEmpty {
+                return false
+            }
+            return true
+        }
+        let selectedStep = resolveSelectedAgentStep(in: agentSteps)
+        let selectedRunId: Int? = {
+            guard let step = selectedStep else { return store.selectedLiveRunId }
+            if let current = store.selectedLiveRunId, step.runs.contains(current) {
+                return current
+            }
+            return step.runs.last
+        }()
+        let hasStreamForSelectedRun = selectedRunId != nil
+            && selectedRunId == store.selectedLiveRunId
+            && !store.liveRunRecords.isEmpty
+
+        return VStack(alignment: .leading, spacing: 10) {
+            activeAgentStatusBanner(row: row)
+
+            // Multi-agent step & run switcher tabs
+            if !agentSteps.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(agentSteps) { step in
+                            let isSelected = selectedStep?.key == step.key
+                            let agentLabel = step.agent?.displayLabel ?? assignedModelLabel(forStep: step.label)
+                            let isRunning = step.state.lowercased().contains("run") || step.mark.lowercased().contains("run")
+                            let isDone = (step.mark.isEmpty ? step.state : step.mark).lowercased().contains("done")
+
+                            HStack(spacing: 0) {
+                                Button {
+                                    selectedAgentStepKey = step.key
+                                    if let runId = step.runs.last {
+                                        Task { await store.selectLiveRun(runId) }
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(
+                                                isRunning ? ToolrollPalette.live
+                                                    : (isDone ? ToolrollPalette.success
+                                                        : (step.state.lowercased().contains("fail") || step.state.lowercased().contains("stuck")
+                                                            ? ToolrollPalette.danger : ToolrollPalette.muted.opacity(0.45)))
+                                            )
+                                            .frame(width: 6, height: 6)
+
+                                        Text(step.label)
+                                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                                            .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                            .lineLimit(1)
+
+                                        if let agentLabel, !agentLabel.isEmpty {
+                                            Text(agentLabel)
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundStyle(isSelected ? ToolrollPalette.ink.opacity(0.8) : ToolrollPalette.muted.opacity(0.8))
+                                                .lineLimit(1)
+                                        }
+
+                                        if step.runs.count == 1, let onlyRun = step.runs.first {
+                                            Text("#\(onlyRun)")
+                                                .font(.system(size: 9.5, design: .monospaced))
+                                                .foregroundStyle(ToolrollPalette.muted)
+                                        }
+                                    }
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(stepTooltip(for: step))
+
+                                if step.runs.count > 1 {
+                                    let activeForStep = (isSelected ? selectedRunId : nil) ?? step.runs.last ?? 0
+                                    Menu {
+                                        ForEach(step.runs.reversed(), id: \.self) { runId in
+                                            Button {
+                                                selectedAgentStepKey = step.key
+                                                Task { await store.selectLiveRun(runId) }
+                                            } label: {
+                                                HStack {
+                                                    Text("Attempt #\(runId)\(runId == step.runs.last ? " (latest)" : "")")
+                                                    if store.selectedLiveRunId == runId {
+                                                        Image(systemName: "checkmark")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 2) {
+                                            Text("#\(activeForStep)")
+                                                .font(.system(size: 9.5, design: .monospaced))
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 7.5, weight: .semibold))
+                                        }
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                    .menuIndicator(.hidden)
+                                    .fixedSize()
+                                    .padding(.trailing, 8)
+                                    .padding(.vertical, 5)
+                                    .help("Switch between \(step.runs.count) attempts for \(step.label)")
+                                }
+                            }
+                            .background(
+                                isSelected ? ToolrollPalette.raised : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .strokeBorder(isSelected ? ToolrollPalette.inputLine : ToolrollPalette.line.opacity(0.75), lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Agent Work Content Card (live stream if available, or clear per-step agent status — never blank!)
+            if store.isLoadingLiveRun && !hasStreamForSelectedRun {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(selectedRunId.map { "Loading Run #\($0) activity…" } ?? "Loading agent activity…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Spacer()
+                }
+                .padding(14)
+                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            } else if hasStreamForSelectedRun {
+                liveStreamSection(
+                    records: store.liveRunRecords,
+                    step: selectedStep,
+                    runId: selectedRunId
+                )
+            } else {
+                emptyStepAgentCard(row: row, step: selectedStep, runId: selectedRunId)
+            }
+        }
+    }
+
+    private func resolveSelectedAgentStep(in steps: [StepCard]) -> StepCard? {
+        if let key = selectedAgentStepKey, let match = steps.first(where: { $0.key == key }) {
+            return match
+        }
+        if let runId = store.selectedLiveRunId, let match = steps.first(where: { $0.runs.contains(runId) }) {
+            return match
+        }
+        if let running = steps.first(where: { $0.state.lowercased().contains("run") || $0.mark.lowercased().contains("run") }) {
+            return running
+        }
+        if let withRuns = steps.last(where: { !$0.runs.isEmpty }) {
+            return withRuns
+        }
+        return steps.first
+    }
+
+    private func assignedModelLabel(forStep label: String) -> String? {
+        let lower = label.lowercased()
+        let roleKey: String
+        if lower.contains("plan") {
+            roleKey = "plan"
+        } else if lower.contains("build") {
+            roleKey = "build"
+        } else if lower.contains("review") || lower.contains("check") || lower.contains("ready") {
+            roleKey = "review"
+        } else {
+            return nil
+        }
+        return store.modelsRead.roles.first(where: { $0.key == roleKey })?.words
+    }
+
+    private func emptyStepAgentCard(row: WorkRow, step: StepCard?, runId: Int?) -> some View {
+        let agentName = step?.agent?.displayLabel ?? step.flatMap { assignedModelLabel(forStep: $0.label) } ?? activeBuilderModelLabel
+        let stageName = step?.label ?? "Agent"
+        let hasRan = (runId != nil) || (step?.agent != nil)
+        let summaryText: String = {
+            if let s = step?.sentence, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return s
+            }
+            if store.approvalCard != nil && (step?.label.lowercased().contains("build") == true) {
+                return "Waiting for your approval above before the builder agent starts."
+            }
+            if let headline = store.stepCards?.headline, !headline.isEmpty {
+                return headline
+            }
+            if let detail = row.detail, !detail.isEmpty {
+                return detail
+            }
+            if row.word.lowercased().contains("cancel") {
+                return "This task was cancelled before this step recorded live agent output."
+            }
+            return "Queued — no live agent output recorded for this step yet."
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(hasRan ? ToolrollPalette.muted : ToolrollPalette.muted.opacity(0.45))
+                    .frame(width: 6, height: 6)
+                Text(hasRan ? "\(stageName) · \(agentName)" : "\(stageName) · Assigned to \(agentName)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                if let runId {
+                    Text("Run #\(runId)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                Spacer()
+                if let cost = step?.costUsd, cost > 0 {
+                    Text(String(format: "$%.2f", cost))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                if let at = step?.at {
+                    Text(formatStepTimestamp(at))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+            }
+
+            Text(summaryText)
+                .font(.system(size: 12.5))
+                .foregroundStyle(ToolrollPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                if let diff = store.diffResponse, !diff.files.isEmpty {
+                    Button {
+                        store.isInspectorVisible = true
+                        store.inspectorTab = .diff
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Inspect Diff (\(diff.files.count) \(diff.files.count == 1 ? "file" : "files"))")
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                }
+
+                if step?.label.lowercased().contains("plan") == true {
+                    Button("View Full Plan ↗") {
+                        store.openTaskArtifact()
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                }
+
+                Spacer()
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     /// Shows explicitly WHICH agent & model is actively working (or ran last) + who is assigned next!
@@ -1519,11 +1796,47 @@ public struct TaskCockpitView: View {
         .help("Change \(prefix) model (Claude, Gemini, or Codex)")
     }
 
-    private func liveStreamSection(records: [LiveAgentRecord]) -> some View {
-        let isRunning = store.selectedRow?.status == .running
+    private func liveStreamSection(records: [LiveAgentRecord], step: StepCard?, runId: Int?) -> some View {
+        let isRunning = (store.stepCards?.liveRun != nil && store.stepCards?.liveRun == runId)
+            || (runId == nil && store.selectedRow?.status == .running)
         let timeline = LiveActivityTimeline.build(from: records, isLive: isRunning)
         return VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
+                if step != nil || runId != nil {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(isRunning ? ToolrollPalette.live : ToolrollPalette.muted)
+                            .frame(width: 6, height: 6)
+                        Text(step?.label ?? "Agent")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.ink)
+                        if let agentLabel = step?.agent?.displayLabel {
+                            Text("· \(agentLabel)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(1)
+                        }
+                        if let runId {
+                            Text("Run #\(runId)")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        Spacer()
+                        if let cost = step?.costUsd, cost > 0 {
+                            Text(String(format: "$%.2f", cost))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        if let at = step?.at {
+                            Text(formatStepTimestamp(at))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                    }
+                    HairlineDivider()
+                        .padding(.bottom, 2)
+                }
+
                 ForEach(Array(timeline.items.suffix(40))) { item in
                     switch item {
                     case .message(_, let text):

@@ -34,7 +34,7 @@ public enum WorkspaceMode: String, CaseIterable, Identifiable, Sendable {
 
 public enum TaskViewMode: String, CaseIterable, Identifiable, Sendable {
     case activity = "Activity"
-    case terminal = "Terminal"
+    case terminal = "Shell"
     public var id: String { rawValue }
 }
 
@@ -125,7 +125,10 @@ public final class WorkbenchStore {
     public private(set) var modelsRead: ModelsReadResponse = ModelsReadResponse()
     public private(set) var selectedTaskId: String?
     public private(set) var stepCards: StepCardsResponse?
+    public private(set) var selectedLiveRunId: Int? = nil
     public private(set) var liveRunRecords: [LiveAgentRecord] = []
+    public private(set) var liveRunRecordsById: [Int: [LiveAgentRecord]] = [:]
+    public private(set) var isLoadingLiveRun: Bool = false
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
     public var modelPasswordPrompt: String?
@@ -1325,12 +1328,35 @@ public final class WorkbenchStore {
         isComposingNewWork = false
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
+        // Return to Activity on task switch so selecting another task immediately shows its agent runs & plan instead of an unrelated worktree shell.
+        taskViewMode = .activity
+        selectedLiveRunId = nil
+        liveRunRecords = []
+        liveRunRecordsById = [:]
         selectedDiffPath = nil
         selectedDiffFile = nil
         approvalCard = nil
         approvalPasswordPrompt = nil
         await loadSelectedTaskDetails(taskId: taskId)
         restartSSE()
+    }
+
+    public func selectLiveRun(_ runId: Int) async {
+        selectedLiveRunId = runId
+        if let cached = liveRunRecordsById[runId] {
+            liveRunRecords = cached
+        }
+        guard !activeProfile.isDemo, let client else { return }
+        isLoadingLiveRun = true
+        defer { isLoadingLiveRun = false }
+        if let live = try? await client.fetchLiveRunWindow(runId: runId) {
+            liveRunRecordsById[runId] = live.records
+            if selectedLiveRunId == runId {
+                liveRunRecords = live.records
+            }
+        } else if liveRunRecordsById[runId] == nil, selectedLiveRunId == runId {
+            liveRunRecords = []
+        }
     }
 
     public func loadSelectedTaskDetails(taskId: String) async {
@@ -1358,9 +1384,17 @@ public final class WorkbenchStore {
 
         if let steps = try? await stepsReq {
             stepCards = steps
-            // Load live streaming agent records for the active or latest run
-            let targetRun = steps.liveRun ?? steps.review?.run ?? steps.cards.flatMap(\.runs).max()
+            // Load live streaming agent records for the user-selected run (if still on this task) or the active/latest run
+            let allRunIds = Set(steps.cards.flatMap(\.runs) + [steps.liveRun, steps.review?.run].compactMap { $0 })
+            let targetRun: Int?
+            if let pinned = selectedLiveRunId, allRunIds.contains(pinned) {
+                targetRun = pinned
+            } else {
+                targetRun = steps.liveRun ?? steps.review?.run ?? steps.cards.flatMap(\.runs).max()
+            }
+            selectedLiveRunId = targetRun
             if let runId = targetRun, let live = try? await client.fetchLiveRunWindow(runId: runId) {
+                liveRunRecordsById[runId] = live.records
                 liveRunRecords = live.records
             } else {
                 liveRunRecords = []

@@ -143,6 +143,22 @@ struct LiveTerminalPaneView: View {
 
             Spacer()
 
+            if inMainPane {
+                Button {
+                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                        store.setTaskViewMode(.activity)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Agent Activity")
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("This is your interactive worktree shell — switch to Activity to view autonomous Planner, Builder, and Reviewer agent runs")
+            }
+
             if session.connectionState == .connected {
                 if session.isControlling {
                     Button("Release") {
