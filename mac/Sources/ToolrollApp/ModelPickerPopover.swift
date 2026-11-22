@@ -261,6 +261,18 @@ public struct ModelPickerPopover: View {
             selectHighlightedModel()
             return .handled
         }
+        .onKeyPress(characters: CharacterSet(charactersIn: "123456")) { press in
+            guard press.modifiers.contains(.command),
+                  let num = Int(press.characters),
+                  num >= 1 && num <= displayedEntries.count
+            else { return .ignored }
+            let entry = displayedEntries[num - 1]
+            Task {
+                await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
+                if store.modelPasswordPrompt == nil { onDismiss() }
+            }
+            return .handled
+        }
     }
 
     private func selectHighlightedModel() {
@@ -332,8 +344,7 @@ public struct ModelPickerPopover: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6.5)
-            .background(isHighlighted ? ToolrollPalette.selection : (isCurrent ? ToolrollPalette.raised : Color.clear), in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(Rectangle())
+            .toolrollHoverSurface(cornerRadius: 5, isSelected: isHighlighted || isCurrent)
         }
         .buttonStyle(.plain)
     }
@@ -363,8 +374,7 @@ public struct ModelPickerPopover: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(active ? ToolrollPalette.raised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(Rectangle())
+            .toolrollHoverSurface(cornerRadius: 5, isSelected: active)
         }
         .buttonStyle(.plain)
     }

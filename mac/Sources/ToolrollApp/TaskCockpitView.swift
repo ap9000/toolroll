@@ -14,6 +14,8 @@ public struct TaskCockpitView: View {
     @State private var showAllSteps: Bool = false
     @State private var isModelPickerOpen: Bool = false
     @State private var copiedBranch: Bool = false
+    @State private var showFullApprovalChecks: Bool = false
+    @State private var showApprovalFiles: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -22,9 +24,7 @@ public struct TaskCockpitView: View {
     public var body: some View {
         VStack(spacing: 0) {
             if let row = store.selectedRow {
-                taskHeader(row)
-                HairlineDivider()
-                worktreeControlStrip(row)
+                unifiedTaskBar(row)
                 HairlineDivider()
 
                 if let notice = store.notice {
@@ -98,14 +98,99 @@ public struct TaskCockpitView: View {
             approvalPassword = ""
             sendBackOpen = false
             sendBackNote = ""
+            showFullApprovalChecks = false
+            showApprovalFiles = false
         }
     }
 
-    // MARK: - Compact Status & Action Strip (Breadcrumb lives cleanly in the top chrome bar)
+    // MARK: - Unified Single Task Bar (Hick's Law: merges status, Activity|Terminal, worktree branch & actions)
 
-    private func taskHeader(_ row: WorkRow) -> some View {
-        HStack(spacing: 10) {
+    private func unifiedTaskBar(_ row: WorkRow) -> some View {
+        let branch = store.activeWorktreeBranch(for: row)
+        let siblings = store.siblingActiveTasks(for: row)
+
+        return HStack(spacing: 10) {
             StatusChip(tone: row.status, label: row.word)
+
+            // Native macOS segmented Activity | Terminal switch (⌘T)
+            Picker("", selection: Binding(
+                get: { store.taskViewMode },
+                set: { store.setTaskViewMode($0) }
+            )) {
+                ForEach(TaskViewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 148)
+            .help("Switch between Activity and raw Worktree Terminal (⌘T)")
+
+            // Active Worktree Branch chip (click to copy)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(branch, forType: .string)
+                copiedBranch = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.4))
+                    copiedBranch = false
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: copiedBranch ? "checkmark" : "arrow.triangle.branch")
+                        .font(.system(size: 10))
+                        .foregroundStyle(copiedBranch ? ToolrollPalette.success : ToolrollPalette.muted)
+                    Text(copiedBranch ? "Copied" : branch)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .toolrollHoverSurface(cornerRadius: 4)
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: 230, alignment: .leading)
+            .help("Isolated worktree branch — click to copy")
+
+            // Sibling parallel worktrees pill
+            if !siblings.isEmpty {
+                Menu {
+                    Section("Parallel worktrees in \(row.project ?? "project")") {
+                        ForEach(siblings) { sib in
+                            Button {
+                                Task { await store.selectTask(sib.id) }
+                            } label: {
+                                Text("[\(sib.status.rawValue)] \(sib.title)")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Fork Another Parallel Approach…") {
+                        store.isForkSheetOpen = true
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Circle().fill(ToolrollPalette.live).frame(width: 5.5, height: 5.5)
+                        Text("\(siblings.count) parallel")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3.5)
+                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Other active worktrees in this repository")
+            }
 
             if store.isTeamWorkspace {
                 Menu {
@@ -138,8 +223,9 @@ public struct TaskCockpitView: View {
                 HStack(spacing: 5) {
                     Circle().fill(ToolrollPalette.live).frame(width: 5, height: 5)
                     Text(presSummary)
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11))
                         .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
                 }
             }
 
@@ -147,9 +233,25 @@ public struct TaskCockpitView: View {
                 Text(busy)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 8)
+
+            Button {
+                if let proj = row.project, !proj.isEmpty {
+                    store.selectedProject = proj
+                }
+                store.workspaceMode = .canvas
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 10.5))
+                    Text("Preview UI")
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Open this project's visual Canvas (⌘3)")
 
             Button {
                 store.isForkSheetOpen = true
@@ -161,37 +263,12 @@ public struct TaskCockpitView: View {
                 }
             }
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Fork into a parallel worktree to try another approach or agent (⌘⇧F)")
-
-            Button {
-                store.openTaskArtifact()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.richtext")
-                        .font(.system(size: 10.5))
-                    Text("Artifact")
-                }
-            }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Open Task Plan & Summary in Right Artifact Window (⌘4)")
-
-            if let diff = store.diffResponse, !diff.files.isEmpty {
-                Button {
-                    store.toggleInspector(tab: .diff)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Diff")
-                        if let totals = diff.totals {
-                            Text("+\(totals.added)")
-                                .foregroundStyle(ToolrollPalette.success)
-                                .font(.system(size: 10.5, design: .monospaced))
-                        }
-                    }
-                }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            }
+            .help("Fork into a parallel worktree (⌘⇧F)")
 
             Menu {
+                Button("Open Task Plan in Artifact Window (⌘4)") {
+                    store.openTaskArtifact()
+                }
                 Button("Fork Approach into Parallel Worktree…") {
                     store.isForkSheetOpen = true
                 }
@@ -231,131 +308,14 @@ public struct TaskCockpitView: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 24, height: 22)
+                    .frame(width: 26, height: 24)
+                    .toolrollHoverSurface(cornerRadius: 5)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-    }
-
-    // MARK: - In-Place Notice
-
-    // MARK: - Worktree & Fluid Activity ↔ Terminal Strip (Orca + AGOR Parity)
-
-    private func worktreeControlStrip(_ row: WorkRow) -> some View {
-        let branch = store.activeWorktreeBranch(for: row)
-        let siblings = store.siblingActiveTasks(for: row)
-
-        return HStack(spacing: 10) {
-            // Native macOS segmented Activity | Terminal switch (⌘T)
-            Picker("", selection: Binding(
-                get: { store.taskViewMode },
-                set: { store.setTaskViewMode($0) }
-            )) {
-                ForEach(TaskViewMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            .frame(width: 158)
-            .help("Switch seamlessly between structured Activity and raw Worktree Terminal (⌘T)")
-
-            // Active Worktree Branch pill (click to copy)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(branch, forType: .string)
-                copiedBranch = true
-                Task {
-                    try? await Task.sleep(for: .seconds(1.4))
-                    copiedBranch = false
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: copiedBranch ? "checkmark" : "arrow.triangle.branch")
-                        .font(.system(size: 10))
-                        .foregroundStyle(copiedBranch ? ToolrollPalette.success : ToolrollPalette.muted)
-                    Text(copiedBranch ? "Copied branch" : branch)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Isolated worktree branch — click to copy")
-
-            // Sibling parallel worktrees awareness (AGOR-style coordination visibility)
-            if !siblings.isEmpty {
-                Menu {
-                    Section("Parallel worktrees in \(row.project ?? "project")") {
-                        ForEach(siblings) { sib in
-                            Button {
-                                Task { await store.selectTask(sib.id) }
-                            } label: {
-                                Text("[\(sib.status.rawValue)] \(sib.title)")
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("Fork Another Parallel Approach…") {
-                        store.isForkSheetOpen = true
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(ToolrollPalette.live)
-                            .frame(width: 5.5, height: 5.5)
-                        Text("\(siblings.count) parallel")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(ToolrollPalette.ink)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.muted)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Other active worktrees in this repository")
-            }
-
-            Spacer()
-
-            // Quick jump to Canvas visual preview for this project
-            Button {
-                if let proj = row.project, !proj.isEmpty {
-                    store.selectedProject = proj
-                }
-                store.workspaceMode = .canvas
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .font(.system(size: 10.5))
-                    Text("Preview UI")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundStyle(ToolrollPalette.muted)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Open this project's visual Canvas (⌘3)")
-        }
         .padding(.horizontal, 16)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
         .background(ToolrollPalette.ground)
     }
 
@@ -383,46 +343,270 @@ public struct TaskCockpitView: View {
         .background(notice.kind == .refusal ? ToolrollPalette.danger.opacity(0.06) : ToolrollPalette.raised)
     }
 
-    // MARK: - Native In-App Plan Approval Card
+    // MARK: - Scannable Native In-App Plan Approval Card (Miller's Law + Von Restorff)
 
     private func inAppApprovalCard(taskId: String, card: ApprovalCard) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                StatusChip(tone: .needs, label: "Needs your approval")
-                if let digest = card.digest {
-                    Text(String(digest.prefix(16)))
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
+        let digest = ApprovalPlanDigest.parse(from: card.terms)
+        let visibleChecks = showFullApprovalChecks ? digest.checks : Array(digest.checks.prefix(3))
+        let hiddenCheckCount = max(0, digest.checks.count - 3)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // 1. TOP ACTION HEADER: Primary CTA ALWAYS visible above the fold!
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(ToolrollPalette.warning)
+                        .frame(width: 7, height: 7)
+                    Text("Needs approval")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
                 }
-                Spacer()
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(ToolrollPalette.warning.opacity(0.14), in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.warning.opacity(0.45), lineWidth: 1))
+
+                if let rev = digest.revision {
+                    Text(rev)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    store.openTaskArtifact()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Full Plan")
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("Read full plan in the right-hand Artifact Window (⌘4)")
+
+                if store.approvalPasswordPrompt == nil {
+                    Button("Approve & Build") {
+                        Task { await store.approveSelectedTask() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary))
+                }
             }
 
-            if !card.terms.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(card.terms.enumerated()), id: \.element.id) { idx, term in
-                        HStack(alignment: .top, spacing: 12) {
-                            Text(term.label)
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .frame(width: 96, alignment: .leading)
-                            Text(term.words)
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(ToolrollPalette.ink)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        if idx < card.terms.count - 1 {
-                            HairlineDivider()
+            // 2. HERO GOAL SUMMARY (Lead with what we're actually building)
+            if let goal = digest.goal {
+                Text(goal)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineSpacing(3.5)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 3. SMART DELTA PILLS FOR `Changed` (replaces unreadable "was only ... now only ..." prose!)
+            if !digest.addedFiles.isEmpty || !digest.removedFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PLAN CHANGES")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .tracking(0.6)
+                        .foregroundStyle(ToolrollPalette.muted)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(digest.addedFiles, id: \.self) { file in
+                                HStack(spacing: 4) {
+                                    Text("+")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    Text(file)
+                                        .font(.system(size: 11, design: .monospaced))
+                                }
+                                .foregroundStyle(ToolrollPalette.success)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(ToolrollPalette.success.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.success.opacity(0.35), lineWidth: 1))
+                            }
+                            ForEach(digest.removedFiles, id: \.self) { file in
+                                HStack(spacing: 4) {
+                                    Text("−")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    Text(file)
+                                        .font(.system(size: 11, design: .monospaced))
+                                }
+                                .foregroundStyle(ToolrollPalette.danger)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(ToolrollPalette.danger.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.danger.opacity(0.35), lineWidth: 1))
+                            }
                         }
                     }
                 }
-                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            } else if let fallbackChanged = digest.changedFallback {
+                Text(fallbackChanged)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
+            // 4. COMPACT METADATA ROW: Agent + Expandable File Chips
+            HStack(spacing: 10) {
+                if let agent = digest.agent {
+                    HStack(spacing: 5) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text(agent)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(1)
+                    }
+                }
+
+                if !digest.files.isEmpty {
+                    Button {
+                        withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                            showApprovalFiles.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 10))
+                            Text("\(digest.files.count) allowed file\(digest.files.count == 1 ? "" : "s")")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            Image(systemName: showApprovalFiles ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8.5, weight: .semibold))
+                        }
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .toolrollHoverSurface(cornerRadius: 4)
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                if let hash = card.digest {
+                    Text(String(hash.prefix(8)))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted.opacity(0.65))
+                        .help("Plan digest: \(hash)")
+                }
+            }
+
+            if showApprovalFiles && !digest.files.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 6)], alignment: .leading, spacing: 6) {
+                    ForEach(digest.files, id: \.self) { path in
+                        Text(path)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+                }
+            }
+
+            // 5. STRUCTURED CHECKLIST (`Done when`) + COLLAPSIBLE BOUNDARIES (`Won't touch`)
+            if !digest.checks.isEmpty || digest.wontTouch != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !visibleChecks.isEmpty {
+                        Text("VERIFICATION CHECKS (\(digest.checks.count))")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .tracking(0.6)
+                            .foregroundStyle(ToolrollPalette.muted)
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(visibleChecks) { item in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Image(systemName: "checkmark.circle")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                    Text(item.text)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
+                                        .lineSpacing(2.5)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 4)
+                                    if let badge = item.badge {
+                                        Text(badge)
+                                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1.5)
+                                            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                                            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if showFullApprovalChecks, let wontTouch = digest.wontTouch {
+                        HairlineDivider().padding(.vertical, 2)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("OUT OF SCOPE (WON'T TOUCH)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .tracking(0.6)
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Text(wontTouch)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineSpacing(2.5)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if showFullApprovalChecks && !digest.extraTerms.isEmpty {
+                        ForEach(digest.extraTerms) { extra in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(extra.label)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .frame(width: 84, alignment: .leading)
+                                Text(extra.words)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+
+                    if hiddenCheckCount > 0 || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                showFullApprovalChecks.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(showFullApprovalChecks
+                                     ? "Show less"
+                                     : "Show \(hiddenCheckCount > 0 ? "all \(digest.checks.count) checks & " : "")scope boundaries")
+                                    .font(.system(size: 11, weight: .medium))
+                                Image(systemName: showFullApprovalChecks ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                            }
+                            .foregroundStyle(ToolrollPalette.live)
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+
+            // 6. PASSWORD STEP-UP OR SECONDARY ACTIONS
             if let prompt = store.approvalPasswordPrompt {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(prompt)
@@ -452,30 +636,27 @@ public struct TaskCockpitView: View {
                 }
             } else {
                 HStack(spacing: 8) {
-                    Button("Approve Plan") {
-                        Task { await store.approveSelectedTask() }
-                    }
-                    .buttonStyle(KitButtonStyle(.primary))
-
                     if store.stepCards?.plan != nil || store.stepCards?.planStopped?.again != nil {
                         Button("Plan Again") {
                             Task { await store.planAgainSelectedTask() }
                         }
-                        .buttonStyle(KitButtonStyle(.ghost))
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
                     }
 
                     Button("Cancel Task") {
                         Task { await store.cancelSelectedTask() }
                     }
-                    .buttonStyle(KitButtonStyle(.ghost))
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                    Spacer()
                 }
             }
         }
-        .padding(14)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(16)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
         )
     }
 
@@ -1128,6 +1309,7 @@ public struct TaskCockpitView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .toolrollHoverSurface(cornerRadius: 4)
     }
 
     private func stepSymbol(for card: StepCard) -> String {

@@ -100,7 +100,7 @@ public struct MainWorkbenchView: View {
                 Spacer().frame(width: 68)
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
+                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
                         store.isSidebarVisible.toggle()
                     }
                 } label: {
@@ -108,7 +108,7 @@ public struct MainWorkbenchView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(store.isSidebarVisible ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isSidebarVisible))
                 .help("Toggle Sidebar (⌘B)")
 
                 Menu {
@@ -166,16 +166,16 @@ public struct MainWorkbenchView: View {
 
                 Spacer(minLength: 4)
 
-                // Back / Forward navigation (⌘[ / ⌘])
-                HStack(spacing: 6) {
+                // Back / Forward navigation (⌘[ / ⌘]) with generous 26×26pt targets
+                HStack(spacing: 2) {
                     Button {
                         Task { await store.goBack() }
                     } label: {
                         Image(systemName: "arrow.left")
                             .font(.system(size: 11))
-                            .foregroundStyle(store.canGoBack ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.35))
+                            .foregroundStyle(ToolrollPalette.ink)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ToolrollIconButtonStyle(size: 26))
                     .disabled(!store.canGoBack)
                     .help("Back (⌘[)")
 
@@ -184,9 +184,9 @@ public struct MainWorkbenchView: View {
                     } label: {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 11))
-                            .foregroundStyle(store.canGoForward ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.35))
+                            .foregroundStyle(ToolrollPalette.ink)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ToolrollIconButtonStyle(size: 26))
                     .disabled(!store.canGoForward)
                     .help("Forward (⌘])")
                 }
@@ -244,10 +244,10 @@ public struct MainWorkbenchView: View {
                 .buttonStyle(.plain)
                 .help("Command Palette (⌘K)")
 
-                // Clean right-edge drawer toggles: Artifact | Diff | Terminal | Lead
-                HStack(spacing: 6) {
+                // Clean right-edge drawer toggles: Artifact | Diff (+N) | Terminal | Lead
+                HStack(spacing: 4) {
                     drawerIconButton(systemName: "doc.richtext", tab: .artifact, help: "Toggle Artifact Window (⌘4)")
-                    drawerIconButton(systemName: "doc.text.magnifyingglass", tab: .diff, help: "Toggle Diff (⌘2)")
+                    diffDrawerButton
                     drawerIconButton(systemName: "terminal", tab: .terminal, help: "Toggle Live Terminal (⌘1)")
                     drawerIconButton(systemName: "sidebar.right", tab: .lead, help: "Toggle Lead / Drawer (⌘J)")
                 }
@@ -259,22 +259,45 @@ public struct MainWorkbenchView: View {
         .background(ToolrollPalette.ground)
     }
 
+    private var diffDrawerButton: some View {
+        let active = store.isInspectorVisible && store.inspectorTab == .diff
+        let added = store.diffResponse?.totals?.added ?? 0
+        return Button {
+            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                store.toggleInspector(tab: .diff)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                if added > 0 {
+                    Text("+\(added)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.success)
+                }
+            }
+            .padding(.horizontal, added > 0 ? 7 : 6)
+            .frame(height: 26)
+            .toolrollHoverSurface(cornerRadius: 5, isSelected: active)
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Toggle Diff Inspector (⌘2)")
+    }
+
     private func drawerIconButton(systemName: String, tab: InspectorTab, help: String) -> some View {
         let active = store.isInspectorVisible && store.inspectorTab == tab
         return Button {
-            withAnimation(.easeInOut(duration: 0.14)) {
+            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
                 store.toggleInspector(tab: tab)
             }
         } label: {
             Image(systemName: systemName)
                 .font(.system(size: 12.5))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .frame(width: 24, height: 22)
-                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: active))
         .help(help)
     }
 }

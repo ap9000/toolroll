@@ -223,8 +223,8 @@ public struct InboxSidebarView: View {
 
             HairlineDivider()
 
-            // Minimal bottom utility icon bar
-            HStack(spacing: 14) {
+            // Minimal bottom utility icon bar with generous 26×26pt Fitts's Law hit targets
+            HStack(spacing: 4) {
                 Button {
                     store.isSetupOpen = true
                 } label: {
@@ -232,7 +232,7 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26))
                 .help("Setup & Agents (⌘,)")
 
                 Button {
@@ -242,7 +242,7 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .terminal ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isInspectorVisible && store.inspectorTab == .terminal))
                 .help("Live Terminal (⌘1)")
 
                 Button {
@@ -252,7 +252,7 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .lead ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isInspectorVisible && store.inspectorTab == .lead))
                 .help("Lead Thread (⌘L)")
 
                 Button {
@@ -262,7 +262,7 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26))
                 .help("Appearance & Lead Themes (⌘⇧T)")
 
                 Spacer()
@@ -280,11 +280,11 @@ public struct InboxSidebarView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26))
                 .help("Refresh (⌘R)")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 6 : 9)
+            .padding(.horizontal, 10)
+            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 5 : 7)
         }
         .background {
             if WorkspaceThemeEngine.shared.config.sidebarVibrancy && WorkspaceThemeEngine.shared.config.effectiveCustomPalette == nil {
@@ -371,11 +371,10 @@ public struct InboxSidebarView: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 5 : 7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .toolrollHoverSurface(cornerRadius: 6, isSelected: isSelected)
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(isSelected ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
@@ -409,9 +408,8 @@ public struct InboxSidebarView: View {
                     .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 5.5)
-            .background(isSelected ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(Rectangle())
+            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 4 : 5.5)
+            .toolrollHoverSurface(cornerRadius: 5, isSelected: isSelected)
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 4)

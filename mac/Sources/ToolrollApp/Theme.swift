@@ -62,6 +62,10 @@ public final class WorkspaceThemeEngine {
         )
     }
 
+    public var snappyAnimation: Animation? {
+        config.reducedMotion ? nil : .snappy(duration: 0.16)
+    }
+
     public var preferredColorScheme: ColorScheme? {
         if let custom = config.effectiveCustomPalette {
             switch custom.base.lowercased() {
@@ -405,7 +409,72 @@ public struct SidebarVibrancyBackground: NSViewRepresentable {
     public func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
+/// Reusable tactile hover surface for rows, quick chips, and compact controls.
+public struct ToolrollHoverSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let isSelected: Bool
+    @State private var isHovered = false
+
+    public func body(content: Content) -> some View {
+        content
+            .background(
+                (isSelected ? ToolrollPalette.selection : (isHovered ? ToolrollPalette.raised.opacity(0.85) : Color.clear)),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .onHover { hovering in
+                isHovered = hovering
+            }
+    }
+}
+
+/// Standardized Fitts's Law (`26×26pt`) icon button with crisp hover feedback and disabled dimming.
+public struct ToolrollIconButtonStyle: ButtonStyle {
+    public let size: CGFloat
+    public let isActive: Bool
+
+    public init(size: CGFloat = 26, isActive: Bool = false) {
+        self.size = size
+        self.isActive = isActive
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        ToolrollIconButtonBody(configuration: configuration, size: size, isActive: isActive)
+    }
+}
+
+private struct ToolrollIconButtonBody: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+    let configuration: ButtonStyleConfiguration
+    let size: CGFloat
+    let isActive: Bool
+
+    var body: some View {
+        configuration.label
+            .frame(width: size, height: size)
+            .background(
+                isActive
+                    ? ToolrollPalette.paper
+                    : (isHovered && isEnabled ? ToolrollPalette.raised : Color.clear),
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(isActive ? ToolrollPalette.line : Color.clear, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1.0) : 0.35)
+            .onHover { isHovered = $0 }
+    }
+}
+
 public extension View {
+    /// Tactile hover fill + full-bounds hit target (matching T3 Code / Linear responsiveness).
+    func toolrollHoverSurface(cornerRadius: CGFloat = 5, isSelected: Bool = false) -> some View {
+        modifier(ToolrollHoverSurfaceModifier(cornerRadius: cornerRadius, isSelected: isSelected))
+    }
+
     /// Applies real macOS Liquid Glass (`glassEffect`) to floating capsule controls (Canvas Dock, Element HUD, Compare Bar),
     /// falling back cleanly to `.ultraThinMaterial` + hairline on macOS 14–15.
     @ViewBuilder

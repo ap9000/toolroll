@@ -214,41 +214,34 @@ struct ScreenFocusLightboxView: View {
 
             Spacer()
 
-            // Preview | Live | Compare switcher
-            HStack(spacing: 2) {
-                ForEach(ViewMode.allCases) { mode in
-                    let active = viewMode == mode
-                    let disabled = (mode == .compare && !hasBeforeAfter)
-                    Button {
-                        if mode == .compare {
-                            Task { await enterCompareMode() }
-                        } else {
-                            viewMode = mode
-                            if mode != .live {
-                                isStylePopoverOpen = false
-                                isContextMenuOpen = false
-                                isEditingCopy = false
-                            }
-                            if mode == .live && store.canvasBaseURL.isEmpty {
-                                Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
-                            }
+            // Native macOS segmented Preview | Live | Compare switcher
+            Picker("", selection: Binding(
+                get: { viewMode },
+                set: { next in
+                    if next == .compare {
+                        guard hasBeforeAfter else { return }
+                        Task { await enterCompareMode() }
+                    } else {
+                        viewMode = next
+                        if next != .live {
+                            isStylePopoverOpen = false
+                            isContextMenuOpen = false
+                            isEditingCopy = false
                         }
-                    } label: {
-                        Text(mode.rawValue)
-                            .font(.system(size: 11, weight: active ? .semibold : .regular))
-                            .foregroundStyle(disabled ? ToolrollPalette.muted.opacity(0.4) : (active ? ToolrollPalette.ink : ToolrollPalette.muted))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4)
-                            .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                            .contentShape(Rectangle())
+                        if next == .live && store.canvasBaseURL.isEmpty {
+                            Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(disabled)
+                }
+            )) {
+                ForEach(ViewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
             }
-            .padding(2)
-            .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 210)
 
             // Zoom controls
             HStack(spacing: 4) {
@@ -1477,7 +1470,7 @@ struct ScreenFocusLightboxView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 5)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
+                        .toolrollHoverSurface(cornerRadius: 5)
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
                 .buttonStyle(.plain)

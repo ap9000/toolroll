@@ -470,6 +470,142 @@ public struct ApprovalCard: Codable, Sendable, Equatable {
     }
 }
 
+/// Structured, scannable digest parsed from raw `ApprovalTerm` rows so the approval UI
+/// shows a clear Goal, smart `+ Added / - Removed` file deltas, check tags, and collapsible fine print.
+public struct ApprovalPlanDigest: Sendable, Equatable {
+    public struct CheckItem: Sendable, Equatable, Identifiable {
+        public var id: String { text }
+        public let text: String
+        public let badge: String?
+
+        public init(text: String, badge: String? = nil) {
+            self.text = text
+            self.badge = badge
+        }
+    }
+
+    public let goal: String?
+    public let revision: String?
+    public let addedFiles: [String]
+    public let removedFiles: [String]
+    public let changedFallback: String?
+    public let agent: String?
+    public let files: [String]
+    public let checks: [CheckItem]
+    public let wontTouch: String?
+    public let extraTerms: [ApprovalTerm]
+
+    public static func parse(from terms: [ApprovalTerm]) -> ApprovalPlanDigest {
+        var goal: String?
+        var revision: String?
+        var addedFiles: [String] = []
+        var removedFiles: [String] = []
+        var changedFallback: String?
+        var agent: String?
+        var files: [String] = []
+        var checks: [CheckItem] = []
+        var wontTouch: String?
+        var extraTerms: [ApprovalTerm] = []
+
+        for term in terms {
+            let key = term.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let val = term.words.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !val.isEmpty else { continue }
+
+            switch key {
+            case "goal":
+                goal = val
+            case "revision":
+                revision = val
+            case "changed":
+                if let diff = parseFileDelta(val) {
+                    addedFiles = diff.added
+                    removedFiles = diff.removed
+                } else {
+                    changedFallback = val
+                }
+            case "agent":
+                agent = val
+            case "files":
+                files = splitFileList(val)
+            case "done when":
+                checks = parseChecks(val)
+            case "won't touch", "wont touch", "not", "boundaries":
+                wontTouch = val
+            default:
+                extraTerms.append(term)
+            }
+        }
+
+        return ApprovalPlanDigest(
+            goal: goal,
+            revision: revision,
+            addedFiles: addedFiles,
+            removedFiles: removedFiles,
+            changedFallback: changedFallback,
+            agent: agent,
+            files: files,
+            checks: checks,
+            wontTouch: wontTouch,
+            extraTerms: extraTerms
+        )
+    }
+
+    private static func splitFileList(_ raw: String) -> [String] {
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.lowercased().hasPrefix("only ") {
+            cleaned = String(cleaned.dropFirst(5))
+        }
+        return cleaned
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func parseFileDelta(_ raw: String) -> (added: [String], removed: [String])? {
+        let lower = raw.lowercased()
+        guard let wasRange = lower.range(of: "was "),
+              let nowRange = lower.range(of: ", now ", range: wasRange.upperBound..<lower.endIndex)
+        else { return nil }
+        let beforeStr = String(raw[wasRange.upperBound..<nowRange.lowerBound])
+        let afterStr = String(raw[nowRange.upperBound...])
+        let beforeList = splitFileList(beforeStr)
+        let afterList = splitFileList(afterStr)
+        guard !beforeList.isEmpty || !afterList.isEmpty else { return nil }
+        let beforeSet = Set(beforeList)
+        let afterSet = Set(afterList)
+        let added = afterList.filter { !beforeSet.contains($0) }
+        let removed = beforeList.filter { !afterSet.contains($0) }
+        guard !added.isEmpty || !removed.isEmpty else { return nil }
+        return (added, removed)
+    }
+
+    private static func parseChecks(_ raw: String) -> [CheckItem] {
+        let lines = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return lines.map { line in
+            var text = line
+            var badge: String? = nil
+            let tagMap: [(suffix: String, badge: String)] = [
+                ("(runs automatically)", "Auto"),
+                ("(shown in a screenshot)", "Visual"),
+                ("(seen in the changed files)", "Diff"),
+                ("(checked manually)", "Manual"),
+            ]
+            for item in tagMap {
+                if text.lowercased().hasSuffix(item.suffix) {
+                    text = String(text.dropLast(item.suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    badge = item.badge
+                    break
+                }
+            }
+            return CheckItem(text: text, badge: badge)
+        }
+    }
+}
+
 public struct TaskReviewAccept: Codable, Sendable, Equatable {
     public let owed: String?
     public let blockers: [String]

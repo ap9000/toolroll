@@ -488,4 +488,26 @@ struct ToolrollCoreTests {
         #expect(reloaded.glassChrome == false)
         #expect(reloaded.savedThemes["neon-night"]?.paper == "#101027")
     }
+
+    @Test("ApprovalPlanDigest extracts Goal, file deltas (+ Added / - Removed), and tagged Checks cleanly")
+    func approvalPlanDigestParsing() {
+        let terms = [
+            ApprovalTerm(label: "Revision", words: "This revises build #13. One limit changes from that build: files."),
+            ApprovalTerm(label: "Changed", words: "files: was only README.md, src/routes/index.tsx, now only README.md, src/routes/index.tsx, node-compile-cache/v26"),
+            ApprovalTerm(label: "Goal", words: "Create a distinctive, modern homepage with clean editorial typography."),
+            ApprovalTerm(label: "Won't touch", words: "No backend or CMS changes."),
+            ApprovalTerm(label: "Done when", words: "Homepage shows prominent heading. (shown in a screenshot)\npnpm build succeeds. (runs automatically)"),
+            ApprovalTerm(label: "Agent", words: "Codex · gpt-6-astra plans, builds, fixes and reviews"),
+            ApprovalTerm(label: "Files", words: "only README.md, src/routes/index.tsx, node-compile-cache/v26"),
+        ]
+        let digest = ApprovalPlanDigest.parse(from: terms)
+        #expect(digest.goal?.contains("editorial typography") == true)
+        #expect(digest.addedFiles == ["node-compile-cache/v26"])
+        #expect(digest.removedFiles.isEmpty)
+        #expect(digest.files.count == 3)
+        #expect(digest.checks.count == 2)
+        #expect(digest.checks[0].badge == "Visual")
+        #expect(digest.checks[1].badge == "Auto")
+        #expect(digest.wontTouch == "No backend or CMS changes.")
+    }
 }

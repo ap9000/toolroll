@@ -129,27 +129,16 @@ public struct NewWorkCanvasView: View {
                     .padding(.top, 4)
 
                     HStack(spacing: 8) {
-                        // Mode switcher pills (Plan first | Just code | Ask Lead)
-                        HStack(spacing: 3) {
+                        // Native macOS segmented mode switcher (Plan first | Just code | Ask Lead)
+                        Picker("", selection: $mode) {
                             ForEach(ComposeMode.allCases) { m in
-                                let active = mode == m
-                                Button {
-                                    mode = m
-                                } label: {
-                                    Text(m.rawValue)
-                                        .font(.system(size: 11, weight: active ? .semibold : .regular))
-                                        .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
+                                Text(m.rawValue).tag(m)
                             }
                         }
-                        .padding(2)
-                        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 248)
 
                         Spacer()
 
