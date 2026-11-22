@@ -181,6 +181,9 @@ import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
 import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
 import { loginHelpOf } from "./login-help.js";
+import { proposeNetworkChanges } from "../route-change.js";
+
+const waitingWords = (count: number): string => count === 0 ? "" : ` ${count === 1 ? "1 task waits" : `${count} tasks wait`} for your Approve to use it.`;
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -977,9 +980,13 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
     if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change what builds may reach.");
-    const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+    // One transaction: the setting, and each idle task in the project re-filed on it, waiting for the same Approve.
+    const { changed, waiting } = store.transact(() => {
+      const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+      return { changed, waiting: proposeNetworkChanges(store, repo, now) };
+    });
     const same = JSON.stringify(changed.before) === JSON.stringify(changed.after);
-    return back("said", same ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep the network they were approved with.");
+    return back("said", same ? "Nothing changed." : `Saved.${waitingWords(waiting)}`);
   }
   // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
   async function projectDelete(ctx: HandlerContext): Promise<void> {

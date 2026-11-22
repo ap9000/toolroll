@@ -173,7 +173,7 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
         formRow("Other hosts builds may reach", "One per line.", textarea({ id: "network-hosts", name: "hosts", value: setting.hosts.join("\n"), rows: 3,
           attrs: { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "api.stripe.com\n*.example.com", "aria-label": "Other hosts builds may reach" } }), "top"),
         formRow("Open", "Builds may reach any host.", switchInput({ id: "network-open", name: "mode", label: "Open", on: setting.mode === "open", attrs: { value: "open", "aria-label": "Open: builds may reach any host" } }), "inline"),
-        note("Tasks scoped from now on use this; tasks already approved keep the network they were approved with."),
+        note("Idle tasks in this project then wait for your Approve to use the change; a running task keeps its network."),
       ]) }))]) });
 }
 

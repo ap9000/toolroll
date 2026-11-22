@@ -347,7 +347,7 @@ import { resumeAllowedReleases } from "./release-next.js";
 import { fileGithubItem, readGithubItem } from "./github-import.js";
 import { runRelease } from "./release.js";
 import { releaseAdapters } from "./release-adapters.js";
-import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
+import { proposeNetworkChanges, routeChangeOf, routeLegacyPlans } from "./route-change.js";
 import { installModeNow, sessionStandsIn } from "./install-mode.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
@@ -11886,7 +11886,7 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
 /**
  * `project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]`: what the project's
  * builds may reach (egress.ts). New scopes are written with it and their approvals seal it; scopes already approved
- * keep the network they were approved with. Widening or narrowing it is an approver's act with a password typed now,
+ * keep the network they were approved with until their re-filed plan is approved (route-change.ts proposeNetworkChanges). Widening or narrowing it is an approver's act with a password typed now,
  * kept in the ledger as before → after.
  */
 async function projectNetworkCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
@@ -11922,10 +11922,14 @@ async function projectNetworkCommand(positional: readonly string[], flags: Map<s
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
   if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes what its builds may reach, with their password: pass --as and --token.", EXIT.refused);
-  const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
-  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after }, () => [
+  // One transaction: the setting, and each idle task in the project re-filed on it, waiting for the same Approve.
+  const { changed, waiting } = context.store.transact(() => {
+    const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
+    return { changed, waiting: proposeNetworkChanges(context.store, repo, context.clock()) };
+  });
+  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after, waiting }, () => [
     ...words(changed.after),
-    "Scopes written from now on use this; scopes already approved keep the network they were approved with.",
+    waiting === 0 ? "Scopes written from now on use this." : `${waiting === 1 ? "1 task waits" : `${waiting} tasks wait`} for your Approve to use it; a running task keeps the network it started with.`,
   ]);
 }
 
