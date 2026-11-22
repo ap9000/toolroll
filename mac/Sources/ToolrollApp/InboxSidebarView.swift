@@ -1,136 +1,149 @@
 import SwiftUI
 import ToolrollCore
 
-/// Left rail (--so-ground) — active work up top, expandable `Settled` pinned cleanly to the bottom,
-/// and a quiet utility icon strip. Zero clutter, maximum focus on what's live.
+/// Left rail — decluttered macOS 26 Liquid Glass sidebar:
+/// Top: Search pill (with integrated project/owner filter) + crisp New Task button.
+/// Middle: Needs you / Running / Queued + inline collapsible Settled section.
+/// Bottom: Single quiet Workspace menu capsule + Appearance trigger (zero multi-row icon clutter).
 public struct InboxSidebarView: View {
     @Bindable var store: WorkbenchStore
-    @State private var searchExpanded: Bool = false
     @FocusState private var searchFocused: Bool
 
     public init(store: WorkbenchStore) {
         self.store = store
     }
 
+    private var hasActiveFilter: Bool {
+        store.selectedProject != nil || store.teamFilter != .everyone
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
-            // Top bar: Search + Filter + Add Project + New Task
-            HStack(spacing: 8) {
-                if searchExpanded {
-                    HStack(spacing: 5) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(ToolrollPalette.muted)
-                        TextField("Search", text: $store.sidebarSearch)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .foregroundStyle(ToolrollPalette.ink)
-                            .focused($searchFocused)
+            // Top bar: Glass Search pill (with integrated filter) + New Task button
+            HStack(spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+
+                    TextField("Search", text: $store.sidebarSearch)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .focused($searchFocused)
+
+                    if !store.sidebarSearch.isEmpty {
                         Button {
                             store.sidebarSearch = ""
-                            searchExpanded = false
                         } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9.5, weight: .semibold))
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 10.5))
                                 .foregroundStyle(ToolrollPalette.muted)
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                } else {
-                    Button {
-                        searchExpanded = true
-                        searchFocused = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 11))
-                            Text("Search")
-                                .font(.system(size: 12))
-                            Spacer()
-                        }
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
 
-                // Filter popover (Project + Team when multi-dev)
-                Menu {
-                    Section("Project") {
-                        Button {
-                            store.selectedProject = nil
-                        } label: {
-                            HStack {
-                                Text("All projects")
-                                if store.selectedProject == nil { Image(systemName: "checkmark") }
-                            }
-                        }
-                        ForEach(store.allProjects, id: \.self) { proj in
+                    // Filter menu tucked cleanly inside the search pill
+                    Menu {
+                        Section("Project") {
                             Button {
-                                store.selectedProject = proj
+                                store.selectedProject = nil
                             } label: {
                                 HStack {
-                                    Text(proj)
-                                    if store.selectedProject == proj { Image(systemName: "checkmark") }
+                                    Text("All projects")
+                                    if store.selectedProject == nil { Image(systemName: "checkmark") }
                                 }
                             }
-                        }
-                    }
-                    if store.isTeamWorkspace {
-                        Divider()
-                        Section("Owner") {
-                            ForEach(TeamFilter.allCases) { f in
+                            ForEach(store.allProjects, id: \.self) { proj in
                                 Button {
-                                    store.teamFilter = f
+                                    store.selectedProject = proj
                                 } label: {
                                     HStack {
-                                        Text(f.rawValue)
-                                        if store.teamFilter == f { Image(systemName: "checkmark") }
+                                        Text(proj)
+                                        if store.selectedProject == proj { Image(systemName: "checkmark") }
                                     }
                                 }
                             }
                         }
+                        Divider()
+                        Button("Add Local Project…") {
+                            store.isAddProjectSheetOpen = true
+                        }
+                        if store.isTeamWorkspace {
+                            Divider()
+                            Section("Owner") {
+                                ForEach(TeamFilter.allCases) { f in
+                                    Button {
+                                        store.teamFilter = f
+                                    } label: {
+                                        HStack {
+                                            Text(f.rawValue)
+                                            if store.teamFilter == f { Image(systemName: "checkmark") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: hasActiveFilter ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+                            .font(.system(size: 11))
+                            .foregroundStyle(hasActiveFilter ? ToolrollPalette.live : ToolrollPalette.muted)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Circle())
                     }
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(store.selectedProject != nil || store.teamFilter != .everyone ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .frame(width: 24, height: 24)
-                        .toolrollHoverSurface(cornerRadius: 5, isSelected: store.selectedProject != nil || store.teamFilter != .everyone)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help(store.selectedProject.map { "Filtered: \($0)" } ?? "Filter by project or owner")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Filter by project or owner")
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .toolrollGlassCapsule(interactive: false)
 
-                // Add project (⌘⇧O)
-                Button {
-                    store.isAddProjectSheetOpen = true
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 24))
-                .help("Add Project (⌘⇧O)")
-
-                // New task inline canvas (⌘N)
+                // Crisp New Task glass circle (⌘N)
                 Button {
                     store.openNewWorkCanvas()
                 } label: {
                     Image(systemName: "square.and.pencil")
-                        .font(.system(size: 12))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(store.isComposingNewWork ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
                 }
-                .buttonStyle(ToolrollIconButtonStyle(size: 24, isActive: store.isComposingNewWork))
+                .buttonStyle(.plain)
+                .toolrollGlassCapsule(interactive: true)
                 .help("New Task (⌘N)")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
 
-            // Active work list (Needs you, Running, Queued)
+            // Active project filter badge (only shown when filtered)
+            if let proj = store.selectedProject {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 9.5))
+                    Text(proj)
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        store.selectedProject = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .foregroundStyle(ToolrollPalette.ink)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.08), in: Capsule())
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+            }
+
+            // Unified scrollable task list (Needs you, Running, Queued + inline collapsible Settled)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if !store.needsRows.isEmpty {
@@ -156,45 +169,37 @@ public struct InboxSidebarView: View {
                             .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 14)
-                        .padding(.top, 10)
+                        .padding(.top, 8)
                     }
-                }
-                .padding(.vertical, 8)
-            }
-            .frame(maxHeight: .infinity)
 
-            // Bottom-pinned expandable Settled section (Finished + Failed)
-            if !store.settledRows.isEmpty {
-                HairlineDivider()
+                    // Inline collapsible Settled section (clean like Linear's Completed/Archive)
+                    if !store.settledRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Button {
+                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                    store.isSettledExpanded.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: store.isSettledExpanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                        .frame(width: 10)
+                                    Text("SETTLED")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .tracking(0.7)
+                                    Spacer()
+                                    Text("\(store.settledRows.count)")
+                                        .font(.system(size: 10, design: .monospaced))
+                                }
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
 
-                VStack(alignment: .leading, spacing: 0) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            store.isSettledExpanded.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("Settled")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(ToolrollPalette.muted)
-                            Spacer()
-                            Text("\(store.settledRows.count)")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
-                            Image(systemName: store.isSettledExpanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(ToolrollPalette.muted)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    if store.isSettledExpanded {
-                        let visibleSettled = Array(store.settledRows.prefix(store.settledDisplayLimit))
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 1) {
+                            if store.isSettledExpanded {
+                                let visibleSettled = Array(store.settledRows.prefix(store.settledDisplayLimit))
                                 ForEach(visibleSettled) { row in
                                     settledRow(row)
                                 }
@@ -206,94 +211,89 @@ public struct InboxSidebarView: View {
                                             Image(systemName: "chevron.down")
                                                 .font(.system(size: 9))
                                             Text("Show \(store.settledRows.count - store.settledDisplayLimit) more")
-                                                .font(.system(size: 11.5))
+                                                .font(.system(size: 11))
                                         }
                                         .foregroundStyle(ToolrollPalette.muted)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 7)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
                                     }
                                     .buttonStyle(.plain)
                                 }
                             }
-                            .padding(.bottom, 6)
                         }
-                        .frame(maxHeight: 280)
+                        .padding(.top, 4)
                     }
                 }
+                .padding(.vertical, 6)
             }
+            .frame(maxHeight: .infinity)
 
-            HairlineDivider()
-
-            // Minimal bottom utility icon bar with generous 26×26pt Fitts's Law hit targets
-            HStack(spacing: 4) {
-                Button {
-                    store.isSetupOpen = true
+            // Single ultra-clean Liquid Glass footer (replaces 6-icon clutter strip)
+            HStack(spacing: 6) {
+                Menu {
+                    if let spend = store.workRowsResponse.spend {
+                        Text(String(format: "Today's spend: $%.2f", spend.todayUsd))
+                        Divider()
+                    }
+                    Button("Setup & Agents…") {
+                        store.isSetupOpen = true
+                    }
+                    Button("Appearance & Lead Themes…") {
+                        store.isAppearanceSheetOpen = true
+                    }
+                    Button("Add Local Project…") {
+                        store.isAddProjectSheetOpen = true
+                    }
+                    Button("Pair Phone for Push Alerts…") {
+                        store.isPhonePairSheetOpen = true
+                    }
+                    Divider()
+                    Button("Refresh Workspace") {
+                        Task { await store.refreshAll() }
+                    }
                 } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
+                    HStack(spacing: 6) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text("Settings")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
+                            Text(String(format: "$%.2f", spend.todayUsd))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .contentShape(Capsule())
                 }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26))
-                .help("Setup & Agents (⌘,)")
-
-                Button {
-                    store.toggleInspector(tab: .terminal)
-                } label: {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 12))
-                        .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .terminal ? ToolrollPalette.ink : ToolrollPalette.muted)
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isInspectorVisible && store.inspectorTab == .terminal))
-                .help("Live Terminal (⌘1)")
-
-                Button {
-                    store.toggleInspector(tab: .lead)
-                } label: {
-                    Image(systemName: "text.bubble")
-                        .font(.system(size: 12))
-                        .foregroundStyle(store.isInspectorVisible && store.inspectorTab == .lead ? ToolrollPalette.ink : ToolrollPalette.muted)
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isInspectorVisible && store.inspectorTab == .lead))
-                .help("Lead Thread (⌘L)")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .toolrollGlassCapsule(interactive: true)
+                .help("Workspace Settings, Spend & Projects")
 
                 Button {
                     store.isAppearanceSheetOpen = true
                 } label: {
                     Image(systemName: "paintbrush")
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11))
                         .foregroundStyle(ToolrollPalette.muted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
                 }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26))
+                .buttonStyle(.plain)
+                .toolrollGlassCapsule(interactive: true)
                 .help("Appearance & Lead Themes (⌘⇧T)")
-
-                Spacer()
-
-                if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
-                    Text(String(format: "$%.2f", spend.todayUsd))
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-
-                Button {
-                    Task { await store.refreshAll() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26))
-                .help("Refresh (⌘R)")
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 5 : 7)
+            .padding(.vertical, 8)
         }
-        .background {
-            if WorkspaceThemeEngine.shared.config.sidebarVibrancy && WorkspaceThemeEngine.shared.config.effectiveCustomPalette == nil {
-                SidebarVibrancyBackground()
-            } else {
-                ToolrollPalette.ground
-            }
-        }
+        .background(Color.clear)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -321,7 +321,7 @@ public struct InboxSidebarView: View {
                     .foregroundStyle(solidBadge ? ToolrollPalette.inverseInk : ToolrollPalette.muted)
                     .padding(.horizontal, solidBadge ? 5.5 : 2)
                     .padding(.vertical, solidBadge ? 1 : 0)
-                    .background(solidBadge ? ToolrollPalette.ink : Color.clear, in: RoundedRectangle(cornerRadius: 3))
+                    .background(solidBadge ? ToolrollPalette.ink : Color.clear, in: Capsule())
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 2)
@@ -352,6 +352,7 @@ public struct InboxSidebarView: View {
                     Text(row.age)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
                 }
 
                 if let project = row.project, !project.isEmpty {
@@ -374,11 +375,18 @@ public struct InboxSidebarView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 5 : 7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .toolrollHoverSurface(cornerRadius: 6, isSelected: isSelected)
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(isSelected ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+            .background(
+                isSelected ? Color.white.opacity(0.11) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? Color.white.opacity(0.12) : Color.clear, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 8)
     }
 
     private func settledRow(_ row: WorkRow) -> some View {
@@ -393,8 +401,8 @@ public struct InboxSidebarView: View {
                     .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(row.status == .failed ? ToolrollPalette.danger : ToolrollPalette.muted)
                     .frame(width: 18, height: 18)
-                    .background(ToolrollPalette.raised, in: Circle())
-                    .overlay(Circle().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    .background(Color.white.opacity(0.06), in: Circle())
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
 
                 Text(row.title)
                     .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
@@ -407,13 +415,18 @@ public struct InboxSidebarView: View {
                 Text(row.age)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                    .lineLimit(1)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 4 : 5.5)
-            .toolrollHoverSurface(cornerRadius: 5, isSelected: isSelected)
+            .background(
+                isSelected ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 7, isSelected: false)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 8)
     }
 
     @ViewBuilder

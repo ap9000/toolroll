@@ -83,11 +83,21 @@ public struct TaskCockpitView: View {
                             // 8. Steps Timeline (quietly collapsed unless needed or toggled)
                             stepsSection()
                         }
-                        .padding(20)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 16)
+                        .padding(.bottom, 16)
                     }
-
-                    HairlineDivider()
-                    composerBar(taskId: row.id)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        composerBar(taskId: row.id)
+                            .background(
+                                LinearGradient(
+                                    colors: [ToolrollPalette.paper.opacity(0), ToolrollPalette.paper.opacity(0.88)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                                .allowsHitTesting(false)
+                            )
+                    }
                 }
             } else {
                 emptyState
@@ -103,226 +113,303 @@ public struct TaskCockpitView: View {
         }
     }
 
-    // MARK: - Unified Single Task Bar (Hick's Law: merges status, Activity|Terminal, worktree branch & actions)
+    // MARK: - Responsive Liquid Glass Task Bar (ViewThatFits: zero wrapping at any width)
 
     private func unifiedTaskBar(_ row: WorkRow) -> some View {
         let branch = store.activeWorktreeBranch(for: row)
         let siblings = store.siblingActiveTasks(for: row)
 
-        return HStack(spacing: 10) {
-            StatusChip(tone: row.status, label: row.word)
-
-            // Native macOS segmented Activity | Terminal switch (⌘T)
-            Picker("", selection: Binding(
-                get: { store.taskViewMode },
-                set: { store.setTaskViewMode($0) }
-            )) {
-                ForEach(TaskViewMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+        return ViewThatFits(in: .horizontal) {
+            // Tier 1 (Wide): Activity|Terminal + Branch + Parallel + Team + Preview + Fork + …
+            HStack(spacing: 8) {
+                taskModeGlassSwitch
+                branchCopyPill(branch: branch, maxWidth: 190)
+                if !siblings.isEmpty { parallelWorktreesMenu(row: row, siblings: siblings) }
+                if store.isTeamWorkspace { teamOwnerMenu(row: row) }
+                if let busy = store.busyLabel { busyPill(busy) }
+                Spacer(minLength: 8)
+                ToolrollGlassGroup(spacing: 6) {
+                    previewCanvasButton(row: row, compactIconOnly: false)
+                    forkTaskButton
+                    overflowTaskMenu(row: row, branch: branch)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            .frame(width: 148)
-            .help("Switch between Activity and raw Worktree Terminal (⌘T)")
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
 
-            // Active Worktree Branch chip (click to copy)
-            Button {
+            // Tier 2 (Medium): Activity|Terminal + Preview + … (branch & Fork cleanly inside …)
+            HStack(spacing: 8) {
+                taskModeGlassSwitch
+                if let busy = store.busyLabel { busyPill(busy) }
+                Spacer(minLength: 8)
+                ToolrollGlassGroup(spacing: 6) {
+                    previewCanvasButton(row: row, compactIconOnly: false)
+                    overflowTaskMenu(row: row, branch: branch)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+
+            // Tier 3 (Condensed): Activity|Terminal + icon-only Preview + … (guaranteed single-line!)
+            HStack(spacing: 6) {
+                taskModeGlassSwitch
+                Spacer(minLength: 6)
+                ToolrollGlassGroup(spacing: 6) {
+                    previewCanvasButton(row: row, compactIconOnly: true)
+                    overflowTaskMenu(row: row, branch: branch)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(ToolrollPalette.paper)
+    }
+
+    private var taskModeGlassSwitch: some View {
+        HStack(spacing: 2) {
+            ForEach(TaskViewMode.allCases) { mode in
+                let selected = store.taskViewMode == mode
+                Button {
+                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                        store.setTaskViewMode(mode)
+                    }
+                } label: {
+                    Text(mode.rawValue)
+                        .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 10)
+                        .frame(height: 22)
+                        .background(
+                            selected ? Color.white.opacity(0.14) : Color.clear,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+        .help("Switch between Activity and raw Worktree Terminal (⌘T)")
+    }
+
+    private func branchCopyPill(branch: String, maxWidth: CGFloat) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(branch, forType: .string)
+            copiedBranch = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.4))
+                copiedBranch = false
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: copiedBranch ? "checkmark" : "arrow.triangle.branch")
+                    .font(.system(size: 10))
+                    .foregroundStyle(copiedBranch ? ToolrollPalette.success : ToolrollPalette.muted)
+                Text(copiedBranch ? "Copied" : branch)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .frame(maxWidth: maxWidth, alignment: .leading)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .toolrollGlassCapsule(interactive: true)
+        .help("Isolated worktree branch (\(branch)) — click to copy")
+    }
+
+    private func parallelWorktreesMenu(row: WorkRow, siblings: [WorkRow]) -> some View {
+        Menu {
+            Section("Parallel worktrees in \(row.project ?? "project")") {
+                ForEach(siblings) { sib in
+                    Button {
+                        Task { await store.selectTask(sib.id) }
+                    } label: {
+                        Text("[\(sib.status.rawValue)] \(sib.title)")
+                    }
+                }
+            }
+            Divider()
+            Button("Fork Another Parallel Approach…") {
+                store.isForkSheetOpen = true
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Circle().fill(ToolrollPalette.live).frame(width: 5.5, height: 5.5)
+                Text("\(siblings.count) parallel")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+        .help("Other active worktrees in this repository")
+    }
+
+    private func teamOwnerMenu(row: WorkRow) -> some View {
+        Menu {
+            ForEach(store.presence.accounts, id: \.self) { person in
+                Button {
+                    Task { await store.handOffTask(taskId: row.id, to: person) }
+                } label: {
+                    HStack {
+                        Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
+                        if store.selectedTaskOwner == person {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+            }
+            .foregroundStyle(ToolrollPalette.muted)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+    }
+
+    private func busyPill(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(ToolrollPalette.muted)
+            .lineLimit(1)
+    }
+
+    private func previewCanvasButton(row: WorkRow, compactIconOnly: Bool) -> some View {
+        Button {
+            if let proj = row.project, !proj.isEmpty {
+                store.selectedProject = proj
+            }
+            store.workspaceMode = .canvas
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 11))
+                if !compactIconOnly {
+                    Text("Preview")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, compactIconOnly ? 0 : 10)
+            .frame(width: compactIconOnly ? 26 : nil, height: 26)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+        .help("Open this project's visual Canvas (⌘3)")
+    }
+
+    private var forkTaskButton: some View {
+        Button {
+            store.isForkSheetOpen = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 10.5))
+                Text("Fork")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+        .help("Fork into a parallel worktree (⌘⇧F)")
+    }
+
+    private func overflowTaskMenu(row: WorkRow, branch: String) -> some View {
+        Menu {
+            Button("Copy Worktree Branch (\(branch))") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(branch, forType: .string)
-                copiedBranch = true
-                Task {
-                    try? await Task.sleep(for: .seconds(1.4))
-                    copiedBranch = false
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: copiedBranch ? "checkmark" : "arrow.triangle.branch")
-                        .font(.system(size: 10))
-                        .foregroundStyle(copiedBranch ? ToolrollPalette.success : ToolrollPalette.muted)
-                    Text(copiedBranch ? "Copied" : branch)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .toolrollHoverSurface(cornerRadius: 4)
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
-            .buttonStyle(.plain)
-            .frame(maxWidth: 230, alignment: .leading)
-            .help("Isolated worktree branch — click to copy")
-
-            // Sibling parallel worktrees pill
-            if !siblings.isEmpty {
-                Menu {
-                    Section("Parallel worktrees in \(row.project ?? "project")") {
-                        ForEach(siblings) { sib in
-                            Button {
-                                Task { await store.selectTask(sib.id) }
-                            } label: {
-                                Text("[\(sib.status.rawValue)] \(sib.title)")
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("Fork Another Parallel Approach…") {
-                        store.isForkSheetOpen = true
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Circle().fill(ToolrollPalette.live).frame(width: 5.5, height: 5.5)
-                        Text("\(siblings.count) parallel")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(ToolrollPalette.ink)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.muted)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .toolrollHoverSurface(cornerRadius: 4)
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Other active worktrees in this repository")
-            }
-
-            if store.isTeamWorkspace {
-                Menu {
-                    ForEach(store.presence.accounts, id: \.self) { person in
-                        Button {
-                            Task { await store.handOffTask(taskId: row.id, to: person) }
-                        } label: {
-                            HStack {
-                                Text(person == store.presence.me ? "@\(person) (me)" : "@\(person)")
-                                if store.selectedTaskOwner == person {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(store.selectedTaskOwner.map { "@\($0)" } ?? "Unassigned")
-                            .font(.system(size: 11.5, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8.5, weight: .semibold))
-                    }
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .toolrollHoverSurface(cornerRadius: 4)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-            }
-
-            if let presSummary = store.selectedTaskPresence?.summary {
-                HStack(spacing: 5) {
-                    Circle().fill(ToolrollPalette.live).frame(width: 5, height: 5)
-                    Text(presSummary)
-                        .font(.system(size: 11))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                }
-            }
-
-            if let busy = store.busyLabel {
-                Text(busy)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Button {
-                if let proj = row.project, !proj.isEmpty {
-                    store.selectedProject = proj
-                }
-                store.workspaceMode = .canvas
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .font(.system(size: 10.5))
-                    Text("Preview UI")
-                }
-            }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Open this project's visual Canvas (⌘3)")
-
-            Button {
+            Button("Fork Approach into Parallel Worktree…") {
                 store.isForkSheetOpen = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 10.5))
-                    Text("Fork")
+            }
+            Button("Open Task Plan in Artifact Window (⌘4)") {
+                store.openTaskArtifact()
+            }
+            Button("Open Raw Terminal (⌘T)") {
+                store.setTaskViewMode(.terminal)
+            }
+            Button("Attach Terminal in Side Drawer") {
+                Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell", openDrawer: true) }
+            }
+            Divider()
+            if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
+                Button("Plan Again") {
+                    Task { await store.planAgainSelectedTask() }
                 }
             }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Fork into a parallel worktree (⌘⇧F)")
-
-            Menu {
-                Button("Open Task Plan in Artifact Window (⌘4)") {
-                    store.openTaskArtifact()
+            if store.stepCards?.retry != nil {
+                Button("Retry Build") {
+                    Task { await store.retrySelectedTask() }
                 }
-                Button("Fork Approach into Parallel Worktree…") {
-                    store.isForkSheetOpen = true
-                }
-                Button("Open Raw Terminal (⌘T)") {
-                    store.setTaskViewMode(.terminal)
-                }
-                Button("Attach Terminal in Side Drawer") {
-                    Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell", openDrawer: true) }
-                }
-                if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
-                    Button("Plan Again") {
-                        Task { await store.planAgainSelectedTask() }
-                    }
-                }
-                if store.stepCards?.retry != nil {
-                    Button("Retry Build") {
-                        Task { await store.retrySelectedTask() }
-                    }
-                }
-                if store.stepCards?.liveRun != nil {
-                    Button("Stop Active Run") {
-                        Task { await store.stopSelectedTask() }
-                    }
-                }
-                Button(store.stepCards?.held != nil ? "Resume Task" : "Pause / Hold Task") {
-                    Task { await store.holdOrResumeSelectedTask() }
-                }
-                Divider()
-                Button("Cancel Task", role: .destructive) {
-                    Task { await store.cancelSelectedTask() }
-                }
-                Divider()
-                Button("Open Web View ↗") {
-                    store.openTaskInBrowser(taskId: row.id)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 26, height: 24)
-                    .toolrollHoverSurface(cornerRadius: 5)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            if store.stepCards?.liveRun != nil {
+                Button("Stop Active Run") {
+                    Task { await store.stopSelectedTask() }
+                }
+            }
+            Button(store.stepCards?.held != nil ? "Resume Task" : "Pause / Hold Task") {
+                Task { await store.holdOrResumeSelectedTask() }
+            }
+            Divider()
+            Button("Cancel Task", role: .destructive) {
+                Task { await store.cancelSelectedTask() }
+            }
+            Divider()
+            Button("Open Web View ↗") {
+                store.openTaskInBrowser(taskId: row.id)
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+                .frame(width: 26, height: 26)
+                .contentShape(Circle())
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(ToolrollPalette.ground)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .toolrollGlassCapsule(interactive: true)
+        .fixedSize()
+        .help("More Task Actions")
     }
 
     private func inPlaceNoticeBar(_ notice: WorkbenchNotice) -> some View {
@@ -351,54 +438,98 @@ public struct TaskCockpitView: View {
 
     // MARK: - Scannable Native In-App Plan Approval Card (Miller's Law + Von Restorff)
 
+    private var approvalStatusBadge: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(ToolrollPalette.warning)
+                .frame(width: 7, height: 7)
+            Text("Needs approval")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(ToolrollPalette.warning.opacity(0.14), in: Capsule())
+        .overlay(Capsule().strokeBorder(ToolrollPalette.warning.opacity(0.45), lineWidth: 1))
+        .fixedSize()
+    }
+
+    private var fullPlanButton: some View {
+        Button {
+            store.openTaskArtifact()
+        } label: {
+            HStack(spacing: 4) {
+                Text("Full Plan")
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9.5, weight: .semibold))
+            }
+        }
+        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+        .fixedSize()
+        .help("Read full plan in the right-hand Artifact Window (⌘4)")
+    }
+
+    private var approveAndBuildButton: some View {
+        Button {
+            Task { await store.approveSelectedTask() }
+        } label: {
+            Text("Approve & Build")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(KitButtonStyle(.primary))
+        .fixedSize()
+    }
+
     private func inAppApprovalCard(taskId: String, card: ApprovalCard) -> some View {
         let digest = ApprovalPlanDigest.parse(from: card.terms)
         let visibleChecks = showFullApprovalChecks ? digest.checks : Array(digest.checks.prefix(3))
         let hiddenCheckCount = max(0, digest.checks.count - 3)
 
         return VStack(alignment: .leading, spacing: 14) {
-            // 1. TOP ACTION HEADER: Primary CTA ALWAYS visible above the fold!
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(ToolrollPalette.warning)
-                        .frame(width: 7, height: 7)
-                    Text("Needs approval")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(ToolrollPalette.warning.opacity(0.14), in: Capsule())
-                .overlay(Capsule().strokeBorder(ToolrollPalette.warning.opacity(0.45), lineWidth: 1))
-
-                if let rev = digest.revision {
-                    Text(rev)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    store.openTaskArtifact()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Full Plan")
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9.5, weight: .semibold))
+            // 1. TOP ACTION HEADER: Responsive ViewThatFits — primary CTA & badge NEVER wrap!
+            ViewThatFits(in: .horizontal) {
+                // Wide: single horizontal row
+                HStack(spacing: 10) {
+                    approvalStatusBadge
+                    if let rev = digest.revision {
+                        Text(rev)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 8)
+                    fullPlanButton
+                    if store.approvalPasswordPrompt == nil {
+                        approveAndBuildButton
                     }
                 }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                .help("Read full plan in the right-hand Artifact Window (⌘4)")
 
-                if store.approvalPasswordPrompt == nil {
-                    Button("Approve & Build") {
-                        Task { await store.approveSelectedTask() }
+                // Condensed: clean 2-row stack with zero text wrapping
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        approvalStatusBadge
+                        Spacer(minLength: 6)
+                        if store.approvalPasswordPrompt == nil {
+                            approveAndBuildButton
+                        }
                     }
-                    .buttonStyle(KitButtonStyle(.primary))
+                    HStack(spacing: 8) {
+                        if let rev = digest.revision {
+                            Text(rev)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: 6)
+                        fullPlanButton
+                    }
                 }
             }
 
@@ -1385,10 +1516,11 @@ public struct TaskCockpitView: View {
 
     private func composerBar(taskId: String) -> some View {
         HStack(spacing: 8) {
-            TextField("Steer task or leave a note for the active run…", text: $steerDraft)
+            TextField("Steer task or leave a note…", text: $steerDraft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5))
                 .foregroundStyle(ToolrollPalette.ink)
+                .frame(minWidth: 110)
                 .onSubmit {
                     submitSteer(taskId: taskId)
                 }
@@ -1402,16 +1534,19 @@ public struct TaskCockpitView: View {
                     Text(activeBuilderModelLabel)
                         .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 7.5, weight: .semibold))
                 }
                 .foregroundStyle(ToolrollPalette.muted)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .frame(maxWidth: 155)
+                .background(Color.white.opacity(0.07), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .fixedSize()
             .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
                 ModelPickerPopover(store: store, initialRoleKey: "build", onDismiss: { isModelPickerOpen = false })
             }
@@ -1422,10 +1557,10 @@ public struct TaskCockpitView: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(ToolrollPalette.inverseInk)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 26, height: 26)
                     .background(
                         steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? ToolrollPalette.muted.opacity(0.35)
+                            ? ToolrollPalette.muted.opacity(0.32)
                             : ToolrollPalette.ink,
                         in: Circle()
                     )
@@ -1433,15 +1568,13 @@ public struct TaskCockpitView: View {
             .buttonStyle(.plain)
             .disabled(steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(ToolrollPalette.composer, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .toolrollGlassPanel(cornerRadius: 20, interactive: true)
+        .shadow(color: Color.black.opacity(0.28), radius: 14, y: 4)
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
     }
 
     private func submitSteer(taskId: String) {

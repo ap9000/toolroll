@@ -394,19 +394,84 @@ public final class CanvasImageCache {
 
 // MARK: - Native macOS Sidebar Vibrancy & Liquid Glass (macOS 26+ with graceful Material fallback)
 
-/// Authentic AppKit translucent sidebar vibrancy (`.sidebar` + `.behindWindow`) for Mac-native depth.
-public struct SidebarVibrancyBackground: NSViewRepresentable {
+/// Configures the hosting NSWindow for authentic macOS 26 Liquid Glass & behind-window desktop vibrancy.
+public struct WindowGlassConfigurator: NSViewRepresentable {
     public init() {}
+
+    public func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window else { return }
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.titlebarAppearsTransparent = true
+        }
+        return view
+    }
+
+    public func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in
+            guard let window = nsView?.window else { return }
+            if window.isOpaque {
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                window.titlebarAppearsTransparent = true
+            }
+        }
+    }
+}
+
+/// Authentic AppKit translucent vibrancy (`.behindWindow`) for Mac-native Liquid Glass depth.
+public struct SidebarVibrancyBackground: NSViewRepresentable {
+    public let material: NSVisualEffectView.Material
+    public let blendingMode: NSVisualEffectView.BlendingMode
+
+    public init(
+        material: NSVisualEffectView.Material = .sidebar,
+        blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+    ) {
+        self.material = material
+        self.blendingMode = blendingMode
+    }
 
     public func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
-        v.material = .sidebar
-        v.blendingMode = .behindWindow
+        v.material = material
+        v.blendingMode = blendingMode
         v.state = .followsWindowActiveState
         return v
     }
 
-    public func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    public func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        if nsView.material != material { nsView.material = material }
+        if nsView.blendingMode != blendingMode { nsView.blendingMode = blendingMode }
+    }
+}
+
+/// Wraps grouped macOS 26 Liquid Glass controls in `GlassEffectContainer` so adjacent glass pills
+/// share optical refraction and specular edge blending (falling back to a clean HStack on macOS 14–15).
+public struct ToolrollGlassGroup<Content: View>: View {
+    public let spacing: CGFloat
+    @ViewBuilder public let content: () -> Content
+
+    public init(spacing: CGFloat = 6, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    public var body: some View {
+        if #available(macOS 26.0, *), WorkspaceThemeEngine.shared.config.glassChrome {
+            GlassEffectContainer(spacing: spacing) {
+                HStack(spacing: spacing) {
+                    content()
+                }
+            }
+        } else {
+            HStack(spacing: spacing) {
+                content()
+            }
+        }
+    }
 }
 
 /// Reusable tactile hover surface for rows, quick chips, and compact controls.

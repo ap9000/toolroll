@@ -13,17 +13,27 @@ public struct MainWorkbenchView: View {
 
     public var body: some View {
         ZStack {
+            // Authentic macOS 26 behind-window vibrancy + subtle theme glass veil
+            if WorkspaceThemeEngine.shared.config.sidebarVibrancy {
+                SidebarVibrancyBackground(material: .underWindowBackground)
+                    .ignoresSafeArea()
+                ToolrollPalette.ground.opacity(0.34)
+                    .ignoresSafeArea()
+            } else {
+                ToolrollPalette.ground
+                    .ignoresSafeArea()
+            }
+
             if store.isSetupOpen {
                 SetupWorkbenchView(store: store)
             } else {
                 VStack(spacing: 0) {
                     topChromeBar
-                    HairlineDivider()
 
                     HSplitView {
                         if store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight {
                             InboxSidebarView(store: store)
-                                .frame(minWidth: 225, idealWidth: 250, maxWidth: 320)
+                                .frame(minWidth: 196, idealWidth: 238, maxWidth: 310)
                         }
 
                         Group {
@@ -35,26 +45,46 @@ public struct MainWorkbenchView: View {
                                 TaskCockpitView(store: store)
                             }
                         }
-                        .frame(minWidth: 460, maxWidth: .infinity)
+                        .frame(minWidth: 360, maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.22), radius: 10, y: 2)
+                        .padding(.top, 2)
+                        .padding(.bottom, 8)
+                        .padding(.leading, store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight ? 4 : 8)
+                        .padding(.trailing, store.isInspectorVisible || (store.isSidebarVisible && WorkspaceThemeEngine.shared.config.isSidebarOnRight) ? 4 : 8)
 
                         if store.isInspectorVisible {
                             InspectorView(store: store)
-                                .frame(minWidth: 360, idealWidth: 480, maxWidth: 860)
+                                .frame(minWidth: 320, idealWidth: 460, maxWidth: 860)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                                )
+                                .shadow(color: Color.black.opacity(0.2), radius: 10, y: 2)
+                                .padding(.top, 2)
+                                .padding(.bottom, 8)
+                                .padding(.leading, 4)
+                                .padding(.trailing, store.isSidebarVisible && WorkspaceThemeEngine.shared.config.isSidebarOnRight ? 4 : 8)
                         }
 
                         if store.isSidebarVisible && WorkspaceThemeEngine.shared.config.isSidebarOnRight {
                             InboxSidebarView(store: store)
-                                .frame(minWidth: 225, idealWidth: 250, maxWidth: 320)
+                                .frame(minWidth: 196, idealWidth: 238, maxWidth: 310)
                         }
                     }
                 }
-                .background(ToolrollPalette.paper)
             }
 
             if store.isCommandPaletteOpen {
                 CommandPaletteView(store: store)
             }
         }
+        .background(WindowGlassConfigurator())
         .sheet(isPresented: $store.isPairSheetOpen) {
             PairWorkspaceSheet(store: store)
         }
@@ -94,170 +124,198 @@ public struct MainWorkbenchView: View {
     }
 
     private var topChromeBar: some View {
-        HStack(spacing: 0) {
-            // Left section aligned with sidebar
-            HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            // Left glass navigation cluster (aligned past traffic lights)
+            HStack(spacing: 6) {
                 Spacer().frame(width: 68)
 
-                Button {
-                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                        store.isSidebarVisible.toggle()
-                    }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 12))
-                        .foregroundStyle(store.isSidebarVisible ? ToolrollPalette.ink : ToolrollPalette.muted)
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: store.isSidebarVisible))
-                .help("Toggle Sidebar (⌘B)")
+                ToolrollGlassGroup(spacing: 6) {
+                    // Sidebar + Workspace menu glass capsule
+                    HStack(spacing: 2) {
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                store.isSidebarVisible.toggle()
+                            }
+                        } label: {
+                            Image(systemName: "sidebar.left")
+                                .font(.system(size: 12))
+                                .foregroundStyle(store.isSidebarVisible ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .frame(width: 26, height: 24)
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Toggle Sidebar (⌘B)")
 
-                Menu {
-                    Section("Workspace") {
-                        ForEach(store.profiles) { profile in
-                            Button {
-                                Task { await store.switchProfile(name: profile.name) }
-                            } label: {
-                                HStack {
-                                    Text(profile.displayTitle)
-                                    if profile.name == store.activeProfile.name {
-                                        Image(systemName: "checkmark")
+                        Menu {
+                            Section("Workspace") {
+                                ForEach(store.profiles) { profile in
+                                    Button {
+                                        Task { await store.switchProfile(name: profile.name) }
+                                    } label: {
+                                        HStack {
+                                            Text(profile.displayTitle)
+                                            if profile.name == store.activeProfile.name {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            Divider()
+                            Button("Setup & Agents…") {
+                                store.isSetupOpen = true
+                            }
+                            Button("Add Project…") {
+                                store.isAddProjectSheetOpen = true
+                            }
+                            Button("Reconnect Local Toolroll") {
+                                Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
+                            }
+                            Button("Connect Remote Workspace…") {
+                                store.isPairSheetOpen = true
+                            }
+                            Button("Pair Phone for Push Alerts…") {
+                                store.isPhonePairSheetOpen = true
+                            }
+                            Button("Appearance & Lead Themes…") {
+                                store.isAppearanceSheetOpen = true
+                            }
+                            if !store.activeProfile.isDemo {
+                                Divider()
+                                Button("Preview Demo Workspace") {
+                                    Task { await store.switchProfile(name: "demo") }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text("Toolroll")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .lineLimit(1)
+                                Circle()
+                                    .fill(store.sseConnected ? ToolrollPalette.success : ToolrollPalette.muted)
+                                    .frame(width: 5.5, height: 5.5)
+                            }
+                            .padding(.trailing, 6)
+                            .frame(height: 24)
                         }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
                     }
-                    Divider()
-                    Button("Setup & Agents…") {
-                        store.isSetupOpen = true
-                    }
-                    Button("Add Project…") {
-                        store.isAddProjectSheetOpen = true
-                    }
-                    Button("Reconnect Local Toolroll") {
-                        Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
-                    }
-                    Button("Connect Remote Workspace…") {
-                        store.isPairSheetOpen = true
-                    }
-                    Button("Pair Phone for Push Alerts…") {
-                        store.isPhonePairSheetOpen = true
-                    }
-                    Button("Appearance & Lead Themes…") {
-                        store.isAppearanceSheetOpen = true
-                    }
-                    if !store.activeProfile.isDemo {
-                        Divider()
-                        Button("Preview Demo Workspace") {
-                            Task { await store.switchProfile(name: "demo") }
+                    .padding(.horizontal, 4)
+                    .toolrollGlassCapsule(interactive: true)
+
+                    // Back / Forward glass capsule (⌘[ / ⌘])
+                    HStack(spacing: 0) {
+                        Button {
+                            Task { await store.goBack() }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(store.canGoBack ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.4))
+                                .frame(width: 24, height: 24)
+                                .contentShape(Circle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(!store.canGoBack)
+                        .help("Back (⌘[)")
+
+                        Button {
+                            Task { await store.goForward() }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(store.canGoForward ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.4))
+                                .frame(width: 24, height: 24)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!store.canGoForward)
+                        .help("Forward (⌘])")
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("Toolroll")
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.ink)
-                        Circle()
-                            .fill(store.sseConnected ? ToolrollPalette.success : ToolrollPalette.muted)
-                            .frame(width: 5, height: 5)
-                    }
+                    .padding(.horizontal, 2)
+                    .toolrollGlassCapsule(interactive: true)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
+            }
 
-                Spacer(minLength: 4)
+            // Quiet centered-left breadcrumb
+            HStack(spacing: 5) {
+                Text(breadcrumbProject)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+                Text("/")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.45))
+                Text(breadcrumbTitle)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(.leading, 4)
 
-                // Back / Forward navigation (⌘[ / ⌘]) with generous 26×26pt targets
+            Spacer(minLength: 8)
+
+            // Right Liquid Glass cluster: Mode switch + ⌘K + Inspector drawer pills
+            ToolrollGlassGroup(spacing: 6) {
+                // Workbench | Canvas glass capsule
                 HStack(spacing: 2) {
-                    Button {
-                        Task { await store.goBack() }
-                    } label: {
-                        Image(systemName: "arrow.left")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ToolrollPalette.ink)
-                    }
-                    .buttonStyle(ToolrollIconButtonStyle(size: 26))
-                    .disabled(!store.canGoBack)
-                    .help("Back (⌘[)")
-
-                    Button {
-                        Task { await store.goForward() }
-                    } label: {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ToolrollPalette.ink)
-                    }
-                    .buttonStyle(ToolrollIconButtonStyle(size: 26))
-                    .disabled(!store.canGoForward)
-                    .help("Forward (⌘])")
-                }
-            }
-            .padding(.trailing, 10)
-            .frame(width: store.isSidebarVisible ? 250 : nil)
-
-            if store.isSidebarVisible {
-                HairlineDivider(vertical: true)
-            }
-
-            // Center/Right breadcrumb + 3 whisper-quiet drawer icons
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Text(breadcrumbProject)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                    Text("/")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted.opacity(0.5))
-                    Text(breadcrumbTitle)
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 12)
-
-                // Native macOS segmented Workbench | Canvas switcher (⌘3)
-                Picker("", selection: $store.workspaceMode) {
                     ForEach(WorkspaceMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+                        let selected = store.workspaceMode == mode
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                store.workspaceMode = mode
+                            }
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                                .foregroundStyle(selected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 10)
+                                .frame(height: 22)
+                                .background(
+                                    selected ? Color.white.opacity(0.14) : Color.clear,
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(width: 170)
+                .padding(2)
+                .toolrollGlassCapsule(interactive: true)
 
-                // Quiet ⌘K trigger
+                // Quiet ⌘K glass pill
                 Button {
                     store.isCommandPaletteOpen.toggle()
                 } label: {
                     Text("⌘K")
                         .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2.5)
-                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                        .contentShape(Rectangle())
+                        .padding(.horizontal, 8)
+                        .frame(height: 26)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .toolrollGlassCapsule(interactive: true)
                 .help("Command Palette (⌘K)")
 
-                // Clean right-edge drawer toggles: Artifact | Diff (+N) | Terminal | Lead
-                HStack(spacing: 4) {
+                // Right-edge Inspector toggles inside one unified glass capsule
+                HStack(spacing: 2) {
                     drawerIconButton(systemName: "doc.richtext", tab: .artifact, help: "Toggle Artifact Window (⌘4)")
                     diffDrawerButton
                     drawerIconButton(systemName: "terminal", tab: .terminal, help: "Toggle Live Terminal (⌘1)")
                     drawerIconButton(systemName: "sidebar.right", tab: .lead, help: "Toggle Lead / Drawer (⌘J)")
                 }
+                .padding(.horizontal, 3)
+                .frame(height: 26)
+                .toolrollGlassCapsule(interactive: true)
             }
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity)
+            .padding(.trailing, 10)
         }
-        .frame(height: 38)
-        .background(ToolrollPalette.ground)
+        .frame(height: 44)
     }
 
     private var diffDrawerButton: some View {
@@ -270,18 +328,19 @@ public struct MainWorkbenchView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 12))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
                 if added > 0 {
                     Text("+\(added)")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.success)
+                        .lineLimit(1)
                 }
             }
-            .padding(.horizontal, added > 0 ? 7 : 6)
-            .frame(height: 26)
-            .toolrollHoverSurface(cornerRadius: 5, isSelected: active)
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+            .padding(.horizontal, added > 0 ? 7 : 5)
+            .frame(height: 22)
+            .background(active ? Color.white.opacity(0.14) : Color.clear, in: Capsule())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help("Toggle Diff Inspector (⌘2)")
@@ -295,10 +354,13 @@ public struct MainWorkbenchView: View {
             }
         } label: {
             Image(systemName: systemName)
-                .font(.system(size: 12.5))
+                .font(.system(size: 11.5))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                .frame(width: 24, height: 22)
+                .background(active ? Color.white.opacity(0.14) : Color.clear, in: Capsule())
+                .contentShape(Capsule())
         }
-        .buttonStyle(ToolrollIconButtonStyle(size: 26, isActive: active))
+        .buttonStyle(.plain)
         .help(help)
     }
 }

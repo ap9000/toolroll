@@ -9,7 +9,7 @@ struct ToolrollMacApp: App {
     var body: some Scene {
         WindowGroup("Toolroll") {
             MainWorkbenchView(store: store)
-                .frame(minWidth: 960, minHeight: 620)
+                .frame(minWidth: 740, minHeight: 580)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.previewServer.stopManagedServer()
                 }
