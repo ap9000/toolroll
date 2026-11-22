@@ -3,6 +3,8 @@ import Observation
 
 public enum PreviewServerStatus: Sendable, Equatable {
     case asleep
+    case needsInstall(packageManager: String, command: String)
+    case installing(command: String)
     case external(url: String)
     case starting(command: String)
     case running(url: String, command: String)
@@ -10,13 +12,15 @@ public enum PreviewServerStatus: Sendable, Equatable {
 }
 
 public struct DetectedDevCommand: Sendable, Equatable {
+    public let packageManager: String
     public let executable: String
     public let arguments: [String]
     public let displayCommand: String
     public let expectedPort: Int
     public let expectedURL: String
 
-    public init(executable: String, arguments: [String], displayCommand: String, expectedPort: Int) {
+    public init(packageManager: String = "npm", executable: String, arguments: [String], displayCommand: String, expectedPort: Int) {
+        self.packageManager = packageManager
         self.executable = executable
         self.arguments = arguments
         self.displayCommand = displayCommand
@@ -86,6 +90,7 @@ public final class PreviewServerManager {
             args = pm == "npm" ? ["run", scriptName] : [scriptName]
         }
         return DetectedDevCommand(
+            packageManager: pm,
             executable: exe,
             arguments: args,
             displayCommand: "\(pm) \(scriptName)",
@@ -134,6 +139,14 @@ public final class PreviewServerManager {
         // Hard cap: stop any previously managed server before spawning a new one
         stopManagedServer()
         activeProjectRoot = projectRoot
+
+        // Detect missing node_modules cleanly before spawning so users get a 1-click Install & Preview CTA!
+        let nodeModulesPath = "\(projectRoot)/node_modules"
+        if !FileManager.default.fileExists(atPath: nodeModulesPath) {
+            status = .needsInstall(packageManager: detected.packageManager, command: "\(detected.packageManager) install")
+            return nil
+        }
+
         status = .starting(command: detected.displayCommand)
 
         do {
@@ -141,21 +154,20 @@ public final class PreviewServerManager {
             proc.executableURL = URL(fileURLWithPath: detected.executable)
             proc.arguments = detected.arguments
             proc.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
-            var env = ProcessInfo.processInfo.environment
-            let extraPaths = "/opt/homebrew/bin:/usr/local/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
-            env["PATH"] = "\(extraPaths):\(env["PATH"] ?? "/usr/bin:/bin")"
-            env["BROWSER"] = "none"
-            proc.environment = env
+            proc.environment = Self.buildSubprocessEnvironment()
+            let errPipe = Pipe()
             proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
+            proc.standardError = errPipe
             try proc.run()
             self.process = proc
             self.managedByToolroll = true
 
-            // Poll up to 15s for dev server to listen
-            for _ in 0..<30 {
+            // Poll up to 18s for dev server to listen
+            for _ in 0..<36 {
                 if !proc.isRunning {
-                    status = .failed("\(detected.displayCommand) exited early.")
+                    let errData = errPipe.fileHandleForReading.availableData
+                    let errLine = Self.extractLastMeaningfulLine(from: errData)
+                    status = .failed(errLine ?? "\(detected.displayCommand) exited early.")
                     managedByToolroll = false
                     self.process = nil
                     return nil
@@ -174,6 +186,72 @@ public final class PreviewServerManager {
             status = .failed("Could not start \(detected.displayCommand): \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// Runs `<pm> install` (e.g. `pnpm install`) inside `projectRoot` and immediately boots the dev server!
+    public func installDependenciesAndRun(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
+        guard let detected = Self.detectDevCommand(projectRoot: projectRoot) else {
+            return await ensureRunning(projectRoot: projectRoot, preferredOrigin: preferredOrigin)
+        }
+        stopManagedServer()
+        activeProjectRoot = projectRoot
+        let pm = detected.packageManager
+        let installCmd = "\(pm) install"
+        status = .installing(command: installCmd)
+
+        let exe = Self.resolveExecutable(pm) ?? "/usr/bin/env"
+        let args = exe == "/usr/bin/env" ? [pm, "install"] : ["install"]
+        let env = Self.buildSubprocessEnvironment()
+
+        let exitInfo: (code: Int32, errorLine: String?) = await Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: exe)
+            proc.arguments = args
+            proc.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
+            proc.environment = env
+            let errPipe = Pipe()
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = errPipe
+            do {
+                try proc.run()
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                return (proc.terminationStatus, Self.extractLastMeaningfulLine(from: errData))
+            } catch {
+                return (-1, error.localizedDescription)
+            }
+        }.value
+
+        guard exitInfo.code == 0 else {
+            status = .failed(exitInfo.errorLine ?? "\(installCmd) failed (exit \(exitInfo.code)).")
+            return nil
+        }
+        return await ensureRunning(projectRoot: projectRoot, preferredOrigin: preferredOrigin)
+    }
+
+    nonisolated private static func buildSubprocessEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let extraPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(home)/.bun/bin",
+            "\(home)/.volta/bin",
+            "\(home)/.local/share/pnpm",
+            "\(home)/.local/bin",
+        ].joined(separator: ":")
+        env["PATH"] = "\(extraPaths):\(env["PATH"] ?? "/usr/bin:/bin")"
+        env["BROWSER"] = "none"
+        return env
+    }
+
+    nonisolated private static func extractLastMeaningfulLine(from data: Data) -> String? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("ELIFECYCLE") }
+        guard let last = lines.last else { return nil }
+        return String(last.prefix(96))
     }
 
     public func stopManagedServer() {

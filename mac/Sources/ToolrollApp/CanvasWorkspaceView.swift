@@ -266,6 +266,22 @@ public struct CanvasWorkspaceView: View {
                 .foregroundStyle(ToolrollPalette.ink)
                 .buttonStyle(.plain)
 
+            case .needsInstall(_, let cmd):
+                Circle().fill(ToolrollPalette.warning).frame(width: 6, height: 6)
+                Text("Missing node_modules")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Button("Install & Preview (\(cmd))") {
+                    Task { await store.installPreviewDependenciesAndHydrate() }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+
+            case .installing(let cmd):
+                Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
+                Text("Installing (\(cmd))…")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+
             case .starting(let cmd):
                 Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
                 Text("Starting \(cmd)…")
@@ -296,6 +312,12 @@ public struct CanvasWorkspaceView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.danger)
                     .lineLimit(1)
+                Button("Retry") {
+                    Task { await store.wakePreviewServerAndHydrate(forceAll: true) }
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(ToolrollPalette.ink)
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 9)
@@ -508,14 +530,28 @@ public struct CanvasWorkspaceView: View {
                         .frame(width: scaledW, height: scaledH)
                         .clipped()
                 } else {
-                    // Clean minimal placeholder while queued for pooled hydration
-                    VStack(spacing: 6) {
+                    // Clean minimal placeholder while queued for pooled hydration or missing deps
+                    VStack(spacing: 8) {
                         Text(board.route)
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
                             .foregroundStyle(ToolrollPalette.ink)
-                        Text(store.canvasBaseURL.isEmpty ? "Click Wake to render live preview" : "Queued for capture…")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ToolrollPalette.muted)
+                        if case .needsInstall(_, let cmd) = store.previewServer.status {
+                            Text("Dependencies not installed in this repo")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Button("Run \(cmd) & Preview") {
+                                Task { await store.installPreviewDependenciesAndHydrate() }
+                            }
+                            .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        } else if case .installing(let cmd) = store.previewServer.status {
+                            Text("Running \(cmd)…")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.live)
+                        } else {
+                            Text(store.canvasBaseURL.isEmpty ? "Click Wake to render live preview" : "Queued for capture…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
                     }
                     .frame(width: scaledW, height: scaledH)
                     .background(ToolrollPalette.codeBg)

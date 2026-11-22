@@ -324,6 +324,22 @@ public final class WorkbenchStore {
                 }
             }
             pumpHydrationPool()
+        } else {
+            canvasBaseURL = ""
+        }
+    }
+
+    public func installPreviewDependenciesAndHydrate() async {
+        guard let root = canvasProjectRoot else { return }
+        let isToolrollRepo = (root as NSString).lastPathComponent.lowercased() == "toolroll"
+        let preferredOrigin: String? = (isToolrollRepo && isLocalSession) ? activeProfile.origin : nil
+
+        if let url = await previewServer.installDependenciesAndRun(projectRoot: root, preferredOrigin: preferredOrigin) {
+            canvasBaseURL = url
+            for idx in canvasArtboards.indices {
+                canvasArtboards[idx].cachedStateKey = nil
+            }
+            pumpHydrationPool()
         }
     }
 
