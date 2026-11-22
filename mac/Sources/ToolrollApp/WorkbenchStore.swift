@@ -26,6 +26,12 @@ public enum WorkspaceMode: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum TaskViewMode: String, CaseIterable, Identifiable, Sendable {
+    case activity = "Activity"
+    case terminal = "Terminal"
+    public var id: String { rawValue }
+}
+
 public struct WorkbenchNotice: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case info
@@ -66,6 +72,8 @@ public final class WorkbenchStore {
     public var isPairSheetOpen: Bool = false
     public var isNewTaskSheetOpen: Bool = false
     public var isAddProjectSheetOpen: Bool = false
+    public var isForkSheetOpen: Bool = false
+    public var taskViewMode: TaskViewMode = .activity
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
@@ -1643,9 +1651,11 @@ public final class WorkbenchStore {
         }
     }
 
-    public func attachOrStartTerminal(taskId: String, program: String = "shell") async {
-        isInspectorVisible = true
-        inspectorTab = .terminal
+    public func attachOrStartTerminal(taskId: String, program: String = "shell", openDrawer: Bool = true) async {
+        if openDrawer {
+            isInspectorVisible = true
+            inspectorTab = .terminal
+        }
         busyLabel = "Attaching \(program) Live Terminal…"
         defer { busyLabel = nil }
 
@@ -1670,6 +1680,86 @@ public final class WorkbenchStore {
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
+    }
+
+    // MARK: - Worktree Visibility, Fluid Activity ↔ Terminal, Parallel Forking & MCP Gateway
+
+    public func toggleTaskTerminalMode() {
+        if taskViewMode == .terminal {
+            taskViewMode = .activity
+        } else {
+            taskViewMode = .terminal
+            if let taskId = selectedTaskId, terminalSession.taskId != taskId || terminalSession.connectionState != .connected {
+                Task { await attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: false) }
+            }
+        }
+    }
+
+    public func setTaskViewMode(_ mode: TaskViewMode) {
+        taskViewMode = mode
+        if mode == .terminal, let taskId = selectedTaskId,
+           terminalSession.taskId != taskId || terminalSession.connectionState != .connected {
+            Task { await attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: false) }
+        }
+    }
+
+    public func activeWorktreeBranch(for row: WorkRow) -> String {
+        if terminalSession.taskId == row.id, !terminalSession.branch.isEmpty {
+            return terminalSession.branch
+        }
+        if let candBranch = candidatesResponse?.candidates.first(where: { $0.branch != nil })?.branch, !candBranch.isEmpty {
+            return candBranch
+        }
+        return "tr/\(row.id)"
+    }
+
+    public func siblingActiveTasks(for row: WorkRow) -> [WorkRow] {
+        guard let proj = row.project, !proj.isEmpty else { return [] }
+        return workRowsResponse.rows.filter { other in
+            other.id != row.id
+                && other.project == proj
+                && (other.status == .running || other.status == .needs || other.status == .queued)
+        }
+    }
+
+    public func forkSelectedTask(title: String, twist: String, planFirst: Bool, preset: AgentPreset?) async {
+        guard let parent = selectedRow else { return }
+        if let preset {
+            await applyModelPreset(preset)
+        }
+        var lines: [String] = [
+            "Parallel fork of task `\(parent.id)` (\"\(parent.title)\") in an isolated worktree.",
+        ]
+        if let headline = stepCards?.headline, !headline.isEmpty {
+            lines.append("Parent context: \(headline)")
+        }
+        if !twist.isEmpty {
+            lines.append("Approach twist for this fork:\n\(twist)")
+        }
+        await createTask(
+            title: title,
+            project: parent.project,
+            body: lines.joined(separator: "\n\n"),
+            planFirst: planFirst
+        )
+        notice = WorkbenchNotice(kind: .info, message: "Launched parallel fork \"\(title)\" in its own isolated worktree.")
+    }
+
+    public var mcpGatewayEndpoint: String {
+        let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return "\(base)/mcp"
+    }
+
+    public var mcpConfigSnippet: String {
+        """
+        {
+          "mcpServers": {
+            "toolroll": {
+              "url": "\(mcpGatewayEndpoint)"
+            }
+          }
+        }
+        """
     }
 
     public func steerTask(taskId: String, note: String) async {

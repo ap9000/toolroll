@@ -41,6 +41,18 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("3", modifiers: [.command])
 
+                Button("Toggle Task Terminal") {
+                    store.toggleTaskTerminalMode()
+                }
+                .keyboardShortcut("t", modifiers: [.command])
+
+                Button("Fork Approach…") {
+                    if store.selectedRow != nil {
+                        store.isForkSheetOpen = true
+                    }
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+
                 Button("Zen Focus") {
                     store.toggleZenFocus()
                 }

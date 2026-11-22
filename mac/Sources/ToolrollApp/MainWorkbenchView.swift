@@ -59,6 +59,9 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isAddProjectSheetOpen) {
             AddProjectSheet(store: store)
         }
+        .sheet(isPresented: $store.isForkSheetOpen) {
+            ForkTaskSheet(store: store)
+        }
         .task {
             await store.start()
         }

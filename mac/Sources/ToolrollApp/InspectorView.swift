@@ -85,7 +85,7 @@ public struct InspectorView: View {
 
 // MARK: - Live Terminal Pane (WebSocket PTY + Lease Controls + AppKit Key Capture)
 
-private struct LiveTerminalPaneView: View {
+struct LiveTerminalPaneView: View {
     @Bindable var store: WorkbenchStore
     @Bindable var session: LiveTerminalSession
     @State private var selectedProgram: String = "shell"

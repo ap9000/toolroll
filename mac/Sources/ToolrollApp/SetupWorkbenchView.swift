@@ -10,6 +10,7 @@ public struct SetupWorkbenchView: View {
     @State private var showMoreAgents: Bool = false
     @State private var isModelPickerOpen: Bool = false
     @State private var confirmingInstallAgent: AgentRow? = nil
+    @State private var copiedMCP: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -252,6 +253,42 @@ public struct SetupWorkbenchView: View {
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1))
                     }
+
+                    // MCP Workspace Coordination Card (25-tool gateway for sibling worktree awareness)
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
+                                Text("MCP Workspace Gateway")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                Text("25 tools")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                            }
+                            Text("Lets Claude, Codex, and Cursor read sibling worktrees, task queues, and code maps at \(store.mcpGatewayEndpoint)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                        Button(copiedMCP ? "Copied JSON" : "Copy MCP Config") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(store.mcpConfigSnippet, forType: .string)
+                            copiedMCP = true
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.6))
+                                copiedMCP = false
+                            }
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    }
+                    .padding(14)
+                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
                     // Bottom bar: Start Local Engine (if offline) + Remote Server + Start Building
                     HStack(spacing: 10) {

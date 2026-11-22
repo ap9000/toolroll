@@ -13,6 +13,7 @@ public struct TaskCockpitView: View {
     @State private var expandedSteps: Set<String> = []
     @State private var showAllSteps: Bool = false
     @State private var isModelPickerOpen: Bool = false
+    @State private var copiedBranch: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -23,64 +24,71 @@ public struct TaskCockpitView: View {
             if let row = store.selectedRow {
                 taskHeader(row)
                 HairlineDivider()
+                worktreeControlStrip(row)
+                HairlineDivider()
 
                 if let notice = store.notice {
                     inPlaceNoticeBar(notice)
                     HairlineDivider()
                 }
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        // 1. Agent Question (answer natively in-app)
-                        if let question = row.need?.question {
-                            questionCard(question)
-                        }
+                if store.taskViewMode == .terminal {
+                    LiveTerminalPaneView(store: store, session: store.terminalSession)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            // 1. Agent Question (answer natively in-app)
+                            if let question = row.need?.question {
+                                questionCard(question)
+                            }
 
-                        // 2. Result Review (Accept or Send Back natively in-app)
-                        if let review = store.stepCards?.review {
-                            resultReviewCard(review)
-                        }
+                            // 2. Result Review (Accept or Send Back natively in-app)
+                            if let review = store.stepCards?.review {
+                                resultReviewCard(review)
+                            }
 
-                        // 3. Plan Approval (Review terms & Approve natively in-app!)
-                        if let card = store.approvalCard {
-                            inAppApprovalCard(taskId: row.id, card: card)
-                        } else if row.status == .needs,
-                                  row.need?.question == nil,
-                                  store.stepCards?.review == nil,
-                                  store.stepCards?.planStopped == nil {
-                            fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
-                        }
+                            // 3. Plan Approval (Review terms & Approve natively in-app!)
+                            if let card = store.approvalCard {
+                                inAppApprovalCard(taskId: row.id, card: card)
+                            } else if row.status == .needs,
+                                      row.need?.question == nil,
+                                      store.stepCards?.review == nil,
+                                      store.stepCards?.planStopped == nil {
+                                fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
+                            }
 
-                        // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
-                        if let stopped = store.stepCards?.planStopped {
-                            planStoppedCard(stopped)
-                        } else if let failure = store.stepCards?.failure {
-                            failureCard(failure)
-                        }
+                            // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
+                            if let stopped = store.stepCards?.planStopped {
+                                planStoppedCard(stopped)
+                            } else if let failure = store.stepCards?.failure {
+                                failureCard(failure)
+                            }
 
-                        // 5. Hold Banner (Resume natively in-app)
-                        if let held = store.stepCards?.held {
-                            heldBanner(held)
-                        }
+                            // 5. Hold Banner (Resume natively in-app)
+                            if let held = store.stepCards?.held {
+                                heldBanner(held)
+                            }
 
-                        // 6. Live Agent Stream (what the agent is actually doing right now)
-                        if !store.liveRunRecords.isEmpty {
-                            liveStreamSection(records: store.liveRunRecords)
-                        }
+                            // 6. Live Agent Stream (what the agent is actually doing right now)
+                            if !store.liveRunRecords.isEmpty {
+                                liveStreamSection(records: store.liveRunRecords)
+                            }
 
-                        // 7. Candidates Strip (Promote / Rebase / Open PR)
-                        if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
-                            candidatesSection(taskId: row.id, candidates: cands)
-                        }
+                            // 7. Candidates Strip (Promote / Rebase / Open PR)
+                            if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
+                                candidatesSection(taskId: row.id, candidates: cands)
+                            }
 
-                        // 8. Steps Timeline (quietly collapsed unless needed or toggled)
-                        stepsSection()
+                            // 8. Steps Timeline (quietly collapsed unless needed or toggled)
+                            stepsSection()
+                        }
+                        .padding(20)
                     }
-                    .padding(20)
-                }
 
-                HairlineDivider()
-                composerBar(taskId: row.id)
+                    HairlineDivider()
+                    composerBar(taskId: row.id)
+                }
             } else {
                 emptyState
             }
@@ -144,6 +152,18 @@ public struct TaskCockpitView: View {
             Spacer()
 
             Button {
+                store.isForkSheetOpen = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10.5))
+                    Text("Fork")
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Fork into a parallel worktree to try another approach or agent (⌘⇧F)")
+
+            Button {
                 store.openTaskArtifact()
             } label: {
                 HStack(spacing: 4) {
@@ -172,8 +192,14 @@ public struct TaskCockpitView: View {
             }
 
             Menu {
-                Button("Attach Live Terminal") {
-                    Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell") }
+                Button("Fork Approach into Parallel Worktree…") {
+                    store.isForkSheetOpen = true
+                }
+                Button("Open Raw Terminal (⌘T)") {
+                    store.setTaskViewMode(.terminal)
+                }
+                Button("Attach Terminal in Side Drawer") {
+                    Task { await store.attachOrStartTerminal(taskId: row.id, program: "shell", openDrawer: true) }
                 }
                 if store.stepCards?.planStopped?.again != nil || store.stepCards?.plan != nil {
                     Button("Plan Again") {
@@ -215,6 +241,123 @@ public struct TaskCockpitView: View {
     }
 
     // MARK: - In-Place Notice
+
+    // MARK: - Worktree & Fluid Activity ↔ Terminal Strip (Orca + AGOR Parity)
+
+    private func worktreeControlStrip(_ row: WorkRow) -> some View {
+        let branch = store.activeWorktreeBranch(for: row)
+        let siblings = store.siblingActiveTasks(for: row)
+
+        return HStack(spacing: 10) {
+            // Native macOS segmented Activity | Terminal switch (⌘T)
+            Picker("", selection: Binding(
+                get: { store.taskViewMode },
+                set: { store.setTaskViewMode($0) }
+            )) {
+                ForEach(TaskViewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 158)
+            .help("Switch seamlessly between structured Activity and raw Worktree Terminal (⌘T)")
+
+            // Active Worktree Branch pill (click to copy)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(branch, forType: .string)
+                copiedBranch = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.4))
+                    copiedBranch = false
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: copiedBranch ? "checkmark" : "arrow.triangle.branch")
+                        .font(.system(size: 10))
+                        .foregroundStyle(copiedBranch ? ToolrollPalette.success : ToolrollPalette.muted)
+                    Text(copiedBranch ? "Copied branch" : branch)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Isolated worktree branch — click to copy")
+
+            // Sibling parallel worktrees awareness (AGOR-style coordination visibility)
+            if !siblings.isEmpty {
+                Menu {
+                    Section("Parallel worktrees in \(row.project ?? "project")") {
+                        ForEach(siblings) { sib in
+                            Button {
+                                Task { await store.selectTask(sib.id) }
+                            } label: {
+                                Text("[\(sib.status.rawValue)] \(sib.title)")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Fork Another Parallel Approach…") {
+                        store.isForkSheetOpen = true
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(ToolrollPalette.live)
+                            .frame(width: 5.5, height: 5.5)
+                        Text("\(siblings.count) parallel")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3.5)
+                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Other active worktrees in this repository")
+            }
+
+            Spacer()
+
+            // Quick jump to Canvas visual preview for this project
+            Button {
+                if let proj = row.project, !proj.isEmpty {
+                    store.selectedProject = proj
+                }
+                store.workspaceMode = .canvas
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 10.5))
+                    Text("Preview UI")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(ToolrollPalette.muted)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open this project's visual Canvas (⌘3)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(ToolrollPalette.ground)
+    }
 
     private func inPlaceNoticeBar(_ notice: WorkbenchNotice) -> some View {
         HStack(spacing: 8) {
