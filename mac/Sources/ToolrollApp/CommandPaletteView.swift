@@ -77,11 +77,7 @@ public struct CommandPaletteView: View {
                 }
             }
             .frame(width: 560)
-            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
-            )
+            .toolrollGlassPanel(cornerRadius: 12)
             .padding(.top, 70)
             .frame(maxHeight: .infinity, alignment: .top)
         }

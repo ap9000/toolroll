@@ -304,6 +304,11 @@ public struct SetupWorkbenchView: View {
                         }
                         .buttonStyle(KitButtonStyle(.ghost))
 
+                        Button("Pair Phone (QR)…") {
+                            store.isPhonePairSheetOpen = true
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost))
+
                         Button("Rescan") {
                             Task { await store.refreshSetupState() }
                         }

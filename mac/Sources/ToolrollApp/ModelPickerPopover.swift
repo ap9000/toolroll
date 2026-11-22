@@ -13,6 +13,7 @@ public struct ModelPickerPopover: View {
     @State private var query: String = ""
     @State private var showAllModels: Bool = false
     @State private var passwordInput: String = ""
+    @State private var highlightedIndex: Int = 0
     @FocusState private var searchFocused: Bool
 
     public init(store: WorkbenchStore, initialRoleKey: String = "all", onDismiss: @escaping () -> Void) {
@@ -94,6 +95,9 @@ public struct ModelPickerPopover: View {
                             .font(.system(size: 12.5))
                             .foregroundStyle(ToolrollPalette.ink)
                             .focused($searchFocused)
+                            .onSubmit {
+                                selectHighlightedModel()
+                            }
                         if !query.isEmpty {
                             Button {
                                 query = ""
@@ -119,7 +123,7 @@ public struct ModelPickerPopover: View {
                                     .padding(14)
                             } else {
                                 ForEach(Array(displayedEntries.enumerated()), id: \.element.id) { idx, entry in
-                                    modelRow(entry, shortcutNumber: idx < 6 ? idx + 1 : nil)
+                                    modelRow(entry, isHighlighted: idx == highlightedIndex, shortcutNumber: idx < 6 ? idx + 1 : nil)
                                 }
                                 if !showAllModels && query.isEmpty && allEntries.count > displayedEntries.count {
                                     Button {
@@ -237,7 +241,34 @@ public struct ModelPickerPopover: View {
         .background(ToolrollPalette.paper)
         .onAppear {
             targetRoleKey = initialRoleKey
+            highlightedIndex = 0
             searchFocused = true
+        }
+        .onChange(of: query) { _, _ in
+            highlightedIndex = 0
+        }
+        .onKeyPress(.downArrow) {
+            guard !displayedEntries.isEmpty else { return .ignored }
+            highlightedIndex = min(displayedEntries.count - 1, highlightedIndex + 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            guard !displayedEntries.isEmpty else { return .ignored }
+            highlightedIndex = max(0, highlightedIndex - 1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            selectHighlightedModel()
+            return .handled
+        }
+    }
+
+    private func selectHighlightedModel() {
+        guard highlightedIndex >= 0 && highlightedIndex < displayedEntries.count else { return }
+        let entry = displayedEntries[highlightedIndex]
+        Task {
+            await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
+            if store.modelPasswordPrompt == nil { onDismiss() }
         }
     }
 
@@ -258,7 +289,7 @@ public struct ModelPickerPopover: View {
         .help(label)
     }
 
-    private func modelRow(_ entry: FlatModelEntry, shortcutNumber: Int?) -> some View {
+    private func modelRow(_ entry: FlatModelEntry, isHighlighted: Bool, shortcutNumber: Int?) -> some View {
         let isCurrent = entry.option.value == currentValueForScope
         return Button {
             Task {
@@ -301,7 +332,7 @@ public struct ModelPickerPopover: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6.5)
-            .background(isCurrent ? ToolrollPalette.raised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+            .background(isHighlighted ? ToolrollPalette.selection : (isCurrent ? ToolrollPalette.raised : Color.clear), in: RoundedRectangle(cornerRadius: 5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

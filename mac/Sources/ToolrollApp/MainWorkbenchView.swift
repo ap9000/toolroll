@@ -62,6 +62,9 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isForkSheetOpen) {
             ForkTaskSheet(store: store)
         }
+        .sheet(isPresented: $store.isPhonePairSheetOpen) {
+            PhonePairSheet(store: store)
+        }
         .task {
             await store.start()
         }
@@ -126,6 +129,9 @@ public struct MainWorkbenchView: View {
                     }
                     Button("Connect Remote Workspace…") {
                         store.isPairSheetOpen = true
+                    }
+                    Button("Pair Phone for Push Alerts…") {
+                        store.isPhonePairSheetOpen = true
                     }
                     if !store.activeProfile.isDemo {
                         Divider()
@@ -199,28 +205,16 @@ public struct MainWorkbenchView: View {
 
                 Spacer(minLength: 12)
 
-                // Clean Workbench | Canvas mode pill (⌘3)
-                HStack(spacing: 2) {
+                // Native macOS segmented Workbench | Canvas switcher (⌘3)
+                Picker("", selection: $store.workspaceMode) {
                     ForEach(WorkspaceMode.allCases) { mode in
-                        let active = store.workspaceMode == mode
-                        Button {
-                            store.workspaceMode = mode
-                        } label: {
-                            Text(mode.rawValue)
-                                .font(.system(size: 11, weight: active ? .semibold : .regular))
-                                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        Text(mode.rawValue).tag(mode)
                     }
                 }
-                .padding(2)
-                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 170)
 
                 // Quiet ⌘K trigger
                 Button {

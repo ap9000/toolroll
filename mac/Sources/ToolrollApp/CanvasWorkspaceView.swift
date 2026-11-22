@@ -901,8 +901,7 @@ public struct CanvasWorkspaceView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(ToolrollPalette.paper, in: Capsule())
-        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .toolrollGlassCapsule(interactive: true)
     }
 
     private func dockToolButton(_ t: CanvasTool, icon: String, key: String) -> some View {

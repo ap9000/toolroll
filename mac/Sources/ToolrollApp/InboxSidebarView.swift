@@ -276,7 +276,7 @@ public struct InboxSidebarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
         }
-        .background(ToolrollPalette.ground)
+        .background(SidebarVibrancyBackground())
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in

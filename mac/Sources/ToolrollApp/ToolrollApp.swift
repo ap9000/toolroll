@@ -86,6 +86,16 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("]", modifiers: [.command])
 
+                Button("Previous Task") {
+                    Task { await store.selectAdjacentTask(delta: -1) }
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command])
+
+                Button("Next Task") {
+                    Task { await store.selectAdjacentTask(delta: 1) }
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command])
+
                 Divider()
 
                 Button("Toggle Live Terminal") {
@@ -126,6 +136,11 @@ struct ToolrollMacApp: App {
                     store.isPairSheetOpen = true
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Button("Pair Phone for Push Alerts…") {
+                    store.isPhonePairSheetOpen = true
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
 
                 Button("Setup & Agents…") {
                     store.isSetupOpen.toggle()

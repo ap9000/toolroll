@@ -73,7 +73,9 @@ public final class WorkbenchStore {
     public var isNewTaskSheetOpen: Bool = false
     public var isAddProjectSheetOpen: Bool = false
     public var isForkSheetOpen: Bool = false
+    public var isPhonePairSheetOpen: Bool = false
     public var taskViewMode: TaskViewMode = .activity
+    private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
@@ -1092,6 +1094,12 @@ public final class WorkbenchStore {
     // MARK: - Lifecycle
 
     public func start() async {
+        DesktopNotifier.shared.configure()
+        DesktopNotifier.shared.onSelectTask = { [weak self] taskId in
+            guard let self else { return }
+            self.workspaceMode = .workbench
+            Task { await self.selectTask(taskId) }
+        }
         // Prefer auto-connecting to a live local Toolroll console on this Mac if no explicit remote profile is active.
         if activeProfile.isDemo {
             if await connectToLocalConsoleIfAvailable(silent: true) {
@@ -1230,6 +1238,7 @@ public final class WorkbenchStore {
             async let modelsReq = client.fetchModels()
 
             workRowsResponse = try await rowsReq
+            processTaskNotifications(workRowsResponse.rows)
             if let pres = try? await presReq { presence = pres }
             if let terms = try? await termsReq { terminalsResponse = terms }
             if let chat = try? await leadReq { leadChat = chat }
@@ -1750,6 +1759,46 @@ public final class WorkbenchStore {
         notice = WorkbenchNotice(kind: .info, message: "Launched parallel fork \"\(title)\" in its own isolated worktree.")
     }
 
+    public func selectAdjacentTask(delta: Int) async {
+        let ordered = needsRows + runningRows + queuedRows + (isSettledExpanded ? settledRows : [])
+        guard !ordered.isEmpty else { return }
+        if let currentId = selectedTaskId,
+           let idx = ordered.firstIndex(where: { $0.id == currentId }) {
+            let nextIdx = max(0, min(ordered.count - 1, idx + delta))
+            await selectTask(ordered[nextIdx].id)
+        } else if let first = ordered.first {
+            await selectTask(first.id)
+        }
+    }
+
+    private func processTaskNotifications(_ rows: [WorkRow]) {
+        let needsTotal = rows.filter { $0.status == .needs }.count
+        DesktopNotifier.shared.updateDockBadge(needsCount: needsTotal)
+
+        let hadBaseline = !lastKnownTaskStatuses.isEmpty
+        for row in rows {
+            let prev = lastKnownTaskStatuses[row.id]
+            lastKnownTaskStatuses[row.id] = row.status
+            guard hadBaseline, prev != row.status else { continue }
+            if row.status == .needs {
+                let subtitle = row.need?.question != nil ? "Question waiting" : "Needs your approval"
+                DesktopNotifier.shared.notify(
+                    taskId: row.id,
+                    title: row.project ?? "Toolroll",
+                    subtitle: subtitle,
+                    body: row.title
+                )
+            } else if row.status == .finished && prev == .running {
+                DesktopNotifier.shared.notify(
+                    taskId: row.id,
+                    title: row.project ?? "Toolroll",
+                    subtitle: "Task finished",
+                    body: row.title
+                )
+            }
+        }
+    }
+
     public var mcpGatewayEndpoint: String {
         let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return "\(base)/mcp"
@@ -1939,6 +1988,7 @@ public final class WorkbenchStore {
             }
             if let client, let rows = try? await client.fetchWorkRows() {
                 workRowsResponse = rows
+                processTaskNotifications(rows.rows)
                 // If a Canvas-linked task reached review/finished, invalidate its screen so fresh `After` captures cleanly
                 if let row = rows.rows.first(where: { $0.id == taskId }),
                    (row.status == .finished || row.status == .needs) {

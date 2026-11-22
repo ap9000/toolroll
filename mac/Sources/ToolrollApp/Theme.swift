@@ -244,6 +244,54 @@ public final class CanvasImageCache {
     }
 }
 
+// MARK: - Native macOS Sidebar Vibrancy & Liquid Glass (macOS 26+ with graceful Material fallback)
+
+/// Authentic AppKit translucent sidebar vibrancy (`.sidebar` + `.behindWindow`) for Mac-native depth.
+public struct SidebarVibrancyBackground: NSViewRepresentable {
+    public init() {}
+
+    public func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .sidebar
+        v.blendingMode = .behindWindow
+        v.state = .followsWindowActiveState
+        return v
+    }
+
+    public func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+public extension View {
+    /// Applies real macOS Liquid Glass (`glassEffect`) to floating capsule controls (Canvas Dock, Element HUD, Compare Bar),
+    /// falling back cleanly to `.ultraThinMaterial` + hairline on macOS 14–15.
+    @ViewBuilder
+    func toolrollGlassCapsule(interactive: Bool = true) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+        } else {
+            self
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        }
+    }
+
+    /// Applies real macOS Liquid Glass (`glassEffect`) to floating panels & popovers (Command Palette, Style Tweaks, Context Menu),
+    /// falling back cleanly to `.regularMaterial` + hairline on macOS 14–15.
+    @ViewBuilder
+    func toolrollGlassPanel(cornerRadius: CGFloat = 10, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            self
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
+                )
+        }
+    }
+}
+
 public extension Color {
     static func fromTerminal(_ tc: TerminalColor, isForeground: Bool) -> Color {
         switch tc {

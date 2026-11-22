@@ -727,10 +727,9 @@ struct ScreenFocusLightboxView: View {
             .buttonStyle(.plain)
             .help("More element actions")
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .toolrollGlassCapsule(interactive: true)
     }
 
     private var toolbarHairline: some View {
@@ -845,8 +844,7 @@ struct ScreenFocusLightboxView: View {
         }
         .padding(12)
         .frame(width: 280)
-        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .toolrollGlassPanel(cornerRadius: 10)
     }
 
     private func styleSliderRow(label: String, valueText: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
@@ -947,8 +945,7 @@ struct ScreenFocusLightboxView: View {
         }
         .padding(.vertical, 4)
         .frame(width: 244)
-        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .toolrollGlassPanel(cornerRadius: 10)
     }
 
     private func contextMenuRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
@@ -1060,8 +1057,7 @@ struct ScreenFocusLightboxView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(ToolrollPalette.paper, in: Capsule())
-        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .toolrollGlassCapsule(interactive: true)
     }
 
     @ViewBuilder
@@ -1214,13 +1210,13 @@ struct ScreenFocusLightboxView: View {
                         quickIntentChipsSection(for: el)
                     }
 
-                    // Kind switcher: UI Change vs Explore Options (A/B/C/D)
-                    HStack(spacing: 4) {
-                        kindButton(.change, label: "UI Change")
-                        kindButton(.options, label: "Options (A/B/C/D)")
+                    // Native macOS segmented kind switcher: UI Change vs Options (A/B/C/D)
+                    Picker("", selection: $selectedKind) {
+                        Text("UI Change").tag(CanvasPinKind.change)
+                        Text("Options (A/B/C/D)").tag(CanvasPinKind.options)
                     }
-                    .padding(2)
-                    .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
 
                     // Multiline prompt input
                     TextField(
@@ -1240,13 +1236,13 @@ struct ScreenFocusLightboxView: View {
                     .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
 
-                    // Execution cadence: Plan first vs Just code
-                    HStack(spacing: 4) {
-                        executionButton(plan: true, label: "Plan first")
-                        executionButton(plan: false, label: "Just code")
+                    // Native macOS segmented cadence switcher: Plan first vs Just code
+                    Picker("", selection: $planFirst) {
+                        Text("Plan first").tag(true)
+                        Text("Just code").tag(false)
                     }
-                    .padding(2)
-                    .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
 
                     HStack(spacing: 8) {
                         Button("Add to Batch") {
@@ -1644,40 +1640,6 @@ struct ScreenFocusLightboxView: View {
         case .card: return "rectangle.inset.filled"
         case .container: return "square.dashed"
         }
-    }
-
-    private func kindButton(_ kind: CanvasPinKind, label: String) -> some View {
-        let active = selectedKind == kind
-        return Button {
-            selectedKind = kind
-        } label: {
-            Text(label)
-                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
-                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.vertical, 5.5)
-                .frame(maxWidth: .infinity)
-                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func executionButton(plan: Bool, label: String) -> some View {
-        let active = planFirst == plan
-        return Button {
-            planFirst = plan
-        } label: {
-            Text(label)
-                .font(.system(size: 11, weight: active ? .semibold : .regular))
-                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.vertical, 4.5)
-                .frame(maxWidth: .infinity)
-                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func pinRowCard(pin: CanvasPin, index: Int) -> some View {
