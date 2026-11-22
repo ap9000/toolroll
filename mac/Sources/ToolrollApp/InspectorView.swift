@@ -36,6 +36,7 @@ public struct InspectorView: View {
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1)
                         )
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -46,6 +47,8 @@ public struct InspectorView: View {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 12))
                         .foregroundStyle(ToolrollPalette.muted)
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Hide Inspector (⌘J)")
@@ -57,6 +60,8 @@ public struct InspectorView: View {
             HairlineDivider()
 
             switch store.inspectorTab {
+            case .artifact:
+                ArtifactPaneView(store: store)
             case .terminal:
                 LiveTerminalPaneView(store: store, session: store.terminalSession)
             case .diff:
@@ -70,6 +75,7 @@ public struct InspectorView: View {
 
     private func icon(for tab: InspectorTab) -> String {
         switch tab {
+        case .artifact: return "doc.richtext"
         case .terminal: return "terminal"
         case .diff: return "doc.text.magnifyingglass"
         case .lead: return "text.bubble"

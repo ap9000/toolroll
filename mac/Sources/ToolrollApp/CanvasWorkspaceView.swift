@@ -187,6 +187,7 @@ public struct CanvasWorkspaceView: View {
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
                             .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("\(preset.rawValue) (\(Int(preset.logicalWidth))×\(Int(preset.logicalHeight)))")
@@ -448,8 +449,8 @@ public struct CanvasWorkspaceView: View {
                 if tool == .compare,
                    let basePath = board.baselineImagePath,
                    let latestPath = board.latestImagePath,
-                   let baseImg = NSImage(contentsOfFile: basePath),
-                   let latestImg = NSImage(contentsOfFile: latestPath) {
+                   let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 1080),
+                   let latestImg = CanvasImageCache.shared.image(atPath: latestPath, maxPixelDimension: 1080) {
                     beforeAfterScrubView(board: board, before: baseImg, after: latestImg, width: scaledW, height: scaledH)
                 } else if needsWebView && !store.canvasBaseURL.isEmpty {
                     // Render at TRUE logical viewport (1440×900 or 390×844), GPU-scaled smoothly into box!
@@ -489,7 +490,7 @@ public struct CanvasWorkspaceView: View {
                     .frame(width: scaledW, height: scaledH, alignment: .topLeading)
                     .clipped()
                     .allowsHitTesting(board.isLiveInteractive)
-                } else if let imgPath = board.latestImagePath, let img = NSImage(contentsOfFile: imgPath) {
+                } else if let imgPath = board.latestImagePath, let img = CanvasImageCache.shared.image(atPath: imgPath, maxPixelDimension: 1080) {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -876,6 +877,7 @@ public struct CanvasWorkspaceView: View {
                                         .padding(.vertical, 4)
                                         .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -918,6 +920,7 @@ public struct CanvasWorkspaceView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(active ? ToolrollPalette.ink : Color.clear, in: Capsule())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help("\(t.rawValue) (\(key))")

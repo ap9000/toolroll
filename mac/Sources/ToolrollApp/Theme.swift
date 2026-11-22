@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import ToolrollCore
 
@@ -138,17 +139,33 @@ public struct KitButtonStyle: ButtonStyle {
     }
 
     public func makeBody(configuration: Configuration) -> some View {
+        KitButtonBody(configuration: configuration, variant: variant, compact: compact)
+    }
+}
+
+private struct KitButtonBody: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered: Bool = false
+    let configuration: ButtonStyleConfiguration
+    let variant: KitButtonVariant
+    let compact: Bool
+
+    var body: some View {
         configuration.label
             .font(.system(size: compact ? 11.5 : 12.5, weight: variant == .primary ? .semibold : .medium))
             .padding(.horizontal, compact ? 9 : 12)
             .padding(.vertical, compact ? 4.5 : 6)
             .foregroundStyle(foreground)
-            .background(background(pressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .background(background, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .strokeBorder(border, lineWidth: variant == .primary ? 0 : 1)
             )
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.36)
+            .onHover { hovering in
+                isHovered = hovering
+            }
     }
 
     private var foreground: Color {
@@ -159,20 +176,71 @@ public struct KitButtonStyle: ButtonStyle {
         }
     }
 
-    private func background(pressed: Bool) -> Color {
+    private var background: Color {
         switch variant {
-        case .primary: return pressed ? ToolrollPalette.ink.opacity(0.85) : ToolrollPalette.ink
-        case .ghost: return pressed ? ToolrollPalette.selection : ToolrollPalette.paper
-        case .danger: return pressed ? ToolrollPalette.danger.opacity(0.16) : ToolrollPalette.danger.opacity(0.08)
+        case .primary:
+            if configuration.isPressed { return ToolrollPalette.ink.opacity(0.85) }
+            if isHovered && isEnabled { return ToolrollPalette.ink.opacity(0.92) }
+            return ToolrollPalette.ink
+        case .ghost:
+            if configuration.isPressed { return ToolrollPalette.selection }
+            if isHovered && isEnabled { return ToolrollPalette.raised }
+            return ToolrollPalette.paper
+        case .danger:
+            return configuration.isPressed ? ToolrollPalette.danger.opacity(0.18) : ToolrollPalette.danger.opacity(isHovered && isEnabled ? 0.13 : 0.08)
         }
     }
 
     private var border: Color {
         switch variant {
         case .primary: return .clear
-        case .ghost: return ToolrollPalette.inputLine
+        case .ghost: return isHovered && isEnabled ? ToolrollPalette.muted : ToolrollPalette.inputLine
         case .danger: return ToolrollPalette.danger.opacity(0.45)
         }
+    }
+}
+
+/// Shared downsampling image cache for Canvas artboard tiles and Lightbox previews.
+/// Prevents inline `NSImage(contentsOfFile:)` inside SwiftUI `body` from re-decoding 21MB Retina bitmaps per frame.
+@MainActor
+public final class CanvasImageCache {
+    public static let shared = CanvasImageCache()
+    private let cache = NSCache<NSString, NSImage>()
+
+    private init() {
+        cache.countLimit = 48
+        cache.totalCostLimit = 96 * 1024 * 1024 // 96 MB hard ceiling
+    }
+
+    public func image(atPath path: String, maxPixelDimension: Int? = nil) -> NSImage? {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(path)#\(Int(mtime))#\(maxPixelDimension ?? 0)" as NSString
+        if let hit = cache.object(forKey: key) {
+            return hit
+        }
+
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+
+        let cgImage: CGImage?
+        if let maxDim = maxPixelDimension {
+            let opts: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxDim,
+            ]
+            cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary)
+        } else {
+            let opts: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+            cgImage = CGImageSourceCreateImageAtIndex(source, 0, opts as CFDictionary)
+        }
+
+        guard let cg = cgImage else { return nil }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        let cost = cg.bytesPerRow * cg.height
+        cache.setObject(img, forKey: key, cost: cost)
+        return img
     }
 }
 

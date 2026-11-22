@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import ToolrollCore
+import UniformTypeIdentifiers
 
 public enum TeamFilter: String, CaseIterable, Identifiable, Sendable {
     case everyone = "Everyone"
@@ -12,8 +13,9 @@ public enum TeamFilter: String, CaseIterable, Identifiable, Sendable {
 }
 
 public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
-    case terminal = "Terminal"
+    case artifact = "Artifact"
     case diff = "Diff"
+    case terminal = "Terminal"
     case lead = "Lead"
     public var id: String { rawValue }
 }
@@ -111,6 +113,10 @@ public final class WorkbenchStore {
     public private(set) var inlineDiffComments: [InlineDiffComment] = []
     public private(set) var terminalsResponse: TermStateResponse?
     public private(set) var leadChat: LeadChatResponse = LeadChatResponse()
+
+    // Right-hand Tabbed Artifact Window
+    public private(set) var openArtifacts: [WorkbenchArtifact] = []
+    public var activeArtifactId: String? = nil
 
     // Live Terminal
     public let terminalSession = LiveTerminalSession()
@@ -698,7 +704,198 @@ public final class WorkbenchStore {
         } else {
             inspectorTab = tab
             isInspectorVisible = true
+            if tab == .artifact {
+                syncTaskArtifacts()
+            }
         }
+    }
+
+    // MARK: - Right-Hand Tabbed Artifact Window
+
+    public func syncTaskArtifacts() {
+        var virtuals: [WorkbenchArtifact] = []
+
+        if let cards = stepCards {
+            var md: [String] = []
+            md.append("# \(cards.task.title)")
+            var metaParts: [String] = ["Task `\(cards.task.id)`"]
+            if let proj = cards.task.project, !proj.isEmpty { metaParts.append("Project `\(proj)`") }
+            if let st = cards.task.state, !st.isEmpty { metaParts.append("State **\(st)**") }
+            md.append("> " + metaParts.joined(separator: " · "))
+
+            if let headline = cards.headline, !headline.isEmpty {
+                md.append(headline)
+            }
+
+            if !cards.cards.isEmpty {
+                md.append("## Execution Steps")
+                md.append("| Step | State | Agent | Notes |")
+                md.append("| :--- | :--- | :--- | :--- |")
+                for c in cards.cards {
+                    let agentStr = c.agent.map { a in [a.provider, a.model].compactMap { $0 }.joined(separator: " / ") } ?? "—"
+                    let note = c.sentence.replacingOccurrences(of: "|", with: "\\|")
+                    md.append("| **\(c.label)** | `\(c.state)` | \(agentStr) | \(note) |")
+                }
+            }
+
+            // Plan terms & scope details
+            let termsCards = cards.cards.compactMap { c -> (String, StepTerms)? in
+                guard let t = c.terms, (!t.rows.isEmpty || !t.warnings.isEmpty || t.summary != nil) else { return nil }
+                return (c.label, t)
+            }
+            if !termsCards.isEmpty {
+                md.append("## Plan & Scope")
+                for (label, terms) in termsCards {
+                    md.append("### \(label)\(terms.revision.map { " (\($0))" } ?? "")")
+                    if let summary = terms.summary, !summary.isEmpty {
+                        md.append("> \(summary)")
+                    }
+                    for row in terms.rows {
+                        md.append("- **\(row.label):** \(row.words)")
+                        for line in row.lines where !line.isEmpty {
+                            md.append("  - \(line)")
+                        }
+                    }
+                    if !terms.warnings.isEmpty {
+                        md.append("### Warnings")
+                        for w in terms.warnings {
+                            md.append("- \(w)")
+                        }
+                    }
+                }
+            }
+
+            if let diff = diffResponse, !diff.files.isEmpty {
+                md.append("## Changed Files (\(diff.files.count))")
+                md.append("| File | Additions | Deletions |")
+                md.append("| :--- | :--- | :--- |")
+                for f in diff.files {
+                    md.append("| `\(f.path)` | `+\(f.added ?? 0)` | `-\(f.removed ?? 0)` |")
+                }
+            }
+
+            if let fail = cards.failure {
+                md.append("## Failure Report")
+                md.append("> \(fail.line)")
+            }
+
+            if let stopped = cards.planStopped {
+                md.append("## Plan Stopped")
+                md.append("> \(stopped.line)")
+                if let probs = stopped.problems {
+                    for p in probs { md.append("- \(p)") }
+                }
+            }
+
+            let doc = WorkbenchArtifact(
+                id: "task-brief::\(cards.task.id)",
+                title: "Task Plan",
+                subtitle: "Artifact · \(cards.task.id)",
+                markdown: md.joined(separator: "\n\n"),
+                filePath: nil,
+                isPinnedVirtual: true
+            )
+            virtuals.append(doc)
+        }
+
+        // Preserve user-opened local file tabs alongside live virtual task artifact
+        let fileTabs = openArtifacts.filter { !$0.isPinnedVirtual }
+        openArtifacts = virtuals + fileTabs
+        if activeArtifactId == nil || !openArtifacts.contains(where: { $0.id == activeArtifactId }) {
+            activeArtifactId = openArtifacts.first?.id
+        }
+    }
+
+    public func openTaskArtifact() {
+        syncTaskArtifacts()
+        if let first = openArtifacts.first(where: { $0.isPinnedVirtual }) {
+            activeArtifactId = first.id
+        }
+        inspectorTab = .artifact
+        isInspectorVisible = true
+    }
+
+    public func openMarkdownArtifact(path: String) {
+        let url = URL(fileURLWithPath: path)
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Could not read \(url.lastPathComponent).")
+            return
+        }
+        let id = "file::\(url.path)"
+        let title = url.deletingPathExtension().lastPathComponent
+        let subtitle = "Artifact · \(url.path)"
+        let doc = WorkbenchArtifact(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            markdown: content,
+            filePath: url.path,
+            isPinnedVirtual: false
+        )
+        if let idx = openArtifacts.firstIndex(where: { $0.id == id }) {
+            openArtifacts[idx] = doc
+        } else {
+            openArtifacts.append(doc)
+        }
+        activeArtifactId = id
+        inspectorTab = .artifact
+        isInspectorVisible = true
+    }
+
+    public func reloadArtifactFile(id: String) {
+        guard let idx = openArtifacts.firstIndex(where: { $0.id == id }),
+              let path = openArtifacts[idx].filePath,
+              let content = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return }
+        let old = openArtifacts[idx]
+        openArtifacts[idx] = WorkbenchArtifact(
+            id: old.id,
+            title: old.title,
+            subtitle: old.subtitle,
+            markdown: content,
+            filePath: path,
+            isPinnedVirtual: false
+        )
+    }
+
+    public func closeArtifact(id: String) {
+        openArtifacts.removeAll { $0.id == id }
+        if activeArtifactId == id {
+            activeArtifactId = openArtifacts.first?.id
+        }
+    }
+
+    public func pickAndOpenMarkdownArtifact() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText]
+        panel.prompt = "Open Artifact"
+        panel.message = "Choose a Markdown or text artifact to open in the right pane"
+        if let root = canvasProjectRoot ?? (selectedProject.flatMap { resolveLocalProjectRoot(for: $0) }) {
+            panel.directoryURL = URL(fileURLWithPath: root)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            openMarkdownArtifact(path: url.path)
+        }
+    }
+
+    public func discoverProjectMarkdownFiles() -> [URL] {
+        let targetProj = selectedProject ?? selectedRow?.project ?? canvasProjectName
+        guard !targetProj.isEmpty,
+              let root = resolveLocalProjectRoot(for: targetProj)
+        else { return [] }
+        let fm = FileManager.default
+        var results: [URL] = []
+        let candidates = [root, "\(root)/docs", "\(root)/docs/adr"]
+        for dir in candidates {
+            guard let items = try? fm.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: nil) else { continue }
+            for u in items where u.pathExtension.lowercased() == "md" {
+                results.append(u)
+            }
+        }
+        return Array(results.sorted { $0.lastPathComponent < $1.lastPathComponent }.prefix(14))
     }
 
     public func goBack() async {
@@ -1033,6 +1230,7 @@ public final class WorkbenchStore {
             if taskId == "t-handoff-rebase" && terminalSession.taskId != taskId {
                 terminalSession.attachDemo(taskId: taskId, program: "shell", branch: "tr/t-handoff-rebase/c-8a2f", controller: "sam", me: "alex")
             }
+            syncTaskArtifacts()
             return
         }
 
@@ -1071,6 +1269,7 @@ public final class WorkbenchStore {
                 await selectDiffFile(path: first)
             }
         }
+        syncTaskArtifacts()
     }
 
     public func addInlineDiffComment(path: String, line: Int, text: String) async {

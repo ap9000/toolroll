@@ -224,6 +224,7 @@ struct ScreenFocusLightboxView: View {
                             .padding(.vertical, 4)
                             .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(disabled)
@@ -339,8 +340,8 @@ struct ScreenFocusLightboxView: View {
                     if viewMode == .compare,
                        let basePath = board.baselineImagePath,
                        let latestPath = board.latestImagePath,
-                       let baseImg = NSImage(contentsOfFile: basePath),
-                       let latestImg = NSImage(contentsOfFile: latestPath) {
+                       let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160),
+                       let latestImg = CanvasImageCache.shared.image(atPath: latestPath, maxPixelDimension: 2160) {
                         focusCompareView(before: baseImg, after: latestImg, width: renderW, height: renderH)
                     } else if viewMode == .live && !store.canvasBaseURL.isEmpty {
                         let logW = store.canvasViewport.logicalWidth
@@ -365,7 +366,7 @@ struct ScreenFocusLightboxView: View {
                         .scaleEffect(scale, anchor: .topLeading)
                         .frame(width: renderW, height: renderH, alignment: .topLeading)
                         .clipped()
-                    } else if let imgPath = board.latestImagePath, let img = NSImage(contentsOfFile: imgPath) {
+                    } else if let imgPath = board.latestImagePath, let img = CanvasImageCache.shared.image(atPath: imgPath, maxPixelDimension: 2160) {
                         Image(nsImage: img)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
@@ -608,6 +609,7 @@ struct ScreenFocusLightboxView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(isEditingCopy ? ToolrollPalette.ink : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Edit text directly on the live page")
@@ -629,6 +631,7 @@ struct ScreenFocusLightboxView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(isStylePopoverOpen ? ToolrollPalette.ink : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Live padding, spacing, type & radius tweaks")
@@ -651,6 +654,7 @@ struct ScreenFocusLightboxView: View {
                 .foregroundStyle(ToolrollPalette.ink)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Generate A/B/C/D design options for this element")
@@ -663,6 +667,7 @@ struct ScreenFocusLightboxView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(isHidden ? ToolrollPalette.warning : ToolrollPalette.ink)
                     .frame(width: 26, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(isHidden ? "Restore element visibility" : "Preview hiding / removing this element")
@@ -676,6 +681,7 @@ struct ScreenFocusLightboxView: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(ToolrollPalette.muted)
                         .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Reset live tweaks on this element")
@@ -693,6 +699,7 @@ struct ScreenFocusLightboxView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                     .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("More element actions")
@@ -788,6 +795,7 @@ struct ScreenFocusLightboxView: View {
                                 .padding(.vertical, 3)
                                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -1236,18 +1244,16 @@ struct ScreenFocusLightboxView: View {
         } else {
             HStack(spacing: 6) {
                 Image(systemName: "viewfinder")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.muted)
-                Text(viewMode == .live ? "Click any element to inspect or right-click" : "Whole screen · click image to target a spot")
+                Text(viewMode == .live ? "Click any element on the screen to target or right-click" : "Whole screen · click image to target a spot")
                     .font(.system(size: 11.5))
                     .foregroundStyle(ToolrollPalette.muted)
                     .lineLimit(1)
                 Spacer()
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
         }
     }
 
@@ -1457,10 +1463,11 @@ struct ScreenFocusLightboxView: View {
             Text(label)
                 .font(.system(size: 11.5, weight: active ? .semibold : .regular))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.vertical, 5)
+                .padding(.vertical, 5.5)
                 .frame(maxWidth: .infinity)
                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -1473,10 +1480,11 @@ struct ScreenFocusLightboxView: View {
             Text(label)
                 .font(.system(size: 11, weight: active ? .semibold : .regular))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.vertical, 4)
+                .padding(.vertical, 4.5)
                 .frame(maxWidth: .infinity)
                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

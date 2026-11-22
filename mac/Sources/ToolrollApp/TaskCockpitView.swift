@@ -143,6 +143,18 @@ public struct TaskCockpitView: View {
 
             Spacer()
 
+            Button {
+                store.openTaskArtifact()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 10.5))
+                    Text("Artifact")
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Open Task Plan & Summary in Right Artifact Window (⌘4)")
+
             if let diff = store.diffResponse, !diff.files.isEmpty {
                 Button {
                     store.toggleInspector(tab: .diff)

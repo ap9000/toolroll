@@ -86,6 +86,11 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("2", modifiers: [.command])
 
+                Button("Toggle Artifact Window") {
+                    store.toggleInspector(tab: .artifact)
+                }
+                .keyboardShortcut("4", modifiers: [.command])
+
                 Button("Toggle Lead Thread") {
                     store.toggleInspector(tab: .lead)
                 }

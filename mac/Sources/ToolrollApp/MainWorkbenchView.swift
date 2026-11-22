@@ -39,7 +39,7 @@ public struct MainWorkbenchView: View {
 
                         if store.isInspectorVisible {
                             InspectorView(store: store)
-                                .frame(minWidth: 360, idealWidth: 460, maxWidth: 700)
+                                .frame(minWidth: 360, idealWidth: 480, maxWidth: 860)
                         }
                     }
                 }
@@ -210,6 +210,7 @@ public struct MainWorkbenchView: View {
                                 .padding(.vertical, 3)
                                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -229,12 +230,14 @@ public struct MainWorkbenchView: View {
                         .padding(.vertical, 2.5)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Command Palette (⌘K)")
 
-                // 3 clean right-edge multiplexer toggles: Diff | Terminal | Lead
-                HStack(spacing: 10) {
+                // Clean right-edge drawer toggles: Artifact | Diff | Terminal | Lead
+                HStack(spacing: 6) {
+                    drawerIconButton(systemName: "doc.richtext", tab: .artifact, help: "Toggle Artifact Window (⌘4)")
                     drawerIconButton(systemName: "doc.text.magnifyingglass", tab: .diff, help: "Toggle Diff (⌘2)")
                     drawerIconButton(systemName: "terminal", tab: .terminal, help: "Toggle Live Terminal (⌘1)")
                     drawerIconButton(systemName: "sidebar.right", tab: .lead, help: "Toggle Lead / Drawer (⌘J)")
@@ -260,6 +263,7 @@ public struct MainWorkbenchView: View {
                 .frame(width: 24, height: 22)
                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
