@@ -1409,46 +1409,69 @@ public final class WorkbenchStore {
     // MARK: - Native In-App Approvals, Reviews, Questions & Lifecycle
 
     public func approveSelectedTask(password: String = "") async {
-        guard let taskId = selectedTaskId else { return }
+        guard let rootTaskId = selectedTaskId else { return }
+        let queryTaskId = stepCards?.task.id ?? rootTaskId
         busyLabel = "Approving plan…"
         defer { busyLabel = nil }
 
         if activeProfile.isDemo {
-            demoApprovedTasks.insert(taskId)
+            demoApprovedTasks.insert(rootTaskId)
             approvalCard = nil
             approvalPasswordPrompt = nil
-            notice = WorkbenchNotice(kind: .info, message: "Approved plan for \(taskId). Build started.")
+            notice = WorkbenchNotice(kind: .info, message: "Approved plan for \(rootTaskId). Build started.")
             await refreshAll()
             return
         }
 
         guard let client else { return }
         do {
-            // Re-fetch fresh approval card if needed so nonce is live
-            let card: ApprovalCard
-            if let existing = approvalCard, existing.task == taskId, existing.digest != nil, existing.nonce != nil {
+            // Re-fetch fresh approval card if missing or mismatched; note on revisions `card.task` is `family.current.id`!
+            var card: ApprovalCard
+            if let existing = approvalCard,
+               (existing.task == queryTaskId || existing.task == rootTaskId),
+               existing.digest != nil,
+               existing.nonce != nil {
                 card = existing
             } else {
-                card = try await client.fetchApprovalCard(taskId: taskId)
+                card = try await client.fetchApprovalCard(taskId: queryTaskId)
                 approvalCard = card
             }
-            guard let digest = card.digest, let nonce = card.nonce else {
+            guard let shownDigest = card.digest, let nonce = card.nonce else {
                 notice = WorkbenchNotice(kind: .refusal, message: card.problem ?? "No pending approval on this task.")
                 return
             }
-            let reply = try await client.approveTask(taskId: taskId, digest: digest, nonce: nonce, password: password)
-            approvalPasswordPrompt = nil
-            approvalCard = nil
-            notice = WorkbenchNotice(kind: .info, message: reply)
-            await refreshAll()
+
+            do {
+                let reply = try await client.approveTask(taskId: card.task, digest: shownDigest, nonce: nonce, password: password)
+                approvalPasswordPrompt = nil
+                approvalCard = nil
+                notice = WorkbenchNotice(kind: .info, message: reply)
+                await refreshAll()
+            } catch let err as ToolrollClientError where err.localizedDescription.localizedCaseInsensitiveContains("stale") {
+                // Nonce expired or was spent earlier: re-fetch fresh card. If the plan digest is identical to what
+                // the user just reviewed, submit seamlessly with the fresh nonce; if terms changed, surface the new card.
+                let fresh = try await client.fetchApprovalCard(taskId: queryTaskId)
+                approvalCard = fresh
+                if let freshDigest = fresh.digest, let freshNonce = fresh.nonce, freshDigest == shownDigest {
+                    let reply = try await client.approveTask(taskId: fresh.task, digest: freshDigest, nonce: freshNonce, password: password)
+                    approvalPasswordPrompt = nil
+                    approvalCard = nil
+                    notice = WorkbenchNotice(kind: .info, message: reply)
+                    await refreshAll()
+                } else {
+                    notice = WorkbenchNotice(kind: .refusal, message: "Plan terms changed — review the refreshed plan and click Approve & Build again.")
+                }
+            }
         } catch ToolrollClientError.passwordRequired(let msg) {
             approvalPasswordPrompt = msg
-            // Mint a fresh nonce for the password submission
-            if let fresh = try? await client.fetchApprovalCard(taskId: taskId) {
+            if let fresh = try? await client.fetchApprovalCard(taskId: queryTaskId) {
                 approvalCard = fresh
             }
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            if let fresh = try? await client.fetchApprovalCard(taskId: queryTaskId), fresh.digest != nil {
+                approvalCard = fresh
+            }
         }
     }
 

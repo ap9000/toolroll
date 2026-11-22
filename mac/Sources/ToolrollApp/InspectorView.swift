@@ -238,16 +238,35 @@ struct LiveTerminalPaneView: View {
 
             ScrollViewReader { proxy in
                 ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(session.renderLines) { line in
-                            attributedText(for: line)
-                                .font(.system(size: 12, design: .monospaced))
-                                .textSelection(.enabled)
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if session.renderLines.isEmpty {
+                            HStack(spacing: 6) {
+                                Text("Waiting for shell output…")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                Text("▋")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.live)
+                            }
+                        } else {
+                            let lastId = session.renderLines.last?.id
+                            ForEach(session.renderLines) { line in
+                                HStack(spacing: 0) {
+                                    attributedText(for: line)
+                                        .font(.system(size: 12.5, design: .monospaced))
+                                        .textSelection(.enabled)
+                                    if session.connectionState == .connected && line.id == lastId {
+                                        Text("▋")
+                                            .font(.system(size: 12.5, design: .monospaced))
+                                            .foregroundStyle(session.isControlling ? ToolrollPalette.ink.opacity(0.85) : ToolrollPalette.muted.opacity(0.5))
+                                    }
+                                }
                                 .id(line.id)
+                            }
                         }
-                        Color.clear.frame(height: 8).id("terminal-bottom")
+                        Color.clear.frame(height: 12).id("terminal-bottom")
                     }
-                    .padding(12)
+                    .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .onChange(of: session.renderLines.count) { _, _ in
@@ -255,7 +274,7 @@ struct LiveTerminalPaneView: View {
                 }
             }
 
-            // Invisible AppKit key-event responder captures terminal typing cleanly on click
+            // Invisible AppKit key-event responder auto-focuses and captures terminal typing cleanly
             TerminalKeyCaptureView(
                 onInput: { input in
                     session.sendInput(input)
@@ -340,9 +359,23 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
     final class KeyCaptureNSView: NSView {
         var onInput: ((String) -> Void)?
         var onResize: ((Int, Int) -> Void)?
+        private var lastCols: Int = 0
+        private var lastRows: Int = 0
 
         override var acceptsFirstResponder: Bool { true }
         override var isOpaque: Bool { false }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let win = self.window else { return }
+                    if !(win.firstResponder is NSTextView) {
+                        win.makeFirstResponder(self)
+                    }
+                }
+            }
+        }
 
         override func mouseDown(with event: NSEvent) {
             window?.makeFirstResponder(self)
@@ -350,11 +383,18 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            let charWidth: CGFloat = 7.2
-            let lineHeight: CGFloat = 16.0
-            let cols = max(40, Int((bounds.width - 24) / charWidth))
-            let rows = max(12, Int((bounds.height - 24) / lineHeight))
-            onResize?(cols, rows)
+            guard bounds.width > 40, bounds.height > 40 else { return }
+            let charWidth: CGFloat = 7.5
+            let lineHeight: CGFloat = 17.0
+            let cols = max(40, Int((bounds.width - 28) / charWidth))
+            let rows = max(12, Int((bounds.height - 28) / lineHeight))
+            if cols != lastCols || rows != lastRows {
+                lastCols = cols
+                lastRows = rows
+                DispatchQueue.main.async { [weak self] in
+                    self?.onResize?(cols, rows)
+                }
+            }
         }
 
         override func keyDown(with event: NSEvent) {

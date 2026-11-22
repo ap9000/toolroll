@@ -558,6 +558,14 @@ struct ToolrollCoreTests {
             program: "shell"
         )
         #expect(!term.id.isEmpty)
+        let liveSession = await LiveTerminalSession()
+        await liveSession.attach(client: liveClient, terminalId: term.id, taskId: nil, program: term.program, branch: term.branch)
+        try await Task.sleep(for: .milliseconds(700))
+        await MainActor.run {
+            #expect(liveSession.connectionState == .connected)
+            #expect(!liveSession.renderLines.isEmpty)
+            liveSession.disconnect()
+        }
     }
 
     @Test("DiffLine classifies engine-api addition, deletion, context, and meta kinds accurately")
