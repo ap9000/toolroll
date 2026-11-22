@@ -643,7 +643,7 @@ public actor ToolrollClient {
             fields.append(("repo", project))
         }
         if !body.isEmpty {
-            fields.append(("body", body))
+            fields.append(("goal", body))
         }
         return try await sendFormAct(
             path: "/tasks/add",

@@ -7,6 +7,9 @@ import ToolrollCore
 public struct TaskCockpitView: View {
     @Bindable var store: WorkbenchStore
     @State private var steerDraft: String = ""
+    @State private var steerAttachments: [ComposerAttachment] = []
+    @State private var isComposerDropTargeted: Bool = false
+    @FocusState private var steerFocused: Bool
     @State private var approvalPassword: String = ""
     @State private var sendBackOpen: Bool = false
     @State private var sendBackNote: String = ""
@@ -1854,73 +1857,113 @@ public struct TaskCockpitView: View {
             ?? "Models"
     }
 
+    private var canSubmitSteer: Bool {
+        !steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !steerAttachments.isEmpty
+    }
+
     private func composerBar(taskId: String) -> some View {
-        HStack(spacing: 8) {
-            TextField("Steer task or leave a note…", text: $steerDraft)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
-                .foregroundStyle(ToolrollPalette.ink)
-                .frame(minWidth: 110)
-                .onSubmit {
+        VStack(alignment: .leading, spacing: 8) {
+            if !steerAttachments.isEmpty {
+                ComposerAttachmentStrip(attachments: steerAttachments) { removedId in
+                    steerAttachments.removeAll { $0.id == removedId }
+                }
+            }
+
+            HStack(spacing: 8) {
+                ComposerAttachMenuButton(
+                    compact: true,
+                    onAddAttachments: { incoming in
+                        appendUniqueAttachments(incoming, to: &steerAttachments)
+                    },
+                    onNoClipboardImage: {
+                        store.notice = WorkbenchNotice(kind: .info, message: "No image found on the clipboard — copy a screenshot (⌘⌃⇧4) or image first.")
+                    }
+                )
+
+                TextField("Steer task, paste screenshot, or leave a note…", text: $steerDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .focused($steerFocused)
+                    .frame(minWidth: 110)
+                    .onSubmit {
+                        submitSteer(taskId: taskId)
+                    }
+
+                Button {
+                    isModelPickerOpen.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                        Text(activeBuilderModelLabel)
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7.5, weight: .semibold))
+                    }
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .frame(maxWidth: 155)
+                    .background(Color.white.opacity(0.07), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
+                    ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, onDismiss: { isModelPickerOpen = false })
+                }
+
+                Button {
                     submitSteer(taskId: taskId)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            canSubmitSteer
+                                ? ToolrollPalette.ink
+                                : ToolrollPalette.muted.opacity(0.32),
+                            in: Circle()
+                        )
                 }
-
-            Button {
-                isModelPickerOpen.toggle()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "cpu")
-                        .font(.system(size: 10))
-                    Text(activeBuilderModelLabel)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7.5, weight: .semibold))
-                }
-                .foregroundStyle(ToolrollPalette.muted)
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .frame(maxWidth: 155)
-                .background(Color.white.opacity(0.07), in: Capsule())
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+                .buttonStyle(.plain)
+                .disabled(!canSubmitSteer)
             }
-            .buttonStyle(.plain)
-            .fixedSize()
-            .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
-                ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, onDismiss: { isModelPickerOpen = false })
-            }
-
-            Button {
-                submitSteer(taskId: taskId)
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(ToolrollPalette.inverseInk)
-                    .frame(width: 26, height: 26)
-                    .background(
-                        steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? ToolrollPalette.muted.opacity(0.32)
-                            : ToolrollPalette.ink,
-                        in: Circle()
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .toolrollGlassPanel(cornerRadius: 20, interactive: true)
+        .toolrollGlassPanel(cornerRadius: steerAttachments.isEmpty ? 20 : 16, interactive: true)
+        .overlay(
+            RoundedRectangle(cornerRadius: steerAttachments.isEmpty ? 20 : 16, style: .continuous)
+                .strokeBorder(
+                    isComposerDropTargeted ? ToolrollPalette.live : Color.clear,
+                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])
+                )
+        )
         .shadow(color: Color.black.opacity(0.28), radius: 14, y: 4)
+        .onComposerPaste(isActive: steerFocused) { incoming in
+            appendUniqueAttachments(incoming, to: &steerAttachments)
+        }
+        .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
+            ComposerDropHelper.handleDrop(providers: providers) { incoming in
+                appendUniqueAttachments(incoming, to: &steerAttachments)
+            }
+        }
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 14)
     }
 
     private func submitSteer(taskId: String) {
-        let note = steerDraft
+        guard canSubmitSteer else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: steerDraft, attachments: steerAttachments)
         steerDraft = ""
-        Task { await store.steerTask(taskId: taskId, note: note) }
+        steerAttachments = []
+        Task { await store.steerTask(taskId: taskId, note: composed.combinedMessage) }
     }
 
     private var emptyState: some View {

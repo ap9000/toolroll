@@ -705,4 +705,39 @@ struct ToolrollCoreTests {
             Issue.record("Expected visible command step fifth")
         }
     }
+
+    @Test("ComposerAttachmentStore saves pasted images, detects folders, and formats context submissions")
+    func testComposerAttachmentStore() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-att-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let savedImg = try ComposerAttachmentStore.saveImageData(
+            Data([0x89, 0x50, 0x4E, 0x47]),
+            pixelSize: "1440×900",
+            suggestedName: "Homepage mock",
+            in: tmpDir
+        )
+        #expect(savedImg.kind == .image)
+        #expect(FileManager.default.fileExists(atPath: savedImg.path))
+        #expect(savedImg.pixelSize == "1440×900")
+
+        let folderAtt = ComposerAttachmentStore.makeAttachment(for: tmpDir)
+        #expect(folderAtt?.kind == .folder)
+        #expect(folderAtt?.path == tmpDir.standardizedFileURL.path)
+
+        let composed = ComposerAttachmentStore.composeSubmission(
+            text: "Match the spacing in this screenshot",
+            attachments: [folderAtt!, savedImg]
+        )
+        #expect(composed.title == "Match the spacing in this screenshot")
+        #expect(composed.goal.contains("Attached context:"))
+        #expect(composed.goal.contains("- Folder: \(tmpDir.standardizedFileURL.path)"))
+        #expect(composed.goal.contains("- Image: \(savedImg.path) (1440×900)"))
+
+        let imageOnly = ComposerAttachmentStore.composeSubmission(text: "", attachments: [savedImg])
+        #expect(imageOnly.title.contains("Homepage mock"))
+        #expect(imageOnly.combinedMessage.contains(savedImg.path))
+    }
 }

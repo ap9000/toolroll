@@ -16,10 +16,12 @@ public struct NewWorkCanvasView: View {
     }
 
     @State private var promptText: String = ""
+    @State private var attachments: [ComposerAttachment] = []
     @State private var mode: ComposeMode = .planFirst
     @State private var isWorkspaceWide: Bool = false
     @State private var isModelPickerOpen: Bool = false
     @State private var isDropTargeted: Bool = false
+    @State private var isComposerDropTargeted: Bool = false
     @FocusState private var promptFocused: Bool
 
     public init(store: WorkbenchStore) {
@@ -143,7 +145,13 @@ public struct NewWorkCanvasView: View {
                         }
 
                         // 2. Floating Liquid Glass Composer
-                        VStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if !attachments.isEmpty {
+                                ComposerAttachmentStrip(attachments: attachments) { removedId in
+                                    attachments.removeAll { $0.id == removedId }
+                                }
+                            }
+
                             TextField(
                                 promptPlaceholder,
                                 text: $promptText,
@@ -158,11 +166,12 @@ public struct NewWorkCanvasView: View {
                                 submit()
                             }
                             .padding(.horizontal, 4)
-                            .padding(.top, 4)
+                            .padding(.top, attachments.isEmpty ? 4 : 0)
 
                             ViewThatFits(in: .horizontal) {
                                 // Wide toolbar row
                                 HStack(spacing: 8) {
+                                    attachButton
                                     modeGlassPicker
                                     Spacer(minLength: 8)
                                     modelPickerButton
@@ -171,7 +180,8 @@ public struct NewWorkCanvasView: View {
 
                                 // Condensed 2-row fallback (zero wrapping)
                                 VStack(spacing: 8) {
-                                    HStack {
+                                    HStack(spacing: 8) {
+                                        attachButton
                                         modeGlassPicker
                                         Spacer()
                                     }
@@ -185,7 +195,22 @@ public struct NewWorkCanvasView: View {
                         }
                         .padding(14)
                         .toolrollGlassPanel(cornerRadius: 18, interactive: true)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(
+                                    isComposerDropTargeted ? ToolrollPalette.live : Color.clear,
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])
+                                )
+                        )
                         .shadow(color: Color.black.opacity(0.24), radius: 14, y: 4)
+                        .onComposerPaste(isActive: promptFocused) { incoming in
+                            appendUniqueAttachments(incoming, to: &attachments)
+                        }
+                        .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
+                            ComposerDropHelper.handleDrop(providers: providers) { incoming in
+                                appendUniqueAttachments(incoming, to: &attachments)
+                            }
+                        }
 
                         // 3. Interactive Bottom-Left Project Folder Switcher + Mode Hint
                         HStack(spacing: 10) {
@@ -332,6 +357,22 @@ public struct NewWorkCanvasView: View {
         }
     }
 
+    private var attachButton: some View {
+        ComposerAttachMenuButton(
+            compact: false,
+            onAddAttachments: { incoming in
+                appendUniqueAttachments(incoming, to: &attachments)
+            },
+            onNoClipboardImage: {
+                store.notice = WorkbenchNotice(kind: .info, message: "No image found on the clipboard — copy a screenshot (⌘⌃⇧4) or image first.")
+            }
+        )
+    }
+
+    private var canSubmit: Bool {
+        !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
+
     private var sendButton: some View {
         Button {
             submit()
@@ -341,14 +382,14 @@ public struct NewWorkCanvasView: View {
                 .foregroundStyle(ToolrollPalette.inverseInk)
                 .frame(width: 28, height: 28)
                 .background(
-                    promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? ToolrollPalette.muted.opacity(0.32)
-                        : ToolrollPalette.ink,
+                    canSubmit
+                        ? ToolrollPalette.ink
+                        : ToolrollPalette.muted.opacity(0.32),
                     in: Circle()
                 )
         }
         .buttonStyle(.plain)
-        .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(!canSubmit)
     }
 
     // MARK: - Interactive Bottom-Left Project Folder Switcher
@@ -597,22 +638,24 @@ public struct NewWorkCanvasView: View {
 
     private func submit() {
         let trimmed = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
         promptText = ""
+        attachments = []
         let cleanProj = resolvedProject
 
         if mode == .askLead {
             store.isInspectorVisible = true
             store.inspectorTab = .lead
-            Task { await store.sendLeadMessage(trimmed) }
+            Task { await store.sendLeadMessage(composed.combinedMessage) }
             return
         }
 
         Task {
             await store.createTask(
-                title: trimmed,
+                title: composed.title,
                 project: cleanProj,
-                body: "",
+                body: composed.goal,
                 planFirst: mode == .planFirst
             )
         }

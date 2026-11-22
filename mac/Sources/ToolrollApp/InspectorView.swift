@@ -725,6 +725,13 @@ private struct DiffLineRowView: View {
 private struct LeadThreadView: View {
     @Bindable var store: WorkbenchStore
     @State private var draft: String = ""
+    @State private var attachments: [ComposerAttachment] = []
+    @State private var isDropTargeted: Bool = false
+    @FocusState private var draftFocused: Bool
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -778,28 +785,63 @@ private struct LeadThreadView: View {
 
             HairlineDivider()
 
-            HStack(spacing: 8) {
-                TextField("Ask Lead…", text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .onSubmit { send() }
+            VStack(alignment: .leading, spacing: 8) {
+                if !attachments.isEmpty {
+                    ComposerAttachmentStrip(attachments: attachments) { removedId in
+                        attachments.removeAll { $0.id == removedId }
+                    }
+                }
 
-                Button("Send") { send() }
-                    .buttonStyle(KitButtonStyle(.primary, compact: true))
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                HStack(spacing: 8) {
+                    ComposerAttachMenuButton(
+                        compact: true,
+                        onAddAttachments: { incoming in
+                            appendUniqueAttachments(incoming, to: &attachments)
+                        },
+                        onNoClipboardImage: {
+                            store.notice = WorkbenchNotice(kind: .info, message: "No image found on the clipboard — copy a screenshot (⌘⌃⇧4) or image first.")
+                        }
+                    )
+
+                    TextField("Ask Lead or paste screenshot…", text: $draft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .focused($draftFocused)
+                        .onSubmit { send() }
+
+                    Button("Send") { send() }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        .disabled(!canSend)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(ToolrollPalette.composer, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+            .background(ToolrollPalette.composer, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        isDropTargeted ? ToolrollPalette.live : ToolrollPalette.inputLine,
+                        lineWidth: isDropTargeted ? 1.5 : 1
+                    )
+            )
+            .onComposerPaste(isActive: draftFocused) { incoming in
+                appendUniqueAttachments(incoming, to: &attachments)
+            }
+            .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isDropTargeted) { providers in
+                ComposerDropHelper.handleDrop(providers: providers) { incoming in
+                    appendUniqueAttachments(incoming, to: &attachments)
+                }
+            }
             .padding(10)
         }
     }
 
     private func send() {
-        let msg = draft
+        guard canSend else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: draft, attachments: attachments)
         draft = ""
-        Task { await store.sendLeadMessage(msg) }
+        attachments = []
+        Task { await store.sendLeadMessage(composed.combinedMessage) }
     }
 }
