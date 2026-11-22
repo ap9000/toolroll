@@ -47,38 +47,57 @@ public struct ModelPickerPopover: View {
         // Ensure Google Gemini is selectable for Planner & Builder whenever installed (or in local mode)
         // even before `POST /settings/models/check` has populated `runtime_check` / `model_seen`.
         if targetRoleKey != "review", !list.contains(where: { $0.provider == "gemini" }) {
-            let geminiInstalled = installedIds.contains("gemini") || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/gemini") || FileManager.default.fileExists(atPath: "/usr/local/bin/gemini")
+            let geminiInstalled = installedIds.contains("gemini")
+                || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/gemini")
+                || FileManager.default.fileExists(atPath: "/usr/local/bin/gemini")
             if geminiInstalled || store.isLocalSession {
                 list.append(ModelChoice(
                     provider: "gemini",
                     label: "Google Gemini",
                     models: [
-                        ModelOption(value: "gemini-4", label: "Gemini 4"),
-                        ModelOption(value: "gemini-3.5-pro", label: "Gemini 3.5 Pro"),
-                        ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro"),
-                        ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash"),
+                        ModelOption(value: "gemini-4-argon", label: "Gemini 4 Argon"),
+                        ModelOption(value: "gemini-3.8-flash", label: "Gemini 3.8 Flash"),
+                        ModelOption(value: "gemini-3.6-flash", label: "Gemini 3.6 Flash"),
+                        ModelOption(value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite"),
+                        ModelOption(value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro"),
                     ]
                 ))
             }
         }
 
-        // Ensure Codex is selectable whenever installed (or already assigned to a role)
+        // Ensure Codex is selectable using live ~/.codex/models_cache.json when available
         if !list.contains(where: { $0.provider == "codex" }) {
             let codexInstalled = installedIds.contains("codex")
                 || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("codex|") })
             if codexInstalled || store.isLocalSession {
+                let liveCodex = Self.loadLocalCodexModels()
                 list.append(ModelChoice(
                     provider: "codex",
                     label: "Codex",
-                    models: [
-                        ModelOption(value: "gpt-6.2-astra", label: "Codex · gpt-6.2-astra"),
-                        ModelOption(value: "gpt-6-astra", label: "Codex · gpt-6-astra"),
-                        ModelOption(value: "gpt-6-sol", label: "Codex · gpt-6-sol"),
-                    ]
+                    models: liveCodex.isEmpty ? [
+                        ModelOption(value: "gpt-6.2-astra", label: "GPT-6.2-Astra"),
+                        ModelOption(value: "gpt-6.2-sol", label: "GPT-6.2-Sol"),
+                        ModelOption(value: "gpt-6.1-terra", label: "GPT-6.1 Terra"),
+                        ModelOption(value: "gpt-6-astra", label: "GPT-6-Astra"),
+                        ModelOption(value: "gpt-6-sol", label: "GPT-6-Sol"),
+                    ] : liveCodex
                 ))
             }
         }
         return list
+    }
+
+    private static func loadLocalCodexModels() -> [ModelOption] {
+        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/models_cache.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = raw["models"] as? [[String: Any]]
+        else { return [] }
+        return models.compactMap { item -> ModelOption? in
+            guard let slug = (item["slug"] as? String) ?? (item["id"] as? String), !slug.isEmpty else { return nil }
+            let name = (item["display_name"] as? String) ?? (item["name"] as? String) ?? slug
+            return ModelOption(value: slug, label: name)
+        }
     }
 
     private var allEntries: [FlatModelEntry] {

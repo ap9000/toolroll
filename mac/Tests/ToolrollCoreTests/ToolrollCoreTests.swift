@@ -623,8 +623,8 @@ struct ToolrollCoreTests {
         let origBuild = buildRole.current
         let origReview = reviewRole.current
 
-        // Verify mixing Google Gemini Planner + Claude Opus Builder + Codex Astra Reviewer in one save!
-        let gemTarget = "gemini|gemini-4"
+        // Verify mixing Google Gemini 4 Argon Planner + Claude Opus Builder + Codex Astra 6.2 Reviewer in one save!
+        let gemTarget = "gemini|gemini-4-argon"
         let opusTarget = "claude|claude-opus-5-5"
         let astraTarget = "codex|gpt-6.2-astra"
         let reply = try await client.updateModels(
