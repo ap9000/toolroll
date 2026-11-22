@@ -523,4 +523,40 @@ struct ToolrollCoreTests {
         #expect(saidRes.said == "All projects: 1 change saved.")
         #expect(saidRes.problem == nil)
     }
+
+    @Test("Local session WebSocket request carries toolroll.key.<key> protocol and live terminal start works when TOOLROLL_TEST_LOCAL_TERM=1")
+    func localWebSocketMutationKeyAndOptionalLiveTerm() async throws {
+        let fakeKey = String(repeating: "a", count: 64)
+        let creds = LocalSessionCredentials(
+            origin: "http://127.0.0.1:4180",
+            account: "alex",
+            cookieHeader: "toolroll_session=abc",
+            csrf: "csrf123",
+            key: fakeKey,
+            epoch: "e1",
+            databasePath: "/tmp/orders.db"
+        )
+        let client = ToolrollClient(localSession: creds)
+        let wsReq = try await client.webSocketRequest(terminalId: String(repeating: "f", count: 32))
+        #expect(wsReq.value(forHTTPHeaderField: "Sec-WebSocket-Protocol") == "toolroll, toolroll.key.\(fakeKey)")
+        #expect(wsReq.value(forHTTPHeaderField: "x-toolroll-key") == fakeKey)
+        #expect(wsReq.value(forHTTPHeaderField: "Origin") == "http://127.0.0.1:4180")
+
+        guard ProcessInfo.processInfo.environment["TOOLROLL_TEST_LOCAL_TERM"] == "1" else { return }
+        let liveCreds = await LocalConsoleConnector.discoverAndConnect()
+        #expect(liveCreds != nil)
+        guard let liveCreds else { return }
+        let liveClient = ToolrollClient(localSession: liveCreds)
+        let state = try await liveClient.fetchTerminals()
+        #expect(state.available == true)
+        let projects = state.projects ?? []
+        #expect(!projects.isEmpty)
+        let term = try await liveClient.startOrReuseTerminal(
+            taskId: "smoke-test",
+            project: projects.first?.name,
+            runId: nil,
+            program: "shell"
+        )
+        #expect(!term.id.isEmpty)
+    }
 }

@@ -180,6 +180,7 @@ public struct CanvasWorkspaceView: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
 
             // Preview server status pill (Cached 0 MB | Starting | Live with 1-click Sleep)

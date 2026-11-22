@@ -162,6 +162,7 @@ public struct MainWorkbenchView: View {
                     }
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
 
                 Spacer(minLength: 4)

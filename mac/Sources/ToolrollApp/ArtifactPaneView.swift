@@ -87,11 +87,8 @@ struct ArtifactPaneView: View {
                         } label: {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(ToolrollIconButtonStyle(size: 22))
                         .help("Reload file from disk")
 
                         Button {
@@ -99,11 +96,8 @@ struct ArtifactPaneView: View {
                         } label: {
                             Image(systemName: "arrow.up.right.square")
                                 .font(.system(size: 11))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(ToolrollIconButtonStyle(size: 22))
                         .help("Open in external editor")
                     }
                 }
@@ -200,9 +194,10 @@ struct ArtifactPaneView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.muted)
                     .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
+                    .toolrollHoverSurface(cornerRadius: 4)
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .help("Open project doc or Markdown artifact")
         }

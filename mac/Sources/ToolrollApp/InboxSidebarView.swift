@@ -99,8 +99,11 @@ public struct InboxSidebarView: View {
                     Image(systemName: "line.3.horizontal.decrease")
                         .font(.system(size: 11.5))
                         .foregroundStyle(store.selectedProject != nil || store.teamFilter != .everyone ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: 24, height: 24)
+                        .toolrollHoverSurface(cornerRadius: 5, isSelected: store.selectedProject != nil || store.teamFilter != .everyone)
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Filter by project or owner")
 
@@ -110,9 +113,8 @@ public struct InboxSidebarView: View {
                 } label: {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 24))
                 .help("Add Project (⌘⇧O)")
 
                 // New task inline canvas (⌘N)
@@ -121,9 +123,8 @@ public struct InboxSidebarView: View {
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 12))
-                        .foregroundStyle(store.isComposingNewWork ? ToolrollPalette.ink : ToolrollPalette.muted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 24, isActive: store.isComposingNewWork))
                 .help("New Task (⌘N)")
             }
             .padding(.horizontal, 12)

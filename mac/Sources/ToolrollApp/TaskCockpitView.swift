@@ -33,7 +33,7 @@ public struct TaskCockpitView: View {
                 }
 
                 if store.taskViewMode == .terminal {
-                    LiveTerminalPaneView(store: store, session: store.terminalSession)
+                    LiveTerminalPaneView(store: store, session: store.terminalSession, inMainPane: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
@@ -184,10 +184,11 @@ public struct TaskCockpitView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3.5)
-                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                    .toolrollHoverSurface(cornerRadius: 4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Other active worktrees in this repository")
             }
@@ -214,8 +215,12 @@ public struct TaskCockpitView: View {
                             .font(.system(size: 8.5, weight: .semibold))
                     }
                     .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .toolrollHoverSurface(cornerRadius: 4)
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
             }
 
@@ -312,6 +317,7 @@ public struct TaskCockpitView: View {
                     .toolrollHoverSurface(cornerRadius: 5)
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
         }
         .padding(.horizontal, 16)

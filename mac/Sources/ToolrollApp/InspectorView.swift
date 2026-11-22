@@ -12,49 +12,44 @@ public struct InspectorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Segmented tab bar
-            HStack(spacing: 4) {
+            // Segmented tab bar — single-line tabs with crisp hover states
+            HStack(spacing: 3) {
                 ForEach(InspectorTab.allCases) { tab in
                     let active = store.inspectorTab == tab
                     Button {
                         store.inspectorTab = tab
                     } label: {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Image(systemName: icon(for: tab))
                                 .font(.system(size: 10.5))
                             Text(tab.rawValue)
                                 .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .background(
-                            active ? ToolrollPalette.paper : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        )
+                        .toolrollHoverSurface(cornerRadius: 4, isSelected: active)
                         .overlay(
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1)
                         )
-                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
-                Spacer()
+                Spacer(minLength: 4)
                 Button {
                     store.isInspectorVisible = false
                 } label: {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ToolrollIconButtonStyle(size: 26))
                 .help("Hide Inspector (⌘J)")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
             .background(ToolrollPalette.ground)
 
             HairlineDivider()
@@ -88,6 +83,7 @@ public struct InspectorView: View {
 struct LiveTerminalPaneView: View {
     @Bindable var store: WorkbenchStore
     @Bindable var session: LiveTerminalSession
+    var inMainPane: Bool = false
     @State private var selectedProgram: String = "shell"
 
     private let programs = ["shell", "claude", "codex", "antigravity"]
@@ -172,7 +168,7 @@ struct LiveTerminalPaneView: View {
                     ForEach(programs, id: \.self) { prog in
                         Button("Attach / Start \(prog)") {
                             selectedProgram = prog
-                            Task { await store.attachOrStartTerminal(taskId: taskId, program: prog) }
+                            Task { await store.attachOrStartTerminal(taskId: taskId, program: prog, openDrawer: !inMainPane) }
                         }
                     }
                     if session.connectionState != .idle {
@@ -191,10 +187,11 @@ struct LiveTerminalPaneView: View {
                     .foregroundStyle(ToolrollPalette.ink)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3.5)
-                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
+                    .toolrollHoverSurface(cornerRadius: 4)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
             }
         }
@@ -305,12 +302,12 @@ struct LiveTerminalPaneView: View {
             if let taskId = store.selectedTaskId {
                 HStack(spacing: 8) {
                     Button("Attach Shell") {
-                        Task { await store.attachOrStartTerminal(taskId: taskId, program: "shell") }
+                        Task { await store.attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: !inMainPane) }
                     }
                     .buttonStyle(KitButtonStyle(.primary))
 
                     Button("Attach Claude") {
-                        Task { await store.attachOrStartTerminal(taskId: taskId, program: "claude") }
+                        Task { await store.attachOrStartTerminal(taskId: taskId, program: "claude", openDrawer: !inMainPane) }
                     }
                     .buttonStyle(KitButtonStyle(.ghost))
                 }
@@ -461,7 +458,7 @@ private struct DiffInspectorView: View {
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(selected ? ToolrollPalette.paper : ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 4))
+                                .toolrollHoverSurface(cornerRadius: 4, isSelected: selected)
                                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(selected ? ToolrollPalette.ink.opacity(0.4) : ToolrollPalette.line, lineWidth: 1))
                             }
                             .buttonStyle(.plain)

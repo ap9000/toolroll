@@ -1702,8 +1702,15 @@ public final class WorkbenchStore {
             return
         }
         guard let client else { return }
+        let targetProject = selectedRow?.project ?? selectedProject ?? allProjects.first
+        let targetRun = stepCards?.liveRun ?? stepCards?.review?.run ?? stepCards?.cards.flatMap(\.runs).max()
         do {
-            let started = try await client.startOrReuseTerminal(taskId: taskId, program: program)
+            let started = try await client.startOrReuseTerminal(
+                taskId: taskId,
+                project: targetProject,
+                runId: targetRun,
+                program: program
+            )
             await terminalSession.attach(
                 client: client,
                 terminalId: started.id,
@@ -1716,12 +1723,7 @@ public final class WorkbenchStore {
                 message: started.reused ? "Attached to existing \(started.program) Live Terminal." : "Started \(started.program) Live Terminal on \(started.branch)."
             )
         } catch {
-            let raw = error.localizedDescription
-            if raw.contains("(request)") || raw.lowercased().contains("rejected") {
-                notice = WorkbenchNotice(kind: .info, message: "No live worktree terminal is active for this task (it may be queued or cancelled).")
-            } else {
-                notice = WorkbenchNotice(kind: .refusal, message: raw)
-            }
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
     }
 

@@ -324,6 +324,7 @@ public final class LiveTerminalSession {
                         // Already cleanly exited.
                     } else {
                         connectionState = .disconnected(error.localizedDescription)
+                        statusNote = "Terminal disconnected: \(error.localizedDescription)"
                     }
                 }
                 break

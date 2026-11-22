@@ -122,6 +122,7 @@ public actor ToolrollClient {
             req.setValue("terminal", forHTTPHeaderField: "x-toolroll-client")
             req.setValue(s.cookieHeader, forHTTPHeaderField: "Cookie")
             req.setValue(s.origin, forHTTPHeaderField: "Origin")
+            req.setValue(s.csrf, forHTTPHeaderField: "x-csrf-token")
             if includeMutationKey || method == "POST" {
                 req.setValue(s.key, forHTTPHeaderField: "x-toolroll-key")
                 req.setValue("in-place", forHTTPHeaderField: "x-toolroll-act")
@@ -318,11 +319,10 @@ public actor ToolrollClient {
 
     public func fetchTerminals() async throws -> TermStateResponse {
         if transport.isLocalSession {
-            // Local console lists terminals at GET /term/state or /api/handoff/terminals
-            if let remote = try? await send(try makeRequest(path: "/api/handoff/terminals"), as: TermStateResponse.self) {
-                return remote
+            if let local = try? await send(try makeRequest(path: "/term/state"), as: TermStateResponse.self) {
+                return local
             }
-            return TermStateResponse(available: true, problem: nil, programs: ["shell", "claude", "codex"], sessions: [])
+            return TermStateResponse(available: true, problem: nil, programs: ["shell", "claude", "codex", "antigravity"], sessions: [])
         }
         return try await send(try makeRequest(path: "/api/handoff/terminals"), as: TermStateResponse.self)
     }
@@ -699,13 +699,103 @@ public actor ToolrollClient {
         )
     }
 
-    public func startOrReuseTerminal(taskId: String, program: String = "shell") async throws -> StartRemoteTerminalResponse {
-        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
-        let payload = try JSONSerialization.data(withJSONObject: ["program": program])
-        return try await send(
-            try makeRequest(path: "/api/handoff/task/\(enc)/terminal", method: "POST", body: payload),
-            as: StartRemoteTerminalResponse.self
+    public func startOrReuseTerminal(
+        taskId: String,
+        project: String? = nil,
+        runId: Int? = nil,
+        program: String = "shell"
+    ) async throws -> StartRemoteTerminalResponse {
+        switch transport {
+        case .localSession(let s):
+            // 1. Check /term/state to reuse an existing live session OR resolve the project's full repo path
+            let state = try? await fetchTerminals()
+            if let existing = state?.sessions.first(where: {
+                $0.endedAt == nil && $0.program == program && ($0.task == taskId || (project != nil && $0.project == project))
+            }) {
+                return StartRemoteTerminalResponse(
+                    ok: true,
+                    id: existing.id,
+                    branch: existing.branch,
+                    program: existing.program,
+                    reused: true
+                )
+            }
+
+            let resolvedRepo: String? = {
+                guard let projects = state?.projects else { return nil }
+                if let p = project, !p.isEmpty,
+                   let match = projects.first(where: { $0.name.lowercased() == p.lowercased() || $0.path.hasSuffix("/\(p)") }) {
+                    return match.path
+                }
+                return projects.first?.path
+            }()
+
+            // 2. Try task+run take-over first when a build run exists; fall back cleanly to project repo terminal!
+            if let runId {
+                if let started = try? await postLocalTermStart(csrf: s.csrf, program: program, taskId: taskId, runId: runId, repo: nil) {
+                    let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == started })?.branch) ?? "tr/\(taskId)"
+                    return StartRemoteTerminalResponse(ok: true, id: started, branch: branch, program: program, reused: false)
+                }
+            }
+
+            guard let repo = resolvedRepo else {
+                throw ToolrollClientError.refused("No project repository is registered with the local Toolroll engine yet.")
+            }
+            let startedId = try await postLocalTermStart(csrf: s.csrf, program: program, taskId: nil, runId: nil, repo: repo)
+            let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == startedId })?.branch) ?? "main"
+            return StartRemoteTerminalResponse(ok: true, id: startedId, branch: branch, program: program, reused: false)
+
+        case .remoteBearer:
+            let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+            let payload = try JSONSerialization.data(withJSONObject: ["program": program])
+            return try await send(
+                try makeRequest(path: "/api/handoff/task/\(enc)/terminal", method: "POST", body: payload),
+                as: StartRemoteTerminalResponse.self
+            )
+        }
+    }
+
+    private func postLocalTermStart(
+        csrf: String,
+        program: String,
+        taskId: String?,
+        runId: Int?,
+        repo: String?
+    ) async throws -> String {
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "csrf", value: csrf),
+            URLQueryItem(name: "program", value: program),
+            URLQueryItem(name: "password", value: ""),
+        ]
+        if let taskId, let runId {
+            items.append(URLQueryItem(name: "task", value: taskId))
+            items.append(URLQueryItem(name: "run", value: String(runId)))
+        } else if let repo {
+            items.append(URLQueryItem(name: "repo", value: repo))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let formBody = comps.percentEncodedQuery ?? ""
+        let req = try makeRequest(
+            path: "/term/start",
+            method: "POST",
+            body: Data(formBody.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
         )
+        let (data, response) = try await session.data(for: req)
+        struct LocalTermReply: Codable {
+            let ok: Bool?
+            let id: String?
+            let error: String?
+        }
+        let reply = try? JSONDecoder().decode(LocalTermReply.self, from: data)
+        if let id = reply?.id, !id.isEmpty {
+            return id
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        throw ToolrollClientError.refused(reply?.error ?? "Could not start \(program) terminal (HTTP \(status)).")
     }
 
     public func pingApproval(taskId: String) async throws -> String {
@@ -818,13 +908,19 @@ public actor ToolrollClient {
             throw ToolrollClientError.invalidOrigin(terminalId)
         }
         var req = URLRequest(url: url, timeoutInterval: 30)
-        req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
         switch transport {
         case .localSession(let s):
+            if s.key.isEmpty {
+                req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+            } else {
+                req.setValue("toolroll, toolroll.key.\(s.key)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+                req.setValue(s.key, forHTTPHeaderField: "x-toolroll-key")
+            }
             req.setValue("terminal", forHTTPHeaderField: "x-toolroll-client")
             req.setValue(s.cookieHeader, forHTTPHeaderField: "Cookie")
             req.setValue(s.origin, forHTTPHeaderField: "Origin")
         case .remoteBearer(let p):
+            req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
             req.setValue("terminal-remote", forHTTPHeaderField: "x-toolroll-client")
             if !p.token.isEmpty {
                 req.setValue("Bearer \(p.token)", forHTTPHeaderField: "Authorization")

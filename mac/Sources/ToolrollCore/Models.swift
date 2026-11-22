@@ -1128,11 +1128,36 @@ public struct TerminalSummary: Codable, Sendable, Equatable, Identifiable {
     public let run: Int?
 }
 
+public struct TermProjectSummary: Codable, Sendable, Equatable {
+    public let path: String
+    public let name: String
+
+    public init(path: String, name: String) {
+        self.path = path
+        self.name = name
+    }
+}
+
 public struct TermStateResponse: Codable, Sendable, Equatable {
     public let available: Bool
     public let problem: String?
     public let programs: [String]
+    public let projects: [TermProjectSummary]?
     public let sessions: [TerminalSummary]
+
+    public init(
+        available: Bool,
+        problem: String? = nil,
+        programs: [String] = [],
+        projects: [TermProjectSummary]? = nil,
+        sessions: [TerminalSummary] = []
+    ) {
+        self.available = available
+        self.problem = problem
+        self.programs = programs
+        self.projects = projects
+        self.sessions = sessions
+    }
 }
 
 public struct StartRemoteTerminalResponse: Codable, Sendable, Equatable {
