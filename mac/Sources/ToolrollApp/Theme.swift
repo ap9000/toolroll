@@ -1,10 +1,108 @@
 import AppKit
 import ImageIO
+import Observation
 import SwiftUI
 import ToolrollCore
 
-/// Exact Toolroll Kit Signal 1.0.0 light & dark design tokens.
-/// Monochrome, 1px hairline structure, zero resting shadows, adaptive macOS appearance.
+/// Live `@Observable` theme engine synced with `~/.config/toolroll/tui.toml`.
+/// Whenever the Lead agent calls `toolroll_view_set` (or the user switches themes in Appearance `⌘⇧T`),
+/// the directory watcher reloads `tui.toml` in < 5ms and every view reading `ToolrollPalette` updates live.
+@MainActor
+@Observable
+public final class WorkspaceThemeEngine {
+    public static let shared = WorkspaceThemeEngine()
+
+    public private(set) var config: WorkspaceAppearanceConfig
+    private var dirFD: Int32 = -1
+    private var watchSource: DispatchSourceFileSystemObject?
+
+    private init() {
+        self.config = WorkspaceThemeStore.load()
+        startWatchingConfigDirectory()
+    }
+
+    public func reload() {
+        let next = WorkspaceThemeStore.load()
+        if next != config {
+            config = next
+        }
+    }
+
+    public func apply(
+        theme: String? = nil,
+        density: String? = nil,
+        listSide: String? = nil,
+        showCosts: Bool? = nil,
+        glassChrome: Bool? = nil,
+        sidebarVibrancy: Bool? = nil,
+        notifyAsks: Bool? = nil,
+        notifyFinished: Bool? = nil
+    ) {
+        WorkspaceThemeStore.savePreferences(
+            theme: theme,
+            density: density,
+            listSide: listSide,
+            showCosts: showCosts,
+            glassChrome: glassChrome,
+            sidebarVibrancy: sidebarVibrancy,
+            notifyAsks: notifyAsks,
+            notifyFinished: notifyFinished
+        )
+        reload()
+    }
+
+    public func resetToSignal() {
+        apply(
+            theme: "signal",
+            density: "comfortable",
+            listSide: "left",
+            showCosts: true,
+            glassChrome: true,
+            sidebarVibrancy: true
+        )
+    }
+
+    public var preferredColorScheme: ColorScheme? {
+        if let custom = config.effectiveCustomPalette {
+            switch custom.base.lowercased() {
+            case "light": return .light
+            case "dark", "high-contrast": return .dark
+            default: return nil
+            }
+        }
+        switch config.activeTheme.lowercased() {
+        case "light": return .light
+        case "dark", "high-contrast": return .dark
+        default: return nil // "signal" / "terminal" / "system" follows macOS appearance
+        }
+    }
+
+    private func startWatchingConfigDirectory() {
+        let dirURL = WorkspaceThemeStore.configDirectoryURL
+        try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        let fd = open(dirURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        dirFD = fd
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .extend, .attrib],
+            queue: .main
+        )
+        src.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.reload()
+            }
+        }
+        src.setCancelHandler {
+            close(fd)
+        }
+        watchSource = src
+        src.resume()
+    }
+}
+
+/// Exact Toolroll Kit Signal 1.0.0 light & dark design tokens — now live-overridable by the Lead agent (`tui.toml`).
+@MainActor
 public enum ToolrollPalette {
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
@@ -17,21 +115,67 @@ public enum ToolrollPalette {
         })
     }
 
-    public static let ground    = dynamic(light: 0xEFEFEF, dark: 0x0B0B0B)
-    public static let paper     = dynamic(light: 0xFFFFFF, dark: 0x161616)
-    public static let raised    = dynamic(light: 0xF5F5F5, dark: 0x1C1C1C)
-    public static let ink       = dynamic(light: 0x171717, dark: 0xEDEDED)
-    public static let inverseInk = dynamic(light: 0xFFFFFF, dark: 0x0B0B0B)
-    public static let muted     = dynamic(light: 0x666666, dark: 0xA1A1A1)
-    public static let line      = dynamic(light: 0xE6E6E6, dark: 0x262626)
-    public static let inputLine = dynamic(light: 0xD4D4D4, dark: 0x363636)
-    public static let live      = dynamic(light: 0x0D74CE, dark: 0x70B8FF)
-    public static let success   = dynamic(light: 0x218358, dark: 0x3DD68C)
-    public static let danger    = dynamic(light: 0xC4320A, dark: 0xFF977D)
-    public static let warning   = dynamic(light: 0xAB6400, dark: 0xFFCA16)
-    public static let codeBg    = dynamic(light: 0xFAFAFA, dark: 0x111111)
-    public static let composer  = dynamic(light: 0xF2F2F2, dark: 0x242424)
-    public static let selection = dynamic(light: 0xE5E5E5, dark: 0x262626)
+    private static func fromHex(_ raw: String?) -> Color? {
+        guard let rgb = WorkspaceThemeStore.parseHex(raw) else { return nil }
+        return Color(red: rgb.r, green: rgb.g, blue: rgb.b)
+    }
+
+    private static var custom: CustomThemePalette? {
+        WorkspaceThemeEngine.shared.config.effectiveCustomPalette
+    }
+
+    private static var isHighContrast: Bool {
+        WorkspaceThemeEngine.shared.config.activeTheme.lowercased() == "high-contrast"
+    }
+
+    public static var ground: Color {
+        fromHex(custom?.ground) ?? dynamic(light: 0xEFEFEF, dark: isHighContrast ? 0x000000 : 0x0B0B0B)
+    }
+    public static var paper: Color {
+        fromHex(custom?.paper) ?? dynamic(light: 0xFFFFFF, dark: isHighContrast ? 0x080808 : 0x161616)
+    }
+    public static var raised: Color {
+        fromHex(custom?.raised ?? custom?.fill) ?? dynamic(light: 0xF5F5F5, dark: isHighContrast ? 0x141414 : 0x1C1C1C)
+    }
+    public static var ink: Color {
+        fromHex(custom?.ink) ?? dynamic(light: 0x171717, dark: isHighContrast ? 0xFFFFFF : 0xEDEDED)
+    }
+    public static var inverseInk: Color {
+        fromHex(custom?.selectionInk ?? custom?.ground) ?? dynamic(light: 0xFFFFFF, dark: 0x0B0B0B)
+    }
+    public static var muted: Color {
+        fromHex(custom?.muted) ?? dynamic(light: 0x666666, dark: isHighContrast ? 0xCCCCCC : 0xA1A1A1)
+    }
+    public static var line: Color {
+        fromHex(custom?.line).map { $0.opacity(0.45) } ?? dynamic(light: 0xE6E6E6, dark: isHighContrast ? 0x525252 : 0x262626)
+    }
+    public static var inputLine: Color {
+        fromHex(custom?.line).map { $0.opacity(0.75) } ?? dynamic(light: 0xD4D4D4, dark: isHighContrast ? 0x7A7A7A : 0x363636)
+    }
+    public static var live: Color {
+        fromHex(custom?.live ?? custom?.selection) ?? dynamic(light: 0x0D74CE, dark: 0x70B8FF)
+    }
+    public static var success: Color {
+        fromHex(custom?.success) ?? dynamic(light: 0x218358, dark: 0x3DD68C)
+    }
+    public static var danger: Color {
+        fromHex(custom?.danger) ?? dynamic(light: 0xC4320A, dark: 0xFF977D)
+    }
+    public static var warning: Color {
+        fromHex(custom?.warning) ?? dynamic(light: 0xAB6400, dark: 0xFFCA16)
+    }
+    public static var codeBg: Color {
+        fromHex(custom?.ground) ?? dynamic(light: 0xFAFAFA, dark: isHighContrast ? 0x040404 : 0x111111)
+    }
+    public static var composer: Color {
+        fromHex(custom?.fill ?? custom?.raised) ?? dynamic(light: 0xF2F2F2, dark: 0x242424)
+    }
+    public static var selection: Color {
+        if let sel = fromHex(custom?.selection) {
+            return sel.opacity(0.22)
+        }
+        return dynamic(light: 0xE5E5E5, dark: 0x262626)
+    }
 }
 
 public struct HairlineDivider: View {
@@ -265,12 +409,19 @@ public extension View {
     /// Applies real macOS Liquid Glass (`glassEffect`) to floating capsule controls (Canvas Dock, Element HUD, Compare Bar),
     /// falling back cleanly to `.ultraThinMaterial` + hairline on macOS 14–15.
     @ViewBuilder
+    @MainActor
     func toolrollGlassCapsule(interactive: Bool = true) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+        if WorkspaceThemeEngine.shared.config.glassChrome {
+            if #available(macOS 26.0, *) {
+                self.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+            } else {
+                self
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+            }
         } else {
             self
-                .background(.ultraThinMaterial, in: Capsule())
+                .background(ToolrollPalette.paper, in: Capsule())
                 .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
         }
     }
@@ -278,12 +429,22 @@ public extension View {
     /// Applies real macOS Liquid Glass (`glassEffect`) to floating panels & popovers (Command Palette, Style Tweaks, Context Menu),
     /// falling back cleanly to `.regularMaterial` + hairline on macOS 14–15.
     @ViewBuilder
+    @MainActor
     func toolrollGlassPanel(cornerRadius: CGFloat = 10, interactive: Bool = false) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(interactive ? .regular.interactive() : .regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        if WorkspaceThemeEngine.shared.config.glassChrome {
+            if #available(macOS 26.0, *) {
+                self.glassEffect(interactive ? .regular.interactive() : .regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            } else {
+                self
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
+                    )
+            }
         } else {
             self
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
@@ -293,6 +454,7 @@ public extension View {
 }
 
 public extension Color {
+    @MainActor
     static func fromTerminal(_ tc: TerminalColor, isForeground: Bool) -> Color {
         switch tc {
         case .default:

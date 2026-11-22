@@ -21,7 +21,7 @@ public struct MainWorkbenchView: View {
                     HairlineDivider()
 
                     HSplitView {
-                        if store.isSidebarVisible {
+                        if store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight {
                             InboxSidebarView(store: store)
                                 .frame(minWidth: 225, idealWidth: 250, maxWidth: 320)
                         }
@@ -40,6 +40,11 @@ public struct MainWorkbenchView: View {
                         if store.isInspectorVisible {
                             InspectorView(store: store)
                                 .frame(minWidth: 360, idealWidth: 480, maxWidth: 860)
+                        }
+
+                        if store.isSidebarVisible && WorkspaceThemeEngine.shared.config.isSidebarOnRight {
+                            InboxSidebarView(store: store)
+                                .frame(minWidth: 225, idealWidth: 250, maxWidth: 320)
                         }
                     }
                 }
@@ -65,6 +70,10 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isPhonePairSheetOpen) {
             PhonePairSheet(store: store)
         }
+        .sheet(isPresented: $store.isAppearanceSheetOpen) {
+            AppearanceSheet(store: store)
+        }
+        .preferredColorScheme(WorkspaceThemeEngine.shared.preferredColorScheme)
         .task {
             await store.start()
         }
@@ -132,6 +141,9 @@ public struct MainWorkbenchView: View {
                     }
                     Button("Pair Phone for Push Alerts…") {
                         store.isPhonePairSheetOpen = true
+                    }
+                    Button("Appearance & Lead Themes…") {
+                        store.isAppearanceSheetOpen = true
                     }
                     if !store.activeProfile.isDemo {
                         Divider()

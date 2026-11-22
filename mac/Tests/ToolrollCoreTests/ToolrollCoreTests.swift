@@ -448,4 +448,44 @@ struct ToolrollCoreTests {
         #expect(changedDiff.changedPercent > 24.0 && changedDiff.changedPercent < 26.0)
         #expect(changedDiff.heatmapImage != nil)
     }
+
+    @Test("WorkspaceThemeStore parses Lead's tui.toml themes and preserves custom themes on preference updates")
+    func workspaceThemeStoreRoundTrip() throws {
+        let tmpFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-theme-\(UUID().uuidString).toml")
+        defer { try? FileManager.default.removeItem(at: tmpFile) }
+
+        let sample = """
+        # Lead-created theme
+        theme = "neon-night"
+        density = "compact"
+        list_side = "right"
+        show_costs = false
+
+        [themes.neon-night]
+        base = "dark"
+        ground = "#090918"
+        paper = "#101027"
+        ink = "#e8f4ff"
+        selection = "#5fffe1"
+        """
+        try Data(sample.utf8).write(to: tmpFile)
+
+        let parsed = WorkspaceThemeStore.load(from: tmpFile)
+        #expect(parsed.activeTheme == "neon-night")
+        #expect(parsed.isCompact == true)
+        #expect(parsed.isSidebarOnRight == true)
+        #expect(parsed.showCosts == false)
+        #expect(parsed.effectiveCustomPalette?.paper == "#101027")
+        #expect(parsed.effectiveCustomPalette?.selection == "#5fffe1")
+
+        // Switch theme back to signal while preserving [themes.neon-night]
+        WorkspaceThemeStore.savePreferences(theme: "signal", density: "comfortable", listSide: "left", glassChrome: false, to: tmpFile)
+        let reloaded = WorkspaceThemeStore.load(from: tmpFile)
+        #expect(reloaded.activeTheme == "signal")
+        #expect(reloaded.isCompact == false)
+        #expect(reloaded.isSidebarOnRight == false)
+        #expect(reloaded.glassChrome == false)
+        #expect(reloaded.savedThemes["neon-night"]?.paper == "#101027")
+    }
 }

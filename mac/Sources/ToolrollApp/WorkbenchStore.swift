@@ -74,6 +74,7 @@ public final class WorkbenchStore {
     public var isAddProjectSheetOpen: Bool = false
     public var isForkSheetOpen: Bool = false
     public var isPhonePairSheetOpen: Bool = false
+    public var isAppearanceSheetOpen: Bool = false
     public var taskViewMode: TaskViewMode = .activity
     private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
     public var isComposingNewWork: Bool = false

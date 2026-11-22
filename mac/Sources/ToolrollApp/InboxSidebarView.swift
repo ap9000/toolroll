@@ -255,9 +255,19 @@ public struct InboxSidebarView: View {
                 .buttonStyle(.plain)
                 .help("Lead Thread (⌘L)")
 
+                Button {
+                    store.isAppearanceSheetOpen = true
+                } label: {
+                    Image(systemName: "paintbrush")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Appearance & Lead Themes (⌘⇧T)")
+
                 Spacer()
 
-                if let spend = store.workRowsResponse.spend {
+                if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
                     Text(String(format: "$%.2f", spend.todayUsd))
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
@@ -274,9 +284,15 @@ public struct InboxSidebarView: View {
                 .help("Refresh (⌘R)")
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 6 : 9)
         }
-        .background(SidebarVibrancyBackground())
+        .background {
+            if WorkspaceThemeEngine.shared.config.sidebarVibrancy && WorkspaceThemeEngine.shared.config.effectiveCustomPalette == nil {
+                SidebarVibrancyBackground()
+            } else {
+                ToolrollPalette.ground
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in

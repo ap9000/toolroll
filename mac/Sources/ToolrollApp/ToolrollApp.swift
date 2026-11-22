@@ -142,6 +142,11 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
 
+                Button("Appearance & Lead Themes…") {
+                    store.isAppearanceSheetOpen = true
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+
                 Button("Setup & Agents…") {
                     store.isSetupOpen.toggle()
                 }
