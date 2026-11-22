@@ -86,7 +86,19 @@ struct LiveTerminalPaneView: View {
     var inMainPane: Bool = false
     @State private var selectedProgram: String = "shell"
 
-    private let programs = ["shell", "claude", "codex", "antigravity"]
+    private var availablePrograms: [String] {
+        var list = ["shell", "claude", "codex"]
+        if Self.isExecutableInstalled("agy") {
+            list.append("antigravity")
+        }
+        return list
+    }
+
+    private static func isExecutableInstalled(_ name: String) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dirs = ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "/usr/bin"]
+        return dirs.contains { FileManager.default.isExecutableFile(atPath: "\($0)/\(name)") }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -181,10 +193,20 @@ struct LiveTerminalPaneView: View {
             // Program launcher menu
             if let taskId = store.selectedTaskId {
                 Menu {
-                    ForEach(programs, id: \.self) { prog in
+                    ForEach(availablePrograms, id: \.self) { prog in
                         Button("Attach / Start \(prog)") {
                             selectedProgram = prog
                             Task { await store.attachOrStartTerminal(taskId: taskId, program: prog, openDrawer: !inMainPane) }
+                        }
+                    }
+                    if Self.isExecutableInstalled("gemini") {
+                        Button("Launch Gemini CLI in shell") {
+                            selectedProgram = "shell"
+                            Task {
+                                await store.attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: !inMainPane)
+                                try? await Task.sleep(for: .milliseconds(350))
+                                session.sendInput("gemini\r")
+                            }
                         }
                     }
                     if session.connectionState != .idle {
@@ -201,14 +223,14 @@ struct LiveTerminalPaneView: View {
                             .font(.system(size: 8.5, weight: .semibold))
                     }
                     .foregroundStyle(ToolrollPalette.ink)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3.5)
-                    .toolrollHoverSurface(cornerRadius: 4)
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .padding(.horizontal, 7)
+                .frame(height: 24)
+                .toolrollHoverSurface(cornerRadius: 4)
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
             }
         }
         .padding(.horizontal, 12)

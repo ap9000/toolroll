@@ -1041,14 +1041,29 @@ public final class WorkbenchStore {
 
     public func selectModel(value: String, label: String, forRoleKey roleKey: String) async {
         var fields: [String: String] = [:]
+        // Also clear tier-specific overrides (plan-strong, build-strong, build-light, review-strong)
+        // left behind by Quick Presets so the newly chosen model actually runs on ALL task sizes!
         if roleKey == "all" {
             for role in modelsRead.roles {
                 fields[role.key] = value
             }
+            fields["plan-strong"] = "clear"
+            fields["build-strong"] = "clear"
+            fields["build-light"] = "clear"
+            fields["review-strong"] = "clear"
         } else {
-            // Only send the role being changed (omitted slots remain untouched in Toolroll's modelsSave handler,
-            // avoiding sending "" for any unset role which would fail validation!).
             fields[roleKey] = value
+            switch roleKey {
+            case "plan":
+                fields["plan-strong"] = "clear"
+            case "build":
+                fields["build-strong"] = "clear"
+                fields["build-light"] = "clear"
+            case "review":
+                fields["review-strong"] = "clear"
+            default:
+                break
+            }
         }
         await submitModelFields(fields, friendlyLabel: label)
     }
