@@ -68,8 +68,8 @@ public struct TaskCockpitView: View {
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                                 .strokeBorder(
-                                                    highlightedSection == "approval-card" ? ToolrollPalette.warning : Color.clear,
-                                                    lineWidth: 2
+                                                    highlightedSection == "approval-card" ? ToolrollPalette.ink.opacity(0.45) : Color.clear,
+                                                    lineWidth: 1.5
                                                 )
                                                 .animation(.easeInOut(duration: 0.25), value: highlightedSection)
                                         )
@@ -470,8 +470,8 @@ public struct TaskCockpitView: View {
     private var approvalStatusBadge: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(ToolrollPalette.warning)
-                .frame(width: 7, height: 7)
+                .fill(ToolrollPalette.ink)
+                .frame(width: 6, height: 6)
             Text("Needs approval")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.ink)
@@ -480,8 +480,8 @@ public struct TaskCockpitView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
-        .background(ToolrollPalette.warning.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(ToolrollPalette.warning.opacity(0.45), lineWidth: 1))
+        .background(ToolrollPalette.paper, in: Capsule())
+        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
         .fixedSize()
     }
 
@@ -582,30 +582,32 @@ public struct TaskCockpitView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(digest.addedFiles, id: \.self) { file in
-                                HStack(spacing: 4) {
+                                HStack(spacing: 5) {
                                     Text("+")
                                         .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.success)
                                     Text(file)
                                         .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
                                 }
-                                .foregroundStyle(ToolrollPalette.success)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(ToolrollPalette.success.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.success.opacity(0.35), lineWidth: 1))
+                                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                             }
                             ForEach(digest.removedFiles, id: \.self) { file in
-                                HStack(spacing: 4) {
+                                HStack(spacing: 5) {
                                     Text("−")
                                         .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.danger)
                                     Text(file)
                                         .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
                                 }
-                                .foregroundStyle(ToolrollPalette.danger)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(ToolrollPalette.danger.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.danger.opacity(0.35), lineWidth: 1))
+                                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                             }
                         }
                     }
@@ -681,19 +683,8 @@ public struct TaskCockpitView: View {
                 }
             }
 
-            // 5. SCANNABLE 1-LINE VERIFICATION CHECKS + EXCEPTION-ONLY SANDBOX DETAILS
+            // 5. SCANNABLE 1-LINE VERIFICATION CHECKS + COLLAPSED SCOPE & SANDBOX DETAILS
             if !digest.checks.isEmpty || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
-                let boilerplateKeys: Set<String> = ["usual", "network", "tools", "may cost", "sent back", "plan changes"]
-                let unusualExtras = digest.extraTerms.filter { extra in
-                    let key = extra.label.lowercased()
-                    if !boilerplateKeys.contains(key) { return true }
-                    let words = extra.words.lowercased()
-                    return words.contains("outside") || words.contains("elevated") || words.contains("unrestricted")
-                }
-                let standardExtras = digest.extraTerms.filter { extra in
-                    !unusualExtras.contains(where: { $0.id == extra.id })
-                }
-
                 VStack(alignment: .leading, spacing: 8) {
                     if !visibleChecks.isEmpty {
                         HStack {
@@ -750,24 +741,7 @@ public struct TaskCockpitView: View {
                         }
                     }
 
-                    // Surface any non-standard exceptions inline immediately
-                    if !unusualExtras.isEmpty {
-                        HairlineDivider().padding(.vertical, 2)
-                        ForEach(unusualExtras) { extra in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(extra.label)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.warning)
-                                    .frame(width: 84, alignment: .leading)
-                                Text(extra.words)
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(ToolrollPalette.ink)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-
-                    // Clean bottom disclosure row: show remaining checks + quiet standard sandbox/limits toggle
+                    // Clean bottom disclosure row: show remaining checks + quiet scope & sandbox details toggle
                     HStack(spacing: 14) {
                         if hiddenCheckCount > 0 {
                             Button {
@@ -781,21 +755,21 @@ public struct TaskCockpitView: View {
                                     Image(systemName: showFullApprovalChecks ? "chevron.up" : "chevron.down")
                                         .font(.system(size: 8.5, weight: .semibold))
                                 }
-                                .foregroundStyle(ToolrollPalette.live)
+                                .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                             }
                             .buttonStyle(.plain)
                         }
 
-                        if digest.wontTouch != nil || !standardExtras.isEmpty {
+                        if digest.wontTouch != nil || !digest.extraTerms.isEmpty {
                             Button {
                                 withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
                                     showStandardSandboxDetails.toggle()
                                 }
                             } label: {
                                 HStack(spacing: 4) {
-                                    Image(systemName: "shield.checkered")
+                                    Image(systemName: "shield")
                                         .font(.system(size: 10))
-                                    Text("Standard sandbox & scope boundaries")
+                                    Text("Scope & sandbox details")
                                         .font(.system(size: 11))
                                     Image(systemName: showStandardSandboxDetails ? "chevron.up" : "chevron.right")
                                         .font(.system(size: 8, weight: .semibold))
@@ -813,26 +787,26 @@ public struct TaskCockpitView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HairlineDivider().padding(.vertical, 2)
                             if let wontTouch = digest.wontTouch {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("OUT OF SCOPE (WON'T TOUCH)")
-                                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                        .tracking(0.6)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text("Won't touch")
+                                        .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(ToolrollPalette.muted)
+                                        .frame(width: 84, alignment: .leading)
                                     Text(wontTouch)
                                         .font(.system(size: 11.5))
-                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
-                            ForEach(standardExtras) { extra in
+                            ForEach(digest.extraTerms) { extra in
                                 HStack(alignment: .top, spacing: 8) {
                                     Text(extra.label)
-                                        .font(.system(size: 11, weight: .semibold))
+                                        .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(ToolrollPalette.muted)
                                         .frame(width: 84, alignment: .leading)
                                     Text(extra.words)
                                         .font(.system(size: 11.5))
-                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -1365,19 +1339,21 @@ public struct TaskCockpitView: View {
             HStack(spacing: 4) {
                 ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
                     let isAttention = card.needsYou
-                    let color = stepColor(for: card)
+                    let isDone = (card.mark.isEmpty ? card.state : card.mark).lowercased().contains("done")
+                    let isRunning = card.state.lowercased().contains("run") || card.mark.lowercased().contains("run")
+                    let iconColor: Color = isAttention ? ToolrollPalette.ink : (isRunning ? ToolrollPalette.live : (isDone ? ToolrollPalette.ink.opacity(0.65) : ToolrollPalette.muted.opacity(0.6)))
                     Button {
                         handlePipelineStepTap(card, proxy: proxy)
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: stepSymbol(for: card))
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(color)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(iconColor)
                             Text(card.label)
-                                .font(.system(size: 11.5, weight: isAttention ? .semibold : .medium))
-                                .foregroundStyle(isAttention ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .font(.system(size: 11.5, weight: isAttention || isRunning ? .semibold : .medium))
+                                .foregroundStyle(isAttention || isRunning ? ToolrollPalette.ink : ToolrollPalette.muted)
                                 .lineLimit(1)
-                            if let agent = card.agent, isAttention || card.state.lowercased().contains("run") {
+                            if let agent = card.agent, isAttention || isRunning {
                                 Text("· \(agent.displayLabel)")
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(ToolrollPalette.muted)
@@ -1387,12 +1363,12 @@ public struct TaskCockpitView: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4.5)
                         .background(
-                            isAttention ? ToolrollPalette.warning.opacity(0.12) : Color.clear,
+                            isAttention || isRunning ? Color.white.opacity(0.08) : Color.clear,
                             in: Capsule()
                         )
                         .overlay(
                             Capsule()
-                                .strokeBorder(isAttention ? ToolrollPalette.warning.opacity(0.4) : Color.clear, lineWidth: 1)
+                                .strokeBorder(isAttention || isRunning ? ToolrollPalette.inputLine : Color.clear, lineWidth: 1)
                         )
                         .toolrollHoverSurface(cornerRadius: 12, isSelected: false)
                     }

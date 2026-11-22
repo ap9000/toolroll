@@ -427,14 +427,14 @@ public struct NewWorkCanvasView: View {
         } label: {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(ToolrollPalette.warning)
-                    .frame(width: 7, height: 7)
+                    .fill(ToolrollPalette.ink)
+                    .frame(width: 6, height: 6)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(row.word.isEmpty ? "Needs approval" : row.word)
                             .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.warning)
+                            .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                         if let proj = row.project, !proj.isEmpty {
                             Text("· \(proj)")
                                 .font(.system(size: 10.5, design: .monospaced))
@@ -459,14 +459,14 @@ public struct NewWorkCanvasView: View {
                 .foregroundStyle(ToolrollPalette.ink)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(Color.white.opacity(0.10), in: Capsule())
+                .background(Color.white.opacity(0.08), in: Capsule())
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(ToolrollPalette.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(ToolrollPalette.warning.opacity(0.32), lineWidth: 1)
+                    .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
