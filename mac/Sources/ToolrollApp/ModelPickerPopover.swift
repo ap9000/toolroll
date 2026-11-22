@@ -11,9 +11,9 @@ public struct ModelPickerPopover: View {
     @State private var selectedProvider: String? = nil // nil = All
     @State private var targetRoleKey: String = "all"   // "all" | "plan" | "build" | "review"
     @State private var query: String = ""
-    @State private var showAllModels: Bool = false
+    @State private var showAllModels: Bool = true
     @State private var passwordInput: String = ""
-    @State private var highlightedIndex: Int = 0
+    @State private var highlightedIndex: Int? = nil
     @FocusState private var searchFocused: Bool
 
     public init(store: WorkbenchStore, initialRoleKey: String = "all", onDismiss: @escaping () -> Void) {
@@ -58,8 +58,15 @@ public struct ModelPickerPopover: View {
     }
 
     private var displayedEntries: [FlatModelEntry] {
-        if showAllModels || !query.isEmpty { return allEntries }
-        return Array(allEntries.prefix(7))
+        // Put the currently active model's provider first when showing All so your active model is immediately visible!
+        let cur = currentValueForScope
+        if selectedProvider == nil && query.isEmpty && !cur.isEmpty {
+            let currentProvider = cur.split(separator: "|").first.map(String.init) ?? ""
+            let prioritized = allEntries.filter { $0.provider == currentProvider }
+            let others = allEntries.filter { $0.provider != currentProvider }
+            return prioritized + others
+        }
+        return allEntries
     }
 
     private var currentValueForScope: String {
@@ -123,7 +130,7 @@ public struct ModelPickerPopover: View {
                                     .padding(14)
                             } else {
                                 ForEach(Array(displayedEntries.enumerated()), id: \.element.id) { idx, entry in
-                                    modelRow(entry, isHighlighted: idx == highlightedIndex, shortcutNumber: idx < 6 ? idx + 1 : nil)
+                                    modelRow(entry, isHighlighted: highlightedIndex == idx, shortcutNumber: idx < 6 ? idx + 1 : nil)
                                 }
                                 if !showAllModels && query.isEmpty && allEntries.count > displayedEntries.count {
                                     Button {
@@ -183,7 +190,7 @@ public struct ModelPickerPopover: View {
                                 Button {
                                     Task {
                                         await store.applyModelPreset(preset)
-                                        if store.modelPasswordPrompt == nil { onDismiss() }
+                                        if store.modelPasswordPrompt == nil && store.modelChangeError == nil { onDismiss() }
                                     }
                                 } label: {
                                     HStack {
@@ -198,8 +205,8 @@ public struct ModelPickerPopover: View {
                                     }
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 5)
-                                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
-                                    .contentShape(Rectangle())
+                                    .toolrollHoverSurface(cornerRadius: 4)
+                                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -209,6 +216,22 @@ public struct ModelPickerPopover: View {
                 }
                 .frame(width: 205)
                 .background(ToolrollPalette.paper)
+            }
+
+            // Inline error feedback if the server refused a model change (never fail silently!)
+            if let err = store.modelChangeError {
+                HairlineDivider()
+                HStack(spacing: 8) {
+                    Circle().fill(ToolrollPalette.danger).frame(width: 6, height: 6)
+                    Text(err)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ToolrollPalette.danger.opacity(0.08))
             }
 
             // Optional inline password confirmation if the Engine requires step-up
@@ -222,13 +245,11 @@ public struct ModelPickerPopover: View {
                         .padding(.vertical, 5)
                         .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 4))
                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                    Button("Confirm") {
-                        let pw = passwordInput
-                        passwordInput = ""
-                        Task {
-                            await store.retryPendingModelChange(password: pw)
-                            if store.modelPasswordPrompt == nil { onDismiss() }
+                        .onSubmit {
+                            submitPasswordConfirmation()
                         }
+                    Button("Confirm") {
+                        submitPasswordConfirmation()
                     }
                     .buttonStyle(KitButtonStyle(.primary, compact: true))
                     .disabled(passwordInput.isEmpty)
@@ -241,20 +262,29 @@ public struct ModelPickerPopover: View {
         .background(ToolrollPalette.paper)
         .onAppear {
             targetRoleKey = initialRoleKey
-            highlightedIndex = 0
+            highlightedIndex = nil
+            store.modelChangeError = nil
             searchFocused = true
         }
-        .onChange(of: query) { _, _ in
-            highlightedIndex = 0
+        .onChange(of: query) { _, next in
+            highlightedIndex = next.isEmpty ? nil : 0
         }
         .onKeyPress(.downArrow) {
             guard !displayedEntries.isEmpty else { return .ignored }
-            highlightedIndex = min(displayedEntries.count - 1, highlightedIndex + 1)
+            if let cur = highlightedIndex {
+                highlightedIndex = min(displayedEntries.count - 1, cur + 1)
+            } else {
+                highlightedIndex = 0
+            }
             return .handled
         }
         .onKeyPress(.upArrow) {
             guard !displayedEntries.isEmpty else { return .ignored }
-            highlightedIndex = max(0, highlightedIndex - 1)
+            if let cur = highlightedIndex {
+                highlightedIndex = max(0, cur - 1)
+            } else {
+                highlightedIndex = displayedEntries.count - 1
+            }
             return .handled
         }
         .onKeyPress(.return) {
@@ -267,21 +297,36 @@ public struct ModelPickerPopover: View {
                   num >= 1 && num <= displayedEntries.count
             else { return .ignored }
             let entry = displayedEntries[num - 1]
-            Task {
-                await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
-                if store.modelPasswordPrompt == nil { onDismiss() }
-            }
+            applyModelEntry(entry)
             return .handled
         }
     }
 
-    private func selectHighlightedModel() {
-        guard highlightedIndex >= 0 && highlightedIndex < displayedEntries.count else { return }
-        let entry = displayedEntries[highlightedIndex]
+    private func submitPasswordConfirmation() {
+        guard !passwordInput.isEmpty else { return }
+        let pw = passwordInput
+        passwordInput = ""
+        Task {
+            await store.retryPendingModelChange(password: pw)
+            if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
+                onDismiss()
+            }
+        }
+    }
+
+    private func applyModelEntry(_ entry: FlatModelEntry) {
         Task {
             await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
-            if store.modelPasswordPrompt == nil { onDismiss() }
+            if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
+                onDismiss()
+            }
         }
+    }
+
+    private func selectHighlightedModel() {
+        let idx = highlightedIndex ?? 0
+        guard idx >= 0 && idx < displayedEntries.count else { return }
+        applyModelEntry(displayedEntries[idx])
     }
 
     private func providerButton(id: String?, label: String, symbol: String) -> some View {
@@ -304,10 +349,7 @@ public struct ModelPickerPopover: View {
     private func modelRow(_ entry: FlatModelEntry, isHighlighted: Bool, shortcutNumber: Int?) -> some View {
         let isCurrent = entry.option.value == currentValueForScope
         return Button {
-            Task {
-                await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
-                if store.modelPasswordPrompt == nil { onDismiss() }
-            }
+            applyModelEntry(entry)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: providerSymbol(entry.provider))

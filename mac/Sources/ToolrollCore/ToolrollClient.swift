@@ -232,10 +232,45 @@ public actor ToolrollClient {
             return words.isEmpty ? defaultDone : words
         }
 
+        // Parse Toolroll's 303 redirect query feedback (`?problem=...` or `?said=...`)
+        // from either the followed final URL (`http.url`) or an unfollowed `Location` header!
+        let redirectOutcome = Self.parseRedirectFeedback(
+            finalURL: http.url,
+            locationHeader: http.value(forHTTPHeaderField: "Location")
+        )
+        if let problem = redirectOutcome.problem {
+            let lower = problem.lowercased()
+            if lower.contains("password") || lower.contains("step-up") || lower.contains("confirm your password") {
+                throw ToolrollClientError.passwordRequired(problem)
+            }
+            throw ToolrollClientError.refused(problem)
+        }
+        if let said = redirectOutcome.said {
+            return said
+        }
+
         if (200...399).contains(http.statusCode) {
             return defaultDone
         }
         throw ToolrollClientError.httpStatus(http.statusCode, "Action failed (HTTP \(http.statusCode)).")
+    }
+
+    public static func parseRedirectFeedback(finalURL: URL?, locationHeader: String?) -> (said: String?, problem: String?) {
+        let candidates: [URL] = [
+            locationHeader.flatMap { URL(string: $0, relativeTo: finalURL) },
+            finalURL,
+        ].compactMap { $0 }
+
+        for url in candidates {
+            guard let items = URLComponents(url: url, resolvingAgainstBaseURL: true)?.queryItems else { continue }
+            if let problem = items.first(where: { $0.name == "problem" })?.value, !problem.isEmpty {
+                return (nil, problem)
+            }
+            if let said = items.first(where: { $0.name == "said" })?.value, !said.isEmpty {
+                return (said, nil)
+            }
+        }
+        return (nil, nil)
     }
 
     // MARK: - Core Engine Reads

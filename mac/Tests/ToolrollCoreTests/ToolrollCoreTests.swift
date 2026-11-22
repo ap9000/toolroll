@@ -510,4 +510,17 @@ struct ToolrollCoreTests {
         #expect(digest.checks[1].badge == "Auto")
         #expect(digest.wontTouch == "No backend or CMS changes.")
     }
+
+    @Test("ToolrollClient.parseRedirectFeedback extracts ?problem= and ?said= from 303 redirect URLs")
+    func redirectFeedbackParsing() {
+        let probURL = URL(string: "http://127.0.0.1:4180/settings/models?problem=Enter%20your%20Toolroll%20password%20to%20change%20models.")!
+        let probRes = ToolrollClient.parseRedirectFeedback(finalURL: probURL, locationHeader: nil)
+        #expect(probRes.problem == "Enter your Toolroll password to change models.")
+        #expect(probRes.said == nil)
+
+        let saidURL = URL(string: "http://127.0.0.1:4180/settings/models?said=All%20projects%3A%201%20change%20saved.")!
+        let saidRes = ToolrollClient.parseRedirectFeedback(finalURL: saidURL, locationHeader: nil)
+        #expect(saidRes.said == "All projects: 1 change saved.")
+        #expect(saidRes.problem == nil)
+    }
 }

@@ -116,6 +116,7 @@ public final class WorkbenchStore {
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
     public var modelPasswordPrompt: String?
+    public var modelChangeError: String?
     private var pendingModelFields: [String: String]?
     public private(set) var candidatesResponse: CandidatesListResponse?
     public private(set) var diffResponse: ResultDiffResponse?
@@ -1016,12 +1017,14 @@ public final class WorkbenchStore {
 
     public func selectModel(value: String, label: String, forRoleKey roleKey: String) async {
         var fields: [String: String] = [:]
-        for role in modelsRead.roles {
-            if roleKey == "all" || role.key == roleKey {
+        if roleKey == "all" {
+            for role in modelsRead.roles {
                 fields[role.key] = value
-            } else {
-                fields[role.key] = role.current
             }
+        } else {
+            // Only send the role being changed (omitted slots remain untouched in Toolroll's modelsSave handler,
+            // avoiding sending "" for any unset role which would fail validation!).
+            fields[roleKey] = value
         }
         await submitModelFields(fields, friendlyLabel: label)
     }
@@ -1037,6 +1040,7 @@ public final class WorkbenchStore {
 
     private func submitModelFields(_ fields: [String: String], friendlyLabel: String, password: String = "") async {
         busyLabel = "Switching to \(friendlyLabel)…"
+        modelChangeError = nil
         defer { busyLabel = nil }
 
         if activeProfile.isDemo {
@@ -1050,6 +1054,7 @@ public final class WorkbenchStore {
                 problem: nil, defaultAgent: modelsRead.defaultAgent, roles: updatedRoles, presets: modelsRead.presets
             )
             modelPasswordPrompt = nil
+            modelChangeError = nil
             pendingModelFields = nil
             notice = WorkbenchNotice(kind: .info, message: "Switched to \(friendlyLabel).")
             return
@@ -1057,8 +1062,12 @@ public final class WorkbenchStore {
 
         guard let client else { return }
         do {
-            let reply = try await client.updateModels(digest: modelsRead.digest, fields: fields, password: password)
+            // Always fetch a fresh digest right before posting so stale-digest refusals never happen!
+            let latest = (try? await client.fetchModels()) ?? modelsRead
+            modelsRead = latest
+            let reply = try await client.updateModels(digest: latest.digest, fields: fields, password: password)
             modelPasswordPrompt = nil
+            modelChangeError = nil
             pendingModelFields = nil
             notice = WorkbenchNotice(kind: .info, message: reply)
             if let refreshed = try? await client.fetchModels() {
@@ -1067,8 +1076,11 @@ public final class WorkbenchStore {
         } catch ToolrollClientError.passwordRequired(let msg) {
             pendingModelFields = fields
             modelPasswordPrompt = msg
+            modelChangeError = nil
         } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            let msg = error.localizedDescription
+            modelChangeError = msg
+            notice = WorkbenchNotice(kind: .refusal, message: msg)
         }
     }
 
