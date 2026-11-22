@@ -365,4 +365,58 @@ struct ToolrollCoreTests {
         #expect(detected?.displayCommand == "pnpm dev")
         #expect(detected?.expectedPort == 3000)
     }
+
+    @Test("ElementLiveEdit summarizes visual deltas and findSourceFile locates local component source")
+    func elementContextAndLiveEditDiff() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-src-lookup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let compDir = tmpDir.appendingPathComponent("src/components", isDirectory: true)
+        try FileManager.default.createDirectory(at: compDir, withIntermediateDirectories: true)
+        let source = """
+        export function RetryCard() {
+          return (
+            <section data-testid="retry-card">
+              <h2>Retry scheduled</h2>
+            </section>
+          );
+        }
+        """
+        try Data(source.utf8).write(to: compDir.appendingPathComponent("RetryCard.tsx"))
+
+        let found = YouiCanvasStorage.findSourceFile(
+            projectRoot: tmpDir.path,
+            testId: "retry-card",
+            textExcerpt: "Retry scheduled",
+            selector: "section"
+        )
+        #expect(found?.file == "src/components/RetryCard.tsx")
+        #expect(found?.line == 3)
+
+        let ctx = SelectedElementContext(
+            elId: "tr-el-1",
+            displayName: "RetryCard",
+            tag: "section",
+            selector: "[data-testid=\"retry-card\"]",
+            testId: "retry-card",
+            textExcerpt: "Retry scheduled",
+            category: .card,
+            file: found?.file,
+            line: found?.line,
+            metrics: ElementStyleMetrics(width: 480, height: 96, padding: 16, gap: 8, fontSize: 14, fontWeight: 500, borderRadius: 8, opacity: 1.0)
+        )
+        var edit = ElementLiveEdit(from: ctx)
+        #expect(!edit.hasChanges)
+        edit.editedText = "Retrying shortly"
+        edit.padding = 12
+        edit.borderRadius = 4
+        #expect(edit.hasChanges)
+        let formatted = edit.formattedForTask()
+        #expect(formatted.contains("RetryCard"))
+        #expect(formatted.contains("src/components/RetryCard.tsx:3"))
+        #expect(formatted.contains("padding: 16px → 12px"))
+        #expect(formatted.contains("border-radius: 8px → 4px"))
+        #expect(formatted.contains("Retrying shortly"))
+    }
 }

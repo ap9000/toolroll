@@ -221,6 +221,263 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Live DOM Element Inspection & WYSIWYG Preview Diff Models
+
+public enum ElementCategory: String, Sendable, Equatable {
+    case text
+    case button
+    case card
+    case input
+    case image
+    case container
+
+    public struct QuickChip: Sendable, Equatable, Identifiable {
+        public var id: String { label }
+        public let label: String
+        public let prompt: String
+        public let isOptions: Bool
+
+        public init(label: String, prompt: String, isOptions: Bool = false) {
+            self.label = label
+            self.prompt = prompt
+            self.isOptions = isOptions
+        }
+    }
+
+    public var quickChips: [QuickChip] {
+        switch self {
+        case .text:
+            return [
+                QuickChip(label: "Tighten copy", prompt: "Tighten this copy so it is shorter, clearer, and more direct."),
+                QuickChip(label: "Stronger hierarchy", prompt: "Strengthen the typographic hierarchy and readability of this text."),
+                QuickChip(label: "Muted tone", prompt: "Make this secondary text quieter and lower visual weight."),
+                QuickChip(label: "Options A/B/C/D", prompt: "Propose 3–4 typographic and copy variations for this element.", isOptions: true),
+            ]
+        case .button:
+            return [
+                QuickChip(label: "Make primary", prompt: "Give this action primary visual emphasis matching our design system."),
+                QuickChip(label: "Make subtle", prompt: "Make this action quieter (ghost/secondary styling) so it competes less."),
+                QuickChip(label: "Fix alignment", prompt: "Fix vertical/horizontal alignment and padding inside this control."),
+                QuickChip(label: "Options A/B/C/D", prompt: "Propose 3–4 visual treatments for this button/control.", isOptions: true),
+            ]
+        case .input:
+            return [
+                QuickChip(label: "Cleaner border", prompt: "Refine the border, padding, and surface contrast of this input."),
+                QuickChip(label: "Better focus state", prompt: "Improve the focus ring and placeholder clarity for this input."),
+                QuickChip(label: "Tighter height", prompt: "Make this input slightly more compact and balanced."),
+                QuickChip(label: "Options A/B/C/D", prompt: "Propose 3–4 layout and styling variations for this input.", isOptions: true),
+            ]
+        case .image:
+            return [
+                QuickChip(label: "Refined framing", prompt: "Improve framing, aspect ratio, and visual alignment of this media element."),
+                QuickChip(label: "Subtle border", prompt: "Add a subtle 1px hairline border and clean corner radius."),
+                QuickChip(label: "Options A/B/C/D", prompt: "Propose 3–4 framing/presentation options for this visual.", isOptions: true),
+            ]
+        case .card, .container:
+            return [
+                QuickChip(label: "Tighter spacing", prompt: "Tighten internal padding and spacing so this block feels denser and crisper."),
+                QuickChip(label: "Higher contrast", prompt: "Improve surface/border contrast and visual separation for this container."),
+                QuickChip(label: "Simplify layout", prompt: "Reduce visual noise and simplify the layout hierarchy inside this block."),
+                QuickChip(label: "Options A/B/C/D", prompt: "Propose 3–4 layout and styling directions for this component.", isOptions: true),
+            ]
+        }
+    }
+}
+
+public struct ElementAncestorRef: Sendable, Equatable, Identifiable {
+    /// Steps upward from the currently selected element (`0` = selected element, `1` = parent, `2` = grandparent, ...).
+    public let depthFromSelected: Int
+    public let label: String
+    public let tag: String
+
+    public var id: Int { depthFromSelected }
+
+    public init(depthFromSelected: Int, label: String, tag: String) {
+        self.depthFromSelected = depthFromSelected
+        self.label = label
+        self.tag = tag
+    }
+}
+
+public struct ElementStyleMetrics: Sendable, Equatable {
+    public let width: Int
+    public let height: Int
+    public let padding: Double
+    public let gap: Double
+    public let fontSize: Double
+    public let fontWeight: Int
+    public let borderRadius: Double
+    public let opacity: Double
+    public let display: String
+    public let color: String
+    public let backgroundColor: String
+
+    public init(
+        width: Int = 0,
+        height: Int = 0,
+        padding: Double = 0,
+        gap: Double = 0,
+        fontSize: Double = 14,
+        fontWeight: Int = 400,
+        borderRadius: Double = 0,
+        opacity: Double = 1.0,
+        display: String = "block",
+        color: String = "",
+        backgroundColor: String = ""
+    ) {
+        self.width = width
+        self.height = height
+        self.padding = padding
+        self.gap = gap
+        self.fontSize = fontSize
+        self.fontWeight = fontWeight
+        self.borderRadius = borderRadius
+        self.opacity = opacity
+        self.display = display
+        self.color = color
+        self.backgroundColor = backgroundColor
+    }
+}
+
+public struct SelectedElementContext: Sendable, Equatable {
+    public let elId: String
+    public let displayName: String
+    public let tag: String
+    public let selector: String
+    public let testId: String?
+    public let textExcerpt: String
+    public let category: ElementCategory
+    public var file: String?
+    public var line: Int?
+    public let ancestors: [ElementAncestorRef]
+    public let metrics: ElementStyleMetrics
+    public let rectXFrac: Double
+    public let rectYFrac: Double
+    public let rectWFrac: Double
+    public let rectHFrac: Double
+    public let clickXFrac: Double
+    public let clickYFrac: Double
+
+    public init(
+        elId: String,
+        displayName: String,
+        tag: String,
+        selector: String,
+        testId: String? = nil,
+        textExcerpt: String = "",
+        category: ElementCategory = .container,
+        file: String? = nil,
+        line: Int? = nil,
+        ancestors: [ElementAncestorRef] = [],
+        metrics: ElementStyleMetrics = ElementStyleMetrics(),
+        rectXFrac: Double = 0.25,
+        rectYFrac: Double = 0.25,
+        rectWFrac: Double = 0.2,
+        rectHFrac: Double = 0.1,
+        clickXFrac: Double = 0.5,
+        clickYFrac: Double = 0.5
+    ) {
+        self.elId = elId
+        self.displayName = displayName
+        self.tag = tag
+        self.selector = selector
+        self.testId = testId
+        self.textExcerpt = textExcerpt
+        self.category = category
+        self.file = file
+        self.line = line
+        self.ancestors = ancestors
+        self.metrics = metrics
+        self.rectXFrac = rectXFrac
+        self.rectYFrac = rectYFrac
+        self.rectWFrac = rectWFrac
+        self.rectHFrac = rectHFrac
+        self.clickXFrac = clickXFrac
+        self.clickYFrac = clickYFrac
+    }
+
+    public var hasParent: Bool {
+        ancestors.contains(where: { $0.depthFromSelected >= 1 })
+    }
+}
+
+public struct ElementLiveEdit: Sendable, Equatable, Identifiable {
+    public let id: String // elId
+    public let elementLabel: String
+    public let selector: String
+    public let file: String?
+    public let line: Int?
+    public let originalText: String
+    public var editedText: String?
+    public let originalMetrics: ElementStyleMetrics
+    public var padding: Double?
+    public var gap: Double?
+    public var fontSize: Double?
+    public var fontWeight: Int?
+    public var borderRadius: Double?
+    public var opacity: Double?
+    public var isHidden: Bool
+
+    public init(from ctx: SelectedElementContext) {
+        self.id = ctx.elId
+        self.elementLabel = ctx.displayName
+        self.selector = ctx.selector
+        self.file = ctx.file
+        self.line = ctx.line
+        self.originalText = ctx.textExcerpt
+        self.editedText = nil
+        self.originalMetrics = ctx.metrics
+        self.padding = nil
+        self.gap = nil
+        self.fontSize = nil
+        self.fontWeight = nil
+        self.borderRadius = nil
+        self.opacity = nil
+        self.isHidden = false
+    }
+
+    public var summaryLines: [String] {
+        var out: [String] = []
+        if isHidden {
+            out.append("remove / hide element")
+        }
+        if let nextText = editedText, nextText != originalText {
+            let before = originalText.isEmpty ? "(empty)" : "\"\(originalText.prefix(48))\""
+            let after = "\"\(nextText.prefix(64))\""
+            out.append("copy: \(before) → \(after)")
+        }
+        if let p = padding, abs(p - originalMetrics.padding) >= 0.5 {
+            out.append("padding: \(Int(originalMetrics.padding.rounded()))px → \(Int(p.rounded()))px")
+        }
+        if let g = gap, abs(g - originalMetrics.gap) >= 0.5 {
+            out.append("gap: \(Int(originalMetrics.gap.rounded()))px → \(Int(g.rounded()))px")
+        }
+        if let fs = fontSize, abs(fs - originalMetrics.fontSize) >= 0.5 {
+            out.append("font-size: \(Int(originalMetrics.fontSize.rounded()))px → \(Int(fs.rounded()))px")
+        }
+        if let fw = fontWeight, fw != originalMetrics.fontWeight {
+            out.append("font-weight: \(originalMetrics.fontWeight) → \(fw)")
+        }
+        if let br = borderRadius, abs(br - originalMetrics.borderRadius) >= 0.5 {
+            out.append("border-radius: \(Int(originalMetrics.borderRadius.rounded()))px → \(Int(br.rounded()))px")
+        }
+        if let op = opacity, abs(op - originalMetrics.opacity) >= 0.02 {
+            out.append("opacity: \(Int((originalMetrics.opacity * 100).rounded()))% → \(Int((op * 100).rounded()))%")
+        }
+        return out
+    }
+
+    public var hasChanges: Bool { !summaryLines.isEmpty }
+
+    public func formattedForTask() -> String {
+        var header = "`\(elementLabel)` (`\(selector)`)"
+        if let f = file {
+            header += line.map { " in `\(f):\($0)`" } ?? " in `\(f)`"
+        }
+        return "\(header): " + summaryLines.joined(separator: "; ")
+    }
+}
+
 /// Content-addressed disk tile cache + framework route discovery + `.youi/requests` persistence.
 public enum YouiCanvasStorage {
 
@@ -543,6 +800,92 @@ public enum YouiCanvasStorage {
             ))
         }
         return pins.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Fast, bounded local repo lookup to pinpoint the likely source file & line number for a selected DOM element
+    /// when React `_debugSource` is stripped in a production/bundled build.
+    public static func findSourceFile(
+        projectRoot: String,
+        testId: String? = nil,
+        textExcerpt: String? = nil,
+        selector: String? = nil
+    ) -> (file: String, line: Int)? {
+        // Build ranked needle candidates (most specific first)
+        var needles: [String] = []
+        if let tid = testId?.trimmingCharacters(in: .whitespacesAndNewlines), tid.count >= 3 {
+            needles.append(tid)
+        }
+        if let txt = textExcerpt?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            let firstLine = txt.split(whereSeparator: \.isNewline).first.map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if firstLine.count >= 4 && firstLine.count <= 60 {
+                needles.append(firstLine)
+            } else if firstLine.count > 60 {
+                needles.append(String(firstLine.prefix(40)))
+            }
+        }
+        if let sel = selector {
+            if let hashRange = sel.range(of: "#") {
+                let idToken = String(sel[hashRange.upperBound...]).split(separator: ".").first.map(String.init) ?? ""
+                if idToken.count >= 3 { needles.append(idToken) }
+            }
+            let classes = sel.split(separator: ".").dropFirst().map(String.init)
+                .filter { $0.count >= 4 && !$0.contains(":") && !$0.hasPrefix("flex") && !$0.hasPrefix("grid") && !$0.hasPrefix("text-") && !$0.hasPrefix("bg-") && !$0.hasPrefix("p-") && !$0.hasPrefix("m-") }
+            if let rareClass = classes.first {
+                needles.append(rareClass)
+            }
+        }
+        guard !needles.isEmpty else { return nil }
+
+        let fm = FileManager.default
+        let canonRepo = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().path
+        let searchRoots = ["src", "app", "components", "web", "ui", "client"].map { "\(canonRepo)/\($0)" }
+            .filter { fm.fileExists(atPath: $0) }
+        let dirs = searchRoots.isEmpty ? [canonRepo] : searchRoots
+        let exts: Set<String> = ["tsx", "ts", "jsx", "js", "svelte", "vue", "astro", "html"]
+
+        // Collect candidate source files (capped so lookup always finishes in < 20ms)
+        var files: [URL] = []
+        for dir in dirs {
+            guard let en = fm.enumerator(
+                at: URL(fileURLWithPath: dir),
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in en {
+                let name = url.lastPathComponent
+                if name == "node_modules" || name == "dist" || name == ".next" || name == "build" || name == ".git" {
+                    en.skipDescendants()
+                    continue
+                }
+                guard exts.contains(url.pathExtension.lowercased()),
+                      !name.contains(".test."), !name.contains(".spec.") else { continue }
+                if let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                   vals.isRegularFile == true,
+                   (vals.fileSize ?? 0) <= 131_072 {
+                    files.append(url)
+                    if files.count >= 350 { break }
+                }
+            }
+            if files.count >= 350 { break }
+        }
+
+        // Prioritize needles in order
+        for needle in needles {
+            for url in files {
+                guard let content = try? String(contentsOf: url, encoding: .utf8),
+                      content.contains(needle) else { continue }
+                let lines = content.components(separatedBy: .newlines)
+                if let idx = lines.firstIndex(where: { $0.contains(needle) }) {
+                    let canonFile = url.resolvingSymlinksInPath().path
+                    let rel = canonFile.hasPrefix(canonRepo + "/")
+                        ? String(canonFile.dropFirst(canonRepo.count + 1))
+                        : url.lastPathComponent
+                    return (rel, idx + 1)
+                }
+            }
+        }
+        return nil
     }
 
     private static func runGit(_ args: [String], in cwd: String) -> String? {
