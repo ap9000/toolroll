@@ -1144,6 +1144,7 @@ struct ScreenFocusLightboxView: View {
                                         .padding(.horizontal, 5)
                                         .padding(.vertical, 2)
                                         .background(isCurrent ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 3))
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .help(isCurrent ? "Current selection" : "Select ancestor \(anc.label)")

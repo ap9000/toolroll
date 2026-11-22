@@ -143,6 +143,7 @@ public struct NewWorkCanvasView: View {
                                         .padding(.vertical, 4)
                                         .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                             }

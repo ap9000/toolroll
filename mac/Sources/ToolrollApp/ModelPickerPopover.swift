@@ -252,6 +252,7 @@ public struct ModelPickerPopover: View {
                 .frame(width: 30, height: 28)
                 .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(label)
