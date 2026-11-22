@@ -18,6 +18,7 @@
  * The queue is the follow-up check ledger (result-follow-ups.ts), with `batch` requests: the same
  * claim, receipts, abandoned-check reading, status projection and Merge gate. The policy is an
  * append-only ledger entry, like the check level. */
+import { keepCheckScreenshots } from "./check-screenshots.js";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
 import type { Runner } from "./backend.js";
 import type { CheckAccess } from "./check-access.js";
@@ -206,6 +207,12 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
       note(set, section(`${label} · full check on ${tested.slice(0, 7)}`, live.command, ran));
       proveSet(set);
+      // Its screenshots, while its checkout is still here (check-screenshots.ts): only for a single result, whose commit is
+      // the one tested; a merge of several results belongs to none of them.
+      if (set.length === 1 && !ran.timedOut && !ran.notFound) {
+        const kept = keepCheckScreenshots(store, root, set[0]!.runId, checkout, tested, (deps.now ?? (() => new Date()))());
+        if (kept.length > 0) note(set, `=== Screenshots ===\n${kept.join("\n")}`);
+      }
       return { conflict: false, tested, setupFailed: false,
         outcome: ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code } };
     } finally {

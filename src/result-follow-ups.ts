@@ -9,6 +9,7 @@
  *
  * Add tests files a small task, unapproved like any other filing, to write
  * tests for that change. */
+import { keepCheckScreenshots } from "./check-screenshots.js";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
 import type { CheckAccess } from "./check-access.js";
 import { widerThan } from "./check-access.js";
@@ -287,6 +288,11 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           const ran = await runWithIsolatedDatabase(launched(checkoutRunner(store, target.repo, checkout, guardedRunner, [runId], level => ranAt.push(level))), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
           proveLaunch();
+          // Its screenshots, while its checkout is still here: reviewer evidence of exactly this commit (check-screenshots.ts).
+          if (!ran.timedOut && !ran.notFound) {
+            const kept = keepCheckScreenshots(store, root, runId, checkout, target.head, now());
+            if (kept.length > 0) log.push(`=== Screenshots ===\n${kept.join("\n")}`);
+          }
           result = ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code };
         }
       } else result ??= { ran: false, failure: "The project's setup failed, so the check didn't run." };
