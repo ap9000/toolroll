@@ -1395,8 +1395,8 @@ public struct TaskCockpitView: View {
         if let agent = card.agent {
             parts.append(agent.displayLabel)
         }
-        if !card.runs.isEmpty {
-            parts.append("Run #\(card.runs.last ?? 0)")
+        if let latest = card.runs.max() {
+            parts.append("Run #\(latest)")
         }
         if !card.sentence.isEmpty {
             parts.append(card.sentence)
@@ -1411,7 +1411,7 @@ public struct TaskCockpitView: View {
             targetId = "approval-card"
         } else if !card.runs.isEmpty || card.agent != nil {
             selectedAgentStepKey = card.key
-            if let latestRun = card.runs.last {
+            if let latestRun = card.runs.max() {
                 Task { await store.selectLiveRun(latestRun) }
             }
             targetId = "agent-activity"
@@ -1459,7 +1459,7 @@ public struct TaskCockpitView: View {
             if let current = store.selectedLiveRunId, step.runs.contains(current) {
                 return current
             }
-            return step.runs.last
+            return step.runs.max()
         }()
         let hasStreamForSelectedRun = selectedRunId != nil
             && selectedRunId == store.selectedLiveRunId
@@ -1481,7 +1481,7 @@ public struct TaskCockpitView: View {
                             HStack(spacing: 0) {
                                 Button {
                                     selectedAgentStepKey = step.key
-                                    if let runId = step.runs.last {
+                                    if let runId = step.runs.max() {
                                         Task { await store.selectLiveRun(runId) }
                                     }
                                 } label: {
@@ -1507,7 +1507,7 @@ public struct TaskCockpitView: View {
                                                 .lineLimit(1)
                                         }
 
-                                        if step.runs.count == 1, let onlyRun = step.runs.first {
+                                        if step.runs.count == 1, let onlyRun = step.runs.max() {
                                             Text("#\(onlyRun)")
                                                 .font(.system(size: 9.5, design: .monospaced))
                                                 .foregroundStyle(ToolrollPalette.muted)
@@ -1521,15 +1521,17 @@ public struct TaskCockpitView: View {
                                 .help(stepTooltip(for: step))
 
                                 if step.runs.count > 1 {
-                                    let activeForStep = (isSelected ? selectedRunId : nil) ?? step.runs.last ?? 0
+                                    let sortedRuns = step.runs.sorted(by: >)
+                                    let latestRun = sortedRuns.first ?? 0
+                                    let activeForStep = (isSelected ? selectedRunId : nil) ?? latestRun
                                     Menu {
-                                        ForEach(step.runs.reversed(), id: \.self) { runId in
+                                        ForEach(sortedRuns, id: \.self) { runId in
                                             Button {
                                                 selectedAgentStepKey = step.key
                                                 Task { await store.selectLiveRun(runId) }
                                             } label: {
                                                 HStack {
-                                                    Text("Attempt #\(runId)\(runId == step.runs.last ? " (latest)" : "")")
+                                                    Text("Attempt #\(runId)\(runId == latestRun ? " (latest)" : "")")
                                                     if store.selectedLiveRunId == runId {
                                                         Image(systemName: "checkmark")
                                                     }
@@ -1585,10 +1587,73 @@ public struct TaskCockpitView: View {
                     step: selectedStep,
                     runId: selectedRunId
                 )
+                if showsOfflineDependencyHint(records: store.liveRunRecords) {
+                    offlineDependencyFixCallout(row: row)
+                }
             } else {
                 emptyStepAgentCard(row: row, step: selectedStep, runId: selectedRunId)
             }
         }
+    }
+
+    private func showsOfflineDependencyHint(records: [LiveAgentRecord]) -> Bool {
+        let joined = (records.flatMap(\.textLines) + (store.stepCards?.failure.map { [$0.line, $0.suggestion ?? ""] } ?? []))
+            .joined(separator: " ")
+            .lowercased()
+        return joined.contains("enotfound")
+            || joined.contains("registry.npmjs.org")
+            || joined.contains("eai_again")
+            || (joined.contains("tsr") && joined.contains("unavailable"))
+            || (joined.contains("vite") && joined.contains("unavailable"))
+    }
+
+    private func offlineDependencyFixCallout(row: WorkRow) -> some View {
+        let repoPath = row.project.flatMap { store.localFolderPath(for: $0) } ?? "<repo-path>"
+        let cliCmd = "toolroll setup set --db ~/.config/nightorders/orders.db --repo \"\(repoPath)\" --command \"pnpm install --frozen-lockfile\" --yes"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("Fresh worktrees need dependencies pre-installed")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+            }
+            Text("Codex runs shell commands offline, so `pnpm install` fails with ENOTFOUND inside a fresh worktree. Configure a Worktree Setup command (e.g. `pnpm install --frozen-lockfile`) so Toolroll installs dependencies before the agent starts, or switch Builder to Claude.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button {
+                    store.openProjectLiveViewSettings()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Open Project Setup")
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+
+                Button("Copy Setup CLI") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(cliCmd, forType: .string)
+                    store.notice = WorkbenchNotice(kind: .info, message: "Copied worktree setup command to clipboard.")
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                Button("Switch Builder Model") {
+                    modelPickerInitialRole = "build"
+                    isModelPickerOpen = true
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
     }
 
     private func resolveSelectedAgentStep(in steps: [StepCard]) -> StepCard? {
