@@ -456,6 +456,79 @@ public actor ToolrollClient {
         )
     }
 
+    /// Official 2-step worktree setup approval (`POST /control/setup-preview` -> `POST /control/setup-approve`)
+    /// so users can approve a per-repo setup command (e.g. `pnpm install --frozen-lockfile`) directly inside Toolroll.app.
+    public func approveProjectWorktreeSetup(
+        repo: String,
+        provider: String,
+        model: String,
+        command: String,
+        timeoutSeconds: Int = 300,
+        password: String
+    ) async throws -> String {
+        guard case .localSession(let creds) = transport else {
+            throw ToolrollClientError.refused("Project worktree setup requires a local Toolroll session.")
+        }
+        let previewFields: [(String, String)] = [
+            ("csrf", creds.csrf),
+            ("repo", repo),
+            ("provider", provider),
+            ("model", model),
+            ("command", command),
+            ("seconds", String(timeoutSeconds)),
+        ]
+        var comps = URLComponents()
+        comps.queryItems = previewFields.map { URLQueryItem(name: $0.0, value: $0.1) }
+        let formBody = comps.percentEncodedQuery ?? ""
+        let previewReq = try makeRequest(
+            path: "/control/setup-preview",
+            method: "POST",
+            body: Data(formBody.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "text/html",
+            includeMutationKey: true
+        )
+        let (previewData, previewResp) = try await session.data(for: previewReq)
+        let previewHTML = String(data: previewData, encoding: .utf8) ?? ""
+        let status = (previewResp as? HTTPURLResponse)?.statusCode ?? 0
+        guard status >= 200 && status < 300 else {
+            throw ToolrollClientError.refused("Could not preview worktree setup (HTTP \(status)).")
+        }
+
+        func extractHidden(_ name: String) -> String? {
+            let pattern1 = #"name=""# + name + #""[^>]*value="([^"]+)""#
+            let pattern2 = #"value="([^"]+)"[^>]*name=""# + name + #"""#
+            for pat in [pattern1, pattern2] {
+                if let re = try? NSRegularExpression(pattern: pat),
+                   let m = re.firstMatch(in: previewHTML, range: NSRange(previewHTML.startIndex..., in: previewHTML)),
+                   m.numberOfRanges > 1,
+                   let r = Range(m.range(at: 1), in: previewHTML) {
+                    return String(previewHTML[r])
+                }
+            }
+            return nil
+        }
+
+        guard let nonce = extractHidden("nonce"), let fingerprint = extractHidden("fingerprint") else {
+            throw ToolrollClientError.refused("Setup preview did not return an approval nonce — check your model selection and try again.")
+        }
+
+        return try await sendFormAct(
+            path: "/control/setup-approve",
+            fields: [
+                ("repo", repo),
+                ("nonce", nonce),
+                ("fingerprint", fingerprint),
+                ("provider", provider),
+                ("model", model),
+                ("command", command),
+                ("seconds", String(timeoutSeconds)),
+                ("token", password),
+            ],
+            defaultDone: "Approved worktree setup (`\(command)`) for \((repo as NSString).lastPathComponent)."
+        )
+    }
+
     public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
         if case .localSession(let s) = transport {
             var fields = [

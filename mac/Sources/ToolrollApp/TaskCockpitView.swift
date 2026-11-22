@@ -24,6 +24,9 @@ public struct TaskCockpitView: View {
     @State private var expandedCheckIds: Set<String> = []
     @State private var highlightedSection: String? = nil
     @State private var selectedAgentStepKey: String? = nil
+    @State private var setupCommandDraft: String = ""
+    @State private var setupPasswordDraft: String = ""
+    @State private var showInlineSetupForm: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -1608,8 +1611,10 @@ public struct TaskCockpitView: View {
     }
 
     private func offlineDependencyFixCallout(row: WorkRow) -> some View {
-        let repoPath = row.project.flatMap { store.localFolderPath(for: $0) } ?? "<repo-path>"
-        let cliCmd = "toolroll setup set --db ~/.config/nightorders/orders.db --repo \"\(repoPath)\" --command \"pnpm install --frozen-lockfile\" --yes"
+        let repoPath = row.project.flatMap { store.localFolderPath(for: $0) }
+        let suggested = repoPath.flatMap { LocalWorkspaceDiscovery.suggestSetupCommand(forRepoPath: $0) } ?? "pnpm install --frozen-lockfile"
+        let effectiveCmd = setupCommandDraft.isEmpty ? suggested : setupCommandDraft
+
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "wrench.and.screwdriver")
@@ -1619,36 +1624,90 @@ public struct TaskCockpitView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
             }
-            Text("Codex runs shell commands offline, so `pnpm install` fails with ENOTFOUND inside a fresh worktree. Configure a Worktree Setup command (e.g. `pnpm install --frozen-lockfile`) so Toolroll installs dependencies before the agent starts, or switch Builder to Claude.")
+            Text("Codex runs shell commands offline, so `pnpm install` fails with ENOTFOUND inside a fresh worktree. Approve a Worktree Setup command once so Toolroll installs dependencies before every future agent run, or switch Builder to Claude.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(ToolrollPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button {
-                    store.openProjectLiveViewSettings()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Open Project Setup")
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9, weight: .semibold))
+
+            if showInlineSetupForm, let repoPath {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Setup command (e.g. pnpm install --frozen-lockfile)", text: Binding(
+                        get: { setupCommandDraft.isEmpty ? suggested : setupCommandDraft },
+                        set: { setupCommandDraft = $0 }
+                    ))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+
+                    HStack(spacing: 8) {
+                        SecureField("Toolroll operator password…", text: $setupPasswordDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                            .onSubmit {
+                                let pw = setupPasswordDraft
+                                setupPasswordDraft = ""
+                                Task {
+                                    if await store.approveProjectWorktreeSetup(repoPath: repoPath, command: effectiveCmd, password: pw) {
+                                        showInlineSetupForm = false
+                                    }
+                                }
+                            }
+
+                        Button("Approve Setup") {
+                            let pw = setupPasswordDraft
+                            setupPasswordDraft = ""
+                            Task {
+                                if await store.approveProjectWorktreeSetup(repoPath: repoPath, command: effectiveCmd, password: pw) {
+                                    showInlineSetupForm = false
+                                }
+                            }
+                        }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        .disabled(setupPasswordDraft.isEmpty)
+
+                        Button("Cancel") {
+                            showInlineSetupForm = false
+                            setupPasswordDraft = ""
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
                     }
                 }
-                .buttonStyle(KitButtonStyle(.primary, compact: true))
+            } else {
+                HStack(spacing: 8) {
+                    if repoPath != nil {
+                        Button("Approve `\(suggested)` In-App") {
+                            setupCommandDraft = suggested
+                            showInlineSetupForm = true
+                        }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    }
 
-                Button("Copy Setup CLI") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(cliCmd, forType: .string)
-                    store.notice = WorkbenchNotice(kind: .info, message: "Copied worktree setup command to clipboard.")
+                    Button("Switch Builder Model") {
+                        modelPickerInitialRole = "build"
+                        isModelPickerOpen = true
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                    Button {
+                        store.openProjectLiveViewSettings()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Project Settings")
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                    Spacer()
                 }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
-                Button("Switch Builder Model") {
-                    modelPickerInitialRole = "build"
-                    isModelPickerOpen = true
-                }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
-                Spacer()
             }
         }
         .padding(12)

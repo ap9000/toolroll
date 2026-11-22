@@ -94,6 +94,13 @@ public final class WorkbenchStore {
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
     public var settledDisplayLimit: Int = 10
+    public var isCliThreadsExpanded: Bool = true
+    public var cliThreadsDisplayLimit: Int = 10
+    public private(set) var discoveredGitRepos: [DiscoveredGitRepo] = []
+    public private(set) var localCliThreads: [LocalCliThread] = []
+    public var selectedCliThreadId: String? = nil
+    public private(set) var selectedCliThreadMessages: [LocalCliMessage] = []
+    public var pendingComposerDraft: String? = nil
     private var preZenSidebar: Bool = true
     private var preZenInspector: Bool = false
 
@@ -771,12 +778,112 @@ public final class WorkbenchStore {
         filteredRows.filter { $0.status == .finished || $0.status == .failed || $0.status == .unknown }
     }
 
+    public var selectedCliThread: LocalCliThread? {
+        guard let id = selectedCliThreadId else { return nil }
+        return localCliThreads.first(where: { $0.id == id })
+    }
+
+    public var filteredCliThreads: [LocalCliThread] {
+        localCliThreads.filter { thread in
+            if let proj = selectedProject, !proj.isEmpty {
+                let matchName = thread.projectName.caseInsensitiveCompare(proj) == .orderedSame
+                let matchPath = thread.projectPath?.localizedCaseInsensitiveContains(proj) == true
+                if !matchName && !matchPath { return false }
+            }
+            let q = sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !q.isEmpty {
+                let hay = "\(thread.title) \(thread.projectName) \(thread.provider.displayName) \(thread.branch ?? "")"
+                if !hay.localizedCaseInsensitiveContains(q) { return false }
+            }
+            return true
+        }
+    }
+
+    public var unconnectedGitRepos: [DiscoveredGitRepo] {
+        let connected = Set(allProjects.map { $0.lowercased() })
+        return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
+    }
+
     public func openNewWorkCanvas() {
         if !isComposingNewWork, let current = selectedTaskId {
             backStack.append(current)
             forwardStack.removeAll()
         }
+        selectedCliThreadId = nil
         isComposingNewWork = true
+    }
+
+    public func refreshLocalDiscovery() {
+        Task.detached(priority: .utility) {
+            let repos = LocalWorkspaceDiscovery.scanGitRepositories(limit: 40)
+            let threads = LocalWorkspaceDiscovery.scanCliThreads(limit: 36)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.discoveredGitRepos = repos
+                self.localCliThreads = threads
+            }
+        }
+    }
+
+    public func selectCliThread(_ thread: LocalCliThread) {
+        isComposingNewWork = false
+        workspaceMode = .workbench
+        selectedCliThreadId = thread.id
+        selectedCliThreadMessages = []
+        Task.detached(priority: .userInitiated) {
+            let msgs = LocalWorkspaceDiscovery.loadCliThreadMessages(thread: thread, limit: 80)
+            await MainActor.run { [weak self] in
+                guard let self, self.selectedCliThreadId == thread.id else { return }
+                self.selectedCliThreadMessages = msgs
+            }
+        }
+    }
+
+    public func continueCliThreadAsTask(_ thread: LocalCliThread) async {
+        if let path = thread.projectPath,
+           !allProjects.contains(where: { $0.caseInsensitiveCompare(thread.projectName) == .orderedSame }) {
+            await addLocalProject(path: path)
+        } else {
+            activeProject = thread.projectName
+        }
+        pendingComposerDraft = "Continue \(thread.provider.displayName) thread (\(thread.sessionId.prefix(8))): \(thread.title)"
+        selectedCliThreadId = nil
+        isComposingNewWork = true
+        workspaceMode = .workbench
+    }
+
+    public func approveProjectWorktreeSetup(repoPath: String, command: String, password: String) async -> Bool {
+        let cleanCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanCmd.isEmpty else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Enter a worktree setup command first.")
+            return false
+        }
+        guard let client, !activeProfile.isDemo else {
+            notice = WorkbenchNotice(kind: .info, message: "Saved worktree setup (demo).")
+            return true
+        }
+        // Resolve current builder provider & model so setup-preview validates cleanly
+        let buildCurrent = modelsRead.roles.first(where: { $0.key == "build" })?.current ?? ""
+        let parts = buildCurrent.split(separator: "|", maxSplits: 1).map(String.init)
+        let provider = parts.count == 2 ? parts[0] : "claude"
+        let model = parts.count == 2 ? parts[1] : "claude-opus-5-5"
+
+        busyLabel = "Approving setup…"
+        defer { busyLabel = nil }
+        do {
+            let reply = try await client.approveProjectWorktreeSetup(
+                repo: repoPath,
+                provider: provider,
+                model: model,
+                command: cleanCmd,
+                password: password
+            )
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            return true
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            return false
+        }
     }
 
     public func toggleInspector(tab: InspectorTab) {
@@ -1014,7 +1121,10 @@ public final class WorkbenchStore {
     }
 
     public func localFolderPath(for projectName: String) -> String? {
-        resolveLocalProjectRoot(for: projectName)
+        if let direct = resolveLocalProjectRoot(for: projectName) {
+            return direct
+        }
+        return discoveredGitRepos.first(where: { $0.name.caseInsensitiveCompare(projectName) == .orderedSame })?.path
     }
 
     public func addLocalProject(path folderPath: String) async {
@@ -1283,6 +1393,7 @@ public final class WorkbenchStore {
     public func refreshAll() async {
         isLoading = true
         defer { isLoading = false }
+        refreshLocalDiscovery()
 
         if activeProfile.isDemo {
             let base = DemoFixtures.workRows
@@ -1341,6 +1452,7 @@ public final class WorkbenchStore {
             forwardStack.removeAll()
         }
         isComposingNewWork = false
+        selectedCliThreadId = nil
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
         // Return to Activity on task switch so selecting another task immediately shows its agent runs & plan instead of an unrelated worktree shell.

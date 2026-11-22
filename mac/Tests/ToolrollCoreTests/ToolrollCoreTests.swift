@@ -740,4 +740,67 @@ struct ToolrollCoreTests {
         #expect(imageOnly.title.contains("Homepage mock"))
         #expect(imageOnly.combinedMessage.contains(savedImg.path))
     }
+
+    @Test("LocalWorkspaceDiscovery detects Git repos, setup commands, and Claude/Codex/Gemini CLI threads")
+    func testLocalWorkspaceDiscovery() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-discovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Fake Git repo with pnpm-lock.yaml
+        let repo = root.appendingPathComponent("sample-web", isDirectory: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git", isDirectory: true), withIntermediateDirectories: true)
+        try "ref: refs/heads/feat/hero\n".write(to: repo.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
+        try "lockfileVersion: 9.0\n".write(to: repo.appendingPathComponent("pnpm-lock.yaml"), atomically: true, encoding: .utf8)
+
+        let repos = LocalWorkspaceDiscovery.scanGitRepositories(roots: [root], maxDepth: 2, limit: 10)
+        #expect(repos.count == 1)
+        #expect(repos[0].name == "sample-web")
+        #expect(repos[0].branch == "feat/hero")
+        #expect(repos[0].suggestedSetupCommand == "pnpm install --frozen-lockfile")
+
+        // Fake Claude, Codex, and Gemini sessions in temp home
+        let claudeDir = root.appendingPathComponent(".claude/projects/-tmp-sample-web", isDirectory: true)
+        try FileManager.default.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+        let claudeSession = """
+        {"type":"user","sessionId":"cl-123","cwd":"\(repo.path)","gitBranch":"feat/hero","message":{"role":"user","content":"Polish the homepage spacing and typography"}}
+        {"type":"assistant","sessionId":"cl-123","message":{"role":"assistant","content":[{"type":"text","text":"Updated the hero grid and type scale."}]}}
+        """
+        try claudeSession.write(to: claudeDir.appendingPathComponent("cl-123.jsonl"), atomically: true, encoding: .utf8)
+
+        let codexDir = root.appendingPathComponent(".codex/sessions/2026/11/21", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        let codexSession = """
+        {"type":"session_meta","payload":{"id":"cx-456","cwd":"\(repo.path)","git":{"branch":"feat/hero"}}}
+        {"type":"event_msg","payload":{"type":"user_message","message":"Add dark mode contrast checks"}}
+        {"type":"event_msg","payload":{"type":"agent_message","message":"Added contrast assertions."}}
+        """
+        try codexSession.write(to: codexDir.appendingPathComponent("rollout-cx-456.jsonl"), atomically: true, encoding: .utf8)
+
+        let geminiDir = root.appendingPathComponent(".gemini/tmp/sample-web/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: geminiDir, withIntermediateDirectories: true)
+        try repo.path.write(to: root.appendingPathComponent(".gemini/tmp/sample-web/.project_root"), atomically: true, encoding: .utf8)
+        let geminiSession = """
+        {"sessionId":"gm-789","startTime":"2026-11-21T20:00:00Z"}
+        {"type":"user","content":[{"text":"<session_context>ignore me</session_context>"}]}
+        {"type":"user","content":[{"text":"Plan the release update flow"}]}
+        {"type":"gemini","content":[{"text":"Here is a 3-step plan."}]}
+        """
+        try geminiSession.write(to: geminiDir.appendingPathComponent("session-gm-789.jsonl"), atomically: true, encoding: .utf8)
+
+        let threads = LocalWorkspaceDiscovery.scanCliThreads(home: root, limit: 10)
+        #expect(threads.count == 3)
+        let providers = Set(threads.map(\.provider))
+        #expect(providers == [.claude, .codex, .gemini])
+
+        let geminiThread = try #require(threads.first(where: { $0.provider == .gemini }))
+        #expect(geminiThread.title == "Plan the release update flow")
+        #expect(geminiThread.resumeCommand == "gemini --resume gm-789")
+
+        let geminiMsgs = LocalWorkspaceDiscovery.loadCliThreadMessages(thread: geminiThread)
+        #expect(geminiMsgs.count == 2)
+        #expect(geminiMsgs[0].role == "user")
+        #expect(geminiMsgs[1].role == "assistant")
+    }
 }

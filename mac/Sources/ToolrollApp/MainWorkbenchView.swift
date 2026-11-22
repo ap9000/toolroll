@@ -39,6 +39,8 @@ public struct MainWorkbenchView: View {
                         Group {
                             if store.workspaceMode == .canvas {
                                 CanvasWorkspaceView(store: store)
+                            } else if let cliThread = store.selectedCliThread {
+                                LocalCliThreadView(store: store, thread: cliThread)
                             } else if store.isComposingNewWork || store.selectedRow == nil {
                                 NewWorkCanvasView(store: store)
                             } else {
@@ -110,6 +112,9 @@ public struct MainWorkbenchView: View {
     }
 
     private var breadcrumbProject: String {
+        if let cliThread = store.selectedCliThread {
+            return "\(cliThread.provider.displayName) · \(cliThread.projectName)"
+        }
         if store.isComposingNewWork {
             return store.activeProject ?? store.selectedProject ?? store.allProjects.first ?? store.activeProfile.displayTitle
         }
@@ -117,6 +122,9 @@ public struct MainWorkbenchView: View {
     }
 
     private var breadcrumbTitle: String {
+        if let cliThread = store.selectedCliThread {
+            return cliThread.title
+        }
         if store.isComposingNewWork || store.selectedRow == nil {
             return "New task"
         }

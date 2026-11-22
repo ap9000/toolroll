@@ -78,6 +78,16 @@ public struct InboxSidebarView: View {
                                 }
                             }
                         }
+                        if !store.unconnectedGitRepos.isEmpty {
+                            Divider()
+                            Menu("Connect Git Repo (\(store.unconnectedGitRepos.count))") {
+                                ForEach(store.unconnectedGitRepos.prefix(15)) { repo in
+                                    Button(repo.branch.map { "\(repo.name) (\($0))" } ?? repo.name) {
+                                        Task { await store.addLocalProject(path: repo.path) }
+                                    }
+                                }
+                            }
+                        }
                         Divider()
                         Button("Add Local Project…") {
                             store.isAddProjectSheetOpen = true
@@ -240,6 +250,58 @@ public struct InboxSidebarView: View {
                                             Image(systemName: "chevron.down")
                                                 .font(.system(size: 9))
                                             Text("Show \(store.settledRows.count - store.settledDisplayLimit) more")
+                                                .font(.system(size: 11))
+                                        }
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
+
+                    // Existing local Claude Code, Codex & Gemini CLI threads
+                    if !store.filteredCliThreads.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Button {
+                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                    store.isCliThreadsExpanded.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: store.isCliThreadsExpanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                    Text("CLI Threads")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .textCase(.uppercase)
+                                        .tracking(0.6)
+                                    Spacer()
+                                    Text("\(store.filteredCliThreads.count)")
+                                        .font(.system(size: 10, design: .monospaced))
+                                }
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            if store.isCliThreadsExpanded {
+                                let visibleThreads = Array(store.filteredCliThreads.prefix(store.cliThreadsDisplayLimit))
+                                ForEach(visibleThreads) { thread in
+                                    cliThreadRow(thread)
+                                }
+                                if store.filteredCliThreads.count > store.cliThreadsDisplayLimit {
+                                    Button {
+                                        store.cliThreadsDisplayLimit += 12
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 9))
+                                            Text("Show \(store.filteredCliThreads.count - store.cliThreadsDisplayLimit) more")
                                                 .font(.system(size: 11))
                                         }
                                         .foregroundStyle(ToolrollPalette.muted)
@@ -460,6 +522,51 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+    }
+
+    private func cliThreadRow(_ thread: LocalCliThread) -> some View {
+        let isSelected = store.selectedCliThreadId == thread.id
+        return Button {
+            store.selectCliThread(thread)
+        } label: {
+            HStack(spacing: 8) {
+                Text(thread.provider.shortBadge)
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    .frame(width: 20, height: 18)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(thread.title)
+                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(thread.projectName)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                Text(thread.relativeAge)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 4 : 5)
+            .background(
+                isSelected ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 7, isSelected: false)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .help("\(thread.provider.displayName) · \(thread.projectName)\n\(thread.title)")
     }
 
     @ViewBuilder

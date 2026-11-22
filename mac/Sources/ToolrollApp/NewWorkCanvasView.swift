@@ -281,7 +281,18 @@ public struct NewWorkCanvasView: View {
             if store.activeProject == nil {
                 store.activeProject = store.selectedProject ?? store.allProjects.first
             }
+            if let draft = store.pendingComposerDraft, !draft.isEmpty {
+                promptText = draft
+                store.pendingComposerDraft = nil
+            }
             promptFocused = true
+        }
+        .onChange(of: store.pendingComposerDraft) { _, draft in
+            if let draft, !draft.isEmpty {
+                promptText = draft
+                store.pendingComposerDraft = nil
+                promptFocused = true
+            }
         }
     }
 
@@ -417,6 +428,19 @@ public struct NewWorkCanvasView: View {
                         Text("Workspace-wide")
                         if isWorkspaceWide {
                             Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+
+            if !store.unconnectedGitRepos.isEmpty {
+                Section("Discovered Git Repos") {
+                    ForEach(store.unconnectedGitRepos.prefix(12)) { repo in
+                        Button {
+                            isWorkspaceWide = false
+                            Task { await store.addLocalProject(path: repo.path) }
+                        } label: {
+                            Text(repo.branch.map { "\(repo.name) (\($0))" } ?? repo.name)
                         }
                     }
                 }

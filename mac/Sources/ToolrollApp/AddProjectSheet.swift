@@ -85,6 +85,73 @@ public struct AddProjectSheet: View {
                     ) {
                         step = .cloneUrl
                     }
+
+                    if !store.unconnectedGitRepos.isEmpty {
+                        HairlineDivider()
+                            .padding(.vertical, 6)
+
+                        HStack {
+                            Text("Detected Git Repos on this Mac (\(store.unconnectedGitRepos.count))")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .textCase(.uppercase)
+                                .tracking(0.5)
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 2)
+
+                        ScrollView {
+                            VStack(spacing: 3) {
+                                ForEach(store.unconnectedGitRepos.prefix(16)) { repo in
+                                    Button {
+                                        store.isAddProjectSheetOpen = false
+                                        dismiss()
+                                        Task { await store.addLocalProject(path: repo.path) }
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "folder.fill")
+                                                .font(.system(size: 11.5))
+                                                .foregroundStyle(ToolrollPalette.muted)
+                                                .frame(width: 18)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                HStack(spacing: 6) {
+                                                    Text(repo.name)
+                                                        .font(.system(size: 12.5, weight: .medium))
+                                                        .foregroundStyle(ToolrollPalette.ink)
+                                                        .lineLimit(1)
+                                                    if let branch = repo.branch {
+                                                        Text(branch)
+                                                            .font(.system(size: 10, design: .monospaced))
+                                                            .foregroundStyle(ToolrollPalette.muted)
+                                                            .lineLimit(1)
+                                                    }
+                                                }
+                                                Text(ComposerAttachmentStore.abbreviateHomePath(repo.path))
+                                                    .font(.system(size: 10.5, design: .monospaced))
+                                                    .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            }
+                                            Spacer()
+                                            Text("Add")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 3)
+                                                .background(ToolrollPalette.raised, in: Capsule())
+                                                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .toolrollHoverSurface(cornerRadius: 6)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 200)
+                    }
                 }
 
             case .newRepo:
