@@ -803,4 +803,28 @@ struct ToolrollCoreTests {
         #expect(geminiMsgs[0].role == "user")
         #expect(geminiMsgs[1].role == "assistant")
     }
+
+    @Test("ToolrollClient.parseProjectSettingsHTML extracts live-view nonce, network switches, and concurrency")
+    func testParseProjectSettingsHTML() {
+        let html = """
+        <span data-live-view-setting="base"> · Commands hidden</span>
+        <form id="live-view-form" action="/settings/project/live-view" method="post">
+          <input type="hidden" name="repo" value="/tmp/site">
+          <input type="hidden" name="act" value="on">
+          <input type="hidden" name="nonce" value="nonce-abc-999">
+        </form>
+        <input id="network-local" name="local" type="checkbox" value="any" checked>
+        <input id="network-open" name="mode" type="checkbox" value="open">
+        <textarea id="network-hosts" name="hosts">api.stripe.com\n*.github.com</textarea>
+        <input id="builds-at-once-n" name="concurrency" type="number" value="3">
+        """
+        let snap = ToolrollClient.parseProjectSettingsHTML(html, repo: "/tmp/site")
+        #expect(snap.projectName == "site")
+        #expect(snap.liveCommandsShown == false)
+        #expect(snap.liveViewNonce == "nonce-abc-999")
+        #expect(snap.networkLocalAny == true)
+        #expect(snap.networkOpen == false)
+        #expect(snap.networkHosts == "api.stripe.com\n*.github.com")
+        #expect(snap.concurrency == 3)
+    }
 }

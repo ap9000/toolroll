@@ -105,6 +105,9 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isAppearanceSheetOpen) {
             AppearanceSheet(store: store)
         }
+        .sheet(isPresented: $store.isProjectSettingsOpen) {
+            ProjectSettingsSheet(store: store)
+        }
         .preferredColorScheme(WorkspaceThemeEngine.shared.preferredColorScheme)
         .task {
             await store.start()

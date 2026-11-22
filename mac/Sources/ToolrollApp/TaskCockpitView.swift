@@ -1695,14 +1695,8 @@ public struct TaskCockpitView: View {
                     }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))
 
-                    Button {
-                        store.openProjectLiveViewSettings()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Project Settings")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
+                    Button("Project Settings…") {
+                        store.openProjectSettings(projectName: row.project)
                     }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))
 
@@ -2051,18 +2045,18 @@ public struct TaskCockpitView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(ToolrollPalette.muted.opacity(0.6))
                         Button {
-                            store.openProjectLiveViewSettings()
+                            store.openProjectSettings(projectName: store.selectedRow?.project)
                         } label: {
-                            HStack(spacing: 3) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.system(size: 9.5, weight: .semibold))
                                 Text("Show in Settings")
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 9, weight: .semibold))
                             }
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(ToolrollPalette.ink.opacity(0.78))
+                            .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                         }
                         .buttonStyle(.plain)
-                        .help("Open Settings → Project in Toolroll to turn on 'Show commands in the live view' for future runs")
+                        .help("Open Project Settings in-app to turn on 'Show commands in the live view' for future runs")
                         Spacer()
                     }
                     .padding(.top, 2)

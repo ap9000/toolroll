@@ -326,6 +326,9 @@ public struct InboxSidebarView: View {
                         Text(String(format: "Today's spend: $%.2f", spend.todayUsd))
                         Divider()
                     }
+                    Button("Project Settings…") {
+                        store.openProjectSettings()
+                    }
                     Button("Setup & Agents…") {
                         store.isSetupOpen = true
                     }

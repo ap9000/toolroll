@@ -88,6 +88,9 @@ public final class WorkbenchStore {
     public var isForkSheetOpen: Bool = false
     public var isPhonePairSheetOpen: Bool = false
     public var isAppearanceSheetOpen: Bool = false
+    public var isProjectSettingsOpen: Bool = false
+    public var projectSettingsTargetName: String? = nil
+    public private(set) var projectSettingsSnapshot: ToolrollClient.ProjectSettingsSnapshot? = nil
     public var taskViewMode: TaskViewMode = .activity
     private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
     public var isComposingNewWork: Bool = false
@@ -2190,14 +2193,92 @@ public final class WorkbenchStore {
         }
     }
 
+    public func openProjectSettings(projectName: String? = nil) {
+        projectSettingsTargetName = projectName ?? selectedRow?.project ?? activeProject ?? selectedProject ?? allProjects.first
+        isProjectSettingsOpen = true
+    }
+
     public func openProjectLiveViewSettings() {
+        openProjectSettings()
+    }
+
+    public func loadProjectSettings(repoPath: String) async -> ToolrollClient.ProjectSettingsSnapshot? {
         if activeProfile.isDemo {
-            notice = WorkbenchNotice(kind: .info, message: "Demo mode — connect a workspace to open project settings.")
-            return
+            let demo = ToolrollClient.ProjectSettingsSnapshot(
+                repoPath: repoPath,
+                projectName: (repoPath as NSString).lastPathComponent,
+                liveCommandsShown: false,
+                liveViewNonce: "demo",
+                networkOpen: false,
+                networkLocalAny: false,
+                networkHosts: "",
+                concurrency: 1,
+                suggestedSetupCommand: "pnpm install --frozen-lockfile"
+            )
+            projectSettingsSnapshot = demo
+            return demo
         }
-        let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if let url = URL(string: "\(base)/settings/project") {
-            NSWorkspace.shared.open(url)
+        guard let client else { return nil }
+        do {
+            let snap = try await client.fetchProjectSettings(repo: repoPath)
+            projectSettingsSnapshot = snap
+            return snap
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            return nil
+        }
+    }
+
+    public func updateProjectLiveCommands(
+        repoPath: String,
+        show: Bool,
+        nonce: String?,
+        password: String
+    ) async -> (ok: Bool, message: String) {
+        if activeProfile.isDemo {
+            return (true, show ? "Commands shown (demo)." : "Commands hidden (demo).")
+        }
+        guard let client else { return (false, "Not connected.") }
+        do {
+            let reply = try await client.setProjectLiveCommands(repo: repoPath, show: show, nonce: nonce, password: password)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            return (true, reply)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    public func updateProjectNetwork(
+        repoPath: String,
+        open: Bool,
+        localAny: Bool,
+        hosts: String,
+        password: String
+    ) async -> (ok: Bool, message: String) {
+        if activeProfile.isDemo {
+            return (true, "Saved network settings (demo).")
+        }
+        guard let client else { return (false, "Not connected.") }
+        do {
+            let reply = try await client.setProjectNetwork(repo: repoPath, open: open, localAny: localAny, hosts: hosts, password: password)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            return (true, reply)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    public func updateProjectConcurrency(repoPath: String, concurrency: Int) async -> (ok: Bool, message: String) {
+        if activeProfile.isDemo {
+            return (true, "Saved. Up to \(concurrency) at once (demo).")
+        }
+        guard let client else { return (false, "Not connected.") }
+        do {
+            let reply = try await client.setProjectConcurrency(repo: repoPath, concurrency: concurrency)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+            return (true, reply)
+        } catch {
+            return (false, error.localizedDescription)
         }
     }
 

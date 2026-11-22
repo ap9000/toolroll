@@ -529,6 +529,179 @@ public actor ToolrollClient {
         )
     }
 
+    // MARK: - Native In-App Project Settings (Live View, Network, Concurrency)
+
+    public struct ProjectSettingsSnapshot: Sendable, Equatable {
+        public let repoPath: String
+        public let projectName: String
+        public let liveCommandsShown: Bool
+        public let liveViewNonce: String?
+        public let networkOpen: Bool
+        public let networkLocalAny: Bool
+        public let networkHosts: String
+        public let concurrency: Int
+        public let suggestedSetupCommand: String
+
+        public init(
+            repoPath: String,
+            projectName: String,
+            liveCommandsShown: Bool,
+            liveViewNonce: String?,
+            networkOpen: Bool,
+            networkLocalAny: Bool,
+            networkHosts: String,
+            concurrency: Int,
+            suggestedSetupCommand: String
+        ) {
+            self.repoPath = repoPath
+            self.projectName = projectName
+            self.liveCommandsShown = liveCommandsShown
+            self.liveViewNonce = liveViewNonce
+            self.networkOpen = networkOpen
+            self.networkLocalAny = networkLocalAny
+            self.networkHosts = networkHosts
+            self.concurrency = concurrency
+            self.suggestedSetupCommand = suggestedSetupCommand
+        }
+    }
+
+    public func fetchProjectSettings(repo: String) async throws -> ProjectSettingsSnapshot {
+        let encoded = repo.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? repo
+        let req = try makeRequest(path: "/settings/project?repo=\(encoded)", method: "GET", accept: "text/html")
+        let (data, resp) = try await session.data(for: req)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard status >= 200 && status < 300 else {
+            throw ToolrollClientError.refused("Could not load project settings (HTTP \(status)).")
+        }
+        let html = String(data: data, encoding: .utf8) ?? ""
+        return Self.parseProjectSettingsHTML(html, repo: repo)
+    }
+
+    public static func parseProjectSettingsHTML(_ html: String, repo: String) -> ProjectSettingsSnapshot {
+        let liveCommandsShown = html.contains(#"data-live-view-setting="commands""#)
+
+        // Extract single-use nonce scoped to the live-view form
+        var liveViewNonce: String? = nil
+        if let formRange = html.range(of: #"id="live-view-form""#) {
+            let tail = String(html[formRange.lowerBound...].prefix(2400))
+            let patterns = [
+                #"name="nonce"[^>]*value="([^"]+)""#,
+                #"value="([^"]+)"[^>]*name="nonce""#,
+            ]
+            for pat in patterns {
+                if let re = try? NSRegularExpression(pattern: pat),
+                   let m = re.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)),
+                   m.numberOfRanges > 1,
+                   let r = Range(m.range(at: 1), in: tail) {
+                    liveViewNonce = String(tail[r])
+                    break
+                }
+            }
+        }
+
+        func inputIsChecked(id: String) -> Bool {
+            let pat = #"<input[^>]*id=""# + id + #""[^>]*>"#
+            guard let re = try? NSRegularExpression(pattern: pat),
+                  let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                  let r = Range(m.range(at: 0), in: html) else {
+                return false
+            }
+            let tag = String(html[r]).lowercased()
+            return tag.contains(" checked") || tag.contains("checked=")
+        }
+
+        let networkLocalAny = inputIsChecked(id: "network-local")
+        let networkOpen = inputIsChecked(id: "network-open")
+
+        var networkHosts = ""
+        if let re = try? NSRegularExpression(pattern: #"<textarea[^>]*id="network-hosts"[^>]*>([\s\S]*?)</textarea>"#),
+           let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           m.numberOfRanges > 1,
+           let r = Range(m.range(at: 1), in: html) {
+            networkHosts = String(html[r])
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var concurrency = 1
+        if let re = try? NSRegularExpression(pattern: #"<input[^>]*id="builds-at-once-n"[^>]*value="(\d+)""#),
+           let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           m.numberOfRanges > 1,
+           let r = Range(m.range(at: 1), in: html),
+           let val = Int(html[r]) {
+            concurrency = val
+        }
+
+        let projName = (repo as NSString).lastPathComponent
+        let suggested = LocalWorkspaceDiscovery.suggestSetupCommand(forRepoPath: repo) ?? "pnpm install --frozen-lockfile"
+        return ProjectSettingsSnapshot(
+            repoPath: repo,
+            projectName: projName,
+            liveCommandsShown: liveCommandsShown,
+            liveViewNonce: liveViewNonce,
+            networkOpen: networkOpen,
+            networkLocalAny: networkLocalAny,
+            networkHosts: networkHosts,
+            concurrency: concurrency,
+            suggestedSetupCommand: suggested
+        )
+    }
+
+    public func setProjectLiveCommands(
+        repo: String,
+        show: Bool,
+        nonce: String?,
+        password: String
+    ) async throws -> String {
+        var fields: [(String, String)] = [
+            ("repo", repo),
+            ("act", show ? "on" : "off"),
+        ]
+        if show {
+            fields.append(("nonce", nonce ?? ""))
+            fields.append(("password", password))
+        }
+        return try await sendFormAct(
+            path: "/settings/project/live-view",
+            fields: fields,
+            defaultDone: show ? "Commands will show in the live view from the next run." : "Commands are now hidden in the live view."
+        )
+    }
+
+    public func setProjectNetwork(
+        repo: String,
+        open: Bool,
+        localAny: Bool,
+        hosts: String,
+        password: String
+    ) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/network",
+            fields: [
+                ("repo", repo),
+                ("mode", open ? "open" : "allowlist"),
+                ("local", localAny ? "any" : "proxy-only"),
+                ("hosts", hosts),
+                ("password", password),
+            ],
+            defaultDone: "Saved project network settings."
+        )
+    }
+
+    public func setProjectConcurrency(repo: String, concurrency: Int) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/concurrency",
+            fields: [
+                ("repo", repo),
+                ("concurrency", String(max(1, min(64, concurrency)))),
+            ],
+            defaultDone: "Saved. Up to \(concurrency) at once."
+        )
+    }
+
     public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
         if case .localSession(let s) = transport {
             var fields = [
