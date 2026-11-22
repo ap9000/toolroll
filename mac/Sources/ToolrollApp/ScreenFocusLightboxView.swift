@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ToolrollCore
+import UniformTypeIdentifiers
 import WebKit
 
 /// Studio Screen Focus Lightbox:
@@ -11,6 +12,7 @@ import WebKit
 struct ScreenFocusLightboxView: View {
     @Bindable var store: WorkbenchStore
     let board: CanvasArtboard
+    var startInCompare: Bool = false
     let onClose: () -> Void
     let onSelectBoard: (String) -> Void
 
@@ -32,6 +34,9 @@ struct ScreenFocusLightboxView: View {
     @State private var viewMode: ViewMode = .cached
     @State private var compareSubMode: CompareSubMode = .wipe
     @State private var liveTweakSnapshot: NSImage? = nil
+    @State private var referenceCompareImage: NSImage? = nil
+    @State private var referenceCompareLabel: String = "REFERENCE"
+    @State private var isCompareGuideOpen: Bool = false
     @State private var visualDiff: VisualDiffResult? = nil
     @State private var detailZoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
@@ -110,13 +115,14 @@ struct ScreenFocusLightboxView: View {
         }
         .onAppear {
             routeDraft = board.path
-            // Q3: Auto-open in Live when preview server is already warm; stay in Preview when asleep.
-            if !store.canvasBaseURL.isEmpty {
+            compareSplit = board.compareSplit
+            if startInCompare {
+                Task { await enterCompareMode() }
+            } else if !store.canvasBaseURL.isEmpty {
                 viewMode = .live
             } else {
                 viewMode = (board.latestImagePath == nil) ? .live : .cached
             }
-            compareSplit = board.compareSplit
         }
         .onChange(of: board.id) { _, _ in
             routeDraft = board.path
@@ -133,6 +139,8 @@ struct ScreenFocusLightboxView: View {
         contextMenuAnchorFrac = nil
         pendingEdits.removeAll()
         liveTweakSnapshot = nil
+        referenceCompareImage = nil
+        referenceCompareLabel = "REFERENCE"
         visualDiff = nil
         detailZoom = 1.0
         baseZoom = 1.0
@@ -219,7 +227,6 @@ struct ScreenFocusLightboxView: View {
                 get: { viewMode },
                 set: { next in
                     if next == .compare {
-                        guard hasBeforeAfter else { return }
                         Task { await enterCompareMode() }
                     } else {
                         viewMode = next
@@ -242,6 +249,7 @@ struct ScreenFocusLightboxView: View {
             .labelsHidden()
             .controlSize(.small)
             .frame(width: 210)
+            .help("Preview: cached screenshot · Live: click elements to edit & pin · Compare: Wipe, Side-by-Side, or Pixel Diff against a Baseline or Reference mockup")
 
             // Zoom controls
             HStack(spacing: 4) {
@@ -347,16 +355,19 @@ struct ScreenFocusLightboxView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
 
                 ZStack(alignment: .topLeading) {
-                    if viewMode == .compare,
-                       let pair = resolveCompareImages() {
-                        focusCompareView(
-                            before: pair.before,
-                            after: pair.after,
-                            beforeLabel: pair.beforeLabel,
-                            afterLabel: pair.afterLabel,
-                            width: renderW,
-                            height: renderH
-                        )
+                    if viewMode == .compare {
+                        if let pair = resolveCompareImages() {
+                            focusCompareView(
+                                before: pair.before,
+                                after: pair.after,
+                                beforeLabel: pair.beforeLabel,
+                                afterLabel: pair.afterLabel,
+                                width: renderW,
+                                height: renderH
+                            )
+                        } else {
+                            compareEmptyGuideView(width: renderW, height: renderH)
+                        }
                     } else if viewMode == .live && !store.canvasBaseURL.isEmpty {
                         let logW = store.canvasViewport.logicalWidth
                         let logH = store.canvasViewport.logicalHeight
@@ -497,8 +508,13 @@ struct ScreenFocusLightboxView: View {
                 }
 
                 // Floating bottom micro-hint bar inside stage
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
+                    if viewMode == .compare,
+                       resolveCompareImages() != nil,
+                       visualDiff?.isIdentical == true {
+                        compareIdenticalHintBanner
+                    }
                     HStack(spacing: 8) {
                         if viewMode == .compare {
                             compareFloatingControlBar
@@ -961,16 +977,26 @@ struct ScreenFocusLightboxView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 3-Mode Compare View (Wipe | Side-by-Side | Pixel Diff) + Original vs Live Tweaks
+    // MARK: - 3-Mode Compare View (Wipe | Side-by-Side | Pixel Diff) + Original vs Live Tweaks + Reference Mockup
 
     private func resolveCompareImages() -> (before: NSImage, after: NSImage, beforeLabel: String, afterLabel: String)? {
-        // Priority 1: Original vs Your Live Preview Tweaks!
+        // Priority 1: Imported / Pasted Reference Mockup vs Current Screen
+        if let refImg = referenceCompareImage {
+            if let tweaked = liveTweakSnapshot {
+                return (refImg, tweaked, referenceCompareLabel, "LIVE TWEAKS")
+            }
+            if let currentPath = board.latestImagePath ?? board.baselineImagePath,
+               let currentImg = CanvasImageCache.shared.image(atPath: currentPath, maxPixelDimension: 2160) {
+                return (refImg, currentImg, referenceCompareLabel, "CURRENT")
+            }
+        }
+        // Priority 2: Original vs Your Live Preview Tweaks!
         if let tweaked = liveTweakSnapshot,
            let basePath = board.latestImagePath ?? board.baselineImagePath,
            let orig = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160) {
             return (orig, tweaked, "ORIGINAL", "LIVE TWEAKS")
         }
-        // Priority 2: Locked Baseline / Main Branch vs Latest Build
+        // Priority 3: Locked Baseline / Main Branch vs Latest Build
         if let basePath = board.baselineImagePath,
            let latestPath = board.latestImagePath,
            let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160),
@@ -978,6 +1004,16 @@ struct ScreenFocusLightboxView: View {
             return (baseImg, latestImg, "BEFORE", "AFTER")
         }
         return nil
+    }
+
+    private func recomputeCompareDiff() {
+        if let pair = resolveCompareImages(),
+           let bCG = pair.before.cgImage(forProposedRect: nil, context: nil, hints: nil),
+           let aCG = pair.after.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            visualDiff = CanvasVisualDiff.compare(before: bCG, after: aCG)
+        } else {
+            visualDiff = nil
+        }
     }
 
     private func enterCompareMode() async {
@@ -992,14 +1028,215 @@ struct ScreenFocusLightboxView: View {
             liveTweakSnapshot = nil
         }
 
-        if let pair = resolveCompareImages(),
-           let bCG = pair.before.cgImage(forProposedRect: nil, context: nil, hints: nil),
-           let aCG = pair.after.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            visualDiff = CanvasVisualDiff.compare(before: bCG, after: aCG)
-        } else {
-            visualDiff = nil
-        }
+        recomputeCompareDiff()
         viewMode = .compare
+    }
+
+    private func pickReferenceCompareImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Reference Image or Mockup"
+        panel.prompt = "Compare"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image, .png, .jpeg, .webP, .tiff]
+        guard panel.runModal() == .OK, let url = panel.url, let img = NSImage(contentsOf: url) else {
+            return
+        }
+        referenceCompareImage = img
+        referenceCompareLabel = "REF · \(url.deletingPathExtension().lastPathComponent.prefix(16).uppercased())"
+        recomputeCompareDiff()
+        viewMode = .compare
+        flashFeedback("Comparing against \(url.lastPathComponent)")
+    }
+
+    private func pasteReferenceCompareImage() {
+        let pasted = ComposerClipboardHelper.extractAttachmentsFromPasteboard(forceImageCheck: true)
+        if let firstImg = pasted.first(where: { $0.kind == .image }),
+           let img = NSImage(contentsOfFile: firstImg.path) {
+            referenceCompareImage = img
+            referenceCompareLabel = "CLIPBOARD REF"
+            recomputeCompareDiff()
+            viewMode = .compare
+            flashFeedback("Comparing against pasted clipboard image")
+        } else {
+            flashFeedback("No image on clipboard — copy a mockup or screenshot first")
+        }
+    }
+
+    private func compareSubModeHelp(_ sub: CompareSubMode) -> String {
+        switch sub {
+        case .wipe:
+            return "Wipe — drag the vertical divider left or right to scrub between Before and After"
+        case .sideBySide:
+            return "Side-by-Side — inspect Before and After right next to each other"
+        case .pixelDiff:
+            return "Pixel Diff — highlight every changed pixel as a heatmap overlay"
+        }
+    }
+
+    private var compareIdenticalHintBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+            Text("Before and After match right now. Tweak elements in Live, run a task, or load a Reference mockup to compare.")
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+                .lineLimit(1)
+            Button("Load Reference…") {
+                pickReferenceCompareImage()
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Pick a Figma export or screenshot to compare against the current screen")
+
+            Button("Live Mode") {
+                viewMode = .live
+                if store.canvasBaseURL.isEmpty {
+                    Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Switch to Live mode to edit spacing, colors, or copy and compare your changes")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(ToolrollPalette.paper.opacity(0.95), in: Capsule())
+        .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private func compareEmptyGuideView(width: CGFloat, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.lefthalf.inset.filled.arrow.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("How Compare Works")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+            }
+
+            Text("Compare lets you scrub a Wipe slider, view Side-by-Side, or inspect a Pixel Diff heatmap between two versions of this screen. Pick a starting point:")
+                .font(.system(size: 12.5))
+                .foregroundStyle(ToolrollPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                compareGuideStepRow(
+                    number: "1",
+                    title: "Compare against a Reference Mockup",
+                    detail: "Load a Figma export or paste a screenshot from your clipboard to overlay directly on your running app."
+                )
+                compareGuideStepRow(
+                    number: "2",
+                    title: "Lock a Before Baseline",
+                    detail: "Snapshot this screen before an agent runs (or before editing), then come back here after changes to see the diff."
+                )
+                compareGuideStepRow(
+                    number: "3",
+                    title: "Preview Live Tweaks",
+                    detail: "Switch to Live mode, tweak styles or copy on any element, then click Compare to inspect Original vs Live Tweaks."
+                )
+            }
+            .padding(12)
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                if board.latestImagePath != nil {
+                    Button("Lock Current as Before") {
+                        if store.setArtboardBaselineCheckpoint(boardId: board.id) {
+                            recomputeCompareDiff()
+                            flashFeedback("Locked current screen as Before baseline")
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .help("Save this screen's current snapshot as its Before checkpoint")
+                } else {
+                    Button("Capture Screen First") {
+                        Task { await store.wakePreviewServerAndHydrate(forceAll: true) }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .help("Wake the preview server and capture a screenshot of this route")
+                }
+
+                Button("Load Reference Image…") {
+                    pickReferenceCompareImage()
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("Pick a PNG/JPG mockup to compare against this screen")
+
+                Button("Paste Screenshot") {
+                    pasteReferenceCompareImage()
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("Compare against an image currently on your clipboard")
+
+                Button("Open Live Mode") {
+                    viewMode = .live
+                    if store.canvasBaseURL.isEmpty {
+                        Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("Switch to Live interactive mode to make element edits")
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: min(560, max(380, width - 32)), alignment: .leading)
+        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        .frame(width: width, height: height)
+        .background(ToolrollPalette.codeBg)
+    }
+
+    private func compareGuideStepRow(number: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text(number)
+                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.ink)
+                .frame(width: 18, height: 18)
+                .background(ToolrollPalette.paper, in: Circle())
+                .overlay(Circle().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text(detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var compareGuidePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("How to Use Compare")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+
+            VStack(alignment: .leading, spacing: 8) {
+                compareGuideStepRow(
+                    number: "1",
+                    title: "Choose your view: Wipe, Side-by-Side, or Pixel Diff",
+                    detail: "In Wipe mode, drag the vertical handle left and right. Pixel Diff highlights changed pixels as a heatmap."
+                )
+                compareGuideStepRow(
+                    number: "2",
+                    title: "Set a Before Baseline before changes",
+                    detail: "Click Set as Baseline to lock the current screenshot. After an agent rebuilds (or you edit in Live), Compare diffs automatically."
+                )
+                compareGuideStepRow(
+                    number: "3",
+                    title: "Or compare against a Reference Mockup",
+                    detail: "Click Reference… to pick a Figma PNG or paste a clipboard screenshot to check visual accuracy right away."
+                )
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
+        .background(ToolrollPalette.paper)
     }
 
     private var compareFloatingControlBar: some View {
@@ -1020,6 +1257,7 @@ struct ScreenFocusLightboxView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help(compareSubModeHelp(sub))
                 }
             }
             .padding(2)
@@ -1038,15 +1276,67 @@ struct ScreenFocusLightboxView: View {
                 .padding(.vertical, 4)
                 .background(ToolrollPalette.raised, in: Capsule())
                 .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .help("Percentage of pixels that differ between the Before/Reference and After/Current images")
             }
+
+            Menu {
+                Button("Choose Reference Image…") {
+                    pickReferenceCompareImage()
+                }
+                Button("Paste Reference from Clipboard") {
+                    pasteReferenceCompareImage()
+                }
+                if referenceCompareImage != nil {
+                    Divider()
+                    Button("Clear Reference Image", role: .destructive) {
+                        referenceCompareImage = nil
+                        referenceCompareLabel = "REFERENCE"
+                        recomputeCompareDiff()
+                        flashFeedback("Returned to Before / After baseline comparison")
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 10))
+                    Text(referenceCompareImage == nil ? "Reference" : "Ref Active")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(referenceCompareImage == nil ? ToolrollPalette.muted : ToolrollPalette.ink)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .help("Compare this screen against a Figma export or pasted clipboard screenshot")
 
             Button("Set as Baseline") {
                 if store.setArtboardBaselineCheckpoint(boardId: board.id) {
+                    referenceCompareImage = nil
+                    recomputeCompareDiff()
                     flashFeedback("Locked current screen as Before baseline")
                 }
             }
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Lock the current snapshot as this screen's Before checkpoint")
+            .help("Lock the current snapshot as this screen's Before checkpoint for future diffs")
+
+            Button {
+                isCompareGuideOpen.toggle()
+            } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("How to use Compare")
+            .popover(isPresented: $isCompareGuideOpen, arrowEdge: .top) {
+                compareGuidePopover
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)

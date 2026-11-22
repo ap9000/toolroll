@@ -25,6 +25,7 @@ public struct CanvasWorkspaceView: View {
     @State private var isAddingRoute: Bool = false
     @State private var newRouteDraft: String = "/"
     @State private var isSubmitBatchOpen: Bool = false
+    @State private var isCompareGuideOpen: Bool = false
     @State private var batchGrouping: PinBatchGrouping = .perScreen
 
     // Pin drafting & inspection
@@ -84,9 +85,12 @@ public struct CanvasWorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                    // Floating Bottom Dock
-                    VStack {
+                    // Floating Bottom Dock + Contextual Compare Guide Bar
+                    VStack(spacing: 8) {
                         Spacer()
+                        if tool == .compare {
+                            compareCanvasGuideBar
+                        }
                         floatingDock()
                             .padding(.bottom, 18)
                     }
@@ -97,6 +101,7 @@ public struct CanvasWorkspaceView: View {
                         ScreenFocusLightboxView(
                             store: store,
                             board: focusBoard,
+                            startInCompare: tool == .compare,
                             onClose: { focusedArtboardId = nil },
                             onSelectBoard: { nextId in focusedArtboardId = nextId }
                         )
@@ -558,6 +563,36 @@ public struct CanvasWorkspaceView: View {
                     .background(ToolrollPalette.codeBg)
                 }
 
+                // Contextual Compare helper overlay when Compare mode is on but this screen has no Before baseline yet
+                if tool == .compare && board.baselineImagePath == nil {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text("No Before baseline")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            if board.latestImagePath != nil {
+                                Button("Set Baseline") {
+                                    _ = store.setArtboardBaselineCheckpoint(boardId: board.id)
+                                }
+                                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                                .help("Lock this screen's current snapshot as its Before checkpoint")
+                            }
+                            Button("Open Compare") {
+                                focusedArtboardId = board.id
+                            }
+                            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                            .help("Open full Compare view to compare against a Reference image or Live tweaks")
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(ToolrollPalette.paper.opacity(0.95), in: Capsule())
+                        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        .padding(.bottom, 10)
+                    }
+                    .frame(width: scaledW, height: scaledH)
+                }
+
                 // Static-tile pin-drop overlay when Pin or Options is active on a cached tile
                 if (tool == .pin || tool == .options) && !inspectorOn {
                     Color.clear
@@ -952,6 +987,93 @@ public struct CanvasWorkspaceView: View {
         .toolrollGlassCapsule(interactive: true)
     }
 
+    private var compareCanvasGuideBar: some View {
+        let readyCount = store.canvasArtboards.filter { $0.baselineImagePath != nil && $0.latestImagePath != nil }.count
+        let capturableCount = store.canvasArtboards.filter { $0.latestImagePath != nil }.count
+
+        return HStack(spacing: 8) {
+            Image(systemName: "rectangle.lefthalf.inset.filled.arrow.left")
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.ink)
+
+            if readyCount > 0 {
+                Text("Compare · Drag the vertical split on any screen, or click a screen for Side-by-Side, Pixel Diff & Reference mockups")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.ink.opacity(0.88))
+                    .lineLimit(1)
+            } else {
+                Text("Compare · Lock a Before checkpoint first, or open a screen to compare against a Reference image")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.ink.opacity(0.88))
+                    .lineLimit(1)
+            }
+
+            if capturableCount > 0 {
+                Button(readyCount > 0 ? "Update Baselines" : "Lock Current as Before") {
+                    var locked = 0
+                    for b in store.canvasArtboards where b.latestImagePath != nil {
+                        if store.setArtboardBaselineCheckpoint(boardId: b.id) { locked += 1 }
+                    }
+                    if locked > 0 {
+                        store.notice = WorkbenchNotice(kind: .info, message: "Locked \(locked) \(locked == 1 ? "screen" : "screens") as Before baseline.")
+                    }
+                }
+                .buttonStyle(KitButtonStyle(readyCount > 0 ? .ghost : .primary, compact: true))
+                .help("Save each screen's current snapshot as its Before checkpoint for future diffs")
+            }
+
+            Button {
+                isCompareGuideOpen.toggle()
+            } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("How Compare works")
+            .popover(isPresented: $isCompareGuideOpen, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("How Visual Compare Works")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Text("1. Lock Before: Click Lock Current as Before (or start a pinned task — Toolroll locks Before automatically).")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("2. Scrub on Canvas: Drag the vertical line on any artboard left or right to compare Before vs After.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("3. Full Compare: Click any screen to unlock Side-by-Side, Pixel Diff heatmap, and Reference Mockup overlay (pick a Figma PNG or paste a screenshot).")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(width: 330)
+                .background(ToolrollPalette.paper)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .toolrollGlassCapsule(interactive: true)
+    }
+
+    private func dockToolHelp(_ t: CanvasTool, key: String) -> String {
+        switch t {
+        case .select:
+            return "Select & Pan (\(key)) — click any artboard to inspect in full focus, or drag its header to arrange"
+        case .pin:
+            return "Pin Change (\(key)) — click any element on a screen to file a targeted UI task"
+        case .options:
+            return "Design Options (\(key)) — pin a request to explore multiple visual directions"
+        case .compare:
+            return "Compare Before / After (\(key)) — drag the vertical wipe across screens, or click a screen for Side-by-Side, Pixel Diff & Reference mockups"
+        }
+    }
+
     private func dockToolButton(_ t: CanvasTool, icon: String, key: String) -> some View {
         let active = tool == t
         return Button {
@@ -970,7 +1092,7 @@ public struct CanvasWorkspaceView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("\(t.rawValue) (\(key))")
+        .help(dockToolHelp(t, key: key))
     }
 
     private func resolvedURL(for path: String) -> String {
