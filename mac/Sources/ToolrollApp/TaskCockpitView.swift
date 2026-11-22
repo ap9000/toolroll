@@ -13,9 +13,13 @@ public struct TaskCockpitView: View {
     @State private var expandedSteps: Set<String> = []
     @State private var showAllSteps: Bool = false
     @State private var isModelPickerOpen: Bool = false
+    @State private var modelPickerInitialRole: String = "build"
     @State private var copiedBranch: Bool = false
     @State private var showFullApprovalChecks: Bool = false
     @State private var showApprovalFiles: Bool = false
+    @State private var showStandardSandboxDetails: Bool = false
+    @State private var expandedCheckIds: Set<String> = []
+    @State private var highlightedSection: String? = nil
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -36,67 +40,90 @@ public struct TaskCockpitView: View {
                     LiveTerminalPaneView(store: store, session: store.terminalSession, inMainPane: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            // 1. Agent Question (answer natively in-app)
-                            if let question = row.need?.question {
-                                questionCard(question)
-                            }
-
-                            // 2. Result Review (Accept or Send Back natively in-app)
-                            if let review = store.stepCards?.review {
-                                resultReviewCard(review)
-                            }
-
-                            // 3. Plan Approval (Review terms & Approve natively in-app!)
-                            if let card = store.approvalCard {
-                                inAppApprovalCard(taskId: row.id, card: card)
-                            } else if row.status == .needs,
-                                      row.need?.question == nil,
-                                      store.stepCards?.review == nil,
-                                      store.stepCards?.planStopped == nil {
-                                fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
-                            }
-
-                            // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
-                            if let stopped = store.stepCards?.planStopped {
-                                planStoppedCard(stopped)
-                            } else if let failure = store.stepCards?.failure {
-                                failureCard(failure)
-                            }
-
-                            // 5. Hold Banner (Resume natively in-app)
-                            if let held = store.stepCards?.held {
-                                heldBanner(held)
-                            }
-
-                            // 6. Live Agent Stream (what the agent is actually doing right now)
-                            if !store.liveRunRecords.isEmpty {
-                                liveStreamSection(records: store.liveRunRecords)
-                            }
-
-                            // 7. Candidates Strip (Promote / Rebase / Open PR)
-                            if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
-                                candidatesSection(taskId: row.id, candidates: cands)
-                            }
-
-                            // 8. Steps Timeline (quietly collapsed unless needed or toggled)
-                            stepsSection()
+                    ScrollViewReader { proxy in
+                        // Top clickable Pipeline Stepper (Plan -> Approval -> Build -> Checks -> Ready)
+                        if let cards = store.stepCards?.cards, !cards.isEmpty {
+                            pipelineStepperBar(cards: cards, proxy: proxy)
+                            HairlineDivider()
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.top, 16)
-                        .padding(.bottom, 16)
-                    }
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        composerBar(taskId: row.id)
-                            .background(
-                                LinearGradient(
-                                    colors: [ToolrollPalette.paper.opacity(0), ToolrollPalette.paper.opacity(0.88)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
+
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 18) {
+                                // 1. Agent Question (answer natively in-app)
+                                if let question = row.need?.question {
+                                    questionCard(question)
+                                        .id("question-card")
+                                }
+
+                                // 2. Result Review (Accept or Send Back natively in-app)
+                                if let review = store.stepCards?.review {
+                                    resultReviewCard(review)
+                                        .id("review-card")
+                                }
+
+                                // 3. Plan Approval (Review terms & Approve natively in-app!)
+                                if let card = store.approvalCard {
+                                    inAppApprovalCard(taskId: row.id, card: card)
+                                        .id("approval-card")
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                .strokeBorder(
+                                                    highlightedSection == "approval-card" ? ToolrollPalette.warning : Color.clear,
+                                                    lineWidth: 2
+                                                )
+                                                .animation(.easeInOut(duration: 0.25), value: highlightedSection)
+                                        )
+                                } else if row.status == .needs,
+                                          row.need?.question == nil,
+                                          store.stepCards?.review == nil,
+                                          store.stepCards?.planStopped == nil {
+                                    fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
+                                        .id("approval-card")
+                                }
+
+                                // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
+                                if let stopped = store.stepCards?.planStopped {
+                                    planStoppedCard(stopped)
+                                        .id("recovery-card")
+                                } else if let failure = store.stepCards?.failure {
+                                    failureCard(failure)
+                                        .id("recovery-card")
+                                }
+
+                                // 5. Hold Banner (Resume natively in-app)
+                                if let held = store.stepCards?.held {
+                                    heldBanner(held)
+                                }
+
+                                // 6. Explicit Active Agent Banner + Live Agent Activity Stream
+                                activeAgentStatusBanner(row: row)
+                                    .id("agent-activity")
+
+                                if !store.liveRunRecords.isEmpty {
+                                    liveStreamSection(records: store.liveRunRecords)
+                                }
+
+                                // 7. Candidates Strip (Promote / Rebase / Open PR)
+                                if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
+                                    candidatesSection(taskId: row.id, candidates: cands)
+                                        .id("candidates-card")
+                                }
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.top, 16)
+                            .padding(.bottom, 16)
+                        }
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            composerBar(taskId: row.id)
+                                .background(
+                                    LinearGradient(
+                                        colors: [ToolrollPalette.paper.opacity(0), ToolrollPalette.paper.opacity(0.88)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                    .allowsHitTesting(false)
                                 )
-                                .allowsHitTesting(false)
-                            )
+                        }
                     }
                 }
             } else {
@@ -110,6 +137,8 @@ public struct TaskCockpitView: View {
             sendBackNote = ""
             showFullApprovalChecks = false
             showApprovalFiles = false
+            showStandardSandboxDetails = false
+            expandedCheckIds.removeAll()
         }
     }
 
@@ -652,62 +681,83 @@ public struct TaskCockpitView: View {
                 }
             }
 
-            // 5. STRUCTURED CHECKLIST (`Done when`) + COLLAPSIBLE BOUNDARIES (`Won't touch`)
-            if !digest.checks.isEmpty || digest.wontTouch != nil {
+            // 5. SCANNABLE 1-LINE VERIFICATION CHECKS + EXCEPTION-ONLY SANDBOX DETAILS
+            if !digest.checks.isEmpty || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
+                let boilerplateKeys: Set<String> = ["usual", "network", "tools", "may cost", "sent back", "plan changes"]
+                let unusualExtras = digest.extraTerms.filter { extra in
+                    let key = extra.label.lowercased()
+                    if !boilerplateKeys.contains(key) { return true }
+                    let words = extra.words.lowercased()
+                    return words.contains("outside") || words.contains("elevated") || words.contains("unrestricted")
+                }
+                let standardExtras = digest.extraTerms.filter { extra in
+                    !unusualExtras.contains(where: { $0.id == extra.id })
+                }
+
                 VStack(alignment: .leading, spacing: 8) {
                     if !visibleChecks.isEmpty {
-                        Text("VERIFICATION CHECKS (\(digest.checks.count))")
-                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                            .tracking(0.6)
-                            .foregroundStyle(ToolrollPalette.muted)
+                        HStack {
+                            Text("VERIFICATION CHECKS (\(digest.checks.count))")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .tracking(0.6)
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Spacer()
+                            Text("Click any check to expand")
+                                .font(.system(size: 10))
+                                .foregroundStyle(ToolrollPalette.muted.opacity(0.65))
+                        }
 
-                        VStack(alignment: .leading, spacing: 7) {
+                        VStack(alignment: .leading, spacing: 5) {
                             ForEach(visibleChecks) { item in
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Image(systemName: "checkmark.circle")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                    Text(item.text)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
-                                        .lineSpacing(2.5)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Spacer(minLength: 4)
-                                    if let badge = item.badge {
-                                        Text(badge)
-                                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                                            .foregroundStyle(ToolrollPalette.muted)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 1.5)
-                                            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
-                                            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                let isRowExpanded = expandedCheckIds.contains(item.id)
+                                Button {
+                                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                        if isRowExpanded {
+                                            expandedCheckIds.remove(item.id)
+                                        } else {
+                                            expandedCheckIds.insert(item.id)
+                                        }
                                     }
+                                } label: {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "checkmark.circle")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                            .padding(.top, 2)
+                                        Text(item.text)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
+                                            .lineLimit(isRowExpanded ? nil : 1)
+                                            .truncationMode(.tail)
+                                            .multilineTextAlignment(.leading)
+                                            .fixedSize(horizontal: false, vertical: isRowExpanded)
+                                        Spacer(minLength: 6)
+                                        if let badge = item.badge {
+                                            Text(badge)
+                                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                                .foregroundStyle(ToolrollPalette.muted)
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1.5)
+                                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                                                .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                        }
+                                    }
+                                    .padding(.vertical, 2)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
 
-                    if showFullApprovalChecks, let wontTouch = digest.wontTouch {
+                    // Surface any non-standard exceptions inline immediately
+                    if !unusualExtras.isEmpty {
                         HairlineDivider().padding(.vertical, 2)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("OUT OF SCOPE (WON'T TOUCH)")
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .tracking(0.6)
-                                .foregroundStyle(ToolrollPalette.muted)
-                            Text(wontTouch)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .lineSpacing(2.5)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    if showFullApprovalChecks && !digest.extraTerms.isEmpty {
-                        ForEach(digest.extraTerms) { extra in
+                        ForEach(unusualExtras) { extra in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(extra.label)
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .foregroundStyle(ToolrollPalette.warning)
                                     .frame(width: 84, alignment: .leading)
                                 Text(extra.words)
                                     .font(.system(size: 11.5))
@@ -717,25 +767,76 @@ public struct TaskCockpitView: View {
                         }
                     }
 
-                    if hiddenCheckCount > 0 || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
-                        Button {
-                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                showFullApprovalChecks.toggle()
+                    // Clean bottom disclosure row: show remaining checks + quiet standard sandbox/limits toggle
+                    HStack(spacing: 14) {
+                        if hiddenCheckCount > 0 {
+                            Button {
+                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                    showFullApprovalChecks.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(showFullApprovalChecks ? "Show fewer checks" : "Show all \(digest.checks.count) checks")
+                                        .font(.system(size: 11, weight: .medium))
+                                    Image(systemName: showFullApprovalChecks ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                }
+                                .foregroundStyle(ToolrollPalette.live)
                             }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Text(showFullApprovalChecks
-                                     ? "Show less"
-                                     : "Show \(hiddenCheckCount > 0 ? "all \(digest.checks.count) checks & " : "")scope boundaries")
-                                    .font(.system(size: 11, weight: .medium))
-                                Image(systemName: showFullApprovalChecks ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 8.5, weight: .semibold))
-                            }
-                            .foregroundStyle(ToolrollPalette.live)
-                            .padding(.vertical, 2)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+
+                        if digest.wontTouch != nil || !standardExtras.isEmpty {
+                            Button {
+                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                    showStandardSandboxDetails.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "shield.checkered")
+                                        .font(.system(size: 10))
+                                    Text("Standard sandbox & scope boundaries")
+                                        .font(.system(size: 11))
+                                    Image(systemName: showStandardSandboxDetails ? "chevron.up" : "chevron.right")
+                                        .font(.system(size: 8, weight: .semibold))
+                                }
+                                .foregroundStyle(ToolrollPalette.muted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.top, 2)
+
+                    if showStandardSandboxDetails {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HairlineDivider().padding(.vertical, 2)
+                            if let wontTouch = digest.wontTouch {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("OUT OF SCOPE (WON'T TOUCH)")
+                                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                        .tracking(0.6)
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                    Text(wontTouch)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            ForEach(standardExtras) { extra in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(extra.label)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .frame(width: 84, alignment: .leading)
+                                    Text(extra.words)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(12)
@@ -1257,25 +1358,193 @@ public struct TaskCockpitView: View {
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    // MARK: - Live Agent Stream (GET /agents/live/run/<run>)
+    // MARK: - Top Horizontal Pipeline Stepper + Active Agent Banner + Live Stream
+
+    private func pipelineStepperBar(cards: [StepCard], proxy: ScrollViewProxy) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                    let isAttention = card.needsYou
+                    let color = stepColor(for: card)
+                    Button {
+                        handlePipelineStepTap(card, proxy: proxy)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: stepSymbol(for: card))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(color)
+                            Text(card.label)
+                                .font(.system(size: 11.5, weight: isAttention ? .semibold : .medium))
+                                .foregroundStyle(isAttention ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .lineLimit(1)
+                            if let agent = card.agent, isAttention || card.state.lowercased().contains("run") {
+                                Text("· \(agent.displayLabel)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4.5)
+                        .background(
+                            isAttention ? ToolrollPalette.warning.opacity(0.12) : Color.clear,
+                            in: Capsule()
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(isAttention ? ToolrollPalette.warning.opacity(0.4) : Color.clear, lineWidth: 1)
+                        )
+                        .toolrollHoverSurface(cornerRadius: 12, isSelected: false)
+                    }
+                    .buttonStyle(.plain)
+                    .help(card.sentence.isEmpty ? "Jump to \(card.label)" : "\(card.label): \(card.sentence)")
+
+                    if idx < cards.count - 1 {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted.opacity(0.4))
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+        }
+        .background(ToolrollPalette.paper)
+    }
+
+    private func handlePipelineStepTap(_ card: StepCard, proxy: ScrollViewProxy) {
+        let label = card.label.lowercased()
+        let targetId: String
+        if label.contains("approv") {
+            targetId = "approval-card"
+        } else if label.contains("ready") || label.contains("review") {
+            if store.stepCards?.review != nil {
+                targetId = "review-card"
+            } else {
+                store.toggleInspector(tab: .diff)
+                return
+            }
+        } else if label.contains("plan") {
+            if !store.liveRunRecords.isEmpty {
+                targetId = "agent-activity"
+            } else {
+                store.openTaskArtifact()
+                return
+            }
+        } else if label.contains("build") {
+            targetId = store.approvalCard != nil ? "approval-card" : "agent-activity"
+        } else if label.contains("check") {
+            targetId = store.stepCards?.review != nil ? "review-card" : "approval-card"
+        } else {
+            targetId = "agent-activity"
+        }
+
+        withAnimation(.easeInOut(duration: 0.22)) {
+            proxy.scrollTo(targetId, anchor: .top)
+            highlightedSection = targetId
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(1.1))
+            if highlightedSection == targetId {
+                highlightedSection = nil
+            }
+        }
+    }
+
+    /// Shows explicitly WHICH agent & model is actively working (or ran last) + who is assigned next!
+    private func activeAgentStatusBanner(row: WorkRow) -> some View {
+        let cards = store.stepCards?.cards ?? []
+        let activeOrLatestStep = cards.first(where: { $0.state.lowercased().contains("run") || $0.mark.lowercased().contains("run") })
+            ?? cards.last(where: { $0.agent != nil })
+        let activeAgentName = activeOrLatestStep?.agent?.displayLabel ?? activeBuilderModelLabel
+        let activeStage = activeOrLatestStep?.label ?? (row.status == .running ? "Working" : "Agent")
+        let isRunning = row.status == .running
+        let plannerModel = store.modelsRead.roles.first(where: { $0.key == "plan" })?.words
+        let builderModel = store.modelsRead.roles.first(where: { $0.key == "build" })?.words
+        let reviewerModel = store.modelsRead.roles.first(where: { $0.key == "review" })?.words
+
+        return VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    activeAgentIdentity(isRunning: isRunning, status: row.status, stage: activeStage, agentName: activeAgentName, at: activeOrLatestStep?.at)
+                    Spacer(minLength: 6)
+                    roleAgentPillsRow(planner: plannerModel, builder: builderModel, reviewer: reviewerModel)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    activeAgentIdentity(isRunning: isRunning, status: row.status, stage: activeStage, agentName: activeAgentName, at: activeOrLatestStep?.at)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        roleAgentPillsRow(planner: plannerModel, builder: builderModel, reviewer: reviewerModel)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+    }
+
+    private func activeAgentIdentity(isRunning: Bool, status: TaskStatusTone, stage: String, agentName: String, at: String?) -> some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(isRunning ? ToolrollPalette.live : (status == .needs ? ToolrollPalette.warning : ToolrollPalette.success))
+                .frame(width: 7, height: 7)
+            Text(isRunning ? "\(stage) · \(agentName)" : "Last run: \(stage) · \(agentName)")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(1)
+            if let at {
+                Text(formatStepTimestamp(at))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func roleAgentPillsRow(planner: String?, builder: String?, reviewer: String?) -> some View {
+        HStack(spacing: 5) {
+            if let p = planner, !p.isEmpty {
+                roleAgentPill(prefix: "Plan", model: p, roleKey: "plan")
+            }
+            if let b = builder, !b.isEmpty {
+                roleAgentPill(prefix: "Build", model: b, roleKey: "build")
+            }
+            if let r = reviewer, !r.isEmpty {
+                roleAgentPill(prefix: "Review", model: r, roleKey: "review")
+            }
+        }
+    }
+
+    private func roleAgentPill(prefix: String, model: String, roleKey: String) -> some View {
+        Button {
+            modelPickerInitialRole = roleKey
+            isModelPickerOpen = true
+        } label: {
+            HStack(spacing: 4) {
+                Text(prefix)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Text(model)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .toolrollHoverSurface(cornerRadius: 4)
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Change \(prefix) model (Claude, Gemini, or Codex)")
+    }
 
     private func liveStreamSection(records: [LiveAgentRecord]) -> some View {
         let visible = records.filter { $0.k == "say" || $0.k == "step" || $0.k == "done" }
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(store.selectedRow?.status == .running ? ToolrollPalette.live : ToolrollPalette.muted)
-                    .frame(width: 6, height: 6)
-                Text("Agent Activity")
-                    .font(.system(size: 11, weight: .semibold))
-                    .textCase(.uppercase)
-                    .tracking(0.6)
-                    .foregroundStyle(ToolrollPalette.muted)
-                Spacer()
-            }
-
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(visible.suffix(24)) { rec in
+                ForEach(visible.suffix(30)) { rec in
                     if rec.k == "say", !rec.textLines.isEmpty {
                         Text(rec.textLines.joined(separator: "\n"))
                             .font(.system(size: 13))
@@ -1283,6 +1552,9 @@ public struct TaskCockpitView: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     } else if rec.k == "step" {
+                        let stepSummary = [rec.target, rec.detail, rec.desc]
+                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .first(where: { !$0.isEmpty }) ?? ""
                         HStack(spacing: 8) {
                             Text(rec.kind ?? "tool")
                                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
@@ -1290,10 +1562,13 @@ public struct TaskCockpitView: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
-                            Text(rec.target ?? "")
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.ink)
-                                .lineLimit(1)
+                            if !stepSummary.isEmpty {
+                                Text(stepSummary)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                             Spacer()
                         }
                     } else if rec.k == "done", !rec.out.isEmpty {
@@ -1312,8 +1587,8 @@ public struct TaskCockpitView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
@@ -1548,7 +1823,7 @@ public struct TaskCockpitView: View {
             .buttonStyle(.plain)
             .fixedSize()
             .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
-                ModelPickerPopover(store: store, initialRoleKey: "build", onDismiss: { isModelPickerOpen = false })
+                ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, onDismiss: { isModelPickerOpen = false })
             }
 
             Button {

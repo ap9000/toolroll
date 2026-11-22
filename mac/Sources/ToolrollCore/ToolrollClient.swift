@@ -413,6 +413,15 @@ public actor ToolrollClient {
         )
     }
 
+    /// Probes installed local CLIs (claude, codex, gemini) and refreshes the live model catalog from OpenRouter/providers.
+    public func checkModelCatalog() async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/models/check",
+            fields: [],
+            defaultDone: "Checked for installed agents & new models."
+        )
+    }
+
     public func fetchLiveRunWindow(runId: Int, cursor: String? = nil) async throws -> LiveRunWindowResponse {
         var path = "/agents/live/run/\(runId)?file=main"
         if let cursor, !cursor.isEmpty,

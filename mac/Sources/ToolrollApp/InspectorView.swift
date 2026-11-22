@@ -221,14 +221,15 @@ struct LiveTerminalPaneView: View {
         case .disconnected:
             return "Disconnected"
         case .connected:
+            let progLabel = session.program == "shell" ? "Worktree Shell" : "Worktree \(session.program.capitalized)"
             if session.isControlling {
                 let obs = session.otherViewersCount
-                return obs > 0 ? "Controlling · \(obs) observing" : "Controlling"
+                return obs > 0 ? "\(progLabel) · Controlling · \(obs) observing" : "\(progLabel) · Controlling"
             }
             if let ctrl = session.controller, !ctrl.isEmpty {
-                return "Observing · @\(ctrl) controlling"
+                return "\(progLabel) · Observing · @\(ctrl)"
             }
-            return "Observing · idle"
+            return "\(progLabel) · Observing"
         }
     }
 

@@ -616,18 +616,33 @@ struct ToolrollCoreTests {
         let client = ToolrollClient(localSession: creds)
         let before = try await client.fetchModels()
         guard let planRole = before.roles.first(where: { $0.key == "plan" }),
-              let claudeChoice = planRole.choices.first(where: { $0.provider == "claude" }),
-              let opus = claudeChoice.models.first
+              let buildRole = before.roles.first(where: { $0.key == "build" }),
+              let reviewRole = before.roles.first(where: { $0.key == "review" })
         else { return }
-        let original = planRole.current
-        let targetVal = opus.formValue(forProvider: claudeChoice.provider)
-        let reply = try await client.updateModels(digest: before.digest, fields: ["plan": targetVal])
+        let origPlan = planRole.current
+        let origBuild = buildRole.current
+        let origReview = reviewRole.current
+
+        // Verify mixing Google Gemini Planner + Claude Opus Builder + Codex Astra Reviewer in one save!
+        let gemTarget = "gemini|gemini-4"
+        let opusTarget = "claude|claude-opus-5-5"
+        let astraTarget = "codex|gpt-6.2-astra"
+        let reply = try await client.updateModels(
+            digest: before.digest,
+            fields: ["plan": gemTarget, "build": opusTarget, "review": astraTarget]
+        )
         #expect(!reply.isEmpty)
         let mid = try await client.fetchModels()
-        #expect(mid.roles.first(where: { $0.key == "plan" })?.current == targetVal)
-        // Restore original selection cleanly
-        if !original.isEmpty {
-            _ = try await client.updateModels(digest: mid.digest, fields: ["plan": original])
+        #expect(mid.roles.first(where: { $0.key == "plan" })?.current == gemTarget)
+        #expect(mid.roles.first(where: { $0.key == "build" })?.current == opusTarget)
+        #expect(mid.roles.first(where: { $0.key == "review" })?.current == astraTarget)
+        // Restore original selections cleanly
+        var restore: [String: String] = [:]
+        if !origPlan.isEmpty { restore["plan"] = origPlan }
+        if !origBuild.isEmpty { restore["build"] = origBuild }
+        if !origReview.isEmpty { restore["review"] = origReview }
+        if !restore.isEmpty {
+            _ = try await client.updateModels(digest: mid.digest, fields: restore)
         }
     }
 }

@@ -130,6 +130,7 @@ public final class WorkbenchStore {
     public var approvalPasswordPrompt: String?
     public var modelPasswordPrompt: String?
     public var modelChangeError: String?
+    public var isCheckingModelCatalog: Bool = false
     private var pendingModelFields: [String: String]?
     public private(set) var candidatesResponse: CandidatesListResponse?
     public private(set) var diffResponse: ResultDiffResponse?
@@ -1051,6 +1052,20 @@ public final class WorkbenchStore {
 
     public func applyModelPreset(_ preset: AgentPreset) async {
         await submitModelFields(preset.fields, friendlyLabel: preset.name)
+    }
+
+    /// Runs `POST /settings/models/check` to detect installed CLIs (including Google Gemini) and pull live model catalogs.
+    public func refreshModelCatalog() async {
+        guard let client, !activeProfile.isDemo, !isCheckingModelCatalog else { return }
+        isCheckingModelCatalog = true
+        modelChangeError = nil
+        defer { isCheckingModelCatalog = false }
+        do {
+            _ = try await client.checkModelCatalog()
+            modelsRead = try await client.fetchModels()
+        } catch {
+            modelChangeError = error.localizedDescription
+        }
     }
 
     public func retryPendingModelChange(password: String) async {

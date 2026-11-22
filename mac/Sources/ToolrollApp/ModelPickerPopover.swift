@@ -41,7 +41,44 @@ public struct ModelPickerPopover: View {
     }
 
     private var providers: [ModelChoice] {
-        activeRole?.choices ?? []
+        var list = activeRole?.choices ?? []
+        let installedIds = Set(store.agentsRead.agents.filter(\.ready).map { $0.id.lowercased() })
+
+        // Ensure Google Gemini is selectable for Planner & Builder whenever installed (or in local mode)
+        // even before `POST /settings/models/check` has populated `runtime_check` / `model_seen`.
+        if targetRoleKey != "review", !list.contains(where: { $0.provider == "gemini" }) {
+            let geminiInstalled = installedIds.contains("gemini") || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/gemini") || FileManager.default.fileExists(atPath: "/usr/local/bin/gemini")
+            if geminiInstalled || store.isLocalSession {
+                list.append(ModelChoice(
+                    provider: "gemini",
+                    label: "Google Gemini",
+                    models: [
+                        ModelOption(value: "gemini-4", label: "Gemini 4"),
+                        ModelOption(value: "gemini-3.5-pro", label: "Gemini 3.5 Pro"),
+                        ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro"),
+                        ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash"),
+                    ]
+                ))
+            }
+        }
+
+        // Ensure Codex is selectable whenever installed (or already assigned to a role)
+        if !list.contains(where: { $0.provider == "codex" }) {
+            let codexInstalled = installedIds.contains("codex")
+                || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("codex|") })
+            if codexInstalled || store.isLocalSession {
+                list.append(ModelChoice(
+                    provider: "codex",
+                    label: "Codex",
+                    models: [
+                        ModelOption(value: "gpt-6.2-astra", label: "Codex · gpt-6.2-astra"),
+                        ModelOption(value: "gpt-6-astra", label: "Codex · gpt-6-astra"),
+                        ModelOption(value: "gpt-6-sol", label: "Codex · gpt-6-sol"),
+                    ]
+                ))
+            }
+        }
+        return list
     }
 
     private var allEntries: [FlatModelEntry] {
@@ -119,6 +156,25 @@ public struct ModelPickerPopover: View {
                             }
                             .buttonStyle(.plain)
                         }
+
+                        Button {
+                            Task { await store.refreshModelCatalog() }
+                        } label: {
+                            if store.isCheckingModelCatalog {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .frame(width: 20, height: 20)
+                                    .toolrollHoverSurface(cornerRadius: 4)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isCheckingModelCatalog)
+                        .help("Detect installed agents (Claude, Codex, Gemini) & refresh model catalog")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -128,10 +184,28 @@ public struct ModelPickerPopover: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             if displayedEntries.isEmpty {
-                                Text(providers.isEmpty ? "No models detected yet." : "No models match \"\(query)\".")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                    .padding(14)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(providers.isEmpty ? "No models detected yet." : "No catalog match for \"\(query)\".")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                    let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if !trimmedQuery.isEmpty {
+                                        Text("Use custom model ID directly:")
+                                            .font(.system(size: 10.5, weight: .semibold))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                        HStack(spacing: 6) {
+                                            customModelChip(provider: "gemini", label: "Gemini", modelId: trimmedQuery)
+                                            customModelChip(provider: "claude", label: "Claude", modelId: trimmedQuery)
+                                            customModelChip(provider: "codex", label: "Codex", modelId: trimmedQuery)
+                                        }
+                                    } else if !store.isCheckingModelCatalog {
+                                        Button("Refresh installed agents & models") {
+                                            Task { await store.refreshModelCatalog() }
+                                        }
+                                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                                    }
+                                }
+                                .padding(12)
                             } else {
                                 ForEach(Array(displayedEntries.enumerated()), id: \.element.id) { idx, entry in
                                     modelRow(entry, isHighlighted: highlightedIndex == idx, shortcutNumber: idx < 6 ? idx + 1 : nil)
@@ -421,6 +495,26 @@ public struct ModelPickerPopover: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .toolrollHoverSurface(cornerRadius: 5, isSelected: active)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func customModelChip(provider: String, label: String, modelId: String) -> some View {
+        Button {
+            Task {
+                await store.selectModel(value: "\(provider)|\(modelId)", label: "\(label) · \(modelId)", forRoleKey: targetRoleKey)
+                if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
+                    onDismiss()
+                }
+            }
+        } label: {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ToolrollPalette.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .toolrollHoverSurface(cornerRadius: 5)
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

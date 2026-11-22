@@ -308,6 +308,13 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
 public struct StepAgent: Codable, Sendable, Equatable {
     public let provider: String
     public let model: String?
+
+    public var displayLabel: String {
+        if let model, !model.isEmpty {
+            return "\(provider) · \(model)"
+        }
+        return provider
+    }
 }
 
 public struct StepTermsRow: Codable, Sendable, Equatable {
