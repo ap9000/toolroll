@@ -2014,6 +2014,17 @@ public final class WorkbenchStore {
         }
     }
 
+    public func openProjectLiveViewSettings() {
+        if activeProfile.isDemo {
+            notice = WorkbenchNotice(kind: .info, message: "Demo mode — connect a workspace to open project settings.")
+            return
+        }
+        let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let url = URL(string: "\(base)/settings/project") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     public func openExternalURL(_ raw: String) {
         if let url = URL(string: raw) {
             NSWorkspace.shared.open(url)

@@ -645,4 +645,64 @@ struct ToolrollCoreTests {
             _ = try await client.updateModels(digest: mid.digest, fields: restore)
         }
     }
+
+    @Test("LiveActivityTimeline collapses consecutive redacted commands and pairs step status")
+    func testLiveActivityTimelineGrouping() {
+        let records: [LiveAgentRecord] = [
+            LiveAgentRecord(k: "open", detail: "base"),
+            LiveAgentRecord(k: "say", textLines: ["I'll inspect the repo."]),
+            LiveAgentRecord(k: "step", stepId: "s1", kind: "command"),
+            LiveAgentRecord(k: "done", stepId: "s1", ok: true),
+            LiveAgentRecord(k: "step", stepId: "s2", kind: "command"),
+            LiveAgentRecord(k: "done", stepId: "s2", ok: true),
+            LiveAgentRecord(k: "step", stepId: "s3", kind: "command"),
+            LiveAgentRecord(k: "done", stepId: "s3", ok: false),
+            LiveAgentRecord(k: "say", textLines: ["Found the issue."]),
+            LiveAgentRecord(k: "step", stepId: "s4", kind: "edit", target: "STANDING-ORDERS-PLAN.json"),
+            LiveAgentRecord(k: "done", stepId: "s4", ok: true),
+            LiveAgentRecord(k: "step", stepId: "s5", kind: "command", target: "pnpm build"),
+            LiveAgentRecord(k: "done", stepId: "s5", ok: true, out: ["Built in 1.2s"]),
+            LiveAgentRecord(k: "end")
+        ]
+
+        let timeline = LiveActivityTimeline.build(from: records, isLive: false)
+        #expect(timeline.hasHiddenCommands == true)
+        #expect(timeline.items.count == 5)
+
+        if case .message(_, let text) = timeline.items[0] {
+            #expect(text == "I'll inspect the repo.")
+        } else {
+            Issue.record("Expected message first")
+        }
+
+        if case .hiddenSteps(_, let kind, let count, let failedCount, let runningCount) = timeline.items[1] {
+            #expect(kind == "command")
+            #expect(count == 3)
+            #expect(failedCount == 1)
+            #expect(runningCount == 0)
+            #expect(
+                LiveActivityItem.hiddenStepLabel(kind: kind, count: count, failedCount: failedCount, runningCount: runningCount)
+                == "Ran 3 shell commands · 1 failed"
+            )
+        } else {
+            Issue.record("Expected collapsed hiddenSteps second")
+        }
+
+        if case .step(_, let kind, let summary, let status, _) = timeline.items[3] {
+            #expect(kind == "edit")
+            #expect(summary == "STANDING-ORDERS-PLAN.json")
+            #expect(status == .succeeded)
+        } else {
+            Issue.record("Expected named edit step fourth")
+        }
+
+        if case .step(_, let kind, let summary, let status, let out) = timeline.items[4] {
+            #expect(kind == "command")
+            #expect(summary == "pnpm build")
+            #expect(status == .succeeded)
+            #expect(out == ["Built in 1.2s"])
+        } else {
+            Issue.record("Expected visible command step fifth")
+        }
+    }
 }

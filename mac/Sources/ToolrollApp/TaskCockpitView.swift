@@ -1517,42 +1517,78 @@ public struct TaskCockpitView: View {
     }
 
     private func liveStreamSection(records: [LiveAgentRecord]) -> some View {
-        let visible = records.filter { $0.k == "say" || $0.k == "step" || $0.k == "done" }
+        let isRunning = store.selectedRow?.status == .running
+        let timeline = LiveActivityTimeline.build(from: records, isLive: isRunning)
         return VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(visible.suffix(30)) { rec in
-                    if rec.k == "say", !rec.textLines.isEmpty {
-                        Text(rec.textLines.joined(separator: "\n"))
+                ForEach(Array(timeline.items.suffix(40))) { item in
+                    switch item {
+                    case .message(_, let text):
+                        Text(text)
                             .font(.system(size: 13))
                             .foregroundStyle(ToolrollPalette.ink)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
-                    } else if rec.k == "step" {
-                        let stepSummary = [rec.target, rec.detail, rec.desc]
-                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .first(where: { !$0.isEmpty }) ?? ""
-                        HStack(spacing: 8) {
-                            Text(rec.kind ?? "tool")
-                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
-                            if !stepSummary.isEmpty {
-                                Text(stepSummary)
+
+                    case .step(_, let kind, let summary, let status, let outputPreview):
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 7) {
+                                liveStepStatusIcon(status)
+                                Text(kind)
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                                Text(summary)
                                     .font(.system(size: 11.5, design: .monospaced))
                                     .foregroundStyle(ToolrollPalette.ink)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                                Spacer(minLength: 0)
                             }
-                            Spacer()
+                            if !outputPreview.isEmpty {
+                                Text(outputPreview.joined(separator: " · "))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .padding(.leading, 20)
+                            }
                         }
-                    } else if rec.k == "done", !rec.out.isEmpty {
+
+                    case .hiddenSteps(_, let kind, let count, let failedCount, let runningCount):
+                        let label = LiveActivityItem.hiddenStepLabel(
+                            kind: kind,
+                            count: count,
+                            failedCount: failedCount,
+                            runningCount: runningCount
+                        )
+                        let status: LiveStepStatus = failedCount > 0 ? .failed : (runningCount > 0 ? .running : .succeeded)
                         HStack(spacing: 6) {
-                            Text(rec.ok == false ? "✗" : "✓")
+                            Image(systemName: kind == "command" ? "terminal" : "wrench")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            Text(label)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            liveStepStatusIcon(status)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(ToolrollPalette.raised.opacity(0.75), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .strokeBorder(ToolrollPalette.line, lineWidth: 1)
+                        )
+                        .help("Shell command text is hidden by Toolroll's default project privacy setting so secrets aren't logged. Enable 'Show commands in the live view' in Settings → Project to view full commands on future runs.")
+
+                    case .output(_, let ok, let lines):
+                        HStack(spacing: 6) {
+                            Text(ok ? "✓" : "✗")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(rec.ok == false ? ToolrollPalette.danger : ToolrollPalette.success)
-                            Text(rec.out.prefix(2).joined(separator: " · "))
+                                .foregroundStyle(ok ? ToolrollPalette.muted : ToolrollPalette.danger)
+                            Text(lines.joined(separator: " · "))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(ToolrollPalette.muted)
                                 .lineLimit(1)
@@ -1560,11 +1596,64 @@ public struct TaskCockpitView: View {
                         .padding(.leading, 8)
                     }
                 }
+
+                if timeline.hasHiddenCommands {
+                    HairlineDivider()
+                        .padding(.top, 4)
+                    HStack(spacing: 6) {
+                        Image(systemName: "eye.slash")
+                            .font(.system(size: 10))
+                            .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
+                        Text("Shell commands are hidden by project privacy")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ToolrollPalette.muted.opacity(0.6))
+                        Button {
+                            store.openProjectLiveViewSettings()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("Show in Settings")
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 9, weight: .semibold))
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink.opacity(0.78))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open Settings → Project in Toolroll to turn on 'Show commands in the live view' for future runs")
+                        Spacer()
+                    }
+                    .padding(.top, 2)
+                }
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder
+    private func liveStepStatusIcon(_ status: LiveStepStatus) -> some View {
+        switch status {
+        case .running:
+            Circle()
+                .fill(ToolrollPalette.live)
+                .frame(width: 6, height: 6)
+        case .succeeded:
+            Image(systemName: "checkmark")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.muted)
+        case .failed:
+            Image(systemName: "xmark")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.danger)
+        case .completed:
+            Circle()
+                .fill(ToolrollPalette.muted.opacity(0.5))
+                .frame(width: 5, height: 5)
         }
     }
 
