@@ -49,6 +49,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Toolroll accesses your local project repositories to discover routes, open Markdown artifacts, and run local Canvas previews.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>
@@ -63,7 +65,24 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 PLIST
 
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1
+  SIGN_ID="${TOOLROLL_SIGN_IDENTITY:-}"
+  if [[ -z "$SIGN_ID" ]] && command -v security >/dev/null 2>&1; then
+    IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null)" || IDENTITIES=""
+    if echo "$IDENTITIES" | grep -q '"Toolroll Local Dev"'; then
+      SIGN_ID="Toolroll Local Dev"
+    elif echo "$IDENTITIES" | grep -q '"Apple Development:'; then
+      SIGN_ID="$(echo "$IDENTITIES" | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)"
+    elif echo "$IDENTITIES" | grep -q '"Developer ID Application:'; then
+      SIGN_ID="$(echo "$IDENTITIES" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)"
+    fi
+  fi
+
+  if [[ -n "$SIGN_ID" ]]; then
+    echo "==> Signing with stable identity: $SIGN_ID"
+    codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
+  else
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1
+  fi
 fi
 
 echo "==> Packaged native macOS bundle: $APP_DIR"
