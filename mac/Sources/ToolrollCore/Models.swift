@@ -1383,6 +1383,11 @@ public struct ModelOption: Codable, Sendable, Equatable, Identifiable {
         self.value = value
         self.label = label
     }
+
+    /// Canonical `"provider|model"` value expected by `POST /settings/models/agent` and `ModelRoleSummary.current`.
+    public func formValue(forProvider provider: String) -> String {
+        value.contains("|") ? value : "\(provider)|\(value)"
+    }
 }
 
 public struct ModelChoice: Codable, Sendable, Equatable, Identifiable {

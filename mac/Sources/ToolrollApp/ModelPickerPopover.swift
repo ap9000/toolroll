@@ -23,7 +23,11 @@ public struct ModelPickerPopover: View {
     }
 
     private struct FlatModelEntry: Identifiable, Equatable {
-        var id: String { option.value }
+        /// Canonical `"provider|model"` value expected by `POST /settings/models/agent` and `role.current`.
+        var formValue: String {
+            option.value.contains("|") ? option.value : "\(provider)|\(option.value)"
+        }
+        var id: String { formValue }
         let provider: String
         let providerLabel: String
         let option: ModelOption
@@ -316,7 +320,7 @@ public struct ModelPickerPopover: View {
 
     private func applyModelEntry(_ entry: FlatModelEntry) {
         Task {
-            await store.selectModel(value: entry.option.value, label: entry.option.label, forRoleKey: targetRoleKey)
+            await store.selectModel(value: entry.formValue, label: entry.option.label, forRoleKey: targetRoleKey)
             if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
                 onDismiss()
             }
@@ -347,7 +351,7 @@ public struct ModelPickerPopover: View {
     }
 
     private func modelRow(_ entry: FlatModelEntry, isHighlighted: Bool, shortcutNumber: Int?) -> some View {
-        let isCurrent = entry.option.value == currentValueForScope
+        let isCurrent = entry.formValue == currentValueForScope
         return Button {
             applyModelEntry(entry)
         } label: {

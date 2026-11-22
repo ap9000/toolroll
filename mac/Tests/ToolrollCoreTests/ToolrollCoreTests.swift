@@ -593,4 +593,33 @@ struct ToolrollCoreTests {
         #expect(ElementStyleMetrics.safeInt(.infinity) == 9999)
         #expect(ElementStyleMetrics.safeInt(.nan) == 0)
     }
+
+    @Test("ModelOption.formValue prefixes provider|model for POST /settings/models/agent")
+    func modelOptionFormValueFormatting() async throws {
+        let raw = ModelOption(value: "claude-opus-5-5", label: "Claude Opus 5.5")
+        #expect(raw.formValue(forProvider: "claude") == "claude|claude-opus-5-5")
+        let alreadyPrefixed = ModelOption(value: "codex|gpt-6-astra", label: "GPT-6 Astra")
+        #expect(alreadyPrefixed.formValue(forProvider: "codex") == "codex|gpt-6-astra")
+
+        guard ProcessInfo.processInfo.environment["TOOLROLL_TEST_LOCAL_MODELS"] == "1" else { return }
+        let creds = await LocalConsoleConnector.discoverAndConnect()
+        #expect(creds != nil)
+        guard let creds else { return }
+        let client = ToolrollClient(localSession: creds)
+        let before = try await client.fetchModels()
+        guard let planRole = before.roles.first(where: { $0.key == "plan" }),
+              let claudeChoice = planRole.choices.first(where: { $0.provider == "claude" }),
+              let opus = claudeChoice.models.first
+        else { return }
+        let original = planRole.current
+        let targetVal = opus.formValue(forProvider: claudeChoice.provider)
+        let reply = try await client.updateModels(digest: before.digest, fields: ["plan": targetVal])
+        #expect(!reply.isEmpty)
+        let mid = try await client.fetchModels()
+        #expect(mid.roles.first(where: { $0.key == "plan" })?.current == targetVal)
+        // Restore original selection cleanly
+        if !original.isEmpty {
+            _ = try await client.updateModels(digest: mid.digest, fields: ["plan": original])
+        }
+    }
 }
