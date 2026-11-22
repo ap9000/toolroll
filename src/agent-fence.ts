@@ -1371,10 +1371,11 @@ export function homeWriteDenies(home: string, binding: WorktreeBinding | null, p
  * where it always has), and never the build's own checkout or launch folder read back (nothing a build wrote loads in a
  * process that holds a tool's secrets). */
 export function serverGrantsOf(grants: FenceGrants): FenceGrants {
-  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, browser: _checkOnly, ...rest } = grants;
+  // Never the agent's own Codex state either (its sign-in, sessions and run home: codexState, runFolders.alsoOwn).
+  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, browser: _checkOnly, codexState: _agentCodex, ...rest } = grants;
   return {
     ...rest,
     ...(rest.pool === undefined ? {} : { pool: { ...rest.pool, own: null } }),
-    ...(rest.runFolders === undefined ? {} : { runFolders: { ...rest.runFolders, own: null } }),
+    ...(rest.runFolders === undefined ? {} : { runFolders: { root: rest.runFolders.root, own: null, ...(rest.runFolders.also === undefined ? {} : { also: rest.runFolders.also }) } }),
   };
 }

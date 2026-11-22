@@ -73,11 +73,12 @@ export function codexDefaults(codexHome: string): ProviderDefaults {
  * build needs none); a missing `sessions/` is made where Codex would make
  * it, so a resumed build finds the thread its first launch wrote.
  */
-export function isolatedCodexHome(source: string, root: string = tmpdir()): { dir: string; cleanup: () => void } {
+export function isolatedCodexHome(source: string, root: string = tmpdir(), options: { signIn: boolean } = { signIn: true }): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(root, "so-codex-"));
   try {
     chmodSync(dir, 0o700);
-    if (existsSync(join(source, "auth.json"))) symlinkSync(join(source, "auth.json"), join(dir, "auth.json"));
+    // Only a Codex build signs in with it: an OpenRouter build carries its own key and never gets the ChatGPT sign-in.
+    if (options.signIn && existsSync(join(source, "auth.json"))) symlinkSync(join(source, "auth.json"), join(dir, "auth.json"));
     mkdirSync(join(source, "sessions"), { recursive: true, mode: 0o700 });
     symlinkSync(join(source, "sessions"), join(dir, "sessions"), "dir");
   } catch (error) {

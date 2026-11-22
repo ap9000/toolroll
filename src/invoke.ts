@@ -489,7 +489,7 @@ export async function invokeAgent(
   // A Codex build's own CODEX_HOME (provider-home.ts): the operator's sign-in and sessions, linked, and nothing else.
   let codexHome: { dir: string; cleanup: () => void } | null = null;
   if (codexHarness && invocation.phase !== "review") {
-    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir())); }
+    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex" }); }
     catch {
       tools?.cleanup();
       removeAgentDatabase(isolatedDb.dir);

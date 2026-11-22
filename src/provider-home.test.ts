@@ -66,6 +66,10 @@ describe("what a build keeps of the provider's own home", () => {
     const bare = isolatedCodexHome(join(dir, "fresh"), dir);
     expect(readdirSync(bare.dir)).toEqual(["sessions"]);
     bare.cleanup();
+    // An OpenRouter build (its own key): the sessions, never the ChatGPT sign-in.
+    const keyed = isolatedCodexHome(source, dir, { signIn: false });
+    expect(readdirSync(keyed.dir)).toEqual(["sessions"]);
+    keyed.cleanup();
   });
 
   test("failed home setup removes the partial private directory", () => {
