@@ -30,6 +30,10 @@ public struct MainWorkbenchView: View {
                 VStack(spacing: 0) {
                     topChromeBar
 
+                    if store.showPasswordNudge {
+                        SetPasswordBanner(store: store)
+                    }
+
                     HSplitView {
                         if store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight {
                             InboxSidebarView(store: store)
@@ -107,6 +111,9 @@ public struct MainWorkbenchView: View {
         }
         .sheet(isPresented: $store.isProjectSettingsOpen) {
             ProjectSettingsSheet(store: store)
+        }
+        .sheet(isPresented: $store.isSetPasswordOpen) {
+            SetPasswordSheet(store: store)
         }
         .preferredColorScheme(WorkspaceThemeEngine.shared.preferredColorScheme)
         .task {

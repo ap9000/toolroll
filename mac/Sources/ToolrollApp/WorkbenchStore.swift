@@ -143,6 +143,15 @@ public final class WorkbenchStore {
     public private(set) var isLoadingLiveRun: Bool = false
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
+    // Password onboarding (docs/plans/password-onboarding.md): whether the account has a password yet (from the console's
+    // connect; nil when it didn't say), the set-password sheet, and the banner's remembered Not now.
+    public private(set) var passwordSet: Bool? = nil
+    public var isSetPasswordOpen: Bool = false
+    public private(set) var setPasswordBusy: Bool = false
+    public var setPasswordProblem: String? = nil
+    private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
+    private static let passwordNudgeSnooze: TimeInterval = 7 * 24 * 60 * 60
+    public private(set) var passwordNudgeSnoozedUntil: Date? = UserDefaults.standard.object(forKey: WorkbenchStore.passwordNudgeKey) as? Date
     public var modelPasswordPrompt: String?
     public var modelChangeError: String?
     public var isCheckingModelCatalog: Bool = false
@@ -886,7 +895,7 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: reply)
             return true
         } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            if !handleSignInRefusal(error) { notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription) }
             return false
         }
     }
@@ -1241,6 +1250,8 @@ public final class WorkbenchStore {
             if let refreshed = try? await client.fetchModels() {
                 modelsRead = refreshed
             }
+        } catch let error as ToolrollClientError where handleSignInRefusal(error) {
+            // Opened the set-password sheet, or said a browser sign-in is needed.
         } catch ToolrollClientError.passwordRequired(let msg) {
             pendingModelFields = fields
             modelPasswordPrompt = msg
@@ -1310,6 +1321,76 @@ public final class WorkbenchStore {
         restartSSE()
     }
 
+    /// The banner asking for a first password: a local session whose account has none, unless Not now is still standing.
+    public var showPasswordNudge: Bool {
+        guard isLocalSession, passwordSet == false else { return false }
+        if let until = passwordNudgeSnoozedUntil, until > Date() { return false }
+        return true
+    }
+
+    public func snoozePasswordNudge() {
+        let until = Date().addingTimeInterval(Self.passwordNudgeSnooze)
+        passwordNudgeSnoozedUntil = until
+        UserDefaults.standard.set(until, forKey: Self.passwordNudgeKey)
+    }
+
+    public func openSetPassword() {
+        setPasswordProblem = nil
+        isSetPasswordOpen = true
+    }
+
+    /// "Set a password to do this." from the server opens the set-password sheet instead of a password box that can't work.
+    /// True when it handled the error.
+    @discardableResult
+    public func handleSignInRefusal(_ error: Error) -> Bool {
+        switch error as? ToolrollClientError {
+        case .passwordNotSet?:
+            openSetPassword()
+            notice = WorkbenchNotice(kind: .info, message: "Set a password first; then do this again.")
+            return true
+        case .fullSignInNeeded?:
+            notice = WorkbenchNotice(kind: .refusal, message: "This needs you signed in with your password: open Toolroll in your browser and sign in there.")
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Set the account's first password, then reconnect (setting it ends every session, this one included) and read
+    /// `passwordSet` again: only that says it worked. Length and match are checked here first, so a slip spends no sign-in try.
+    @discardableResult
+    public func setFirstPassword(_ password: String, again: String) async -> Bool {
+        setPasswordProblem = nil
+        guard password.count >= 8 else { setPasswordProblem = "Use at least 8 characters."; return false }
+        guard password == again else { setPasswordProblem = "The two passwords don't match. Type them again."; return false }
+        guard let client else { setPasswordProblem = "Toolroll isn't connected. Run `toolroll up`, then try again."; return false }
+        setPasswordBusy = true
+        defer { setPasswordBusy = false }
+        // No refresh may answer "signed out" while the old session ends and the new one starts.
+        sseTask?.cancel()
+        sseTask = nil
+        do {
+            try await client.setFirstPassword(password)
+        } catch {
+            setPasswordProblem = error.localizedDescription
+            return false
+        }
+        let keep = selectedTaskId
+        let connected = await connectToLocalConsoleIfAvailable(silent: true)
+        if let keep { await selectTask(keep) }
+        guard connected else {
+            setPasswordProblem = "Toolroll couldn't reconnect. Run `toolroll` in Terminal, then reopen this window."
+            return false
+        }
+        guard passwordSet == true else {
+            setPasswordProblem = "Toolroll didn't take that password. Try again, or set it in Terminal with `toolroll password set`."
+            return false
+        }
+        isSetPasswordOpen = false
+        notice = WorkbenchNotice(kind: .info, message: "Password set. Use it whenever Toolroll asks; keep it in your password manager.")
+        return true
+    }
+
     @discardableResult
     public func connectToLocalConsoleIfAvailable(silent: Bool = false) async -> Bool {
         if let creds = await LocalConsoleConnector.discoverAndConnect() {
@@ -1326,6 +1407,7 @@ public final class WorkbenchStore {
             self.activeProfile = localProf
             self.isLocalSession = true
             self.client = ToolrollClient(localSession: creds)
+            self.passwordSet = creds.passwordSet
             if let eq = creds.cookieHeader.firstIndex(of: "=") {
                 let cname = String(creds.cookieHeader[..<eq])
                 let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
@@ -1643,6 +1725,8 @@ public final class WorkbenchStore {
                     notice = WorkbenchNotice(kind: .refusal, message: "Plan terms changed — review the refreshed plan and click Approve & Build again.")
                 }
             }
+        } catch let error as ToolrollClientError where handleSignInRefusal(error) {
+            // Opened the set-password sheet, or said a browser sign-in is needed.
         } catch ToolrollClientError.passwordRequired(let msg) {
             approvalPasswordPrompt = msg
             if let fresh = try? await client.fetchApprovalCard(taskId: queryTaskId) {
@@ -2250,6 +2334,7 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: reply)
             return (true, reply)
         } catch {
+            handleSignInRefusal(error)
             return (false, error.localizedDescription)
         }
     }
@@ -2270,6 +2355,7 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: reply)
             return (true, reply)
         } catch {
+            handleSignInRefusal(error)
             return (false, error.localizedDescription)
         }
     }
@@ -2284,6 +2370,7 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: reply)
             return (true, reply)
         } catch {
+            handleSignInRefusal(error)
             return (false, error.localizedDescription)
         }
     }

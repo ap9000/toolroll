@@ -15,6 +15,8 @@ public struct LocalSessionCredentials: Sendable, Equatable {
     public let key: String
     public let epoch: String
     public let databasePath: String
+    /// Whether the account has a password yet (the console says so on connect; nil from an older console).
+    public let passwordSet: Bool?
 
     public init(
         origin: String,
@@ -23,7 +25,8 @@ public struct LocalSessionCredentials: Sendable, Equatable {
         csrf: String,
         key: String,
         epoch: String,
-        databasePath: String
+        databasePath: String,
+        passwordSet: Bool? = nil
     ) {
         self.origin = origin
         self.account = account
@@ -32,6 +35,7 @@ public struct LocalSessionCredentials: Sendable, Equatable {
         self.key = key
         self.epoch = epoch
         self.databasePath = databasePath
+        self.passwordSet = passwordSet
     }
 }
 
@@ -55,6 +59,7 @@ public enum LocalConsoleConnector {
         let csrf: String
         let key: String
         let epoch: String
+        let passwordSet: Bool?
     }
 
     /// Discovers a live local Toolroll console on this Mac and redeems a one-time session link in memory.
@@ -233,7 +238,8 @@ public enum LocalConsoleConnector {
             csrf: redeemed.csrf,
             key: redeemed.key,
             epoch: redeemed.epoch,
-            databasePath: databasePath
+            databasePath: databasePath,
+            passwordSet: redeemed.passwordSet
         )
     }
 }

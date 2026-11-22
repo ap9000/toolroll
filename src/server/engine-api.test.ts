@@ -843,3 +843,27 @@ describe("a file's length from its own patch (resultDiffFile.lineCount)", () => 
     expect(reads.patchLineCount([{ header: "not a header" }])).toBeNull();
   });
 });
+
+describe("password onboarding from the Mac app (password-onboarding.md)", () => {
+  let world: LocalWorld;
+  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); }, LOCAL_WORLD_SETUP_MS);
+  afterAll(async () => { await world.close(); });
+  test("the Mac app sets its first password with exactly what it sends, and its next connect says so", async () => {
+    const redeem = async () => {
+      const link = world.server.mintLocalLink()!;
+      const answer = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+      return linkRedemptionSchema.parse(JSON.parse(answer.body));
+    };
+    const before = await redeem();
+    expect(before.passwordSet).toBe(false);
+    // The app's request (ToolrollClient.setFirstPassword): form-encoded, csrf in the body, the key header, its own Origin.
+    const origin = `http://127.0.0.1:${world.port}`;
+    const form = `csrf=${before.csrf}&password=${encodeURIComponent("a+b&c=d %e!")}&again=${encodeURIComponent("a+b&c=d %e!")}`;
+    const set = await world.send("/password/set", "POST", { cookie: `${before.cookie.name}=${before.cookie.value}`, origin, "x-csrf-token": before.csrf, "x-toolroll-key": before.key,
+      "x-toolroll-client": "terminal", "content-type": "application/x-www-form-urlencoded", accept: "text/html" }, form);
+    expect(set.status).toBeLessThan(400);
+    // Setting it ended the app's session; a fresh link connects again and now says a password is set.
+    expect((await world.send("/work/rows", "GET", { cookie: `${before.cookie.name}=${before.cookie.value}`, accept: "application/json" })).status).not.toBe(200);
+    expect((await redeem()).passwordSet).toBe(true);
+  });
+});

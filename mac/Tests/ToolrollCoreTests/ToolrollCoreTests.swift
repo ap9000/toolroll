@@ -838,4 +838,27 @@ struct ToolrollCoreTests {
         #expect(round == scratch)
         #expect(round.scratch == true)
     }
+
+    @Test("The server's two local-owner sentences never become a password box; other password refusals do")
+    func signInRefusalsMapExactly() {
+        #expect(ToolrollClient.refusal("Set a password to do this.") == .passwordNotSet("Set a password to do this."))
+        #expect(ToolrollClient.refusal("Sign in with your password to do this.") == .fullSignInNeeded("Sign in with your password to do this."))
+        #expect(ToolrollClient.refusal("Enter your Toolroll password to change what builds may reach.") == .passwordRequired("Enter your Toolroll password to change what builds may reach."))
+        #expect(ToolrollClient.refusal("An approver for this project changes what its builds may reach.") == .refused("An approver for this project changes what its builds may reach."))
+    }
+
+    @Test("A password reaches the server exactly as typed: + & = % and spaces are encoded")
+    func formEncodingKeepsEveryCharacter() {
+        #expect(ToolrollClient.formEncoded([("password", "a+b&c=d %e")]) == "password=a%2Bb%26c%3Dd%20%25e")
+        #expect(ToolrollClient.formEncoded([("csrf", "ab12"), ("local", "any")]) == "csrf=ab12&local=any")
+        #expect(ToolrollClient.formEncoded([("password", "pässword")]) == "password=p%C3%A4ssword")
+    }
+
+    @Test("A session from an older console doesn't say whether a password is set")
+    func sessionPasswordSetDefaultsToUnknown() {
+        let creds = LocalSessionCredentials(origin: "http://127.0.0.1:4180", account: "alex", cookieHeader: "s=1", csrf: "c", key: "k", epoch: "e", databasePath: "/tmp/x.db")
+        #expect(creds.passwordSet == nil)
+        let told = LocalSessionCredentials(origin: "http://127.0.0.1:4180", account: "alex", cookieHeader: "s=1", csrf: "c", key: "k", epoch: "e", databasePath: "/tmp/x.db", passwordSet: false)
+        #expect(told.passwordSet == false)
+    }
 }

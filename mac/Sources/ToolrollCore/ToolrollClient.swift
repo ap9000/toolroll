@@ -5,6 +5,10 @@ public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
     case unauthenticated
     case refused(String)
     case passwordRequired(String)
+    /// The account has no password yet ("Set a password to do this."): the app offers to set one, never a password box.
+    case passwordNotSet(String)
+    /// A password is set, but this needs a full sign-in the app's local session can't make ("Sign in with your password to do this.").
+    case fullSignInNeeded(String)
     case httpStatus(Int, String)
     case unreachable(String)
     case decoding(String)
@@ -15,6 +19,8 @@ public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
         case .unauthenticated: return "Session ended or access changed — reconnect in Workspace Settings."
         case .refused(let m): return m
         case .passwordRequired(let m): return m
+        case .passwordNotSet: return "Set a password to do this."
+        case .fullSignInNeeded: return "This needs you signed in with your password in Toolroll's browser page."
         case .httpStatus(let code, let m): return m.isEmpty ? "Server answered HTTP \(code)." : m
         case .unreachable(let m): return "Could not reach Toolroll: \(m)"
         case .decoding(let m): return "Unexpected response shape: \(m)"
@@ -183,17 +189,44 @@ public actor ToolrollClient {
 
     /// Sends a form POST action (`application/x-www-form-urlencoded`) in local-session mode and parses
     /// Toolroll's standard JSON (`{ outcome, words }`) or redirect (`?said=` / `?problem=`) response.
+    /// `application/x-www-form-urlencoded`, strictly: everything but letters, digits and `-._*` is percent-encoded, so a
+    /// password's `+`, `&`, `=` or `%` reaches the server exactly as typed (URLComponents leaves `+`, which a form reads as a space).
+    public static func formEncoded(_ fields: [(String, String)]) -> String {
+        var allowed = CharacterSet.alphanumerics.intersection(CharacterSet(charactersIn: Unicode.Scalar(0)...Unicode.Scalar(127)))
+        allowed.insert(charactersIn: "-._*")
+        let encode = { (text: String) in text.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
+        return fields.map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&")
+    }
+
+    /// The server's exact local-owner sentences (local-owner.ts localOwnerRefusal) first, so neither shows a password box
+    /// that can't work; then any other password refusal asks for the password again.
+    public static func refusal(_ words: String) -> ToolrollClientError {
+        let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        if said == "Set a password to do this." { return .passwordNotSet(said) }
+        if said == "Sign in with your password to do this." { return .fullSignInNeeded(said) }
+        let lower = said.lowercased()
+        if lower.contains("password") || lower.contains("step-up") { return .passwordRequired(said) }
+        return .refused(said)
+    }
+
+    /// Set the account's first password (`POST /password/set`, the console's own form: csrf in the body, the key header).
+    /// Its answer is a page, and it ends every session of the account, this one included: the caller reconnects and reads
+    /// `passwordSet` again, which alone says whether it worked. Throws only when the request couldn't be made.
+    public func setFirstPassword(_ password: String) async throws {
+        guard case .localSession(let s) = transport else {
+            throw ToolrollClientError.refused("Set a password from Toolroll on this Mac.")
+        }
+        let body = Self.formEncoded([("csrf", s.csrf), ("password", password), ("again", password)])
+        let req = try makeRequest(path: "/password/set", method: "POST", body: Data(body.utf8),
+                                  contentType: "application/x-www-form-urlencoded", accept: "text/html", includeMutationKey: true)
+        do { _ = try await session.data(for: req) } catch { throw ToolrollClientError.unreachable(error.localizedDescription) }
+    }
+
     private func sendFormAct(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
         guard case .localSession(let s) = transport else {
             throw ToolrollClientError.refused("This action requires a local or signed-in session.")
         }
-        var items = [URLQueryItem(name: "csrf", value: s.csrf)]
-        for (k, v) in fields {
-            items.append(URLQueryItem(name: k, value: v))
-        }
-        var comps = URLComponents()
-        comps.queryItems = items
-        let formBody = comps.percentEncodedQuery ?? ""
+        let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
         let req = try makeRequest(
             path: path,
             method: "POST",
@@ -224,11 +257,7 @@ public actor ToolrollClient {
                 ?? ""
             let outcome = obj["outcome"] as? String
             if outcome == "refused" || http.statusCode >= 400 {
-                let lower = words.lowercased()
-                if lower.contains("password") || lower.contains("step-up") || lower.contains("confirm your password") {
-                    throw ToolrollClientError.passwordRequired(words.isEmpty ? "Enter your password to confirm this action." : words)
-                }
-                throw ToolrollClientError.refused(words.isEmpty ? "Action refused (\(http.statusCode))." : words)
+                throw Self.refusal(words.isEmpty ? "Action refused (\(http.statusCode))." : words)
             }
             return words.isEmpty ? defaultDone : words
         }
@@ -240,11 +269,7 @@ public actor ToolrollClient {
             locationHeader: http.value(forHTTPHeaderField: "Location")
         )
         if let problem = redirectOutcome.problem {
-            let lower = problem.lowercased()
-            if lower.contains("password") || lower.contains("step-up") || lower.contains("confirm your password") {
-                throw ToolrollClientError.passwordRequired(problem)
-            }
-            throw ToolrollClientError.refused(problem)
+            throw Self.refusal(problem)
         }
         if let said = redirectOutcome.said {
             return said

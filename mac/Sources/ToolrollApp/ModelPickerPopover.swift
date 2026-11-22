@@ -342,6 +342,7 @@ public struct ModelPickerPopover: View {
                         .padding(.vertical, 5)
                         .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 4))
                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    ForgotPasswordLink()
                         .onSubmit {
                             submitPasswordConfirmation()
                         }

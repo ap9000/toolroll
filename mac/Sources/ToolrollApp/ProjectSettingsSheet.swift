@@ -196,6 +196,7 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    ForgotPasswordLink()
                         .onSubmit {
                             Task { await toggleLiveCommands(snap: snap, show: true) }
                         }
@@ -264,6 +265,7 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    ForgotPasswordLink()
                         .onSubmit {
                             Task { await saveNetwork(snap: snap) }
                         }
@@ -304,6 +306,7 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                    ForgotPasswordLink()
                         .onSubmit {
                             Task { await saveSetup(snap: snap) }
                         }

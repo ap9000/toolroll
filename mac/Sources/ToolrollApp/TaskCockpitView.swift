@@ -836,6 +836,7 @@ public struct TaskCockpitView: View {
                             .padding(.vertical, 6)
                             .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        ForgotPasswordLink()
                             .onSubmit {
                                 let pw = approvalPassword
                                 approvalPassword = ""
@@ -1650,6 +1651,7 @@ public struct TaskCockpitView: View {
                             .padding(.vertical, 6)
                             .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        ForgotPasswordLink()
                             .onSubmit {
                                 let pw = setupPasswordDraft
                                 setupPasswordDraft = ""
