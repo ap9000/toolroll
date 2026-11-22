@@ -38,8 +38,8 @@ const prove = (act: LocalOwnerAct, token: string, options: { credential?: boolea
 };
 
 describe("the closed list", () => {
-  test("is exactly the thread setup's credential steps", () => {
-    expect([...LOCAL_PASSWORD_ACTS].sort()).toEqual(["flexible-sign-in-check", "flexible-sign-in-save", "flexible-switch", "project-flexible"]);
+  test("is exactly the thread setup's credential steps and the Mac app's project settings that take a password", () => {
+    expect([...LOCAL_PASSWORD_ACTS].sort()).toEqual(["flexible-sign-in-check", "flexible-sign-in-save", "flexible-switch", "project-flexible", "project-live-view", "project-network"]);
   });
 
   test.each([...LOCAL_PASSWORD_ACTS])("%s: the real password typed now is password-now (a credential act's proof), for this act only, and stamps nothing", act => {

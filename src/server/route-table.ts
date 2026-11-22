@@ -243,6 +243,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.flexible-sign-in-check": "flexible-sign-in-check",
   "settings.flexible-sign-in-clear": "flexible-sign-in-clear",
   "settings.project-flexible": "project-flexible",
+  // The Mac app's Project Settings sheet: each takes a password typed into it (scope.ts LOCAL_PASSWORD_ACTS).
+  "settings.project-network": "project-network",
+  "settings.project-live-view": "project-live-view",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });

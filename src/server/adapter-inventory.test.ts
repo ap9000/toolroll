@@ -58,6 +58,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.models-agent=change-models", "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
     // A project's Flexible terms: turning on takes a password typed into the form; lowering and off only narrow.
     "settings.project-flexible=project-flexible",
+    "settings.project-live-view=project-live-view",
+    "settings.project-network=project-network",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",

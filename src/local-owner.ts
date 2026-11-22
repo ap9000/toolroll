@@ -114,6 +114,11 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "flexible-sign-in-check",
   "flexible-sign-in-clear",
   "project-flexible",
+  // The Mac app's Project Settings (codex-os-fence.md, 2026-11-22): what a project's builds may reach (local services,
+  // hosts, open or not) and whether its builds' shell commands show live. Each takes the password typed into the sheet
+  // now (LOCAL_PASSWORD_ACTS); the handlers' own credential checks are unchanged.
+  "project-network",
+  "project-live-view",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 /**
@@ -123,7 +128,7 @@ export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
  * local owner's own act; nothing it proves stamps a remembered password, stands in for a later step-up, or upgrades the
  * session (its authority stays local-owner).
  */
-export const LOCAL_PASSWORD_ACTS: ReadonlySet<LocalOwnerAct> = new Set<LocalOwnerAct>(["flexible-switch", "flexible-sign-in-save", "flexible-sign-in-check", "project-flexible"]);
+export const LOCAL_PASSWORD_ACTS: ReadonlySet<LocalOwnerAct> = new Set<LocalOwnerAct>(["flexible-switch", "flexible-sign-in-save", "flexible-sign-in-check", "project-flexible", "project-network", "project-live-view"]);
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
 /** Whether a runtime string names an act a local owner may do. */
 export function localOwnerAct(value: unknown): value is LocalOwnerAct {
