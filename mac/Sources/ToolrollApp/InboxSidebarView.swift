@@ -43,8 +43,21 @@ public struct InboxSidebarView: View {
                         .buttonStyle(.plain)
                     }
 
-                    // Filter menu tucked cleanly inside the search pill
+                    // Filter & Grouping menu tucked cleanly inside the search pill
                     Menu {
+                        Section("Group by") {
+                            ForEach(SidebarGrouping.allCases) { g in
+                                Button {
+                                    store.sidebarGrouping = g
+                                } label: {
+                                    HStack {
+                                        Text(g.rawValue)
+                                        if store.sidebarGrouping == g { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }
+                        Divider()
                         Section("Project") {
                             Button {
                                 store.selectedProject = nil
@@ -143,17 +156,33 @@ public struct InboxSidebarView: View {
                 .padding(.bottom, 6)
             }
 
-            // Unified scrollable task list (Needs you, Running, Queued + inline collapsible Settled)
+            // Unified scrollable task list (Status-first default, or grouped by Project)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if !store.needsRows.isEmpty {
-                        activeSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
-                    }
-                    if !store.runningRows.isEmpty {
-                        activeSection(title: "Running", count: store.runningRows.count, solidBadge: false, rows: store.runningRows)
-                    }
-                    if !store.queuedRows.isEmpty {
-                        activeSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
+                    if store.sidebarGrouping == .project {
+                        let activeAll = store.needsRows + store.runningRows + store.queuedRows
+                        let grouped = Dictionary(grouping: activeAll) { ($0.project?.isEmpty == false ? $0.project! : "Workspace") }
+                        let keys = grouped.keys.sorted()
+                        ForEach(keys, id: \.self) { projKey in
+                            if let rows = grouped[projKey], !rows.isEmpty {
+                                activeSection(
+                                    title: projKey,
+                                    count: rows.count,
+                                    solidBadge: rows.contains(where: { $0.status == .needs }),
+                                    rows: rows
+                                )
+                            }
+                        }
+                    } else {
+                        if !store.needsRows.isEmpty {
+                            activeSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
+                        }
+                        if !store.runningRows.isEmpty {
+                            activeSection(title: "Running", count: store.runningRows.count, solidBadge: false, rows: store.runningRows)
+                        }
+                        if !store.queuedRows.isEmpty {
+                            activeSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
+                        }
                     }
 
                     if store.needsRows.isEmpty && store.runningRows.isEmpty && store.queuedRows.isEmpty {

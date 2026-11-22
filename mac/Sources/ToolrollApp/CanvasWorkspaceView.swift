@@ -116,7 +116,7 @@ public struct CanvasWorkspaceView: View {
             }
         }
         .background(ToolrollPalette.ground)
-        .task(id: "\(store.selectedProject ?? "")::\(store.selectedRow?.project ?? "")") {
+        .task(id: "\(store.selectedProject ?? "")::\(store.activeProject ?? "")::\(store.selectedRow?.project ?? "")") {
             await store.loadCanvasForCurrentProject()
         }
         .onKeyPress("v") { handleCanvasToolShortcut(.select) }

@@ -4,6 +4,12 @@ import Observation
 import ToolrollCore
 import UniformTypeIdentifiers
 
+public enum SidebarGrouping: String, CaseIterable, Identifiable, Sendable {
+    case status = "Status"
+    case project = "Project"
+    public var id: String { rawValue }
+}
+
 public enum TeamFilter: String, CaseIterable, Identifiable, Sendable {
     case everyone = "Everyone"
     case mine = "Mine"
@@ -59,6 +65,13 @@ public final class WorkbenchStore {
         didSet { UserDefaults.standard.set(workspaceMode.rawValue, forKey: "toolroll.workspaceMode") }
     }
     public var selectedProject: String? = nil
+    /// Active workspace project context for Launchpad, Canvas, and quick Terminal without filtering out other repos in the sidebar.
+    public var activeProject: String? = nil
+    public var sidebarGrouping: SidebarGrouping = SidebarGrouping(
+        rawValue: UserDefaults.standard.string(forKey: "toolroll.sidebarGrouping") ?? ""
+    ) ?? .status {
+        didSet { UserDefaults.standard.set(sidebarGrouping.rawValue, forKey: "toolroll.sidebarGrouping") }
+    }
     public var teamFilter: TeamFilter = .everyone
     public var sidebarSearch: String = ""
     public var isSidebarVisible: Bool = true {
@@ -274,7 +287,7 @@ public final class WorkbenchStore {
     }
 
     public func loadCanvasForCurrentProject(forceRefresh: Bool = false) async {
-        let targetProject = selectedProject ?? selectedRow?.project ?? allProjects.first ?? "toolroll"
+        let targetProject = selectedProject ?? activeProject ?? selectedRow?.project ?? allProjects.first ?? "toolroll"
         let root = resolveLocalProjectRoot(for: targetProject)
 
         let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
@@ -996,16 +1009,23 @@ public final class WorkbenchStore {
         }
     }
 
+    public func localFolderPath(for projectName: String) -> String? {
+        resolveLocalProjectRoot(for: projectName)
+    }
+
     public func addLocalProject(path folderPath: String) async {
         busyLabel = "Adding project…"
         defer { busyLabel = nil }
+        let folderName = (folderPath as NSString).lastPathComponent
         if activeProfile.isDemo {
-            notice = WorkbenchNotice(kind: .info, message: "Added \((folderPath as NSString).lastPathComponent) (demo).")
+            activeProject = folderName
+            notice = WorkbenchNotice(kind: .info, message: "Added \(folderName) (demo).")
             return
         }
         guard let client else { return }
         do {
             let reply = try await client.openLocalProject(path: folderPath)
+            activeProject = folderName
             notice = WorkbenchNotice(kind: .info, message: reply)
             await refreshAll()
         } catch {
@@ -1721,6 +1741,42 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(
                 kind: .info,
                 message: started.reused ? "Attached to existing \(started.program) Live Terminal." : "Started \(started.program) Live Terminal on \(started.branch)."
+            )
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    /// Starts or attaches a live PTY directly on a project from the Launchpad (no task required).
+    public func startProjectTerminal(project: String?, program: String = "shell") async {
+        isInspectorVisible = true
+        inspectorTab = .terminal
+        busyLabel = "Starting \(program) Live Terminal…"
+        defer { busyLabel = nil }
+
+        let targetProject = project ?? activeProject ?? selectedProject ?? allProjects.first
+        if activeProfile.isDemo {
+            terminalSession.attachDemo(taskId: "workspace", program: program, branch: targetProject ?? "workspace", controller: "alex", me: "alex")
+            return
+        }
+        guard let client else { return }
+        do {
+            let started = try await client.startOrReuseTerminal(
+                taskId: "",
+                project: targetProject,
+                runId: nil,
+                program: program
+            )
+            await terminalSession.attach(
+                client: client,
+                terminalId: started.id,
+                taskId: nil,
+                program: started.program,
+                branch: started.branch
+            )
+            notice = WorkbenchNotice(
+                kind: .info,
+                message: started.reused ? "Attached to \(started.program) in \(targetProject ?? "workspace")." : "Started \(started.program) in \(targetProject ?? "workspace")."
             )
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)

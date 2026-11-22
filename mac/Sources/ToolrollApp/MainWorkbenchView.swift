@@ -111,9 +111,9 @@ public struct MainWorkbenchView: View {
 
     private var breadcrumbProject: String {
         if store.isComposingNewWork {
-            return store.selectedProject ?? store.allProjects.first ?? store.activeProfile.displayTitle
+            return store.activeProject ?? store.selectedProject ?? store.allProjects.first ?? store.activeProfile.displayTitle
         }
-        return store.selectedRow?.project ?? store.selectedProject ?? store.activeProfile.displayTitle
+        return store.selectedRow?.project ?? store.activeProject ?? store.selectedProject ?? store.activeProfile.displayTitle
     }
 
     private var breadcrumbTitle: String {
