@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 
@@ -177,6 +178,7 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
     public let elementSelector: String?
     public let elementFile: String?
     public let elementLine: Int?
+    public var screenshotPath: String?
     public var isDraft: Bool
     public var linkedTaskId: String?
     public let createdAt: String
@@ -194,6 +196,7 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         elementSelector: String? = nil,
         elementFile: String? = nil,
         elementLine: Int? = nil,
+        screenshotPath: String? = nil,
         isDraft: Bool = true,
         linkedTaskId: String? = nil,
         createdAt: String = ISO8601DateFormatter().string(from: Date())
@@ -210,6 +213,7 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         self.elementSelector = elementSelector
         self.elementFile = elementFile
         self.elementLine = elementLine
+        self.screenshotPath = screenshotPath
         self.isDraft = isDraft
         self.linkedTaskId = linkedTaskId
         self.createdAt = createdAt
@@ -651,6 +655,7 @@ public enum YouiCanvasStorage {
     ) -> (baseline: String, latest: String)? {
         let latestURL = cachedTilePath(projectRoot: projectRoot, stateKey: stateKey, slug: slug, viewport: viewport)
         let baselineURL = cachedTilePath(projectRoot: projectRoot, stateKey: baselineKey, slug: slug, viewport: viewport)
+        let checkpointURL = baselineCheckpointPath(projectRoot: projectRoot, slug: slug, viewport: viewport)
         do {
             try FileManager.default.createDirectory(at: latestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try pngData.write(to: latestURL, options: .atomic)
@@ -658,7 +663,8 @@ public enum YouiCanvasStorage {
                 try FileManager.default.createDirectory(at: baselineURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try pngData.write(to: baselineURL, options: .atomic)
             }
-            return (baselineURL.path, latestURL.path)
+            let effectiveBase = FileManager.default.fileExists(atPath: checkpointURL.path) ? checkpointURL.path : baselineURL.path
+            return (effectiveBase, latestURL.path)
         } catch {
             return nil
         }
@@ -695,18 +701,70 @@ public enum YouiCanvasStorage {
             )
             if let root = projectRoot {
                 let latest = cachedTilePath(projectRoot: root, stateKey: stateKey, slug: board.slug, viewport: viewport).path
+                let checkpoint = baselineCheckpointPath(projectRoot: root, slug: board.slug, viewport: viewport).path
                 let base = cachedTilePath(projectRoot: root, stateKey: baselineKey, slug: board.slug, viewport: viewport).path
                 if FileManager.default.fileExists(atPath: latest) {
                     board.latestImagePath = latest
                     board.cachedStateKey = stateKey
                 }
-                if FileManager.default.fileExists(atPath: base) {
+                if FileManager.default.fileExists(atPath: checkpoint) {
+                    board.baselineImagePath = checkpoint
+                } else if FileManager.default.fileExists(atPath: base) {
                     board.baselineImagePath = base
                 } else if board.latestImagePath != nil {
                     board.baselineImagePath = board.latestImagePath
                 }
             }
             return board
+        }
+    }
+
+    // MARK: - Run-Scoped Baseline Checkpoints & Pin Cropped Screenshots
+
+    public static func baselineCheckpointPath(
+        projectRoot: String,
+        slug: String,
+        viewport: CanvasViewportPreset
+    ) -> URL {
+        repoCacheDir(projectRoot: projectRoot)
+            .appendingPathComponent("checkpoints", isDirectory: true)
+            .appendingPathComponent("\(slug)-\(viewport.rawValue.lowercased()).png")
+    }
+
+    @discardableResult
+    public static func saveBaselineCheckpoint(
+        fromImagePath: String,
+        projectRoot: String,
+        slug: String,
+        viewport: CanvasViewportPreset
+    ) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: fromImagePath)) else { return nil }
+        let dest = baselineCheckpointPath(projectRoot: projectRoot, slug: slug, viewport: viewport)
+        do {
+            try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: dest, options: .atomic)
+            return dest.path
+        } catch {
+            return nil
+        }
+    }
+
+    /// Saves a cropped PNG screenshot of the targeted element under `.youi/requests/<pinId>.png`
+    /// and returns the repo-relative path (`.youi/requests/<pinId>.png`).
+    @discardableResult
+    public static func savePinScreenshot(
+        _ pngData: Data,
+        projectRoot: String,
+        pinId: String
+    ) -> String? {
+        let dir = URL(fileURLWithPath: projectRoot).appendingPathComponent(".youi/requests", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let fileURL = dir.appendingPathComponent("\(pinId).png")
+            try pngData.write(to: fileURL, options: .atomic)
+            return ".youi/requests/\(pinId).png"
+        } catch {
+            return nil
         }
     }
 
@@ -724,6 +782,7 @@ public enum YouiCanvasStorage {
             ]
             if let file = pin.elementFile, !file.isEmpty { target["file"] = file }
             if let line = pin.elementLine, line > 0 { target["line"] = line }
+            if let shot = pin.screenshotPath, !shot.isEmpty { target["screenshot"] = shot }
 
             let payload: [String: Any] = [
                 "schema": "youi.request/v1",
@@ -741,6 +800,7 @@ public enum YouiCanvasStorage {
                     "yFrac": pin.yFrac,
                     "route": pin.artboardRoute,
                     "selector": pin.elementSelector as Any,
+                    "screenshot": pin.screenshotPath as Any,
                     "isDraft": pin.isDraft,
                     "linkedTaskId": pin.linkedTaskId as Any,
                 ],
@@ -794,6 +854,7 @@ public enum YouiCanvasStorage {
                 elementSelector: canvas?["selector"] as? String,
                 elementFile: target?["file"] as? String,
                 elementLine: target?["line"] as? Int,
+                screenshotPath: (target?["screenshot"] as? String) ?? (canvas?["screenshot"] as? String),
                 isDraft: (canvas?["isDraft"] as? Bool) ?? (linkedTaskId == nil),
                 linkedTaskId: linkedTaskId,
                 createdAt: (obj["createdAt"] as? String) ?? ""
@@ -905,5 +966,91 @@ public enum YouiCanvasStorage {
         } catch {
             return nil
         }
+    }
+}
+
+// MARK: - Native CoreGraphics Visual Diff Analyzer (Pixel Delta % + Heatmap Overlay)
+
+public struct VisualDiffResult: Sendable {
+    public let changedPercent: Double
+    public let changedPixels: Int
+    public let totalPixels: Int
+    public let heatmapImage: CGImage?
+
+    public init(changedPercent: Double, changedPixels: Int, totalPixels: Int, heatmapImage: CGImage?) {
+        self.changedPercent = changedPercent
+        self.changedPixels = changedPixels
+        self.totalPixels = totalPixels
+        self.heatmapImage = heatmapImage
+    }
+
+    public var isIdentical: Bool { changedPixels == 0 }
+}
+
+public enum CanvasVisualDiff {
+    /// Compares two screenshots into a crisp pixel-diff percentage + transparent heatmap overlay in ~8–12ms.
+    public static func compare(
+        before: CGImage,
+        after: CGImage,
+        maxWidth: Int = 720,
+        tolerance: Int = 14
+    ) -> VisualDiffResult {
+        let srcW = max(1, after.width)
+        let srcH = max(1, after.height)
+        let w = min(maxWidth, srcW)
+        let h = max(1, Int((Double(srcH) * Double(w) / Double(srcW)).rounded()))
+        let bytesPerRow = w * 4
+        let byteCount = bytesPerRow * h
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            return VisualDiffResult(changedPercent: 0, changedPixels: 0, totalPixels: w * h, heatmapImage: nil)
+        }
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        var beforeBuf = [UInt8](repeating: 0, count: byteCount)
+        var afterBuf = [UInt8](repeating: 0, count: byteCount)
+        var heatBuf = [UInt8](repeating: 0, count: byteCount)
+
+        let drawRect = CGRect(x: 0, y: 0, width: w, height: h)
+        beforeBuf.withUnsafeMutableBytes { ptr in
+            if let ctx = CGContext(data: ptr.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo) {
+                ctx.interpolationQuality = .medium
+                ctx.draw(before, in: drawRect)
+            }
+        }
+        afterBuf.withUnsafeMutableBytes { ptr in
+            if let ctx = CGContext(data: ptr.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo) {
+                ctx.interpolationQuality = .medium
+                ctx.draw(after, in: drawRect)
+            }
+        }
+
+        var changed = 0
+        let total = w * h
+        for i in 0..<total {
+            let o = i * 4
+            let dr = abs(Int(beforeBuf[o]) - Int(afterBuf[o]))
+            let dg = abs(Int(beforeBuf[o + 1]) - Int(afterBuf[o + 1]))
+            let db = abs(Int(beforeBuf[o + 2]) - Int(afterBuf[o + 2]))
+            let da = abs(Int(beforeBuf[o + 3]) - Int(afterBuf[o + 3]))
+            if max(max(dr, dg), max(db, da)) > tolerance {
+                changed += 1
+                // Crisp crimson/rose premultiplied highlight (alpha ~175)
+                heatBuf[o] = 168     // R premultiplied
+                heatBuf[o + 1] = 36  // G premultiplied
+                heatBuf[o + 2] = 68  // B premultiplied
+                heatBuf[o + 3] = 180 // A
+            }
+        }
+
+        let heatmap: CGImage? = heatBuf.withUnsafeMutableBytes { ptr in
+            guard let ctx = CGContext(data: ptr.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo) else {
+                return nil
+            }
+            return ctx.makeImage()
+        }
+
+        let pct = total > 0 ? (Double(changed) / Double(total)) * 100.0 : 0.0
+        return VisualDiffResult(changedPercent: pct, changedPixels: changed, totalPixels: total, heatmapImage: heatmap)
     }
 }

@@ -459,6 +459,25 @@ public final class WorkbenchStore {
         pumpHydrationPool()
     }
 
+    /// Locks the artboard's current snapshot as its persistent `Before` baseline checkpoint for visual Compare.
+    @discardableResult
+    public func setArtboardBaselineCheckpoint(boardId: String) -> Bool {
+        guard let idx = canvasArtboards.firstIndex(where: { $0.id == boardId }),
+              let latest = canvasArtboards[idx].latestImagePath,
+              let root = canvasProjectRoot
+        else { return false }
+        if let savedPath = YouiCanvasStorage.saveBaselineCheckpoint(
+            fromImagePath: latest,
+            projectRoot: root,
+            slug: canvasArtboards[idx].slug,
+            viewport: canvasViewport
+        ) {
+            canvasArtboards[idx].baselineImagePath = savedPath
+            return true
+        }
+        return false
+    }
+
     private func resolveDynamicTaskRoutes(_ entries: [YouiScreenEntry]) -> [YouiScreenEntry] {
         let rows = workRowsResponse.rows
         guard !rows.isEmpty else { return entries }
@@ -496,11 +515,18 @@ public final class WorkbenchStore {
         elementSelector: String? = nil,
         elementFile: String? = nil,
         elementLine: Int? = nil,
+        screenshotPNG: Data? = nil,
         fileImmediately: Bool,
         planFirst: Bool = true
     ) async {
         let fallbackFile = elementFile ?? canvasArtboards.first(where: { $0.path == path })?.sourceFile
+        let pinId = CanvasPin.newRequestId()
+        var savedShot: String? = nil
+        if let png = screenshotPNG, let root = canvasProjectRoot {
+            savedShot = YouiCanvasStorage.savePinScreenshot(png, projectRoot: root, pinId: pinId)
+        }
         let pin = CanvasPin(
+            id: pinId,
             artboardRoute: route,
             artboardPath: path,
             xFrac: xFrac,
@@ -512,6 +538,7 @@ public final class WorkbenchStore {
             elementSelector: elementSelector,
             elementFile: fallbackFile,
             elementLine: elementLine,
+            screenshotPath: savedShot,
             isDraft: !fileImmediately
         )
         canvasPins.append(pin)
@@ -563,11 +590,20 @@ public final class WorkbenchStore {
                 title = String("[UI] \(label) (\(batch.count) changes)".prefix(118))
             }
 
+            // Automatically lock a pre-run `Before` baseline checkpoint for each screen in this batch
+            let touchedPaths = Set(batch.map(\.artboardPath))
+            for board in canvasArtboards where touchedPaths.contains(board.path) {
+                setArtboardBaselineCheckpoint(boardId: board.id)
+            }
+
             let details = batch.enumerated().map { idx, p -> String in
                 var meta = "route `\(p.artboardPath)` at (\(Int(p.xFrac * 100))%, \(Int(p.yFrac * 100))%)"
                 if let el = p.elementName { meta += " · element `\(el)`" }
                 if let f = p.elementFile {
                     meta += p.elementLine.map { " · `\(f):\($0)`" } ?? " · `\(f)`"
+                }
+                if let shot = p.screenshotPath {
+                    meta += " · element screenshot `\(shot)`"
                 }
                 let kindTag = p.kind == .options ? "[Options A/B/C/D] " : ""
                 return "\(idx + 1). \(kindTag)\(p.body) (\(meta))"
@@ -1808,6 +1844,19 @@ public final class WorkbenchStore {
             }
             if let client, let rows = try? await client.fetchWorkRows() {
                 workRowsResponse = rows
+                // If a Canvas-linked task reached review/finished, invalidate its screen so fresh `After` captures cleanly
+                if let row = rows.rows.first(where: { $0.id == taskId }),
+                   (row.status == .finished || row.status == .needs) {
+                    let linkedPaths = Set(canvasPins.filter { $0.linkedTaskId == taskId }.map(\.artboardPath))
+                    var invalidated = false
+                    for i in canvasArtboards.indices where linkedPaths.contains(canvasArtboards[i].path) {
+                        canvasArtboards[i].cachedStateKey = nil
+                        invalidated = true
+                    }
+                    if invalidated && !canvasBaseURL.isEmpty {
+                        pumpHydrationPool()
+                    }
+                }
             }
             if let client, let pres = try? await client.fetchPresence() {
                 presence = pres

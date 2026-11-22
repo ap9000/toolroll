@@ -21,8 +21,18 @@ struct ScreenFocusLightboxView: View {
         var id: String { rawValue }
     }
 
+    enum CompareSubMode: String, CaseIterable, Identifiable {
+        case wipe = "Wipe"
+        case sideBySide = "Side-by-Side"
+        case pixelDiff = "Pixel Diff"
+        var id: String { rawValue }
+    }
+
     @State private var bridge = FocusWebBridge()
     @State private var viewMode: ViewMode = .cached
+    @State private var compareSubMode: CompareSubMode = .wipe
+    @State private var liveTweakSnapshot: NSImage? = nil
+    @State private var visualDiff: VisualDiffResult? = nil
     @State private var detailZoom: CGFloat = 1.0
     @State private var baseZoom: CGFloat = 1.0
     @State private var pan: CGSize = .zero
@@ -56,7 +66,8 @@ struct ScreenFocusLightboxView: View {
     }
 
     private var hasBeforeAfter: Bool {
-        board.baselineImagePath != nil && board.latestImagePath != nil
+        (board.baselineImagePath != nil && board.latestImagePath != nil)
+            || (!activeLiveEdits.isEmpty && board.latestImagePath != nil)
     }
 
     private var activeLiveEdits: [ElementLiveEdit] {
@@ -121,6 +132,8 @@ struct ScreenFocusLightboxView: View {
         isContextMenuOpen = false
         contextMenuAnchorFrac = nil
         pendingEdits.removeAll()
+        liveTweakSnapshot = nil
+        visualDiff = nil
         detailZoom = 1.0
         baseZoom = 1.0
         pan = .zero
@@ -207,14 +220,18 @@ struct ScreenFocusLightboxView: View {
                     let active = viewMode == mode
                     let disabled = (mode == .compare && !hasBeforeAfter)
                     Button {
-                        viewMode = mode
-                        if mode != .live {
-                            isStylePopoverOpen = false
-                            isContextMenuOpen = false
-                            isEditingCopy = false
-                        }
-                        if mode == .live && store.canvasBaseURL.isEmpty {
-                            Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                        if mode == .compare {
+                            Task { await enterCompareMode() }
+                        } else {
+                            viewMode = mode
+                            if mode != .live {
+                                isStylePopoverOpen = false
+                                isContextMenuOpen = false
+                                isEditingCopy = false
+                            }
+                            if mode == .live && store.canvasBaseURL.isEmpty {
+                                Task { await store.wakePreviewServerAndHydrate(forceAll: false) }
+                            }
                         }
                     } label: {
                         Text(mode.rawValue)
@@ -338,11 +355,15 @@ struct ScreenFocusLightboxView: View {
 
                 ZStack(alignment: .topLeading) {
                     if viewMode == .compare,
-                       let basePath = board.baselineImagePath,
-                       let latestPath = board.latestImagePath,
-                       let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160),
-                       let latestImg = CanvasImageCache.shared.image(atPath: latestPath, maxPixelDimension: 2160) {
-                        focusCompareView(before: baseImg, after: latestImg, width: renderW, height: renderH)
+                       let pair = resolveCompareImages() {
+                        focusCompareView(
+                            before: pair.before,
+                            after: pair.after,
+                            beforeLabel: pair.beforeLabel,
+                            afterLabel: pair.afterLabel,
+                            width: renderW,
+                            height: renderH
+                        )
                     } else if viewMode == .live && !store.canvasBaseURL.isEmpty {
                         let logW = store.canvasViewport.logicalWidth
                         let logH = store.canvasViewport.logicalHeight
@@ -486,7 +507,9 @@ struct ScreenFocusLightboxView: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
-                        if viewMode == .cached {
+                        if viewMode == .compare {
+                            compareFloatingControlBar
+                        } else if viewMode == .cached {
                             Button {
                                 viewMode = .live
                                 if store.canvasBaseURL.isEmpty {
@@ -948,55 +971,222 @@ struct ScreenFocusLightboxView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Compare View
+    // MARK: - 3-Mode Compare View (Wipe | Side-by-Side | Pixel Diff) + Original vs Live Tweaks
 
-    private func focusCompareView(before: NSImage, after: NSImage, width: CGFloat, height: CGFloat) -> some View {
-        let splitX = CGFloat(compareSplit) * width
-        return ZStack(alignment: .topLeading) {
-            Image(nsImage: after)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: width, height: height)
-
-            Image(nsImage: before)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: width, height: height)
-                .mask(
-                    Rectangle()
-                        .frame(width: max(0, splitX), height: height)
-                        .frame(width: width, height: height, alignment: .leading)
-                )
-
-            Rectangle()
-                .fill(ToolrollPalette.ink)
-                .frame(width: 2, height: height)
-                .offset(x: splitX)
-
-            HStack {
-                Text("BEFORE")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(ToolrollPalette.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 4))
-                Spacer()
-                Text("AFTER")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(ToolrollPalette.paper.opacity(0.9), in: RoundedRectangle(cornerRadius: 4))
-            }
-            .foregroundStyle(ToolrollPalette.ink)
-            .padding(10)
+    private func resolveCompareImages() -> (before: NSImage, after: NSImage, beforeLabel: String, afterLabel: String)? {
+        // Priority 1: Original vs Your Live Preview Tweaks!
+        if let tweaked = liveTweakSnapshot,
+           let basePath = board.latestImagePath ?? board.baselineImagePath,
+           let orig = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160) {
+            return (orig, tweaked, "ORIGINAL", "LIVE TWEAKS")
         }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { val in
-                    compareSplit = min(0.98, max(0.02, Double(val.location.x / max(1, width))))
-                    store.setArtboardCompareSplit(id: board.id, split: compareSplit)
+        // Priority 2: Locked Baseline / Main Branch vs Latest Build
+        if let basePath = board.baselineImagePath,
+           let latestPath = board.latestImagePath,
+           let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160),
+           let latestImg = CanvasImageCache.shared.image(atPath: latestPath, maxPixelDimension: 2160) {
+            return (baseImg, latestImg, "BEFORE", "AFTER")
+        }
+        return nil
+    }
+
+    private func enterCompareMode() async {
+        isStylePopoverOpen = false
+        isContextMenuOpen = false
+        isEditingCopy = false
+        bridge.endInlineCopyEdit()
+
+        if !activeLiveEdits.isEmpty, bridge.webView != nil {
+            liveTweakSnapshot = await bridge.captureSnapshot(cropRectFrac: nil)?.image
+        } else {
+            liveTweakSnapshot = nil
+        }
+
+        if let pair = resolveCompareImages(),
+           let bCG = pair.before.cgImage(forProposedRect: nil, context: nil, hints: nil),
+           let aCG = pair.after.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            visualDiff = CanvasVisualDiff.compare(before: bCG, after: aCG)
+        } else {
+            visualDiff = nil
+        }
+        viewMode = .compare
+    }
+
+    private var compareFloatingControlBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                ForEach(CompareSubMode.allCases) { sub in
+                    let active = compareSubMode == sub
+                    Button {
+                        compareSubMode = sub
+                    } label: {
+                        Text(sub.rawValue)
+                            .font(.system(size: 11, weight: active ? .semibold : .regular))
+                            .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-        )
+            }
+            .padding(2)
+            .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+
+            if let diff = visualDiff {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(diff.isIdentical ? ToolrollPalette.muted : ToolrollPalette.live)
+                        .frame(width: 6, height: 6)
+                    Text(diff.isIdentical ? "Identical (0.0%)" : String(format: "%.1f%% changed", diff.changedPercent))
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(diff.isIdentical ? ToolrollPalette.muted : ToolrollPalette.ink)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(ToolrollPalette.raised, in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+
+            Button("Set as Baseline") {
+                if store.setArtboardBaselineCheckpoint(boardId: board.id) {
+                    flashFeedback("Locked current screen as Before baseline")
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Lock the current snapshot as this screen's Before checkpoint")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(ToolrollPalette.paper, in: Capsule())
+        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func focusCompareView(
+        before: NSImage,
+        after: NSImage,
+        beforeLabel: String,
+        afterLabel: String,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        switch compareSubMode {
+        case .wipe:
+            let splitX = CGFloat(compareSplit) * width
+            ZStack(alignment: .topLeading) {
+                Image(nsImage: after)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: width, height: height)
+
+                Image(nsImage: before)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: width, height: height)
+                    .mask(
+                        Rectangle()
+                            .frame(width: max(0, splitX), height: height)
+                            .frame(width: width, height: height, alignment: .leading)
+                    )
+
+                Rectangle()
+                    .fill(ToolrollPalette.ink)
+                    .frame(width: 2, height: height)
+                    .offset(x: splitX)
+
+                // Center drag pill handle
+                Capsule()
+                    .fill(ToolrollPalette.ink)
+                    .frame(width: 22, height: 34)
+                    .overlay(
+                        Image(systemName: "chevron.left.chevron.right")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(ToolrollPalette.inverseInk)
+                    )
+                    .position(x: splitX, y: height / 2)
+
+                HStack {
+                    compareBadge(beforeLabel)
+                    Spacer()
+                    compareBadge(afterLabel)
+                }
+                .padding(10)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { val in
+                        compareSplit = min(0.98, max(0.02, Double(val.location.x / max(1, width))))
+                        store.setArtboardCompareSplit(id: board.id, split: compareSplit)
+                    }
+            )
+
+        case .sideBySide:
+            let halfW = max(120, (width - 10) / 2)
+            HStack(spacing: 10) {
+                ZStack(alignment: .topLeading) {
+                    Image(nsImage: before)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: halfW, height: height)
+                    compareBadge(beforeLabel).padding(8)
+                }
+                .background(ToolrollPalette.codeBg)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+                ZStack(alignment: .topLeading) {
+                    Image(nsImage: after)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: halfW, height: height)
+                    compareBadge(afterLabel).padding(8)
+                }
+                .background(ToolrollPalette.codeBg)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+            .frame(width: width, height: height)
+
+        case .pixelDiff:
+            ZStack(alignment: .topLeading) {
+                Image(nsImage: after)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: width, height: height)
+                    .opacity(0.68)
+
+                if let heatCG = visualDiff?.heatmapImage {
+                    Image(nsImage: NSImage(cgImage: heatCG, size: NSSize(width: heatCG.width, height: heatCG.height)))
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: width, height: height)
+                }
+
+                HStack {
+                    compareBadge("PIXEL DIFF · \(beforeLabel) → \(afterLabel)")
+                    Spacer()
+                    if let diff = visualDiff, diff.isIdentical {
+                        compareBadge("NO VISUAL CHANGE YET")
+                    }
+                }
+                .padding(10)
+            }
+            .frame(width: width, height: height)
+        }
+    }
+
+    private func compareBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(ToolrollPalette.paper.opacity(0.92), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     // MARK: - Right Edit & Task Creation Rail
@@ -1522,6 +1712,17 @@ struct ScreenFocusLightboxView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(ToolrollPalette.ink)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let shotRel = pin.screenshotPath,
+               let root = store.canvasProjectRoot,
+               let thumb = CanvasImageCache.shared.image(atPath: "\(root)/\(shotRel)", maxPixelDimension: 420) {
+                Image(nsImage: thumb)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 84, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
         }
         .padding(10)
         .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6))
@@ -1544,11 +1745,16 @@ struct ScreenFocusLightboxView: View {
         let combinedBody = parts.joined(separator: "\n\n")
 
         let pt = pinnedPoint ?? CGPoint(x: 0.5, y: 0.35)
-        let elName = selectedElement?.displayName ?? edits.first?.elementLabel
-        let elSel = selectedElement?.selector ?? edits.first?.selector
-        let elFile = selectedElement?.file ?? edits.first?.file ?? board.sourceFile
-        let elLine = selectedElement?.line ?? edits.first?.line
+        let capturedEl = selectedElement
+        let elName = capturedEl?.displayName ?? edits.first?.elementLabel
+        let elSel = capturedEl?.selector ?? edits.first?.selector
+        let elFile = capturedEl?.file ?? edits.first?.file ?? board.sourceFile
+        let elLine = capturedEl?.line ?? edits.first?.line
         let shouldPlan = planFirst
+        let shouldCropShot = (viewMode == .live && capturedEl != nil && bridge.webView != nil)
+        let cropFrac: CGRect? = capturedEl.map {
+            CGRect(x: $0.rectXFrac, y: $0.rectYFrac, width: $0.rectWFrac, height: $0.rectHFrac)
+        }
 
         taskPrompt = ""
         isStylePopoverOpen = false
@@ -1557,6 +1763,10 @@ struct ScreenFocusLightboxView: View {
         pendingEdits.removeAll()
 
         Task {
+            var shotData: Data? = nil
+            if shouldCropShot {
+                shotData = await bridge.captureSnapshot(cropRectFrac: cropFrac)?.pngData
+            }
             await store.createCanvasPin(
                 route: board.route,
                 path: board.path,
@@ -1568,6 +1778,7 @@ struct ScreenFocusLightboxView: View {
                 elementSelector: elSel,
                 elementFile: elFile,
                 elementLine: elLine,
+                screenshotPNG: shotData,
                 fileImmediately: fileImmediately,
                 planFirst: shouldPlan
             )
@@ -1626,6 +1837,43 @@ final class FocusWebBridge {
 
     func clearSelection() {
         webView?.evaluateJavaScript("window.__trFocus && window.__trFocus.clearSelection();", completionHandler: nil)
+    }
+
+    /// Captures a clean PNG snapshot (hiding inspector highlight boxes temporarily).
+    /// Pass `cropRectFrac` (`0...1` normalized bounds) to capture a cropped element thumbnail with breathing margin.
+    func captureSnapshot(cropRectFrac: CGRect?) async -> (image: NSImage, pngData: Data)? {
+        guard let webView else { return nil }
+        _ = try? await webView.evaluateJavaScript("window.__trFocus && window.__trFocus.setBoxesHidden(true);")
+        defer {
+            webView.evaluateJavaScript("window.__trFocus && window.__trFocus.setBoxesHidden(false);", completionHandler: nil)
+        }
+
+        let config = WKSnapshotConfiguration()
+        let bounds = webView.bounds
+        if let frac = cropRectFrac, bounds.width > 0, bounds.height > 0 {
+            let pad: CGFloat = 24
+            let x = max(0, frac.origin.x * bounds.width - pad)
+            let y = max(0, frac.origin.y * bounds.height - pad)
+            let w = min(bounds.width - x, max(80, frac.size.width * bounds.width + pad * 2))
+            let h = min(bounds.height - y, max(48, frac.size.height * bounds.height + pad * 2))
+            config.rect = CGRect(x: x, y: y, width: w, height: h)
+        } else {
+            config.rect = bounds
+        }
+
+        return await withCheckedContinuation { continuation in
+            webView.takeSnapshot(with: config) { image, _ in
+                guard let image,
+                      let tiff = image.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:])
+                else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: (image, png))
+            }
+        }
     }
 }
 
@@ -1953,6 +2201,15 @@ private struct FocusLiveWebView: NSViewRepresentable {
           selectedEl = null;
           selectBox.style.display = 'none';
           hoverBox.style.display = 'none';
+        },
+        setBoxesHidden: function(hidden) {
+          if (hidden) {
+            selectBox.style.visibility = 'hidden';
+            hoverBox.style.visibility = 'hidden';
+          } else {
+            selectBox.style.visibility = 'visible';
+            hoverBox.style.visibility = 'visible';
+          }
         }
       };
     })();

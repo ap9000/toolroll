@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import ToolrollCore
@@ -418,5 +419,33 @@ struct ToolrollCoreTests {
         #expect(formatted.contains("padding: 16px → 12px"))
         #expect(formatted.contains("border-radius: 8px → 4px"))
         #expect(formatted.contains("Retrying shortly"))
+    }
+
+    @Test("CanvasVisualDiff detects identical vs modified pixels and generates heatmap overlay")
+    func visualDiffHeatmapAndCheckpoints() throws {
+        func makeSolidCGImage(w: Int, h: Int, fillBox: CGRect? = nil) -> CGImage {
+            let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+            let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.setFillColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0)
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            if let box = fillBox {
+                ctx.setFillColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1.0)
+                ctx.fill(box)
+            }
+            return ctx.makeImage()!
+        }
+
+        let before = makeSolidCGImage(w: 200, h: 100)
+        let same = makeSolidCGImage(w: 200, h: 100)
+        let sameDiff = CanvasVisualDiff.compare(before: before, after: same, maxWidth: 200)
+        #expect(sameDiff.isIdentical == true)
+        #expect(sameDiff.changedPercent == 0.0)
+
+        // Change exactly 25% of pixels (100x50 inside 200x100)
+        let after = makeSolidCGImage(w: 200, h: 100, fillBox: CGRect(x: 0, y: 0, width: 100, height: 50))
+        let changedDiff = CanvasVisualDiff.compare(before: before, after: after, maxWidth: 200)
+        #expect(changedDiff.isIdentical == false)
+        #expect(changedDiff.changedPercent > 24.0 && changedDiff.changedPercent < 26.0)
+        #expect(changedDiff.heatmapImage != nil)
     }
 }
