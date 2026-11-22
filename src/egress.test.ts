@@ -80,11 +80,14 @@ describe("the network a scope is written with", () => {
   test("Codex sandboxed commands are flagged offline in network wording and offline registry failures point to worktree setup", () => {
     const allow = resolveNetwork("codex", { mode: "allowlist", hosts: [], loopback: "proxy-only" }, ["npm"]);
     const open = resolveNetwork("codex", { mode: "open", hosts: [], loopback: "proxy-only" }, ["npm"]);
-    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: allow })).toBe(true);
-    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: open })).toBe(true);
-    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: allow })).toBe(true);
-    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: open })).toBe(false);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: allow }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: open }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: allow }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: open }, "linux")).toBe(false);
     expect(codexCommandsOffline({ provider: "claude", network: allow })).toBe(false);
+    // On a Mac Codex and OpenRouter run inside the OS fence with the run's proxy: never offline.
+    for (const provider of ["codex", "openrouter"]) expect(codexCommandsOffline({ provider, sandboxMode: "workspace-write", network: allow }, "darwin")).toBe(false);
+    expect(codexCommandsOffline({ provider: "openrouter", sandboxMode: "workspace-write", network: allow }, "linux")).toBe(true);
     expect(networkWords(allow, "codex", { commandsOffline: true })).toContain("Codex commands run offline");
     expect(networkWords(open, "codex", { commandsOffline: true })).toContain("until Full access is on");
 

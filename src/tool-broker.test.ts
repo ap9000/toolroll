@@ -307,14 +307,15 @@ describe("through the gateway", () => {
   });
   afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
-  test.each(["codex", "openrouter"] as const)("%s withholds secret-bearing stdio tools before startup and records why", async provider => {
+  test.each(["codex", "openrouter"] as const)("%s in its own profile withholds secret-bearing stdio tools before startup and records why", async provider => {
     store.createTask({ id: "withheld", title: "withheld" }, T0);
     const ref = store.refFor("built-in", "withheld").id;
     store.placeTask(ref, repo);
     const took = acquire(store, ref, "builder-1", { now: T0, token: "tok", newLeaseId: () => "lease-withheld", ttlMs: 10 * 365 * 24 * 3600 * 1000 });
     if (!took.ok) throw new Error("claim");
     const id = store.startRun({ taskRef: ref, leaseId: "lease-withheld", runner: "builder-1", branch: "b", worktree, route: { routeDigest: "legacy", phase: "build", provider, model: null, chosen: "legacy" }, now: T0 });
-    const tools = await prepareRunTools(store, id, provider, { home, now: T0, containment: { platform: "darwin", fence: "macos-sandbox" } });
+    // Codex's own profile (where no OS fence works) can't hide a server's environment; inside the macOS sandbox it can.
+    const tools = await prepareRunTools(store, id, provider, { home, now: T0, containment: { platform: "darwin", fence: "codex-profile" } });
     try {
       expect(tools.argv.join(" ")).not.toContain("mcp_servers.notes");
       expect(tools.serverPids?.() ?? []).toEqual([]);
@@ -353,7 +354,7 @@ describe("through the gateway", () => {
     const result = await invokeAgent(store, id, { provider: "codex", model: null }, { phase: "build", brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: false, resumeSession: null }, { keyHome: home, clock: () => T0, cwd: worktree, runner: runner as never });
     expect(result.kind).toBe("ran");
     expect(listed).toEqual([]);
-    expect(store.runFence(id)).toMatchObject({ method: macosFenceAvailable() ? "codex-profile" : expect.any(String) });
+    expect(store.runFence(id)).toMatchObject({ method: macosFenceAvailable() ? "macos-sandbox" : expect.any(String) });
     // On macOS the server ran inside the sandbox: it started, and the adjacent repository stayed out of reach.
     if (macosFenceAvailable()) expect(await firedBy(probeLog)).toEqual({ "codex-build": ["named-tool"] });
     else expect((await firedBy(probeLog))["codex-build"]).toContain("named-tool");

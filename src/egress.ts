@@ -241,10 +241,12 @@ export function unaccountedHosts(network: NetworkProfile, provider: string): str
   return network.hosts.filter(one => !known.has(one));
 }
 
-/** Codex's own command sandbox can't route through Toolroll's egress proxy (agent-fence.ts codexNetworkOn):
- * its shell commands reach the network only when the build has both Full access and an open network. */
-export function codexCommandsOffline(profile: { provider: string; sandboxMode?: string; network?: NetworkProfile | null }): boolean {
-  if (profile.provider !== "codex") return false;
+/** Where Codex runs in its own command sandbox (no OS fence: off a Mac), it can't route through Toolroll's egress proxy
+ * (agent-fence.ts codexNetworkOn): its shell commands reach the network only with Full access and an open network. */
+export function codexCommandsOffline(profile: { provider: string; sandboxMode?: string; network?: NetworkProfile | null }, platform: NodeJS.Platform = process.platform): boolean {
+  if (profile.provider !== "codex" && profile.provider !== "openrouter") return false;
+  // On a Mac Codex runs inside the OS fence with the run's proxy, like every other agent (codex-os-fence.md).
+  if (platform === "darwin") return false;
   return !(profile.sandboxMode === "danger-full-access" && profile.network?.mode === "open");
 }
 

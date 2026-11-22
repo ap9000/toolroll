@@ -15,8 +15,9 @@
  * own and no other terminal, a project check's launch Chromium's own service, and only a build's agent the keychain
  * (sandbox-runtime.ts seatbeltRulesFor, static rules).
  *
- * Codex (every platform) fences its own agent's commands with its own sandbox: a permission profile with the same
- * denies (codexFenceArgv). Claude also gets Read/Edit deny rules for its own file tools.
+ * Codex and OpenRouter run inside the same OS fence on a Mac, their own sandbox off (codex-os-fence.md); elsewhere
+ * Codex fences its own agent's commands with its own sandbox: a permission profile with the same denies
+ * (codexFenceArgv). Claude also gets Read/Edit deny rules for its own file tools.
  *
  * A build's fence also holds its task boundary (`taskBoundary`): under v1 the home configuration and the repositories
  * beside its own; under v2 only the primary checkout write-denied.
@@ -250,7 +251,8 @@ const HOME_CONFIGURATION = [
   ...ACP_PROVIDER_IDS.flatMap(id => ACP_AGENTS[id].home),
 ];
 /** What a provider's own CLI reads to sign in and keep its sessions. The OS fence around Claude and Gemini holds
- * their whole process, so those stay reachable there; Codex fences only its agent's commands, so it keeps none. */
+ * their whole process, so those stay reachable there. Codex keeps none by name: inside the OS fence it gets its exact
+ * sign-in and sessions (codexOwnState); in its own profile it fences only its agent's commands. */
 const PROVIDER_HOME: Record<string, readonly string[]> = {
   claude: [".claude", ".claude.json"], gemini: [".gemini"], codex: [], openrouter: [],
   // Each ACP agent keeps its own configuration and sign-in where its row says (acp-agents.ts).
@@ -374,7 +376,9 @@ function siblingGitData(main: string | null, gitdir: string | null): { readOnly:
 
 /** Where launches keep their private folders: `root` (the system temp folder) and, on a Mac, `also` the short shared one
  * a check's launch folder is made in (/private/tmp, so its unix sockets fit); `own` is this launch's. */
-export type RunFolders = { root: string; own: string | null; also?: string[] };
+export type RunFolders = { root: string; own: string | null; also?: string[];
+  /** This launch's other private folders, read and written like `own` (a Codex build's own home inside the OS fence). */
+  alsoOwn?: string[] };
 /** The prefixes of every launch's private folders: its tools' config and a Codex build's own home (and a check's). */
 export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
 
@@ -398,7 +402,7 @@ function otherRunFolders(folders: RunFolders): string[] {
   try { entries = readdirSync(folders.root); } catch { entries = []; }
   const uid = process.getuid?.();
   return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(folders.root, entry)).filter(path => {
-    if (path === folders.own) return false;
+    if (path === folders.own || (folders.alsoOwn ?? []).includes(path)) return false;
     try { const held = lstatSync(path); return held.isDirectory() && !held.isSymbolicLink() && (uid === undefined || held.uid === uid); } catch { return false; }
   });
 }
@@ -429,6 +433,8 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   browser?: true;
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
+  /** macOS: a Codex or OpenRouter build's own Codex state inside the OS fence (codexOwnState). */
+  codexState?: CodexState;
   /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
   writeDenies?: string[];
   /** Protected storage (protected-storage.ts): denied to read and write by every backend, and no grant equal to or
@@ -704,6 +710,39 @@ function worktreeGitDir(worktree: string): string | null {
   }
 }
 
+/** What a Codex build's harness touches of the operator's Codex folder when it runs inside the OS fence: its sign-in
+ * (`read`, `write`: a refresh writes through the run home's link) and its sessions folder (`write`), each by its real
+ * path; `denyWrite` is every other name there now, and Codex's configuration and extension names whether present or
+ * not, so nothing a later Codex session loads can be planted. `home` is the folder itself (its whole-folder deny is
+ * lifted for these). */
+export type CodexState = { home: string; read: string[]; write: string[]; denyWrite: string[] };
+
+/** The names inside a Codex home that configure or extend the operator's next Codex session. */
+export const CODEX_CONFIG_NAMES: readonly string[] = ["config.toml", "AGENTS.md", "AGENTS.override.md", ".env", "hooks", "hooks.json",
+  "rules", "plugins", "skills", "prompts", "memories", "themes", "profiles", "keybindings.json", "requirements.toml", "managed_config.toml"];
+
+/** A Codex build's own state inside the OS fence (FenceGrants.codexState), from Toolroll's own resolution of the
+ * operator's Codex folder (provider-home.ts codexHomeDir: never the build's environment). Only a real folder counts;
+ * the sign-in and sessions are granted only as what they are now (resolved, the sign-in a regular file). */
+export function codexOwnState(codexHome: string): CodexState | null {
+  let base: string;
+  try { if (!lstatSync(codexHome).isDirectory()) return null; base = realpathSync(codexHome); } catch { return null; }
+  const write: string[] = [];
+  const read: string[] = [];
+  try { const auth = realpathSync(join(base, "auth.json")); if (lstatSync(auth).isFile()) { read.push(auth); write.push(auth); } } catch { /* signed in some other way */ }
+  try { const sessions = realpathSync(join(base, "sessions")); if (lstatSync(sessions).isDirectory()) write.push(sessions); } catch { /* none yet */ }
+  const kept = new Set(["auth.json", "sessions"]);
+  let entries: string[] = [];
+  try { entries = readdirSync(base); } catch { entries = []; }
+  const denyWrite = new Set<string>();
+  for (const name of [...entries.filter(entry => !kept.has(entry)), ...CODEX_CONFIG_NAMES]) {
+    const path = join(base, name);
+    denyWrite.add(path);
+    denyWrite.add(resolvedPath(path));
+  }
+  return { home: base, read: read.sort(), write: write.sort(), denyWrite: [...denyWrite].sort() };
+}
+
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
@@ -943,12 +982,22 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
       // And by name, each there right before the launch (this runs at the spawn): on Linux the runtime gives a pattern
       // no mask where a path it allows lies beside its matches. Written: only where the launch writes anywhere (under a
       // write allowlist they are out of its writes already).
-      for (const path of otherRunFolders({ root, own: folders.own })) {
+      for (const path of otherRunFolders({ root, own: folders.own, ...(folders.alsoOwn === undefined ? {} : { alsoOwn: folders.alsoOwn }) })) {
         denyRead.add(path);
         if (grants.writes === undefined) denyWrite.add(path);
       }
     }
     if (folders.own !== null) allowRead.add(folders.own);
+    for (const path of folders.alsoOwn ?? []) allowRead.add(path);
+  }
+  // A Codex build's own state inside the OS fence (codexOwnState): its sign-in and sessions read and written again,
+  // the rest of the operator's Codex folder never written (by name, present or not). The whole-folder write deny is
+  // lifted for exactly that folder, since the runtime can't write back inside a write deny.
+  const codex = grants.codexState;
+  if (codex !== undefined) {
+    for (const path of [codex.home, real(codex.home)]) denyWrite.delete(path);
+    for (const path of codex.denyWrite) denyWrite.add(path);
+    for (const path of [...codex.read, ...codex.write]) allowRead.add(path);
   }
   const pool = grants.pool;
   if (pool !== undefined) {
@@ -977,8 +1026,8 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const signInWrites = [...grants.signIns?.writes ?? [], ...(grants.signIns?.transcripts ?? []).map(folder => join(folder, "*.jsonl"))];
   // Writing anywhere: everything but the denies. The launch's own checkout and folder are named too, so a backend that
   // binds a read deny's re-allowed paths back (bubblewrap) binds those back writable.
-  const allowOnly = writes === undefined ? ["/", ...(pool?.own == null ? [] : [real(pool.own)]), ...(folders?.own == null ? [] : [folders.own])]
-    : [...writes.subpaths, ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
+  const allowOnly = writes === undefined ? ["/", ...(pool?.own == null ? [] : [real(pool.own)]), ...(folders?.own == null ? [] : [folders.own]), ...(folders?.alsoOwn ?? [])]
+    : [...writes.subpaths, ...(folders?.alsoOwn ?? []), ...(codex?.write ?? []), ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
       .filter(path => grants.noSharedTemp !== true || !SHARED_TEMP.includes(path))];
   const network = grants.network;
   return {
@@ -1010,12 +1059,12 @@ export function sandboxedSpawn(file: string, args: readonly string[], fence: rea
  */
 export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string }[] = [
   {
-    agent: "**Claude, Gemini, ACP agents**",
+    agent: "**Claude, Gemini, ACP agents; Codex and OpenRouter on a Mac**",
     auto: "Anthropic's sandbox-runtime (Seatbelt on macOS; bubblewrap and its seccomp filter on Linux, which also needs socat and ripgrep): reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files (anywhere outside the fence, under a project set to write anywhere), never the runtime's protected names in the checkout (Git hooks and config, shell profiles, `.mcp.json`, editor settings); no Apple Events. Neither (Windows, or a Linux missing one of those): the build doesn't start, unless an instance operator allows unconfined agents",
     full: "same",
   },
   {
-    agent: "**Codex / OpenRouter** (any OS)",
+    agent: "**Codex / OpenRouter** (Linux)",
     auto: "Codex's own sandbox, given the same fence: reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network",
     full: "the same reads and writes, with the fence; its commands reach the network only when the project's network is open",
   },
