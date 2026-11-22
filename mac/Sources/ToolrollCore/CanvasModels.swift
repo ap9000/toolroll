@@ -329,17 +329,30 @@ public struct ElementStyleMetrics: Sendable, Equatable {
         color: String = "",
         backgroundColor: String = ""
     ) {
-        self.width = width
-        self.height = height
-        self.padding = padding
-        self.gap = gap
-        self.fontSize = fontSize
-        self.fontWeight = fontWeight
-        self.borderRadius = borderRadius
-        self.opacity = opacity
+        self.width = max(0, min(100_000, width))
+        self.height = max(0, min(100_000, height))
+        self.padding = Self.sanitize(padding, min: 0, max: 9999, fallback: 0)
+        self.gap = Self.sanitize(gap, min: 0, max: 9999, fallback: 0)
+        self.fontSize = Self.sanitize(fontSize, min: 0, max: 9999, fallback: 14)
+        self.fontWeight = max(100, min(1000, fontWeight))
+        self.borderRadius = Self.sanitize(borderRadius, min: 0, max: 9999, fallback: 0)
+        self.opacity = Self.sanitize(opacity, min: 0, max: 1, fallback: 1)
         self.display = display
         self.color = color
         self.backgroundColor = backgroundColor
+    }
+
+    /// Sanitizes CSS computed metrics (handles NaN, Infinity, and Tailwind v4 `rounded-full` `calc(infinity * 1px)` -> `3.4e38`).
+    public static func sanitize(_ value: Double, min lower: Double, max upper: Double, fallback: Double) -> Double {
+        guard !value.isNaN else { return fallback }
+        if value.isInfinite { return value > 0 ? upper : lower }
+        return Swift.min(upper, Swift.max(lower, value))
+    }
+
+    /// Safe Double-to-Int conversion that can never trap on NaN, Infinity, or values > Int.max.
+    public static func safeInt(_ value: Double, min lower: Int = 0, max upper: Int = 9999) -> Int {
+        let clamped = sanitize(value, min: Double(lower), max: Double(upper), fallback: Double(lower))
+        return Int(clamped.rounded())
     }
 }
 
@@ -451,22 +464,24 @@ public struct ElementLiveEdit: Sendable, Equatable, Identifiable {
             out.append("copy: \(before) → \(after)")
         }
         if let p = padding, abs(p - originalMetrics.padding) >= 0.5 {
-            out.append("padding: \(Int(originalMetrics.padding.rounded()))px → \(Int(p.rounded()))px")
+            out.append("padding: \(ElementStyleMetrics.safeInt(originalMetrics.padding))px → \(ElementStyleMetrics.safeInt(p))px")
         }
         if let g = gap, abs(g - originalMetrics.gap) >= 0.5 {
-            out.append("gap: \(Int(originalMetrics.gap.rounded()))px → \(Int(g.rounded()))px")
+            out.append("gap: \(ElementStyleMetrics.safeInt(originalMetrics.gap))px → \(ElementStyleMetrics.safeInt(g))px")
         }
         if let fs = fontSize, abs(fs - originalMetrics.fontSize) >= 0.5 {
-            out.append("font-size: \(Int(originalMetrics.fontSize.rounded()))px → \(Int(fs.rounded()))px")
+            out.append("font-size: \(ElementStyleMetrics.safeInt(originalMetrics.fontSize))px → \(ElementStyleMetrics.safeInt(fs))px")
         }
         if let fw = fontWeight, fw != originalMetrics.fontWeight {
             out.append("font-weight: \(originalMetrics.fontWeight) → \(fw)")
         }
         if let br = borderRadius, abs(br - originalMetrics.borderRadius) >= 0.5 {
-            out.append("border-radius: \(Int(originalMetrics.borderRadius.rounded()))px → \(Int(br.rounded()))px")
+            let fromStr = originalMetrics.borderRadius >= 9999 ? "full" : "\(ElementStyleMetrics.safeInt(originalMetrics.borderRadius))px"
+            let toStr = br >= 9999 ? "full" : "\(ElementStyleMetrics.safeInt(br))px"
+            out.append("border-radius: \(fromStr) → \(toStr)")
         }
         if let op = opacity, abs(op - originalMetrics.opacity) >= 0.02 {
-            out.append("opacity: \(Int((originalMetrics.opacity * 100).rounded()))% → \(Int((op * 100).rounded()))%")
+            out.append("opacity: \(ElementStyleMetrics.safeInt(originalMetrics.opacity * 100, min: 0, max: 100))% → \(ElementStyleMetrics.safeInt(op * 100, min: 0, max: 100))%")
         }
         return out
     }

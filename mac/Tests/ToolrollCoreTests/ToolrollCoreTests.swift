@@ -572,4 +572,25 @@ struct ToolrollCoreTests {
         #expect(!context.isAddition && !context.isDeletion && !context.isMeta)
         #expect(meta.isMeta && !meta.isAddition && !meta.isDeletion)
     }
+
+    @Test("ElementStyleMetrics safely clamps Tailwind rounded-full 3.4e38, Infinity, and NaN without Int overflow")
+    func elementStyleMetricsOverflowProtection() {
+        let metrics = ElementStyleMetrics(
+            width: 120,
+            height: 36,
+            padding: .nan,
+            gap: .infinity,
+            fontSize: 14,
+            fontWeight: 600,
+            borderRadius: Double(Float.greatestFiniteMagnitude), // WebKit computed value for calc(infinity * 1px)
+            opacity: .nan
+        )
+        #expect(metrics.padding == 0)
+        #expect(metrics.gap == 9999)
+        #expect(metrics.borderRadius == 9999)
+        #expect(metrics.opacity == 1)
+        #expect(ElementStyleMetrics.safeInt(Double(Float.greatestFiniteMagnitude)) == 9999)
+        #expect(ElementStyleMetrics.safeInt(.infinity) == 9999)
+        #expect(ElementStyleMetrics.safeInt(.nan) == 0)
+    }
 }

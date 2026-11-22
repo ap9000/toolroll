@@ -766,27 +766,27 @@ struct ScreenFocusLightboxView: View {
                 .buttonStyle(.plain)
             }
 
-            styleSliderRow(label: "Padding", valueText: "\(Int(curPadding.rounded()))px", value: Binding(
-                get: { curPadding },
+            styleSliderRow(label: "Padding", valueText: "\(ElementStyleMetrics.safeInt(curPadding))px", value: Binding(
+                get: { min(64, max(0, curPadding)) },
                 set: { next in
                     mutateEdit(for: el) { $0.padding = next }
-                    bridge.applyStyleTweak(elId: el.elId, property: "padding", value: "\(Int(next.rounded()))px")
+                    bridge.applyStyleTweak(elId: el.elId, property: "padding", value: "\(ElementStyleMetrics.safeInt(next))px")
                 }
             ), range: 0...64, step: 2)
 
-            styleSliderRow(label: "Gap", valueText: "\(Int(curGap.rounded()))px", value: Binding(
-                get: { curGap },
+            styleSliderRow(label: "Gap", valueText: "\(ElementStyleMetrics.safeInt(curGap))px", value: Binding(
+                get: { min(48, max(0, curGap)) },
                 set: { next in
                     mutateEdit(for: el) { $0.gap = next }
-                    bridge.applyStyleTweak(elId: el.elId, property: "gap", value: "\(Int(next.rounded()))px")
+                    bridge.applyStyleTweak(elId: el.elId, property: "gap", value: "\(ElementStyleMetrics.safeInt(next))px")
                 }
             ), range: 0...48, step: 2)
 
-            styleSliderRow(label: "Font size", valueText: "\(Int(curFontSize.rounded()))px", value: Binding(
-                get: { curFontSize },
+            styleSliderRow(label: "Font size", valueText: "\(ElementStyleMetrics.safeInt(curFontSize))px", value: Binding(
+                get: { min(48, max(10, curFontSize)) },
                 set: { next in
                     mutateEdit(for: el) { $0.fontSize = next }
-                    bridge.applyStyleTweak(elId: el.elId, property: "fontSize", value: "\(Int(next.rounded()))px")
+                    bridge.applyStyleTweak(elId: el.elId, property: "fontSize", value: "\(ElementStyleMetrics.safeInt(next))px")
                 }
             ), range: 10...48, step: 1)
 
@@ -819,16 +819,16 @@ struct ScreenFocusLightboxView: View {
                 .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 5))
             }
 
-            styleSliderRow(label: "Radius", valueText: "\(Int(curRadius.rounded()))px", value: Binding(
-                get: { curRadius },
+            styleSliderRow(label: "Radius", valueText: curRadius >= 9999 ? "full" : "\(ElementStyleMetrics.safeInt(curRadius))px", value: Binding(
+                get: { min(24, max(0, curRadius)) },
                 set: { next in
                     mutateEdit(for: el) { $0.borderRadius = next }
-                    bridge.applyStyleTweak(elId: el.elId, property: "borderRadius", value: "\(Int(next.rounded()))px")
+                    bridge.applyStyleTweak(elId: el.elId, property: "borderRadius", value: "\(ElementStyleMetrics.safeInt(next))px")
                 }
             ), range: 0...24, step: 1)
 
-            styleSliderRow(label: "Opacity", valueText: "\(Int((curOpacity * 100).rounded()))%", value: Binding(
-                get: { curOpacity },
+            styleSliderRow(label: "Opacity", valueText: "\(ElementStyleMetrics.safeInt(curOpacity * 100, min: 0, max: 100))%", value: Binding(
+                get: { min(1.0, max(0.1, curOpacity)) },
                 set: { next in
                     mutateEdit(for: el) { $0.opacity = next }
                     bridge.applyStyleTweak(elId: el.elId, property: "opacity", value: String(format: "%.2f", next))
@@ -1365,15 +1365,16 @@ struct ScreenFocusLightboxView: View {
                         .lineLimit(1)
                 }
 
-                // Measured computed style spec chips
+                // Measured computed style spec chips (clamped safely for Tailwind `rounded-full` calc(infinity * 1px))
                 HStack(spacing: 5) {
-                    specChip("\(Int(el.metrics.fontSize.rounded()))px/\(el.metrics.fontWeight)")
-                    specChip("pad \(Int(el.metrics.padding.rounded()))")
+                    specChip("\(ElementStyleMetrics.safeInt(el.metrics.fontSize))px/\(el.metrics.fontWeight)")
+                    specChip("pad \(ElementStyleMetrics.safeInt(el.metrics.padding))")
                     if el.metrics.borderRadius > 0 {
-                        specChip("r \(Int(el.metrics.borderRadius.rounded()))")
+                        let rLabel = el.metrics.borderRadius >= 9999 ? "r full" : "r \(ElementStyleMetrics.safeInt(el.metrics.borderRadius))"
+                        specChip(rLabel)
                     }
                     if el.metrics.gap > 0 {
-                        specChip("gap \(Int(el.metrics.gap.rounded()))")
+                        specChip("gap \(ElementStyleMetrics.safeInt(el.metrics.gap))")
                     }
                     Spacer()
                 }
@@ -2261,8 +2262,8 @@ private struct FocusLiveWebView: NSViewRepresentable {
             }()
 
             let metrics = ElementStyleMetrics(
-                width: (dict["width"] as? Int) ?? Int((dict["width"] as? Double) ?? 0),
-                height: (dict["height"] as? Int) ?? Int((dict["height"] as? Double) ?? 0),
+                width: (dict["width"] as? Int) ?? ElementStyleMetrics.safeInt((dict["width"] as? Double) ?? 0, min: 0, max: 100_000),
+                height: (dict["height"] as? Int) ?? ElementStyleMetrics.safeInt((dict["height"] as? Double) ?? 0, min: 0, max: 100_000),
                 padding: (dict["padding"] as? Double) ?? 0,
                 gap: (dict["gap"] as? Double) ?? 0,
                 fontSize: (dict["fontSize"] as? Double) ?? 14,
