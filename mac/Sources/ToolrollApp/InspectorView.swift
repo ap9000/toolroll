@@ -472,36 +472,42 @@ private struct DiffInspectorView: View {
                 HairlineDivider()
 
                 // Hunks
-                ScrollView([.vertical, .horizontal]) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let file = store.selectedDiffFile {
-                            Text(file.path)
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .padding(.horizontal, 12)
-                                .padding(.top, 10)
+                GeometryReader { geo in
+                    ScrollView([.vertical, .horizontal]) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if let file = store.selectedDiffFile {
+                                Text(file.path)
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .padding(.horizontal, 12)
+                                    .padding(.top, 10)
 
-                            ForEach(file.hunks) { hunk in
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text(hunk.header)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 5)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(ToolrollPalette.raised)
+                                ForEach(file.hunks) { hunk in
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        Text(hunk.header)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 5)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(ToolrollPalette.raised)
 
-                                    ForEach(hunk.lines) { line in
-                                        diffLineRow(line, filePath: file.path)
+                                        ForEach(hunk.lines) { line in
+                                            diffLineRow(line, filePath: file.path)
+                                        }
                                     }
+                                    .overlay(
+                                        Rectangle()
+                                            .strokeBorder(ToolrollPalette.line, lineWidth: 0.5)
+                                    )
                                 }
-                                .overlay(RoundedRectangle(cornerRadius: 0).strokeBorder(ToolrollPalette.line, lineWidth: 0.5))
                             }
                         }
+                        .frame(minWidth: geo.size.width, alignment: .leading)
+                        .padding(.bottom, 16)
                     }
-                    .padding(.bottom, 16)
+                    .background(ToolrollPalette.codeBg)
                 }
-                .background(ToolrollPalette.codeBg)
             } else {
                 VStack(spacing: 8) {
                     Text("No diff recorded for this task yet.")
@@ -518,53 +524,120 @@ private struct DiffInspectorView: View {
     }
 
     private func diffLineRow(_ line: DiffLine, filePath: String) -> some View {
-        let isAdd = line.kind == "add" || line.kind == "+"
-        let isDel = line.kind == "del" || line.kind == "-"
-        let prefix = isAdd ? "+" : (isDel ? "-" : " ")
-        let bg: Color = isAdd
-            ? ToolrollPalette.success.opacity(0.11)
-            : (isDel ? ToolrollPalette.danger.opacity(0.11) : .clear)
-        let fg: Color = isAdd
-            ? ToolrollPalette.success
-            : (isDel ? ToolrollPalette.danger : ToolrollPalette.ink)
         let targetLine = line.newLine ?? line.oldLine
         let existingComments = targetLine.map { ln in
             store.inlineDiffComments.filter { $0.path == filePath && $0.line == ln }
         } ?? []
 
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+        return DiffLineRowView(
+            line: line,
+            isCommenting: targetLine != nil && commentingLine == targetLine,
+            commentDraft: $commentDraft,
+            existingComments: existingComments,
+            onToggleComment: {
+                guard let ln = targetLine else { return }
+                commentingLine = (commentingLine == ln) ? nil : ln
+                commentDraft = ""
+            },
+            onSaveComment: { text in
+                guard let ln = targetLine else { return }
+                commentDraft = ""
+                commentingLine = nil
+                Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+            }
+        )
+    }
+}
+
+private struct DiffLineRowView: View {
+    let line: DiffLine
+    let isCommenting: Bool
+    @Binding var commentDraft: String
+    let existingComments: [InlineDiffComment]
+    let onToggleComment: () -> Void
+    let onSaveComment: (String) -> Void
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        let isAdd = line.isAddition
+        let isDel = line.isDeletion
+        let isMeta = line.isMeta
+        let prefix = isAdd ? "+" : (isDel ? "-" : " ")
+        let rowBg: Color = isAdd
+            ? ToolrollPalette.success.opacity(0.14)
+            : (isDel ? ToolrollPalette.danger.opacity(0.14) : (isHovered ? ToolrollPalette.raised.opacity(0.55) : .clear))
+        let stripeColor: Color = isAdd
+            ? ToolrollPalette.success
+            : (isDel ? ToolrollPalette.danger : .clear)
+        let gutterFg: Color = isAdd
+            ? ToolrollPalette.success.opacity(0.8)
+            : (isDel ? ToolrollPalette.danger.opacity(0.8) : ToolrollPalette.muted.opacity(0.75))
+        let signFg: Color = isAdd
+            ? ToolrollPalette.success
+            : (isDel ? ToolrollPalette.danger : ToolrollPalette.muted.opacity(0.45))
+        let codeFg: Color = isAdd
+            ? ToolrollPalette.success
+            : (isDel ? ToolrollPalette.danger : (isMeta ? ToolrollPalette.muted : ToolrollPalette.ink.opacity(0.88)))
+        let targetLine = line.newLine ?? line.oldLine
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                // Crisp 2.5pt left status bar
+                Rectangle()
+                    .fill(stripeColor)
+                    .frame(width: 2.5)
+
+                // Hover-revealed inline comment trigger in the left gutter (never clips on wide lines)
+                Group {
+                    if let ln = targetLine, isHovered || isCommenting || !existingComments.isEmpty {
+                        Button(action: onToggleComment) {
+                            Image(systemName: existingComments.isEmpty ? "plus" : "text.bubble.fill")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(isCommenting || !existingComments.isEmpty ? ToolrollPalette.live : ToolrollPalette.ink)
+                                .frame(width: 16, height: 16)
+                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                                .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 0.75))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Comment on line \(ln)")
+                    } else {
+                        Color.clear.frame(width: 16, height: 16)
+                    }
+                }
+                .padding(.leading, 4)
+
                 Text(line.oldLine.map(String.init) ?? "")
                     .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 28, alignment: .trailing)
+                    .foregroundStyle(gutterFg)
+                    .frame(width: 30, alignment: .trailing)
+
                 Text(line.newLine.map(String.init) ?? "")
                     .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 28, alignment: .trailing)
-                Text("\(prefix)\(line.text)")
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundStyle(fg)
-                    .textSelection(.enabled)
-                Spacer(minLength: 8)
-                if let ln = targetLine {
-                    Button {
-                        commentingLine = (commentingLine == ln) ? nil : ln
-                        commentDraft = ""
-                    } label: {
-                        Image(systemName: "plus.bubble")
-                            .font(.system(size: 10))
-                            .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Comment on line \(ln)")
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 2)
-            .background(bg)
+                    .foregroundStyle(gutterFg)
+                    .frame(width: 30, alignment: .trailing)
+                    .padding(.leading, 4)
 
-            if let ln = targetLine, commentingLine == ln {
+                Text(prefix)
+                    .font(.system(size: 11.5, weight: (isAdd || isDel) ? .bold : .regular, design: .monospaced))
+                    .foregroundStyle(signFg)
+                    .frame(width: 14, alignment: .center)
+                    .padding(.leading, 4)
+
+                Text(line.text)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(codeFg)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .textSelection(.enabled)
+
+                Spacer(minLength: 16)
+            }
+            .padding(.trailing, 10)
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBg)
+            .onHover { isHovered = $0 }
+
+            if let ln = targetLine, isCommenting {
                 HStack(spacing: 6) {
                     Text("L\(ln)")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -574,16 +647,11 @@ private struct DiffInspectorView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.ink)
                         .onSubmit {
-                            let text = commentDraft
-                            commentDraft = ""
-                            commentingLine = nil
-                            Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+                            let trimmed = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty { onSaveComment(commentDraft) }
                         }
                     Button("Save") {
-                        let text = commentDraft
-                        commentDraft = ""
-                        commentingLine = nil
-                        Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+                        onSaveComment(commentDraft)
                     }
                     .buttonStyle(KitButtonStyle(.primary, compact: true))
                     .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

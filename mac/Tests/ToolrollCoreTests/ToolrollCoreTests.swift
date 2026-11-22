@@ -559,4 +559,17 @@ struct ToolrollCoreTests {
         )
         #expect(!term.id.isEmpty)
     }
+
+    @Test("DiffLine classifies engine-api addition, deletion, context, and meta kinds accurately")
+    func diffLineKindClassification() {
+        let added = DiffLine(kind: "addition", text: "let x = 1", oldLine: nil, newLine: 10)
+        let deleted = DiffLine(kind: "deletion", text: "let x = 0", oldLine: 10, newLine: nil)
+        let context = DiffLine(kind: "context", text: "return x", oldLine: 11, newLine: 11)
+        let meta = DiffLine(kind: "meta", text: "\\ No newline at end of file", oldLine: nil, newLine: nil)
+
+        #expect(added.isAddition && !added.isDeletion && !added.isMeta)
+        #expect(deleted.isDeletion && !deleted.isAddition && !deleted.isMeta)
+        #expect(!context.isAddition && !context.isDeletion && !context.isMeta)
+        #expect(meta.isMeta && !meta.isAddition && !meta.isDeletion)
+    }
 }

@@ -1043,6 +1043,20 @@ public struct DiffLine: Codable, Sendable, Equatable, Identifiable {
         self.oldLine = oldLine
         self.newLine = newLine
     }
+
+    public var isAddition: Bool {
+        let k = kind.lowercased()
+        return k == "addition" || k == "add" || k == "+"
+    }
+
+    public var isDeletion: Bool {
+        let k = kind.lowercased()
+        return k == "deletion" || k == "del" || k == "-"
+    }
+
+    public var isMeta: Bool {
+        kind.lowercased() == "meta"
+    }
 }
 
 public struct DiffHunk: Codable, Sendable, Equatable, Identifiable {
