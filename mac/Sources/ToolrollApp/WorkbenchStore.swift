@@ -1678,7 +1678,12 @@ public final class WorkbenchStore {
                 message: started.reused ? "Attached to existing \(started.program) Live Terminal." : "Started \(started.program) Live Terminal on \(started.branch)."
             )
         } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            let raw = error.localizedDescription
+            if raw.contains("(request)") || raw.lowercased().contains("rejected") {
+                notice = WorkbenchNotice(kind: .info, message: "No live worktree terminal is active for this task (it may be queued or cancelled).")
+            } else {
+                notice = WorkbenchNotice(kind: .refusal, message: raw)
+            }
         }
     }
 

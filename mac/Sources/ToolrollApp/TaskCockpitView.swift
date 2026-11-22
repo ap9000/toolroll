@@ -1075,14 +1075,24 @@ public struct TaskCockpitView: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text(card.mark.isEmpty ? "·" : card.mark)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(card.needsYou ? ToolrollPalette.ink : (card.state == "done" ? ToolrollPalette.success : ToolrollPalette.muted))
-                        .frame(width: 14)
+                    Image(systemName: stepSymbol(for: card))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(stepColor(for: card))
+                        .frame(width: 16, alignment: .center)
 
                     Text(card.label)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(ToolrollPalette.ink)
+
+                    if let badge = stepStateBadge(for: card) {
+                        Text(badge)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(stepColor(for: card))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
 
                     if let agent = card.agent {
                         Text("\(agent.provider)\(agent.model.map { " · \($0)" } ?? "")")
@@ -1098,7 +1108,7 @@ public struct TaskCockpitView: View {
                             .foregroundStyle(ToolrollPalette.muted)
                     }
                     if let at = card.at {
-                        Text(at)
+                        Text(formatStepTimestamp(at))
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(ToolrollPalette.muted)
                     }
@@ -1112,12 +1122,69 @@ public struct TaskCockpitView: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(ToolrollPalette.muted)
                     .lineLimit(isExpanded ? nil : 2)
-                    .padding(.leading, 24)
+                    .padding(.leading, 26)
                     .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, 10)
+    }
+
+    private func stepSymbol(for card: StepCard) -> String {
+        let m = (card.mark.isEmpty ? card.state : card.mark).lowercased()
+        if m.contains("done") || m.contains("pass") || m.contains("ok") || m == "✓" {
+            return "checkmark.circle.fill"
+        }
+        if m.contains("stuck") || m.contains("fail") || m.contains("err") || m.contains("stop") {
+            return "exclamationmark.triangle.fill"
+        }
+        if m.contains("skip") || m.contains("cancel") {
+            return "minus.circle"
+        }
+        if m.contains("run") || m.contains("work") || m.contains("active") || m.contains("live") {
+            return "record.circle"
+        }
+        if card.needsYou || m.contains("need") || m.contains("wait") {
+            return "exclamationmark.circle.fill"
+        }
+        return "circle"
+    }
+
+    private func stepColor(for card: StepCard) -> Color {
+        let m = (card.mark.isEmpty ? card.state : card.mark).lowercased()
+        if m.contains("done") || m.contains("pass") || m.contains("ok") || m == "✓" {
+            return ToolrollPalette.success
+        }
+        if m.contains("stuck") || m.contains("fail") || m.contains("err") {
+            return ToolrollPalette.danger
+        }
+        if m.contains("run") || m.contains("work") || m.contains("active") {
+            return ToolrollPalette.live
+        }
+        if card.needsYou || m.contains("need") || m.contains("wait") {
+            return ToolrollPalette.warning
+        }
+        return ToolrollPalette.muted
+    }
+
+    private func stepStateBadge(for card: StepCard) -> String? {
+        let raw = card.mark.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.count >= 2 else { return nil }
+        if raw.lowercased() == card.label.lowercased() { return nil }
+        return raw.lowercased()
+    }
+
+    private func formatStepTimestamp(_ raw: String) -> String {
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoBasic = ISO8601DateFormatter()
+        isoBasic.formatOptions = [.withInternetDateTime]
+        guard let date = isoFrac.date(from: raw) ?? isoBasic.date(from: raw) else {
+            return raw
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d, h:mm a"
+        return fmt.string(from: date)
     }
 
     // MARK: - Composer Bar
