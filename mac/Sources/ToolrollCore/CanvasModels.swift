@@ -6,6 +6,7 @@ import Foundation
 
 public enum CanvasTool: String, CaseIterable, Identifiable, Sendable {
     case select = "Select"
+    case hand = "Hand"
     case pin = "Pin"
     case options = "Options"
     case compare = "Compare"

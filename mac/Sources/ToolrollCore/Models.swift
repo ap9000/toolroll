@@ -281,6 +281,65 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         self.observedAt = observedAt
     }
 
+    /// The provider as people call it ("claude" → "Claude").
+    public var providerLabel: String {
+        switch provider.lowercased() {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        case "gemini": return "Gemini"
+        default: return provider.prefix(1).uppercased() + provider.dropFirst()
+        }
+    }
+
+    /// "seven_day" → "Weekly", "five_hour" → "5-hour"; anything else in plain words.
+    public var windowLabel: String {
+        switch window.lowercased() {
+        case "seven_day", "weekly", "week": return "Weekly"
+        case "five_hour", "5h": return "5-hour"
+        case "one_day", "daily", "day": return "Daily"
+        case "monthly", "month", "thirty_day": return "Monthly"
+        default:
+            let words = window.replacingOccurrences(of: "_", with: " ")
+            return words.prefix(1).uppercased() + words.dropFirst()
+        }
+    }
+
+    /// The plan as a name ("pro" → "Pro"); nil when the provider didn't say.
+    public var planLabel: String? {
+        guard let plan, !plan.isEmpty else { return nil }
+        return plan.prefix(1).uppercased() + plan.dropFirst()
+    }
+
+    public enum ResetState: Equatable, Sendable {
+        /// Resets at this time, still ahead.
+        case upcoming(Date)
+        /// The reported reset already passed: this reading is from before it (Toolroll hasn't heard since).
+        case passed(Date)
+        case unknown
+    }
+
+    public func resetState(now: Date = Date()) -> ResetState {
+        guard let resetsAt, let date = Self.parseDate(resetsAt) else { return .unknown }
+        return date > now ? .upcoming(date) : .passed(date)
+    }
+
+    /// Reached, and still true: a limit whose reset has passed since it was read is probably clear again.
+    public func isReachedNow(now: Date = Date()) -> Bool {
+        guard reached else { return false }
+        if case .passed = resetState(now: now) { return false }
+        return true
+    }
+
+    public var observedDate: Date? { Self.parseDate(observedAt) }
+
+    static func parseDate(_ iso: String) -> Date? {
+        let plain = ISO8601DateFormatter()
+        if let date = plain.date(from: iso) { return date }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: iso)
+    }
+
     /// Each provider once, by its tightest window (the one closest to its limit).
     public static func tightestPerProvider(_ all: [ProviderLimit]) -> [ProviderLimit] {
         var best: [String: ProviderLimit] = [:]

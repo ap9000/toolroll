@@ -74,100 +74,17 @@ struct WorkHomeView: View {
         return "\(waitingCount) waiting on you · \(running.count) running · \(settled.count) settled"
     }
 
-    // MARK: Limits (only what /work/rows `spend` supplies; its audience is the owner, so it's absent for others)
+    // MARK: Limits — one tile per provider (its tightest window), then today's spend. Owner audience only.
 
     @ViewBuilder private var limits: some View {
         let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
-        if !perProvider.isEmpty {
-            HStack(spacing: 30) {
-                ForEach(perProvider, id: \.provider) { limit in providerLimit(limit) }
-                if let spend = store.workRowsResponse.spend {
-                    HStack(spacing: 6) {
-                        Text(spend.todayUsd, format: .currency(code: "USD")).foregroundStyle(ToolrollPalette.ink)
-                        Text("today").foregroundStyle(ToolrollPalette.muted)
-                    }
-                }
-                Spacer()
+        let spend = store.workRowsResponse.spend
+        if !perProvider.isEmpty || spend != nil {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
+                ForEach(perProvider, id: \.provider) { LimitTile(limit: $0) }
+                if let spend { SpendTile(spend: spend) }
             }
-            .font(.system(size: 12.5))
-            .padding(.horizontal, 16)
-            .frame(minHeight: 44)
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-        } else if let spend = store.workRowsResponse.spend {
-            HStack(spacing: 28) {
-                if let percent = spend.planPercent {
-                    HStack(spacing: 10) {
-                        Text("Plan")
-                            .foregroundStyle(ToolrollPalette.muted)
-                        meter(percent)
-                        Text(percent >= 100 ? "Limit reached" : "\(percent)%")
-                            .foregroundStyle(percent >= 100 ? ToolrollPalette.danger : ToolrollPalette.ink)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(percent >= 100 ? "Plan limit reached" : "Plan \(percent) percent used")
-                }
-                HStack(spacing: 6) {
-                    Text(spend.todayUsd, format: .currency(code: "USD"))
-                        .foregroundStyle(ToolrollPalette.ink)
-                    Text("today").foregroundStyle(ToolrollPalette.muted)
-                }
-                Spacer()
-            }
-            .font(.system(size: 12.5))
-            .padding(.horizontal, 16)
-            .frame(height: 44)
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
-    }
-
-    private func providerLimit(_ limit: ProviderLimit) -> some View {
-        let name = Self.providerName(limit.provider) + (limit.plan.map { " \($0)" } ?? "")
-        let percent = Int(limit.usedPercent.rounded())
-        let state = limit.reached ? "Limit reached" : "\(percent)% \(limit.window)"
-        let reset = Self.resetWords(limit.resetsAt)
-        return HStack(spacing: 10) {
-            Text(name).foregroundStyle(ToolrollPalette.muted)
-            meter(limit.reached ? 100 : percent)
-            Text(state).foregroundStyle(limit.reached ? ToolrollPalette.danger : ToolrollPalette.ink)
-            if let reset { Text(reset).foregroundStyle(ToolrollPalette.muted) }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name): \(limit.reached ? "limit reached" : "\(percent) percent of its \(limit.window) window used")\(reset.map { ", \($0)" } ?? "")")
-    }
-
-    static func providerName(_ id: String) -> String {
-        switch id.lowercased() {
-        case "claude": return "Claude"
-        case "codex": return "Codex"
-        case "gemini": return "Gemini"
-        default: return id.prefix(1).uppercased() + id.dropFirst()
-        }
-    }
-
-    /// "resets in 5h" within a day, "resets Wed" within a week, else "resets Dec 3"; nil when not reported.
-    static func resetWords(_ iso: String?, now: Date = Date()) -> String? {
-        guard let iso, let date = ISO8601DateFormatter().date(from: iso) ?? {
-            let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.date(from: iso)
-        }() else { return nil }
-        let seconds = date.timeIntervalSince(now)
-        if seconds <= 0 { return nil }
-        if seconds < 86_400 { return "resets in \(max(1, Int(seconds / 3600)))h" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = seconds < 7 * 86_400 ? "EEE" : "MMM d"
-        return "resets \(formatter.string(from: date))"
-    }
-
-    private func meter(_ percent: Int) -> some View {
-        let clamped = Double(max(0, min(100, percent))) / 100
-        return ZStack(alignment: .leading) {
-            Capsule().fill(Color.white.opacity(0.10))
-            Capsule()
-                .fill(percent >= 100 ? ToolrollPalette.danger : ToolrollPalette.ink)
-                .frame(width: 84 * clamped)
-        }
-        .frame(width: 84, height: 4)
     }
 
     // MARK: Work list
@@ -355,5 +272,116 @@ struct WorkCustomizeSheet: View {
         }
         .padding(20)
         .frame(width: 440)
+    }
+}
+
+/// A provider's usage: name and plan, window, a slim meter, the percentage, and when it resets — honest about stale
+/// readings (a reset that already passed means "probably reset", never a red "limit reached").
+struct LimitTile: View {
+    let limit: ProviderLimit
+    private var now: Date { Date() }
+
+    var body: some View {
+        let percent = Int(limit.usedPercent.rounded())
+        let reachedNow = limit.isReachedNow(now: now)
+        let state = limit.resetState(now: now)
+        let stale: Bool = { if case .passed = state { return true }; return false }()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Text(limit.providerLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                if let plan = limit.planLabel {
+                    Text(plan)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+                Spacer(minLength: 6)
+                Text(limit.windowLabel)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(stale ? "—" : "\(percent)%")
+                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
+                Text(stale ? "not checked since its reset" : (reachedNow ? "limit reached" : "used"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.08))
+                    Capsule()
+                        .fill(reachedNow ? ToolrollPalette.danger : (stale ? ToolrollPalette.muted.opacity(0.5) : ToolrollPalette.ink))
+                        .frame(width: stale ? 0 : proxy.size.width * CGFloat(max(0, min(100, percent))) / 100)
+                }
+            }
+            .frame(height: 5)
+            Text(footer(state))
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.muted)
+                .lineLimit(1)
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility(percent: percent, reachedNow: reachedNow, state: state))
+    }
+
+    private func footer(_ state: ProviderLimit.ResetState) -> String {
+        switch state {
+        case .upcoming(let date): return "Resets \(Self.when(date))"
+        case .passed(let date):
+            let checked = limit.observedDate.map { " · last checked \(Self.day.string(from: $0))" } ?? ""
+            return "Probably reset \(Self.day.string(from: date))\(checked)"
+        case .unknown: return "Reset time not reported"
+        }
+    }
+
+    private func accessibility(percent: Int, reachedNow: Bool, state: ProviderLimit.ResetState) -> String {
+        let name = limit.providerLabel + (limit.planLabel.map { " \($0)" } ?? "")
+        let used = reachedNow ? "limit reached" : "\(percent) percent of its \(limit.windowLabel.lowercased()) limit used"
+        return "\(name): \(used). \(footer(state))"
+    }
+
+    /// "in 5h" within a day, else "Tue 9:19 AM" within a week, else "Dec 3".
+    static func when(_ date: Date, now: Date = Date()) -> String {
+        let seconds = date.timeIntervalSince(now)
+        if seconds < 3600 { return "in \(max(1, Int(seconds / 60)))m" }
+        if seconds < 86_400 { return "in \(Int(seconds / 3600))h" }
+        if seconds < 7 * 86_400 { return weekday.string(from: date) }
+        return day.string(from: date)
+    }
+
+    private static let weekday: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("EEE j:mm"); return f }()
+    private static let day: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
+}
+
+/// Today's spend, sized to sit beside the provider tiles.
+struct SpendTile: View {
+    let spend: SpendSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Spend").font(.system(size: 13, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(spend.todayUsd, format: .currency(code: "USD"))
+                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("today").font(.system(size: 12)).foregroundStyle(ToolrollPalette.muted)
+            }
+            Spacer(minLength: 0)
+            Text("Pay-as-you-go use, UTC day").font(.system(size: 11.5)).foregroundStyle(ToolrollPalette.muted)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }

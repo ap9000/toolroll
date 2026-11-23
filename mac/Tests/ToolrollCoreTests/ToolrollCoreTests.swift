@@ -978,4 +978,20 @@ struct ToolrollCoreTests {
         #expect(WorkLayout.load(from: defaults).widgets.map(\.kind) == [.header, .list, .limits])
         #expect(WorkLayout.load(from: defaults).widgets.last?.isHidden == true)
     }
+
+    @Test("Limits read honestly: plain window names, plan casing, and a passed reset means probably clear, not reached")
+    func providerLimitWords() {
+        let now = ISO8601DateFormatter().date(from: "2026-11-23T05:00:00Z")!
+        let claude = ProviderLimit(provider: "claude", plan: nil, window: "seven_day", usedPercent: 100, reached: true,
+                                   resetsAt: "2026-11-21T07:00:00.000Z", observedAt: "2026-11-19T07:17:40.670Z")
+        let codex = ProviderLimit(provider: "codex", plan: "pro", window: "seven_day", usedPercent: 24, reached: false,
+                                  resetsAt: "2026-11-25T17:19:22.000Z", observedAt: "2026-11-23T04:07:34.515Z")
+        #expect(claude.windowLabel == "Weekly")
+        #expect(codex.planLabel == "Pro")
+        #expect(claude.planLabel == nil)
+        #expect(claude.isReachedNow(now: now) == false)
+        if case .passed = claude.resetState(now: now) {} else { Issue.record("Claude's reset is in the past") }
+        if case .upcoming = codex.resetState(now: now) {} else { Issue.record("Codex's reset is ahead") }
+        #expect(ProviderLimit(provider: "x", window: "five_hour", usedPercent: 1, reached: false).resetState(now: now) == .unknown)
+    }
 }

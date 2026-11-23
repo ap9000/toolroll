@@ -73,7 +73,7 @@ public struct CanvasWorkspaceView: View {
                                 }
                         )
 
-                    // Artboards
+                    // Artboards (under the Hand layer below, which takes every drag while Hand is on)
                     ZStack(alignment: .topLeading) {
                         ForEach(store.canvasArtboards) { board in
                             artboardView(board)
@@ -119,12 +119,29 @@ public struct CanvasWorkspaceView: View {
                         }
                 )
             }
+            .overlay {
+                if tool == .hand {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    panOffset = CGSize(width: dragStartPan.width + value.translation.width,
+                                                       height: dragStartPan.height + value.translation.height)
+                                }
+                                .onEnded { _ in dragStartPan = panOffset }
+                        )
+                        .onHover { inside in (inside ? NSCursor.openHand : NSCursor.arrow).set() }
+                        .accessibilityHidden(true)
+                }
+            }
         }
         .background(ToolrollPalette.ground)
         .task(id: "\(store.selectedProject ?? "")::\(store.activeProject ?? "")::\(store.selectedRow?.project ?? "")") {
             await store.loadCanvasForCurrentProject()
         }
         .onKeyPress("v") { handleCanvasToolShortcut(.select) }
+        .onKeyPress("h") { handleCanvasToolShortcut(.hand) }
         .onKeyPress("c") { handleCanvasToolShortcut(.pin) }
         .onKeyPress("o") { handleCanvasToolShortcut(.options) }
         .onKeyPress("d") { handleCanvasToolShortcut(.compare) }
@@ -870,38 +887,23 @@ public struct CanvasWorkspaceView: View {
     private func floatingDock() -> some View {
         HStack(spacing: 4) {
             dockToolButton(.select, icon: "cursorarrow", key: "V")
-            dockToolButton(.pin, icon: "mappin.and.ellipse", key: "C")
+            dockToolButton(.hand, icon: "hand.raised", key: "H")
+            dockDivider
+            dockToolButton(.pin, icon: "plus.bubble", key: "C")
             dockToolButton(.options, icon: "square.grid.2x2", key: "O")
-            dockToolButton(.compare, icon: "rectangle.lefthalf.inset.filled.arrow.left", key: "D")
-
-            HairlineDivider(vertical: true).frame(height: 18).padding(.horizontal, 4)
-
-            Button {
+            dockToolButton(.compare, icon: "rectangle.split.2x1", key: "D")
+            dockDivider
+            dockIconButton("rectangle.3.group", help: "Arrange screens") {
                 store.arrangeCanvasArtboards(viewport: store.canvasViewport)
                 panOffset = .zero
                 dragStartPan = .zero
                 zoom = 0.85
                 gestureBaseZoom = 0.85
-            } label: {
-                Text("Arrange")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 5)
             }
-            .buttonStyle(.plain)
-
-            Button {
+            dockIconButton("minus", help: "Zoom out") {
                 zoom = max(0.35, zoom - 0.15)
                 gestureBaseZoom = zoom
-            } label: {
-                Image(systemName: "minus")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 22, height: 22)
             }
-            .buttonStyle(.plain)
-
             Button {
                 zoom = 1.0
                 gestureBaseZoom = 1.0
@@ -909,22 +911,17 @@ public struct CanvasWorkspaceView: View {
                 dragStartPan = .zero
             } label: {
                 Text("\(Int(zoom * 100))%")
-                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .frame(width: 38)
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
+                    .frame(width: 46, height: 36)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            Button {
+            .help("Reset zoom to 100%")
+            dockIconButton("plus", help: "Zoom in") {
                 zoom = min(2.0, zoom + 0.15)
                 gestureBaseZoom = zoom
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 22, height: 22)
             }
-            .buttonStyle(.plain)
 
             // Batch review CTA (Q4 + Q8)
             if !store.draftCanvasPins.isEmpty {
@@ -982,9 +979,10 @@ public struct CanvasWorkspaceView: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .toolrollGlassCapsule(interactive: true)
+        .padding(6)
+        .background(ToolrollPalette.raised.opacity(0.96), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.35), radius: 18, y: 6)
     }
 
     private var compareCanvasGuideBar: some View {
@@ -1064,7 +1062,9 @@ public struct CanvasWorkspaceView: View {
     private func dockToolHelp(_ t: CanvasTool, key: String) -> String {
         switch t {
         case .select:
-            return "Select & Pan (\(key)) — click any artboard to inspect in full focus, or drag its header to arrange"
+            return "Select (\(key)) — click a screen to focus it, drag its header to arrange"
+        case .hand:
+            return "Hand (\(key)) — drag anywhere to move around the canvas"
         case .pin:
             return "Pin Change (\(key)) — click any element on a screen to file a targeted UI task"
         case .options:
@@ -1074,25 +1074,48 @@ public struct CanvasWorkspaceView: View {
         }
     }
 
+    private var dockDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.12))
+            .frame(width: 1, height: 22)
+            .padding(.horizontal, 4)
+    }
+
+    /// One tool: an icon in a 36pt square; the active one is softly tinted (name and key in its tooltip).
     private func dockToolButton(_ t: CanvasTool, icon: String, key: String) -> some View {
         let active = tool == t
         return Button {
             tool = t
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 11))
-                Text(t.rawValue)
-                    .font(.system(size: 11.5, weight: active ? .semibold : .medium))
-            }
-            .foregroundStyle(active ? ToolrollPalette.inverseInk : ToolrollPalette.ink)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(active ? ToolrollPalette.ink : Color.clear, in: Capsule())
-            .contentShape(Capsule())
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(active ? ToolrollPalette.live : ToolrollPalette.ink.opacity(0.85))
+                .frame(width: 36, height: 36)
+                .background(
+                    active ? ToolrollPalette.live.opacity(0.16) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .toolrollHoverSurface(cornerRadius: 10, isSelected: active)
         }
         .buttonStyle(.plain)
         .help(dockToolHelp(t, key: key))
+        .accessibilityLabel("\(t.rawValue) tool")
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private func dockIconButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13.5, weight: .regular))
+                .foregroundStyle(ToolrollPalette.ink.opacity(0.75))
+                .frame(width: 32, height: 36)
+                .contentShape(Rectangle())
+                .toolrollHoverSurface(cornerRadius: 10, isSelected: false)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private func resolvedURL(for path: String) -> String {
