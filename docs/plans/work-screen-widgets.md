@@ -108,3 +108,36 @@ Phase 2: lead proposals, feeds + scheduler, store index (add store by URL), web/
 4. Store trust: digest-only, or signed packages (minisign/Sigstore) from day one?
 5. Where should the renderer contract live so web and TUI can render the same widgets later?
 6. Anything in phase 1 that will be expensive to change later.
+
+---
+
+## Reconciled after Codex + critic review (2026-11-22) — supersedes §6 where they differ
+
+Both reviewers: ship A from bundled widget definitions on data that already exists; defer the platform pieces until
+their authority, contract-rollout and trust questions are settled. Phase 1 (now):
+1. Sidebar "New task" first row — shipped alone (037aac99).
+2. Swift `WorkRowsResponse` keeps what the server already sends and the app dropped: `groups`, `needs` (non-task
+   asks), `next` (paging). Group rows by the server's `rank` (0 waits on a person, 1 runs, 2 queued/waiting,
+   3 finished, 4 stopped/put away), never by tone.
+3. Work home is its own navigation state: shown on launch (no auto-selecting the first task) and from a "Work" row;
+   New task opens the composer; a row opens its task.
+4. Work screen = bundled widgets in Swift (`header`, `limits`, `list`); the layout (order, hidden) lives in
+   UserDefaults until server sync ships. Customize sheet: reorder + hide/show only.
+5. Limits shows only what `/work/rows` `spend` supplies (plan % + today's spend, owner audience; hidden when null).
+   Per-provider windows with reset times = a later owner-only engine read (lead-status.ts planWindows is
+   installation-wide; `resets_at` nullable → the meter needs an "unknown" state).
+No engine contract change in phase 1 (an engine digest change needs a TUI rebuild: tui/…/client.rs check_hello).
+
+Later, each its own reviewed slice (Codex "must"s carried):
+- Server layout: `POST /engine/work/layout {baseRevision, instances}` (not PUT), LOCAL_POSTS + LOCAL_OWNER_ACTS +
+  adapter-inventory pin, v181 + UPDATE_SAFE_MIGRATIONS + migration test, account-scoped key, history cap in the
+  same transaction; fallback to the bundled default when missing/invalid/newer.
+- Manifest: strict per-source/per-view unions, `{"field":…}` / `{"option":…}` objects instead of path strings;
+  sources declare fields, navigation targets and audience; internal actions only from trusted engine records.
+- Sources: registry entries `{params, audience, output, admit, read}`; grants applied before counts/sort/limit;
+  discriminated output (`records`/`stat`/`unavailable`); rendering never triggers integration probes.
+- Store: package identity (publisher key, id, version, digest); signed packages before any public store; local
+  previews only; credential-free downloader with size/redirect caps and private-network blocks.
+- Feeds (connector data): manual refresh first; one revocable writer bound to owner+feed+query+projection+audience;
+  server-derived `by`/receipt time; replay rejection; staleness visible. Needs its own threat model and a feature-
+  freeze decision (a scheduled agent session is flow territory). Toolroll stays an MCP server only.

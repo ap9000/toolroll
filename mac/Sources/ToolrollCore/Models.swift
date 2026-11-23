@@ -261,6 +261,21 @@ public struct SpendSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// One of the Work list's own groups, in the server's order and words.
+public struct WorkGroupSummary: Codable, Sendable, Equatable {
+    public let key: String
+    public let label: String
+    public let count: Int
+}
+
+/// Waiting asks that are no task row (a held release, a flow card, a setup step), by Work's three groups.
+public struct WorkNeedGroup: Codable, Sendable, Equatable {
+    public let key: String
+    public let label: String
+    public let count: Int
+    public let rows: [NeedRow]
+}
+
 public struct WorkRowsResponse: Codable, Sendable, Equatable {
     public let version: Int
     public let project: String?
@@ -269,6 +284,12 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
     public let rows: [WorkRow]
     public let room: String
     public let spend: SpendSummary?
+    /// The list's own groups (null: one plain list).
+    public var groups: [WorkGroupSummary]? = nil
+    /// Waiting asks that are no task row.
+    public var needs: [WorkNeedGroup] = []
+    /// The next page's cursor (null: this is all of it).
+    public var next: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -278,6 +299,7 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
         case rows
         case room
         case spend
+        case groups, needs, next
     }
 
     public init(
@@ -312,6 +334,9 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
         rows = try c.decodeIfPresent([WorkRow].self, forKey: .rows) ?? []
         room = try c.decodeIfPresent(String.self, forKey: .room) ?? "home"
         spend = try c.decodeIfPresent(SpendSummary.self, forKey: .spend)
+        groups = try? c.decodeIfPresent([WorkGroupSummary].self, forKey: .groups)
+        needs = (try? c.decodeIfPresent([WorkNeedGroup].self, forKey: .needs)) ?? []
+        next = try? c.decodeIfPresent(String.self, forKey: .next)
     }
 
     private enum CamelKeys: String, CodingKey {

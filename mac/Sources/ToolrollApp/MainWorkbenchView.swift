@@ -47,8 +47,10 @@ public struct MainWorkbenchView: View {
                                 CanvasWorkspaceView(store: store)
                             } else if let cliThread = store.selectedCliThread {
                                 LocalCliThreadView(store: store, thread: cliThread)
-                            } else if store.isComposingNewWork || store.selectedRow == nil {
+                            } else if store.isComposingNewWork {
                                 NewWorkCanvasView(store: store)
+                            } else if store.selectedRow == nil {
+                                WorkHomeView(store: store)
                             } else {
                                 TaskCockpitView(store: store)
                             }

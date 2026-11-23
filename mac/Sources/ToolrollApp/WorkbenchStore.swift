@@ -875,6 +875,17 @@ public final class WorkbenchStore {
         return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
     }
 
+    /// The Work screen: no task open, not composing (a "Work" row, launch, or after the open task is archived).
+    public var isShowingWorkHome: Bool { !isComposingNewWork && selectedTaskId == nil && selectedCliThreadId == nil }
+
+    public func openWorkHome() {
+        if let current = selectedTaskId { backStack.append(current); forwardStack.removeAll() }
+        isComposingNewWork = false
+        selectedCliThreadId = nil
+        selectedTaskId = nil
+        stepCards = nil
+    }
+
     public func openNewWorkCanvas() {
         if !isComposingNewWork, let current = selectedTaskId {
             backStack.append(current)
@@ -1329,7 +1340,7 @@ public final class WorkbenchStore {
 
     public var selectedRow: WorkRow? {
         guard let id = selectedTaskId else { return nil }
-        return workRowsResponse.rows.first(where: { $0.id == id })
+        return workRowsResponse.rows.first(where: { $0.id == id }) ?? archivedRows.first(where: { $0.id == id })
     }
 
     public var selectedTaskOwner: String? {
@@ -1500,9 +1511,7 @@ public final class WorkbenchStore {
             self.selectedTaskId = nil
             self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
             await refreshAll()
-            if let first = needsRows.first ?? runningRows.first ?? failedRows.first ?? workRowsResponse.rows.first {
-                await selectTask(first.id)
-            }
+            // Work home is the first screen: nothing is opened on the person's behalf.
             restartSSE()
             return true
         }

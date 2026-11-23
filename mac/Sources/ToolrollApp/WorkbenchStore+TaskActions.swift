@@ -294,7 +294,7 @@ extension WorkbenchStore {
         let ordered = selectableRows
         let remaining = ordered.filter { !archived.contains($0.id) }
         guard let idx = ordered.firstIndex(where: { $0.id == current }), !remaining.isEmpty else {
-            openNewWorkCanvas()
+            openWorkHome()
             return
         }
         let after = ordered[idx...].first { !archived.contains($0.id) } ?? remaining.last!

@@ -152,9 +152,12 @@ public struct InboxSidebarView: View {
                 .padding(.bottom, 6)
             }
 
-            newTaskRow
-                .padding(.horizontal, 8)
-                .padding(.bottom, 6)
+            VStack(spacing: 2) {
+                newTaskRow
+                workRow
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 6)
 
             // Unified scrollable task list (Status-first default, or grouped by Project)
             ScrollView {
@@ -411,6 +414,41 @@ public struct InboxSidebarView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("New task")
         .help("New task (⌘N)")
+    }
+
+    /// The Work screen: what's waiting, running and settled, with limits. Its badge counts what waits on you.
+    private var workRow: some View {
+        Button {
+            store.openWorkHome()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                Text("Work")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                if store.needsRows.count > 0 {
+                    Text("\(store.needsRows.count)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(ToolrollPalette.ink, in: Capsule())
+                }
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                store.isShowingWorkHome ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(store.needsRows.isEmpty ? "Work" : "Work, \(store.needsRows.count) waiting on you")
     }
 
     private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {

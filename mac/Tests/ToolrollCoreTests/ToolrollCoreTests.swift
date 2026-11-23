@@ -944,4 +944,38 @@ struct ToolrollCoreTests {
         #expect(steps.pendingAgentChange?.when == "next-run")
         #expect(steps.pendingAgentChange?.problem == nil)
     }
+
+    @Test("The server's real Work rows fixture decodes with its groups, non-task asks and paging cursor kept")
+    func workRowsKeepsGroupsNeedsNext() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("test/fixtures/engine-api/work-rows-every-kind.json")
+        let data = try Data(contentsOf: url)
+        let decoded = try JSONDecoder().decode(WorkRowsResponse.self, from: data)
+        let raw = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(decoded.rows.count == (raw["rows"] as! [Any]).count)
+        #expect(decoded.needs.count == (raw["needs"] as! [Any]).count)
+        #expect((decoded.groups?.count ?? 0) == ((raw["groups"] as? [Any])?.count ?? 0))
+        #expect(decoded.rows.allSatisfy { (0...4).contains($0.rank) })
+    }
+
+    @Test("The Work layout falls back to the standard one when missing, unreadable or newer, and never drops a built-in")
+    func workLayoutFallsBack() throws {
+        let defaults = UserDefaults(suiteName: "work-layout-\(UUID().uuidString)")!
+        #expect(WorkLayout.load(from: defaults) == .standard)
+        defaults.set(Data("not json".utf8), forKey: WorkLayout.defaultsKey)
+        #expect(WorkLayout.load(from: defaults) == .standard)
+        WorkLayout(schema: "toolroll.work-layout/v9", widgets: []).save(to: defaults)
+        #expect(WorkLayout.load(from: defaults) == .standard)
+        // A saved layout missing a built-in (and holding a duplicate) keeps its order and gains the missing one.
+        WorkLayout(widgets: [WorkWidgetInstance(id: "list", kind: .list, isHidden: false),
+                             WorkWidgetInstance(id: "list2", kind: .list, isHidden: true)]).save(to: defaults)
+        let loaded = WorkLayout.load(from: defaults)
+        #expect(loaded.widgets.map(\.kind) == [.list, .header, .limits])
+        // Reorder and hide round-trip.
+        let edited = loaded.moving("header", by: -1).togglingHidden("limits")
+        edited.save(to: defaults)
+        #expect(WorkLayout.load(from: defaults).widgets.map(\.kind) == [.header, .list, .limits])
+        #expect(WorkLayout.load(from: defaults).widgets.last?.isHidden == true)
+    }
 }
