@@ -183,7 +183,6 @@ import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settings
 import { loginHelpOf } from "./login-help.js";
 import { proposeNetworkChanges } from "../route-change.js";
 
-const waitingWords = (count: number): string => count === 0 ? "" : ` ${count === 1 ? "1 task waits" : `${count} tasks wait`} for your Approve to use it.`;
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -3260,3 +3259,5 @@ function savedLoginOf(store: Store): string | null {
   const help = loginHelpOf(store, { here: true });
   return help.kind === "password" ? help.savedAt : null;
 }
+
+const waitingWords = (count: number): string => count === 0 ? "" : ` ${count === 1 ? "1 task waits" : `${count} tasks wait`} for your Approve to use it.`;
