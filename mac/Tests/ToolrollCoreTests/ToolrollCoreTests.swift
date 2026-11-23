@@ -994,4 +994,13 @@ struct ToolrollCoreTests {
         if case .upcoming = codex.resetState(now: now) {} else { Issue.record("Codex's reset is ahead") }
         #expect(ProviderLimit(provider: "x", window: "five_hour", usedPercent: 1, reached: false).resetState(now: now) == .unknown)
     }
+
+    @Test("A dev server on a project's port counts as that project's only when it runs from inside its folder")
+    func previewServerOwnership() {
+        #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll", root: "/Users/a/Documents/toolroll"))
+        #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll/web", root: "/Users/a/Documents/toolroll"))
+        #expect(!PreviewServerManager.isInside("/Users/a/Documents/alekseypelletier.com", root: "/Users/a/Documents/toolroll"))
+        // A sibling whose name merely starts the same is not inside.
+        #expect(!PreviewServerManager.isInside("/Users/a/Documents/toolroll-old", root: "/Users/a/Documents/toolroll"))
+    }
 }

@@ -375,8 +375,10 @@ public final class WorkbenchStore {
         let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
         canvasProjectName = targetProject
         canvasProjectRoot = root
+        // Another project's server address never carries over: this project's is found again on wake.
+        if projectChanged { canvasBaseURL = "" }
 
-        let stateKey = root.map { YouiCanvasStorage.gitStateKey(projectRoot: $0) } ?? "latest"
+        let stateKey = (root.map { YouiCanvasStorage.gitStateKey(projectRoot: $0) } ?? "latest") + canvasOriginTag(for: root)
         let baselineKey = root.map { YouiCanvasStorage.mainBranchKey(projectRoot: $0) } ?? "baseline"
         canvasStateKey = stateKey
         canvasBaselineKey = baselineKey
@@ -407,6 +409,27 @@ public final class WorkbenchStore {
         }
     }
 
+    private static let canvasOriginKeyPrefix = "toolroll.canvasOrigin|"
+
+    /// Screens are cached per git state AND per server they were captured from: a capture from the wrong server
+    /// (another project on the same port) never stands in for this project's.
+    func canvasOriginTag(for root: String?) -> String {
+        guard let root, let origin = UserDefaults.standard.string(forKey: Self.canvasOriginKeyPrefix + root) else { return "-o0" }
+        var hash: UInt32 = 2_166_136_261
+        for byte in origin.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        return "-o" + String(hash, radix: 16)
+    }
+
+    /// Records the server this project's screens now come from; a different one re-keys and re-captures them.
+    func adoptCanvasOrigin(_ url: String) {
+        guard let root = canvasProjectRoot else { return }
+        let key = Self.canvasOriginKeyPrefix + root
+        guard UserDefaults.standard.string(forKey: key) != url else { return }
+        UserDefaults.standard.set(url, forKey: key)
+        canvasStateKey = YouiCanvasStorage.gitStateKey(projectRoot: root) + canvasOriginTag(for: root)
+        for idx in canvasArtboards.indices { canvasArtboards[idx].cachedStateKey = nil }
+    }
+
     public func wakePreviewServerAndHydrate(forceAll: Bool = false) async {
         guard let root = canvasProjectRoot else { return }
         let isToolrollRepo = (root as NSString).lastPathComponent.lowercased() == "toolroll"
@@ -414,6 +437,7 @@ public final class WorkbenchStore {
 
         if let url = await previewServer.ensureRunning(projectRoot: root, preferredOrigin: preferredOrigin) {
             canvasBaseURL = url
+            adoptCanvasOrigin(url)
             if forceAll {
                 for idx in canvasArtboards.indices {
                     canvasArtboards[idx].cachedStateKey = nil
@@ -432,6 +456,7 @@ public final class WorkbenchStore {
 
         if let url = await previewServer.installDependenciesAndRun(projectRoot: root, preferredOrigin: preferredOrigin) {
             canvasBaseURL = url
+            adoptCanvasOrigin(url)
             for idx in canvasArtboards.indices {
                 canvasArtboards[idx].cachedStateKey = nil
             }

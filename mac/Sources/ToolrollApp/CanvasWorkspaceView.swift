@@ -85,6 +85,32 @@ public struct CanvasWorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+                    // Hand: one layer over the screens (so a drag anywhere pans and never selects or moves a screen),
+                    // under the dock (so every tool stays clickable). Open hand on hover, closed while dragging.
+                    if tool == .hand {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        NSCursor.closedHand.set()
+                                        panOffset = CGSize(width: dragStartPan.width + value.translation.width,
+                                                           height: dragStartPan.height + value.translation.height)
+                                    }
+                                    .onEnded { _ in
+                                        dragStartPan = panOffset
+                                        NSCursor.openHand.set()
+                                    }
+                            )
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active: NSCursor.openHand.set()
+                                case .ended: NSCursor.arrow.set()
+                                }
+                            }
+                            .accessibilityHidden(true)
+                    }
+
                     // Floating Bottom Dock + Contextual Compare Guide Bar
                     VStack(spacing: 8) {
                         Spacer()
@@ -118,22 +144,6 @@ public struct CanvasWorkspaceView: View {
                             gestureBaseZoom = zoom
                         }
                 )
-            }
-            .overlay {
-                if tool == .hand {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    panOffset = CGSize(width: dragStartPan.width + value.translation.width,
-                                                       height: dragStartPan.height + value.translation.height)
-                                }
-                                .onEnded { _ in dragStartPan = panOffset }
-                        )
-                        .onHover { inside in (inside ? NSCursor.openHand : NSCursor.arrow).set() }
-                        .accessibilityHidden(true)
-                }
             }
         }
         .background(ToolrollPalette.ground)

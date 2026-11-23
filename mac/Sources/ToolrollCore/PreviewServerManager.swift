@@ -127,8 +127,16 @@ public final class PreviewServerManager {
             return nil
         }
 
-        // Reuse already-running external dev server on the expected port!
+        // Reuse an already-running dev server on the expected port, but only this project's: a port is shared
+        // between projects (alekseypelletier.com and toolroll both default to :3000), and another project's pages
+        // would fill this canvas with its 404s.
         if await isReachable(urlString: detected.expectedURL) {
+            if let owner = Self.listenerDirectory(port: detected.expectedPort), !Self.isInside(owner, root: projectRoot) {
+                stopManagedServer()
+                activeProjectRoot = projectRoot
+                status = .failed("Port \(detected.expectedPort) is in use by another project (\((owner as NSString).lastPathComponent)). Stop it, or start this project's dev server on another port.")
+                return nil
+            }
             stopManagedServer()
             activeProjectRoot = projectRoot
             managedByToolroll = false
@@ -276,6 +284,34 @@ public final class PreviewServerManager {
             if Task.isCancelled { return }
             self?.stopManagedServer()
         }
+    }
+
+    /// The working directory of whatever listens on `port` (nil when nothing does or it can't be read).
+    nonisolated static func listenerDirectory(port: Int) -> String? {
+        guard let pid = run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"])?
+            .split(separator: "\n").first.map(String.init) else { return nil }
+        let out = run("/usr/sbin/lsof", ["-a", "-p", pid, "-d", "cwd", "-Fn"]) ?? ""
+        return out.split(separator: "\n").first(where: { $0.hasPrefix("n") }).map { String($0.dropFirst()) }
+    }
+
+    nonisolated static func isInside(_ path: String, root: String) -> Bool {
+        let resolve = { (p: String) in URL(fileURLWithPath: p).resolvingSymlinksInPath().standardizedFileURL.path }
+        let child = resolve(path), parent = resolve(root)
+        return child == parent || child.hasPrefix(parent.hasSuffix("/") ? parent : parent + "/")
+    }
+
+    nonisolated private static func run(_ tool: String, _ args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     private func isReachable(urlString: String) async -> Bool {
