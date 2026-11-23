@@ -4,6 +4,7 @@ import ToolrollCore
 
 @main
 struct ToolrollMacApp: App {
+    static let mainWindowId = "main"
     @State private var store = WorkbenchStore()
 
     private func archiveSelectedTask() {
@@ -17,7 +18,9 @@ struct ToolrollMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Toolroll") {
+        // One main window. Cmd-W closes it and Toolroll keeps running (menu bar); the Dock icon, the menu bar's
+        // "Open Toolroll" and Window ▸ Toolroll bring it back.
+        Window("Toolroll", id: ToolrollMacApp.mainWindowId) {
             MainWorkbenchView(store: store)
                 .frame(minWidth: 740, minHeight: 580)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -171,34 +174,7 @@ struct ToolrollMacApp: App {
         }
 
         MenuBarExtra {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(store.activeProfile.displayTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(store.needsCount > 0 ? "\(store.needsCount) task(s) need your approval" : "Inbox clear")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Divider()
-                ForEach(store.needsRows.prefix(5)) { row in
-                    Button("Needs you: \(row.title)") {
-                        NSApp.activate(ignoringOtherApps: true)
-                        Task { await store.selectTask(row.id) }
-                    }
-                }
-                if !store.needsRows.isEmpty {
-                    Divider()
-                }
-                Button("Open Toolroll") {
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                Button("Refresh") {
-                    Task { await store.refreshAll() }
-                }
-                Divider()
-                Button("Quit Toolroll") {
-                    NSApp.terminate(nil)
-                }
-            }
-            .padding(6)
+            ToolrollMenuBarContent(store: store)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: store.needsCount > 0 ? "square.fill" : "square")
@@ -208,5 +184,45 @@ struct ToolrollMacApp: App {
                 }
             }
         }
+    }
+}
+
+/// The menu bar's menu. "Open Toolroll" reopens the main window when it was closed (Cmd-W), not just the app.
+private struct ToolrollMenuBarContent: View {
+    let store: WorkbenchStore
+    @Environment(\.openWindow) private var openWindow
+
+    private func showMain() {
+        openWindow(id: ToolrollMacApp.mainWindowId)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(store.activeProfile.displayTitle)
+                .font(.system(size: 12, weight: .semibold))
+            Text(store.needsCount > 0 ? "\(store.needsCount) task(s) need your approval" : "Inbox clear")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Divider()
+            ForEach(store.needsRows.prefix(5)) { row in
+                Button("Needs you: \(row.title)") {
+                    showMain()
+                    Task { await store.selectTask(row.id) }
+                }
+            }
+            if !store.needsRows.isEmpty {
+                Divider()
+            }
+            Button("Open Toolroll") { showMain() }
+            Button("Refresh") {
+                Task { await store.refreshAll() }
+            }
+            Divider()
+            Button("Quit Toolroll") {
+                NSApp.terminate(nil)
+            }
+        }
+        .padding(6)
     }
 }
