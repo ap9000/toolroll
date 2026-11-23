@@ -72,6 +72,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Extended attributes (Finder info, provenance) make codesign refuse with "detritus not allowed": strip them first.
+xattr -cr "$APP_DIR" 2>/dev/null || true # guard: allow — a missing xattr tool only skips the cleanup
 if command -v codesign >/dev/null 2>&1; then
   SIGN_ID="${TOOLROLL_SIGN_IDENTITY:-}"
   if [[ -z "$SIGN_ID" ]] && command -v security >/dev/null 2>&1; then
