@@ -233,6 +233,13 @@ export const workRowsSchema = z.object({
    * unpriced work counted as nothing) and the fullest current subscription window the providers last reported, rounded
    * (null: none reported). The Limits view's audience only (an instance operator); null for everyone else. */
   spend: z.object({ todayUsd: z.number(), planPercent: z.number().int().nullable() }).nullable(),
+  /** Each provider's subscription windows as last reported (provider_limit): used %, whether the limit is reached and
+   * when it resets (null: not reported). The installation's own accounts, so the same audience as `spend`, plus this
+   * computer's own local owner (it is their machine's subscriptions); null for everyone else. */
+  limits: z.array(z.object({
+    provider: z.string(), plan: z.string().nullable(), window: z.string(), usedPercent: z.number(),
+    reached: z.boolean(), resetsAt: z.string().nullable(), observedAt: z.string(),
+  })).nullable(),
 });
 
 // ---- Step cards ---------------------------------------------------------------------------------------------------

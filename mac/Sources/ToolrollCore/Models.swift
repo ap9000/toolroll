@@ -261,6 +261,37 @@ public struct SpendSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// A provider's subscription window as last reported (owner audience).
+public struct ProviderLimit: Codable, Sendable, Equatable {
+    public let provider: String
+    public let plan: String?
+    public let window: String
+    public let usedPercent: Double
+    public let reached: Bool
+    public let resetsAt: String?
+    public let observedAt: String
+
+    public init(provider: String, plan: String? = nil, window: String, usedPercent: Double, reached: Bool, resetsAt: String? = nil, observedAt: String = "") {
+        self.provider = provider
+        self.plan = plan
+        self.window = window
+        self.usedPercent = usedPercent
+        self.reached = reached
+        self.resetsAt = resetsAt
+        self.observedAt = observedAt
+    }
+
+    /// Each provider once, by its tightest window (the one closest to its limit).
+    public static func tightestPerProvider(_ all: [ProviderLimit]) -> [ProviderLimit] {
+        var best: [String: ProviderLimit] = [:]
+        for one in all {
+            if let current = best[one.provider], (current.reached ? 101 : current.usedPercent) >= (one.reached ? 101 : one.usedPercent) { continue }
+            best[one.provider] = one
+        }
+        return best.values.sorted { $0.provider < $1.provider }
+    }
+}
+
 /// One of the Work list's own groups, in the server's order and words.
 public struct WorkGroupSummary: Codable, Sendable, Equatable {
     public let key: String
@@ -290,6 +321,8 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
     public var needs: [WorkNeedGroup] = []
     /// The next page's cursor (null: this is all of it).
     public var next: String? = nil
+    /// Each provider's subscription windows (owner audience; null for others).
+    public var limits: [ProviderLimit]? = nil
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -299,7 +332,7 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
         case rows
         case room
         case spend
-        case groups, needs, next
+        case groups, needs, next, limits
     }
 
     public init(
@@ -337,6 +370,7 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
         groups = try? c.decodeIfPresent([WorkGroupSummary].self, forKey: .groups)
         needs = (try? c.decodeIfPresent([WorkNeedGroup].self, forKey: .needs)) ?? []
         next = try? c.decodeIfPresent(String.self, forKey: .next)
+        limits = try? c.decodeIfPresent([ProviderLimit].self, forKey: .limits)
     }
 
     private enum CamelKeys: String, CodingKey {

@@ -77,7 +77,24 @@ struct WorkHomeView: View {
     // MARK: Limits (only what /work/rows `spend` supplies; its audience is the owner, so it's absent for others)
 
     @ViewBuilder private var limits: some View {
-        if let spend = store.workRowsResponse.spend {
+        let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
+        if !perProvider.isEmpty {
+            HStack(spacing: 30) {
+                ForEach(perProvider, id: \.provider) { limit in providerLimit(limit) }
+                if let spend = store.workRowsResponse.spend {
+                    HStack(spacing: 6) {
+                        Text(spend.todayUsd, format: .currency(code: "USD")).foregroundStyle(ToolrollPalette.ink)
+                        Text("today").foregroundStyle(ToolrollPalette.muted)
+                    }
+                }
+                Spacer()
+            }
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 16)
+            .frame(minHeight: 44)
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        } else if let spend = store.workRowsResponse.spend {
             HStack(spacing: 28) {
                 if let percent = spend.planPercent {
                     HStack(spacing: 10) {
@@ -103,6 +120,43 @@ struct WorkHomeView: View {
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
+    }
+
+    private func providerLimit(_ limit: ProviderLimit) -> some View {
+        let name = Self.providerName(limit.provider) + (limit.plan.map { " \($0)" } ?? "")
+        let percent = Int(limit.usedPercent.rounded())
+        let state = limit.reached ? "Limit reached" : "\(percent)% \(limit.window)"
+        let reset = Self.resetWords(limit.resetsAt)
+        return HStack(spacing: 10) {
+            Text(name).foregroundStyle(ToolrollPalette.muted)
+            meter(limit.reached ? 100 : percent)
+            Text(state).foregroundStyle(limit.reached ? ToolrollPalette.danger : ToolrollPalette.ink)
+            if let reset { Text(reset).foregroundStyle(ToolrollPalette.muted) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name): \(limit.reached ? "limit reached" : "\(percent) percent of its \(limit.window) window used")\(reset.map { ", \($0)" } ?? "")")
+    }
+
+    static func providerName(_ id: String) -> String {
+        switch id.lowercased() {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        case "gemini": return "Gemini"
+        default: return id.prefix(1).uppercased() + id.dropFirst()
+        }
+    }
+
+    /// "resets in 5h" within a day, "resets Wed" within a week, else "resets Dec 3"; nil when not reported.
+    static func resetWords(_ iso: String?, now: Date = Date()) -> String? {
+        guard let iso, let date = ISO8601DateFormatter().date(from: iso) ?? {
+            let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.date(from: iso)
+        }() else { return nil }
+        let seconds = date.timeIntervalSince(now)
+        if seconds <= 0 { return nil }
+        if seconds < 86_400 { return "resets in \(max(1, Int(seconds / 3600)))h" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = seconds < 7 * 86_400 ? "EEE" : "MMM d"
+        return "resets \(formatter.string(from: date))"
     }
 
     private func meter(_ percent: Int) -> some View {

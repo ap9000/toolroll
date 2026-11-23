@@ -1,5 +1,5 @@
 {
-  "digest": "4287d1a32db70a1294ad56bcc337333505c45e2aa7424aa971b1eab8e40a7f40",
+  "digest": "0b88c973de6f29a22592b5e0f319d84ee2eeaacdd6d0d3ad5a1188411ab91cb4",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1537,6 +1537,58 @@
               "type": "null"
             }
           ]
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "plan": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "window": {
+                    "type": "string"
+                  },
+                  "usedPercent": {
+                    "type": "number"
+                  },
+                  "reached": {
+                    "type": "boolean"
+                  },
+                  "resetsAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "observedAt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "plan",
+                  "window",
+                  "usedPercent",
+                  "reached",
+                  "resetsAt",
+                  "observedAt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1549,7 +1601,8 @@
         "needs",
         "next",
         "room",
-        "spend"
+        "spend",
+        "limits"
       ],
       "additionalProperties": false
     },

@@ -662,3 +662,14 @@ test("RS1: after a console restart a form act with the old key is refused in wor
     await w.close();
   }
 }, LOCAL_WORLD_SETUP_MS);
+
+test("LIMITS: the local owner reads each provider's windows on the Work rows (what the Work screen's Limits widget shows)", async () => {
+  const reset = new Date(Date.now() + 3 * 86_400_000).toISOString();
+  world.store.recordProviderLimits({ provider: "claude", plan: "Max", windows: [{ window: "weekly", usedPercent: 100, windowMinutes: 10_080, resetsAt: reset, reached: true }] } as never, new Date());
+  world.store.recordProviderLimits({ provider: "codex", plan: "Pro", windows: [{ window: "weekly", usedPercent: 24, windowMinutes: 10_080, resetsAt: null, reached: false }] } as never, new Date());
+  const read = workRowsSchema.parse((await mac.get("/work/rows")).body);
+  expect(read.limits?.map(one => [one.provider, one.window, one.usedPercent, one.reached])).toEqual(expect.arrayContaining([
+    ["claude", "weekly", 100, true], ["codex", "weekly", 24, false],
+  ]));
+  expect(read.limits?.find(one => one.provider === "claude")?.resetsAt).toBe(reset);
+});

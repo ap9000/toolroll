@@ -1467,6 +1467,14 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
       try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), store.providerLimits(), now); } catch { return null; }
     })();
+    // The providers' windows, per provider: the cost line's audience, or this computer's own local owner.
+    const limits = (() => {
+      if (who.via !== "cookie" || !(store.isInstanceOperator(who.name) || who.authority === "local-owner")) return null;
+      try {
+        return store.providerLimits().map(one => ({ provider: one.provider, plan: one.plan, window: one.window, usedPercent: one.usedPercent,
+          reached: one.reached, resetsAt: one.resetsAt, observedAt: one.observedAt }));
+      } catch { return null; }
+    })();
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
     // Every row's wait, read at once (one statement, never a few per row: the wire budgets hold it).
@@ -1477,7 +1485,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
         chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
         waiting: waiting.get(row.id) ?? null })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
-      next: list.pages.next, room: "workspace", spend,
+      next: list.pages.next, room: "workspace", spend, limits,
     };
     return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", body)));
   }

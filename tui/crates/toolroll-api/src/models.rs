@@ -461,6 +461,9 @@ pub struct WorkRows {
     pub room: String,
     /// The cost line: today's spend and the fullest current plan window (an instance operator's only; else None).
     pub spend: Option<Spend>,
+    /// Each provider's subscription windows (owner audience; null for others).
+    #[serde(default)]
+    pub limits: Option<Vec<ProviderLimit>>,
 }
 
 /// "$1.84 today · plan 62%": today's spend (the UTC day) and the fullest current subscription window, rounded.
@@ -670,6 +673,19 @@ pub struct Failure {
     pub suggestion: Option<String>,
     /// The agent's last lines before it stopped, cleaned by the engine (at most 8).
     pub agent_said: Option<Vec<String>>,
+}
+
+/// A provider's subscription window as last reported: used %, reached, and when it resets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderLimit {
+    pub provider: String,
+    pub plan: Option<String>,
+    pub window: String,
+    pub used_percent: f64,
+    pub reached: bool,
+    pub resets_at: Option<String>,
+    pub observed_at: String,
 }
 
 /// One step's agent on a task's own route; `chosen` says whether a person overrode the recommendation.
