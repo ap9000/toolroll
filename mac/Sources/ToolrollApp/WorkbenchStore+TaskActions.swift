@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ToolrollCore
 
@@ -51,7 +52,9 @@ extension WorkbenchStore {
                 await refreshAll()
                 return
             }
-            await archiveRetryingWhileWinding(taskId: pending.taskId, title: pending.title)
+            let failure = await archiveOne(id: pending.taskId, running: false)
+            let row = WorkRow(id: pending.taskId, title: pending.title, status: .finished, word: "Cancelled")
+            await finishArchive(archived: failure == nil ? [row] : [], failure: failure, asked: 1)
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
             await refreshAll()
@@ -91,86 +94,140 @@ extension WorkbenchStore {
 
     // MARK: Archive / restore
 
-    /// Archive; on a running task, stop its run first and archive once it has wound down.
+    /// Archive one task; a running one is stopped first and archived once it has wound down.
     public func archiveTask(_ row: WorkRow) async {
-        guard isFreeForTaskAction() else { return }
-        if activeProfile.isDemo {
-            notice = WorkbenchNotice(kind: .info, message: "Demo tasks can't be archived.")
-            return
-        }
-        guard let client else { return }
-        if row.status == .running {
-            busyLabel = "Stopping before archiving…"
-            defer { busyLabel = nil }
-            // A row's id is its family's root; stop acts on the current version, which the steps read names.
-            // A stop that comes back refused (already finished, not live) still leaves the archive to decide.
-            if let steps = try? await client.fetchSteps(taskId: row.id), let live = steps.liveRun {
-                _ = try? await client.stopTask(taskId: steps.task.id, runId: live)
-            }
-            await archiveRetryingWhileWinding(taskId: row.id, title: row.title)
-            return
-        }
-        busyLabel = "Archiving…"
+        guard canStartArchive() else { return }
+        busyLabel = row.status == .running ? "Stopping before archiving…" : "Archiving…"
         defer { busyLabel = nil }
-        await archiveNow(taskId: row.id, title: row.title)
+        let failure = await archiveOne(id: row.id, running: row.status == .running)
+        await finishArchive(archived: failure == nil ? [row] : [], failure: failure, asked: 1)
+    }
+
+    /// Archive every selected row (running ones are stopped first): one notice, and one Undo restores them all.
+    public func archiveTasks(_ rows: [WorkRow]) async {
+        guard !rows.isEmpty, canStartArchive() else { return }
+        busyLabel = "Archiving \(rows.count) tasks…"
+        defer { busyLabel = nil }
+        var archived: [WorkRow] = []
+        var firstFailure: String?
+        for row in rows {
+            if let failure = await archiveOne(id: row.id, running: row.status == .running) {
+                firstFailure = firstFailure ?? failure
+            } else {
+                archived.append(row)
+            }
+        }
+        bulkSelection = []
+        await finishArchive(archived: archived, failure: firstFailure, asked: rows.count)
     }
 
     public func restoreTask(taskId: String) async {
-        guard let client else { return }
+        await restoreTasks([taskId])
+    }
+
+    public func restoreTasks(_ taskIds: [String]) async {
+        guard let client, !taskIds.isEmpty else { return }
         busyLabel = "Restoring…"
         defer { busyLabel = nil }
-        do {
-            _ = try await client.restoreTask(taskId: taskId)
-            notice = WorkbenchNotice(kind: .info, message: "Restored.")
-            await refreshAll()
-            await selectTask(taskId)
-        } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        var restored = 0
+        var failure: String?
+        for id in taskIds {
+            do {
+                _ = try await client.restoreTask(taskId: id)
+                restored += 1
+            } catch {
+                failure = failure ?? error.localizedDescription
+            }
         }
+        let message = restored == 1 && taskIds.count == 1 ? "Restored." : "Restored \(restored) of \(taskIds.count)."
+        notice = WorkbenchNotice(kind: failure == nil ? .info : .refusal, message: failure.map { "\(message) \($0)" } ?? message)
+        await refreshAll()
+        if taskIds.count == 1, restored == 1 { await selectTask(taskIds[0]) }
     }
 
     public func performNoticeAction(_ action: NoticeAction) async {
         switch action {
         case .restore(let taskId): await restoreTask(taskId: taskId)
+        case .restoreAll(let taskIds): await restoreTasks(taskIds)
         }
     }
 
-    /// After a stop the run takes a few seconds to wind down, and archive refuses until it has: retry only that refusal.
-    private func archiveRetryingWhileWinding(taskId: String, title: String) async {
-        guard let client else { return }
+    // MARK: Multi-select (⌘-click adds or removes a row, ⇧-click selects a range, a plain click selects one)
+
+    /// The active and visible settled rows in sidebar order: what a ⇧-click range runs over.
+    var selectableRows: [WorkRow] { needsRows + runningRows + queuedRows + (isSettledExpanded ? settledRows : []) }
+
+    public var bulkSelectedRows: [WorkRow] { selectableRows.filter { bulkSelection.contains($0.id) } }
+
+    public func handleRowClick(_ row: WorkRow) async {
+        let flags = NSEvent.modifierFlags
+        let ordered = selectableRows
+        guard ordered.contains(where: { $0.id == row.id }) else {
+            bulkSelection = []
+            await selectTask(row.id)
+            return
+        }
+        if flags.contains(.command) {
+            if bulkSelection.isEmpty, let current = selectedTaskId, !isComposingNewWork { bulkSelection.insert(current) }
+            if bulkSelection.contains(row.id) { bulkSelection.remove(row.id) } else { bulkSelection.insert(row.id) }
+            bulkAnchorId = row.id
+            return
+        }
+        if flags.contains(.shift), let anchor = bulkAnchorId ?? selectedTaskId,
+           let from = ordered.firstIndex(where: { $0.id == anchor }), let to = ordered.firstIndex(where: { $0.id == row.id }) {
+            bulkSelection = Set(ordered[min(from, to)...max(from, to)].map(\.id))
+            return
+        }
+        bulkSelection = []
+        bulkAnchorId = row.id
+        await selectTask(row.id)
+    }
+
+    // MARK: Archive internals
+
+    private func canStartArchive() -> Bool {
+        guard isFreeForTaskAction() else { return false }
+        if activeProfile.isDemo {
+            notice = WorkbenchNotice(kind: .info, message: "Demo tasks can't be archived.")
+            return false
+        }
+        return client != nil
+    }
+
+    /// Archives one task; nil when it worked, else the words to show. After a stop the run takes a few seconds to wind
+    /// down and archive refuses until it has, so that one refusal is retried; any other is returned as it is.
+    func archiveOne(id: String, running: Bool) async -> String? {
+        guard let client else { return "Not connected to Toolroll." }
+        // A row's id is its family's root; stop acts on the current version, which the steps read names.
+        // A stop that comes back refused (already finished, not live) still leaves the archive to decide.
+        if running, let steps = try? await client.fetchSteps(taskId: id), let live = steps.liveRun {
+            _ = try? await client.stopTask(taskId: steps.task.id, runId: live)
+        }
         for attempt in 1...Self.archiveRetryLimit {
             do {
-                _ = try await client.archiveTask(taskId: taskId, reason: Self.archiveReason)
-                await didArchive(taskId: taskId, title: title)
-                return
+                _ = try await client.archiveTask(taskId: id, reason: Self.archiveReason)
+                return nil
             } catch {
                 let words = error.localizedDescription
-                guard words.contains(Self.stillWorkingWords) else {
-                    notice = WorkbenchNotice(kind: .refusal, message: words)
-                    await refreshAll()
-                    return
-                }
+                guard words.contains(Self.stillWorkingWords) else { return words }
                 if attempt < Self.archiveRetryLimit { try? await Task.sleep(for: Self.archiveRetryInterval) }
             }
         }
-        notice = WorkbenchNotice(kind: .info, message: "Stopped. It's still winding down, so archive it again in a moment.")
-        await refreshAll()
+        return "Stopped. It's still winding down, so archive it again in a moment."
     }
 
-    private func archiveNow(taskId: String, title: String) async {
-        guard let client else { return }
-        do {
-            _ = try await client.archiveTask(taskId: taskId, reason: Self.archiveReason)
-            await didArchive(taskId: taskId, title: title)
-        } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
-            await refreshAll()
+    /// One notice for what was archived (with its Undo) and what wasn't, then the list again.
+    func finishArchive(archived: [WorkRow], failure: String?, asked: Int) async {
+        await leaveSelectionIfArchived(Set(archived.map(\.id)))
+        let ids = archived.map(\.id)
+        if ids.isEmpty {
+            notice = WorkbenchNotice(kind: .refusal, message: failure ?? "Nothing was archived.")
+        } else {
+            let done = ids.count == 1 ? "Archived \u{201C}\(archived[0].title)\u{201D}." : "Archived \(ids.count) tasks."
+            let rest = failure.map { " \(asked - ids.count) couldn't be: \($0)" } ?? ""
+            notice = WorkbenchNotice(kind: .info, message: done + rest,
+                                     action: ids.count == 1 ? .restore(taskId: ids[0]) : .restoreAll(taskIds: ids))
         }
-    }
-
-    private func didArchive(taskId: String, title: String) async {
-        await leaveTaskIfSelected(taskId)
-        notice = WorkbenchNotice(kind: .info, message: "Archived \u{201C}\(title)\u{201D}.", action: .restore(taskId: taskId))
         await refreshAll()
     }
 
@@ -183,15 +240,16 @@ extension WorkbenchStore {
         return true
     }
 
-    /// An archived task leaves the list: open the next task in the list (or the new-work screen) instead.
-    private func leaveTaskIfSelected(_ taskId: String) async {
-        guard selectedTaskId == taskId, !isComposingNewWork else { return }
-        let ordered = needsRows + runningRows + queuedRows + (isSettledExpanded ? settledRows : [])
-        let remaining = ordered.filter { $0.id != taskId }
-        guard let idx = ordered.firstIndex(where: { $0.id == taskId }), !remaining.isEmpty else {
+    /// Archived tasks leave the list: open the next remaining task in the list (or the new-work screen) instead.
+    private func leaveSelectionIfArchived(_ archived: Set<String>) async {
+        guard let current = selectedTaskId, archived.contains(current), !isComposingNewWork else { return }
+        let ordered = selectableRows
+        let remaining = ordered.filter { !archived.contains($0.id) }
+        guard let idx = ordered.firstIndex(where: { $0.id == current }), !remaining.isEmpty else {
             openNewWorkCanvas()
             return
         }
-        await selectTask(remaining[min(idx, remaining.count - 1)].id)
+        let after = ordered[idx...].first { !archived.contains($0.id) } ?? remaining.last!
+        await selectTask(after.id)
     }
 }

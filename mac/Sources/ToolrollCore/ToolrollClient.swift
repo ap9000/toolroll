@@ -235,16 +235,29 @@ public actor ToolrollClient {
     private func reconnectLocalSession() async -> Bool {
         guard case .localSession = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
         transport = .localSession(fresh)
+        sessionRenewed?(fresh)
         return true
     }
 
-    private func sendFormAct(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+    /// Told when the session was renewed after a restart, so the app's other users of it (the web preview's cookie) follow.
+    private var sessionRenewed: (@Sendable (LocalSessionCredentials) -> Void)?
+
+    public func onSessionRenewed(_ handler: @escaping @Sendable (LocalSessionCredentials) -> Void) {
+        sessionRenewed = handler
+    }
+
+    /// Runs `op`; when it was refused for a key from before a restart, reconnects and runs it once more.
+    private func renewingStaleSession<T>(_ op: () async throws -> T) async throws -> T {
         do {
-            return try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone)
+            return try await op()
         } catch where Self.isStaleSession(error) {
             guard await reconnectLocalSession() else { throw error }
-            return try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone)
+            return try await op()
         }
+    }
+
+    private func sendFormAct(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+        try await renewingStaleSession { try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone) }
     }
 
     private func sendFormActOnce(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
@@ -326,8 +339,9 @@ public actor ToolrollClient {
 
     // MARK: - Core Engine Reads
 
-    public func fetchWorkRows() async throws -> WorkRowsResponse {
-        try await send(try makeRequest(path: "/work/rows"), as: WorkRowsResponse.self)
+    /// Work's rows; `view: "archived"` reads the tasks put away (the default list leaves them out).
+    public func fetchWorkRows(view: String? = nil) async throws -> WorkRowsResponse {
+        try await send(try makeRequest(path: view.map { "/work/rows?view=\($0)" } ?? "/work/rows"), as: WorkRowsResponse.self)
     }
 
     public func fetchSteps(taskId: String) async throws -> StepCardsResponse {
@@ -410,6 +424,10 @@ public actor ToolrollClient {
 
     /// Starts Toolroll's built-in trusted agent sign-in or install terminal (`POST /term/agent/sign-in` or `/install`).
     public func startAgentTerminal(kind: String, agentId: String, confirmCommand: String? = nil) async throws -> String {
+        try await renewingStaleSession { try await startAgentTerminalOnce(kind: kind, agentId: agentId, confirmCommand: confirmCommand) }
+    }
+
+    private func startAgentTerminalOnce(kind: String, agentId: String, confirmCommand: String?) async throws -> String {
         struct TermStartReply: Decodable {
             let ok: Bool?
             let id: String?
@@ -907,8 +925,9 @@ public actor ToolrollClient {
 
     public func cancelTask(taskId: String, state: String, runId: Int?) async throws -> String {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
-        if !transport.isLocalSession {
-            return try await runRemoteCli(argv: ["task", "stop", taskId], defaultDone: "Cancelled.")
+        // The remote CLI has no cancel (and `task stop` there needs a run and a password): never pretend.
+        guard transport.isLocalSession else {
+            throw ToolrollClientError.refused("Cancel this task from the web view on a remote workspace.")
         }
         return try await sendFormAct(
             path: "/t/\(enc)/cancel",
@@ -1031,6 +1050,17 @@ public actor ToolrollClient {
         project: String? = nil,
         runId: Int? = nil,
         program: String = "shell"
+    ) async throws -> StartRemoteTerminalResponse {
+        try await renewingStaleSession {
+            try await startOrReuseTerminalOnce(taskId: taskId, project: project, runId: runId, program: program)
+        }
+    }
+
+    private func startOrReuseTerminalOnce(
+        taskId: String,
+        project: String?,
+        runId: Int?,
+        program: String
     ) async throws -> StartRemoteTerminalResponse {
         switch transport {
         case .localSession(let s):

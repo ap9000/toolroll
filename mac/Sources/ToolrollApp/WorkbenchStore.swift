@@ -51,6 +51,7 @@ public struct WorkbenchNotice: Equatable, Sendable {
 
 public enum NoticeAction: Equatable, Sendable {
     case restore(taskId: String)
+    case restoreAll(taskIds: [String])
 }
 
 /// A cancel waiting for the person's confirm: exactly the state and newest run they were shown, which the server proves.
@@ -78,6 +79,8 @@ public final class WorkbenchStore {
     public var pendingCancel: PendingCancel?
     /// The task whose models the picker is changing (right-click → Change Models…); nil when it isn't open.
     public var modelPickerTaskId: String?
+    /// Your password for a short while after you type it or use Touch ID (Settings → Remember password).
+    public let passwordMemory = PasswordMemory()
 
     // Filters & Layout (persisted cleanly across launches)
     public var workspaceMode: WorkspaceMode = .workbench {
@@ -117,6 +120,12 @@ public final class WorkbenchStore {
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
+    /// Archived tasks, shown in their own group inside Settled (right-click → Restore).
+    public private(set) var archivedRows: [WorkRow] = []
+    public var isArchivedExpanded: Bool = false
+    /// Rows picked with ⌘/⇧-click for a bulk action; empty when one task is simply open.
+    public var bulkSelection: Set<String> = []
+    var bulkAnchorId: String?
     public var settledDisplayLimit: Int = 10
     public var isCliThreadsExpanded: Bool = true
     public var cliThreadsDisplayLimit: Int = 10
@@ -898,6 +907,7 @@ public final class WorkbenchStore {
     }
 
     public func approveProjectWorktreeSetup(repoPath: String, command: String, password: String) async -> Bool {
+        let password = effectivePassword(password)
         let cleanCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanCmd.isEmpty else {
             notice = WorkbenchNotice(kind: .refusal, message: "Enter a worktree setup command first.")
@@ -1242,11 +1252,13 @@ public final class WorkbenchStore {
     }
 
     public func retryPendingModelChange(password: String) async {
+        let password = effectivePassword(password)
         guard let fields = pendingModelFields else { return }
         await submitModelFields(fields, friendlyLabel: "model selection", password: password)
     }
 
     private func submitModelFields(_ fields: [String: String], friendlyLabel: String, password: String = "") async {
+        let password = effectivePassword(password)
         busyLabel = "Switching to \(friendlyLabel)…"
         modelChangeError = nil
         defer { busyLabel = nil }
@@ -1429,6 +1441,14 @@ public final class WorkbenchStore {
         return true
     }
 
+    /// After a Toolroll restart the client signs in again by itself; the web preview's cookie follows it here.
+    func adoptRenewedSession(_ creds: LocalSessionCredentials) {
+        guard let eq = creds.cookieHeader.firstIndex(of: "=") else { return }
+        let name = String(creds.cookieHeader[..<eq])
+        let value = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
+        localSessionCookie = (name, value, creds.origin)
+    }
+
     @discardableResult
     public func connectToLocalConsoleIfAvailable(silent: Bool = false) async -> Bool {
         if let creds = await LocalConsoleConnector.discoverAndConnect() {
@@ -1445,7 +1465,11 @@ public final class WorkbenchStore {
             self.activeProfile = localProf
             self.isLocalSession = true
             self.localDatabasePath = creds.databasePath
-            self.client = ToolrollClient(localSession: creds)
+            let fresh = ToolrollClient(localSession: creds)
+            self.client = fresh
+            await fresh.onSessionRenewed { [weak self] renewed in
+                Task { @MainActor in self?.adoptRenewedSession(renewed) }
+            }
             self.passwordSet = creds.passwordSet
             refreshTouchIDState()
             refreshAgentRequests(notifyNew: false)
@@ -1560,6 +1584,7 @@ public final class WorkbenchStore {
             async let leadReq = client.fetchLeadChat(project: selectedProject)
             async let agentsReq = client.fetchAgents()
             async let modelsReq = client.fetchModels()
+            async let archivedReq = client.fetchWorkRows(view: "archived")
 
             workRowsResponse = try await rowsReq
             processTaskNotifications(workRowsResponse.rows)
@@ -1568,6 +1593,7 @@ public final class WorkbenchStore {
             if let chat = try? await leadReq { leadChat = chat }
             if let ag = try? await agentsReq { agentsRead = ag }
             if let mod = try? await modelsReq { modelsRead = mod }
+            if let archived = try? await archivedReq { archivedRows = archived.rows }
 
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
@@ -1716,6 +1742,7 @@ public final class WorkbenchStore {
     // MARK: - Native In-App Approvals, Reviews, Questions & Lifecycle
 
     public func approveSelectedTask(password: String = "") async {
+        let password = effectivePassword(password)
         guard let rootTaskId = selectedTaskId else { return }
         let queryTaskId = stepCards?.task.id ?? rootTaskId
         busyLabel = "Approving plan…"
@@ -2444,9 +2471,21 @@ public final class WorkbenchStore {
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
 
+    /// A typed password is remembered for the chosen window; an empty one uses the remembered password, if any.
+    func effectivePassword(_ typed: String) -> String {
+        guard typed.isEmpty else {
+            passwordMemory.remember(typed)
+            return typed
+        }
+        return passwordMemory.recall() ?? ""
+    }
+
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
+        if let remembered = passwordMemory.recall() { return remembered }
         do {
-            return try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
+            let unlocked = try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
+            passwordMemory.remember(unlocked)
+            return unlocked
         } catch TouchIDVaultError.cancelled {
             return nil
         } catch {
@@ -2502,6 +2541,7 @@ public final class WorkbenchStore {
     }
 
     public func approveAgentRequest(_ request: AgentRequest, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
+        let typedPassword: String? = { let pw = effectivePassword(typedPassword ?? ""); return pw.isEmpty ? nil : pw }()
         guard let dbPath = resolvedLocalDatabasePath else {
             return (false, "No local Toolroll database connected.")
         }

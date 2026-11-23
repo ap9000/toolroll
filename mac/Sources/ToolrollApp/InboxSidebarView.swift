@@ -212,7 +212,7 @@ public struct InboxSidebarView: View {
                     }
 
                     // Inline collapsible Settled section (clean like Linear's Completed/Archive)
-                    if !store.settledRows.isEmpty {
+                    if !store.settledRows.isEmpty || !store.archivedRows.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Button {
                                 withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
@@ -257,6 +257,9 @@ public struct InboxSidebarView: View {
                                         .padding(.vertical, 6)
                                     }
                                     .buttonStyle(.plain)
+                                }
+                                if !store.archivedRows.isEmpty {
+                                    archivedGroup
                                 }
                             }
                         }
@@ -431,11 +434,11 @@ public struct InboxSidebarView: View {
     }
 
     private func activeRow(_ row: WorkRow) -> some View {
-        let isSelected = !store.isComposingNewWork && store.selectedTaskId == row.id
+        let isSelected = (!store.isComposingNewWork && store.selectedTaskId == row.id) || store.bulkSelection.contains(row.id)
         let pres = store.presence.tasks[row.id]
 
         return Button {
-            Task { await store.selectTask(row.id) }
+            Task { await store.handleRowClick(row) }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .top, spacing: 7) {
@@ -488,12 +491,40 @@ public struct InboxSidebarView: View {
         .contextMenu { TaskRowMenuItems(store: store, row: row) }
     }
 
-    private func settledRow(_ row: WorkRow) -> some View {
-        let isSelected = !store.isComposingNewWork && store.selectedTaskId == row.id
+    /// Archived tasks, folded inside Settled: the only place to find one again after its Undo is gone.
+    private var archivedGroup: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.isArchivedExpanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: store.isArchivedExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .frame(width: 10)
+                    Text("Archived")
+                        .font(.system(size: 11))
+                    Spacer()
+                    Text("\(store.archivedRows.count)")
+                        .font(.system(size: 10, design: .monospaced))
+                }
+                .foregroundStyle(ToolrollPalette.muted)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if store.isArchivedExpanded {
+                ForEach(store.archivedRows) { row in settledRow(row, archived: true) }
+            }
+        }
+    }
+
+    private func settledRow(_ row: WorkRow, archived: Bool = false) -> some View {
+        let isSelected = (!store.isComposingNewWork && store.selectedTaskId == row.id) || store.bulkSelection.contains(row.id)
         let badgeChar = row.project.flatMap { $0.isEmpty ? nil : String($0.prefix(2)).uppercased() } ?? "•"
 
         return Button {
-            Task { await store.selectTask(row.id) }
+            Task { await store.handleRowClick(row) }
         } label: {
             HStack(spacing: 8) {
                 Text(badgeChar)
@@ -526,7 +557,9 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
-        .contextMenu { TaskRowMenuItems(store: store, row: row) }
+        .contextMenu {
+            if archived { ArchivedRowMenuItems(store: store, row: row) } else { TaskRowMenuItems(store: store, row: row) }
+        }
     }
 
     private func cliThreadRow(_ thread: LocalCliThread) -> some View {

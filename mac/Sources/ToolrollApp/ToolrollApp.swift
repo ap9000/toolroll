@@ -7,6 +7,11 @@ struct ToolrollMacApp: App {
     @State private var store = WorkbenchStore()
 
     private func archiveSelectedTask() {
+        let picked = store.bulkSelectedRows
+        if picked.count > 1 {
+            Task { await store.archiveTasks(picked) }
+            return
+        }
         guard let row = store.selectedRow else { return }
         Task { await store.archiveTask(row) }
     }

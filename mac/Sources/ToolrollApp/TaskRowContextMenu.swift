@@ -11,6 +11,22 @@ struct TaskRowMenuItems: View {
     private var isCancellable: Bool { row.status == .needs || row.status == .queued || row.status == .failed }
 
     var body: some View {
+        if store.bulkSelection.count > 1 && store.bulkSelection.contains(row.id) {
+            bulkItems
+        } else {
+            singleItems
+        }
+    }
+
+    /// Right-click inside a ⌘/⇧-click selection acts on all of it.
+    @ViewBuilder private var bulkItems: some View {
+        let rows = store.bulkSelectedRows
+        Button("Archive \(rows.count) Tasks") { Task { await store.archiveTasks(rows) } }
+            .disabled(!store.canArchiveTasks || rows.isEmpty)
+        Button("Clear Selection") { store.bulkSelection = [] }
+    }
+
+    @ViewBuilder private var singleItems: some View {
         Button("Open") { Task { await store.selectTask(row.id) } }
         Button("Open in Web View") { store.openTaskInBrowser(taskId: row.id) }
         Divider()
@@ -22,7 +38,10 @@ struct TaskRowMenuItems: View {
             // A remote workspace's archive takes the web view's signed-in session.
             Button("Archive in Web View…") { store.openTaskInBrowser(taskId: row.id) }
         }
-        if isCancellable {
+        if isCancellable && !store.canArchiveTasks {
+            // A remote workspace's cancel takes the web view's signed-in session.
+            Button("Cancel in Web View…") { store.openTaskInBrowser(taskId: row.id) }
+        } else if isCancellable {
             Button("Cancel Task…", role: .destructive) {
                 Task { await store.prepareCancel(taskId: row.id, alsoArchive: false) }
             }
@@ -39,6 +58,21 @@ struct TaskRowMenuItems: View {
                 store.modelPickerTaskId = row.id
             }
         }
+        Divider()
+        Button("Copy Task ID") { copyToPasteboard(row.id) }
+    }
+}
+
+/// Right-click actions on an archived row: bring it back, or look at it.
+struct ArchivedRowMenuItems: View {
+    let store: WorkbenchStore
+    let row: WorkRow
+
+    var body: some View {
+        Button("Open") { Task { await store.selectTask(row.id) } }
+        Button("Restore") { Task { await store.restoreTask(taskId: row.id) } }
+            .disabled(!store.canArchiveTasks)
+        Button("Open in Web View") { store.openTaskInBrowser(taskId: row.id) }
         Divider()
         Button("Copy Task ID") { copyToPasteboard(row.id) }
     }
