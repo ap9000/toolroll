@@ -58,6 +58,8 @@ struct ScreenFocusLightboxView: View {
     @State private var selectedKind: CanvasPinKind = .change
     @State private var planFirst: Bool = true
     @State private var taskPrompt: String = ""
+    @State private var isAsking: Bool = false
+    @State private var askProblem: String? = nil
     @State private var routeDraft: String = ""
     @State private var isEditingRoute: Bool = false
     @State private var copiedFeedback: String? = nil
@@ -90,8 +92,17 @@ struct ScreenFocusLightboxView: View {
             line: element?.line,
             element: element
         )
-        taskPrompt = ""
-        Task { await store.askLeadAboutCanvas(message) }
+        askProblem = nil
+        isAsking = true
+        Task {
+            let problem = await store.askLeadAboutCanvas(message)
+            isAsking = false
+            if let problem {
+                askProblem = problem // the question stays in the box to try again
+            } else {
+                taskPrompt = ""
+            }
+        }
     }
 
     private var canSubmitTask: Bool {
@@ -1557,7 +1568,7 @@ struct ScreenFocusLightboxView: View {
                             Label("Ask Lead", systemImage: "bubble.left")
                         }
                         .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                        .disabled(taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(isAsking || taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Ask the Lead about this, with what you selected; the answer opens beside the canvas")
 
                         Button("File Task (⌘↵)") {
@@ -1566,6 +1577,13 @@ struct ScreenFocusLightboxView: View {
                         .buttonStyle(KitButtonStyle(.primary))
                         .keyboardShortcut(.return, modifiers: [.command])
                         .disabled(!canSubmitTask)
+                    }
+
+                    if let askProblem {
+                        Label(askProblem, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.danger)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(15)

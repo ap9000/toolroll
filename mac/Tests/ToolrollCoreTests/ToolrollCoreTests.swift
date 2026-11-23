@@ -1048,4 +1048,13 @@ struct ToolrollCoreTests {
         let bare = LeadAskContext.message(question: "why?", project: nil, route: "", file: nil, line: nil, element: nil)
         #expect(bare == "why?")
     }
+
+    @Test("A Lead send's request id is the 32 hex characters the server takes, and the chat read keeps its session")
+    func leadSendShape() throws {
+        let id = ToolrollClient.leadRequestId()
+        #expect(id.count == 32)
+        #expect(id.allSatisfy { "0123456789abcdef".contains($0) })
+        let read = try JSONDecoder().decode(LeadChatResponse.self, from: Data(#"{"version":1,"room":"chat","session":7,"leadName":"Lead","canSend":true,"busy":false,"messages":[]}"#.utf8))
+        #expect(read.session == 7)
+    }
 }

@@ -880,9 +880,17 @@ private struct LeadThreadView: View {
     private func send() {
         guard canSend else { return }
         let composed = ComposerAttachmentStore.composeSubmission(text: draft, attachments: attachments)
+        let keptDraft = draft
+        let keptAttachments = attachments
         draft = ""
         attachments = []
-        Task { await store.sendLeadMessage(composed.combinedMessage) }
+        Task {
+            // A refused send gives the person their words back (the refusal shows as the notice).
+            if await store.sendLeadMessage(composed.combinedMessage) != nil, draft.isEmpty {
+                draft = keptDraft
+                attachments = keptAttachments
+            }
+        }
     }
 
     /// Takes the seed a "New automation" (or similar) left for the composer, once.

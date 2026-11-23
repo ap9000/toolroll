@@ -1507,16 +1507,19 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
     public let problem: String?
     public let busy: Bool
     public let messages: [LeadMessage]
+    /// The Lead conversation this read showed (nil when none has started); a send says which one it answers.
+    public let session: Int?
 
     enum CodingKeys: String, CodingKey {
-        case version, room, busy, messages, problem
+        case version, room, busy, messages, problem, session
         case leadName = "lead_name"
         case canSend = "can_send"
     }
 
     private enum CamelKeys: String, CodingKey { case leadName, canSend }
 
-    public init(version: Int = 1, room: String = "chat", leadName: String = "Lead", canSend: Bool = true, problem: String? = nil, busy: Bool = false, messages: [LeadMessage] = []) {
+    public init(version: Int = 1, room: String = "chat", leadName: String = "Lead", canSend: Bool = true, problem: String? = nil, busy: Bool = false, messages: [LeadMessage] = [], session: Int? = nil) {
+        self.session = session
         self.version = version
         self.room = room
         self.leadName = leadName
@@ -1540,6 +1543,7 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
         problem = try c.decodeIfPresent(String.self, forKey: .problem)
         busy = try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false
         messages = try c.decodeIfPresent([LeadMessage].self, forKey: .messages) ?? []
+        session = try? c.decodeIfPresent(Int.self, forKey: .session)
     }
 }
 

@@ -771,12 +771,20 @@ public actor ToolrollClient {
         )
     }
 
-    public func sendLeadMessage(message: String, project: String? = nil) async throws -> String {
+    /// The server takes a request id of exactly 32 hex characters (a retry of the same id never sends twice).
+    static func leadRequestId() -> String {
+        UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+    }
+
+    /// Sends to the Lead. `session` is the conversation the person was looking at (as the web's form sends it), so a
+    /// message never lands in a conversation that changed underneath; nil when none had started.
+    public func sendLeadMessage(message: String, project: String? = nil, session: Int? = nil) async throws -> String {
         if case .localSession(let s) = transport {
             var fields = [
                 ("message", message),
-                ("request", UUID().uuidString.lowercased()),
+                ("request", Self.leadRequestId()),
             ]
+            if let session { fields.append(("request-session", String(session))) }
             if let project, !project.isEmpty { fields.append(("project", project)) }
             _ = s
             return try await sendFormAct(path: "/chat", fields: fields, defaultDone: "Sent to Lead.")
@@ -784,8 +792,9 @@ public actor ToolrollClient {
         struct ChatReply: Codable { let ok: Bool?; let message: String?; let problem: String?; let error: String? }
         var items = [
             URLQueryItem(name: "message", value: message),
-            URLQueryItem(name: "request", value: UUID().uuidString.lowercased()),
+            URLQueryItem(name: "request", value: Self.leadRequestId()),
         ]
+        if let session { items.append(URLQueryItem(name: "request-session", value: String(session))) }
         if let project, !project.isEmpty {
             items.append(URLQueryItem(name: "project", value: project))
         }

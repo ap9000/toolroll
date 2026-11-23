@@ -2394,15 +2394,19 @@ public final class WorkbenchStore {
 
     /// Asks the Lead about something on Canvas and shows the Lead drawer beside it. It goes to the conversation the drawer
     /// shows, so the answer is in view; the message itself names the project, page and source.
-    public func askLeadAboutCanvas(_ message: String) async {
+    /// Returns nil when it was sent, else the reason in words (shown beside the Ask button, where the person is looking).
+    @discardableResult
+    public func askLeadAboutCanvas(_ message: String) async -> String? {
         isInspectorVisible = true
         inspectorTab = .lead
-        await sendLeadMessage(message)
+        return await sendLeadMessage(message)
     }
 
-    public func sendLeadMessage(_ text: String) async {
+    /// Sends to the Lead; nil when sent, else the refusal in words (also shown as the notice).
+    @discardableResult
+    public func sendLeadMessage(_ text: String) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         busyLabel = "Sending to Lead…"
         defer { busyLabel = nil }
 
@@ -2412,16 +2416,19 @@ public final class WorkbenchStore {
             msgs.append(LeadMessage(id: nextId, role: "user", text: trimmed, at: "now"))
             msgs.append(LeadMessage(id: nextId + 1, role: "assistant", text: "Demo mode: start local Toolroll (`toolroll up`) or connect a remote workspace (`⌘⇧P`) to chat with your real central Lead.", at: "now"))
             leadChat = LeadChatResponse(leadName: leadChat.leadName, canSend: true, busy: false, messages: msgs)
-            return
+            return nil
         }
-        guard let client else { return }
+        guard let client else { return "Not connected to Toolroll." }
         do {
-            _ = try await client.sendLeadMessage(message: trimmed, project: selectedProject)
+            _ = try await client.sendLeadMessage(message: trimmed, project: selectedProject, session: leadChat.session)
             if let refreshed = try? await client.fetchLeadChat(project: selectedProject) {
                 leadChat = refreshed
             }
+            return nil
         } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            let words = error.localizedDescription
+            notice = WorkbenchNotice(kind: .refusal, message: words)
+            return words
         }
     }
 
