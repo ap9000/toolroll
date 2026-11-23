@@ -454,6 +454,7 @@ public struct TaskCockpitView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(notice.kind == .refusal ? ToolrollPalette.danger : ToolrollPalette.ink)
                 .textSelection(.enabled)
+            NoticeActionButton(store: store, notice: notice)
             Spacer()
             Button {
                 store.notice = nil
@@ -1773,7 +1774,7 @@ public struct TaskCockpitView: View {
         } else {
             return nil
         }
-        return store.modelsRead.roles.first(where: { $0.key == roleKey })?.words
+        return taskOrDefaultModel(forRole: roleKey)
     }
 
     private func emptyStepAgentCard(row: WorkRow, step: StepCard?, runId: Int?) -> some View {
@@ -1869,9 +1870,9 @@ public struct TaskCockpitView: View {
         let activeAgentName = activeOrLatestStep?.agent?.displayLabel ?? activeBuilderModelLabel
         let activeStage = activeOrLatestStep?.label ?? (row.status == .running ? "Working" : "Agent")
         let isRunning = row.status == .running
-        let plannerModel = store.modelsRead.roles.first(where: { $0.key == "plan" })?.words
-        let builderModel = store.modelsRead.roles.first(where: { $0.key == "build" })?.words
-        let reviewerModel = store.modelsRead.roles.first(where: { $0.key == "review" })?.words
+        let plannerModel = taskOrDefaultModel(forRole: "plan")
+        let builderModel = taskOrDefaultModel(forRole: "build")
+        let reviewerModel = taskOrDefaultModel(forRole: "review")
 
         return VStack(alignment: .leading, spacing: 8) {
             ViewThatFits(in: .horizontal) {
@@ -2319,9 +2320,12 @@ public struct TaskCockpitView: View {
     // MARK: - Composer Bar
 
     private var activeBuilderModelLabel: String {
-        store.modelsRead.roles.first(where: { $0.key == "build" })?.words
-            ?? store.modelsRead.roles.first?.words
-            ?? "Models"
+        taskOrDefaultModel(forRole: "build") ?? store.modelsRead.roles.first?.words ?? "Models"
+    }
+
+    /// The open task's own model for a step, falling back to the workspace default when the task doesn't name one.
+    private func taskOrDefaultModel(forRole role: String) -> String? {
+        store.stepCards?.modelLabel(forPhase: role) ?? store.modelsRead.roles.first(where: { $0.key == role })?.words
     }
 
     private var canSubmitSteer: Bool {
@@ -2380,7 +2384,7 @@ public struct TaskCockpitView: View {
                 .buttonStyle(.plain)
                 .fixedSize()
                 .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
-                    ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, onDismiss: { isModelPickerOpen = false })
+                    ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, taskId: taskId, onDismiss: { isModelPickerOpen = false })
                 }
 
                 Button {

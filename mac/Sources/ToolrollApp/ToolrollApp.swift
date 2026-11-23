@@ -6,6 +6,11 @@ import ToolrollCore
 struct ToolrollMacApp: App {
     @State private var store = WorkbenchStore()
 
+    private func archiveSelectedTask() {
+        guard let row = store.selectedRow else { return }
+        Task { await store.archiveTask(row) }
+    }
+
     var body: some Scene {
         WindowGroup("Toolroll") {
             MainWorkbenchView(store: store)
@@ -119,6 +124,12 @@ struct ToolrollMacApp: App {
                 .keyboardShortcut("l", modifiers: [.command])
 
                 Divider()
+
+                Button("Archive Task") {
+                    archiveSelectedTask()
+                }
+                .keyboardShortcut("a", modifiers: [.command, .control])
+                .disabled(store.selectedRow == nil || !store.canArchiveTasks)
 
                 Button("Open Task in Browser") {
                     if let taskId = store.selectedTaskId {

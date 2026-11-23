@@ -67,7 +67,7 @@ public enum ClientTransport: Sendable, Equatable {
 ///   reviews, answers, retries, plans, and task creation with zero browser handoff.
 /// - **Remote Bearer Profile** (`x-toolroll-client: terminal-remote` + workspace/recovery pinning).
 public actor ToolrollClient {
-    public let transport: ClientTransport
+    public private(set) var transport: ClientTransport
     public var profile: ConnectionProfile {
         switch transport {
         case .remoteBearer(let p): return p
@@ -222,7 +222,32 @@ public actor ToolrollClient {
         do { _ = try await session.data(for: req) } catch { throw ToolrollClientError.unreachable(error.localizedDescription) }
     }
 
+    /// The server's words when this app's key is from before a Toolroll restart (server/mutation-key.ts). The key
+    /// check refuses before the action runs, so reconnecting and sending again once can't do anything twice.
+    static let staleSessionWords = ["Toolroll restarted", "isn't connected to Toolroll"]
+
+    static func isStaleSession(_ error: Error) -> Bool {
+        let words = error.localizedDescription
+        return staleSessionWords.contains { words.contains($0) }
+    }
+
+    /// Mints a fresh local session the way the app does at launch, so a restart never asks the person to run a command.
+    private func reconnectLocalSession() async -> Bool {
+        guard case .localSession = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
+        transport = .localSession(fresh)
+        return true
+    }
+
     private func sendFormAct(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+        do {
+            return try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone)
+        } catch where Self.isStaleSession(error) {
+            guard await reconnectLocalSession() else { throw error }
+            return try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone)
+        }
+    }
+
+    private func sendFormActOnce(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
         guard case .localSession(let s) = transport else {
             throw ToolrollClientError.refused("This action requires a local or signed-in session.")
         }
@@ -893,6 +918,28 @@ public actor ToolrollClient {
             ],
             defaultDone: "Task cancelled."
         )
+    }
+
+    /// Whether archive and restore can run here: they are a signed-in person's act, which a remote CLI bridge can't make.
+    public var canArchive: Bool { transport.isLocalSession }
+
+    public func archiveTask(taskId: String, reason: String) async throws -> String {
+        guard canArchive else { throw ToolrollClientError.refused("Archive this task from the web view on a remote workspace.") }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(path: "/t/\(enc)/archive", fields: [("reason", reason), ("return", "/")], defaultDone: "Archived.")
+    }
+
+    /// Sets one step's agent for this task only (POST /t/<id>/route). `agent` is `provider|model`. If the task's plan
+    /// was approved, the server marks that approval out of date and the task asks for approval again.
+    public func routeTask(taskId: String, phase: String, agent: String) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(path: "/t/\(enc)/route", fields: [("phase", phase), ("agent", agent)], defaultDone: "Models changed for this task.")
+    }
+
+    public func restoreTask(taskId: String) async throws -> String {
+        guard canArchive else { throw ToolrollClientError.refused("Restore this task from the web view on a remote workspace.") }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(path: "/t/\(enc)/restore", fields: [("return", "/")], defaultDone: "Restored.")
     }
 
     public func createTask(title: String, project: String?, body: String, planFirst: Bool) async throws -> String {

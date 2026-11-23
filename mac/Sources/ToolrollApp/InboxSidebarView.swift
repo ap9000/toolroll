@@ -485,6 +485,7 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .contextMenu { TaskRowMenuItems(store: store, row: row) }
     }
 
     private func settledRow(_ row: WorkRow) -> some View {
@@ -525,6 +526,7 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .contextMenu { TaskRowMenuItems(store: store, row: row) }
     }
 
     private func cliThreadRow(_ thread: LocalCliThread) -> some View {
@@ -570,6 +572,7 @@ public struct InboxSidebarView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .help("\(thread.provider.displayName) · \(thread.projectName)\n\(thread.title)")
+        .contextMenu { CliThreadMenuItems(thread: thread) }
     }
 
     @ViewBuilder

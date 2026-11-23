@@ -453,7 +453,13 @@ describe("every answer is its contract's shape", () => {
     const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(ref) as { lease_id?: string } | undefined;
     if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
     store.setTaskState("t-gone", "queued", T0);
-    expect(store.cancelTask("t-gone", new Date())).toEqual({ ok: true });
+    // Queued with a finished build: nothing is live, but the newest run is what a client's cancel names as shown.
+    const shown = stepCardsSchema.parse((await read("operator", "/t/t-gone/steps")).body);
+    expect([shown.liveRun, shown.latestRun]).toEqual([null, run]);
+    // The agent each step of this task runs, as its route says (the Mac shows and changes these per task).
+    expect(shown.models?.map(one => [one.phase, one.provider, one.model])).toContainEqual(["build", "claude", "sonnet"]);
+    expect(store.cancelTask("t-gone", new Date(), undefined, { state: shown.task.state, run: null })).toEqual({ ok: false, reason: "changed" });
+    expect(store.cancelTask("t-gone", new Date(), undefined, { state: shown.task.state, run: shown.latestRun })).toEqual({ ok: true });
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-gone/steps")).body);
     expect(steps.headline).toBe("Cancelled");
     expect(steps.cards?.map(card => [card.key, card.label, card.state])).toEqual([["build", "Build", "stuck"], ["ready", "Cancelled", "skipped"]]);

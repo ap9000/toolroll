@@ -278,6 +278,11 @@ export const stepCardsSchema = z.object({
   chain: z.enum(["plan-first", "just-code"]),
   headline: z.string().nullable(),
   liveRun: z.number().int().nullable(),
+  /** The task's newest run, live or finished (null: none yet): the `run` a cancel names as the build it showed. */
+  latestRun: z.number().int().nullable(),
+  /** The agent each step of this task runs: its approved route, else the proposed or recommended one. `chosen` says
+   * whether a person overrode the recommendation for this task. Null when the task has no exact route to show. */
+  models: z.array(z.object({ phase: z.string(), provider: z.string(), model: z.string(), chosen: z.enum(["recommended", "override", "pinned"]) })).nullable(),
   cards: z.array(stepCardSchema).nullable(),
   /** The result waiting for this person's Accept or Send back, as the task page's own forms carry it: `run` and the
    * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to

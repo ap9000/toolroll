@@ -28,6 +28,7 @@ import { scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
 import { wasInterrupted } from "./run-ending.js";
+import { routeOfTask } from "./agentconfig.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
@@ -125,6 +126,13 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     // A cancelled task's own word (the stage's is "Stopped"): it ended because a person cancelled it.
     headline: current.state === "cancelled" ? "Cancelled" : card?.status.headline ?? null,
     liveRun: live?.id ?? null,
+    // The newest run of this task, live or finished: what a cancel names as the build it showed (store.cancelTask).
+    latestRun: runs.reduce<number | null>((max, run) => max === null || run.id > max ? run.id : max, null),
+    // The agent each step of THIS task runs (its approved, proposed or recommended route); null when it has no exact route.
+    models: (() => {
+      const routed = routeOfTask(store, current.id, ref, now);
+      return routed?.kind === "route" ? routed.route.legs.map(leg => ({ phase: leg.phase, provider: leg.provider, model: leg.model, chosen: leg.chosen })) : null;
+    })(),
     cards,
     // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id

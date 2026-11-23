@@ -86,6 +86,7 @@ public struct NewWorkCanvasView: View {
                     Text(notice.message)
                         .font(.system(size: 12))
                         .foregroundStyle(notice.kind == .refusal ? ToolrollPalette.danger : ToolrollPalette.ink)
+                    NoticeActionButton(store: store, notice: notice)
                     Spacer()
                     Button {
                         store.notice = nil

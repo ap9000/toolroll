@@ -10,6 +10,8 @@
   "chain": "plan-first",
   "headline": "Queued",
   "liveRun": 3,
+  "latestRun": 3,
+  "models": null,
   "cards": [
     {
       "key": "plan",

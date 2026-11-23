@@ -49,6 +49,24 @@ public enum TaskStatusTone: String, Codable, Sendable, Equatable {
     case failed
     case unknown
 
+    /// A Work row's status (contracts/engine-api.ts WORK_STATUS_TONES). The token says what happened and wins where
+    /// the tone is shared: a Cancelled row is "muted" like a Queued one, but it has ended and belongs in Settled.
+    public init(workTone tone: String, token: String) {
+        switch token {
+        case "cancelled", "assignment-complete": self = .finished
+        case "failed": self = .failed
+        default:
+            switch tone {
+            case "attention": self = .needs
+            case "live": self = .running
+            case "problem": self = .failed
+            case "done": self = .finished
+            case "muted", "ready", "neutral": self = .queued   // waiting its turn, retrying later, or on hold
+            default: self = TaskStatusTone(fromWire: token)
+            }
+        }
+    }
+
     public init(fromWire raw: String) {
         switch raw.lowercased() {
         case "needs", "need", "decide", "decision", "approval", "waiting-you", "needs_you", "needs-you", "ink":
@@ -212,12 +230,7 @@ public struct WorkRow: Codable, Sendable, Equatable, Identifiable {
         need = try? c.decodeIfPresent(NeedRow.self, forKey: .need)
 
         if let sObj = try? c.decode(WireStatus.self, forKey: .status) {
-            let derived = TaskStatusTone(fromWire: sObj.tone)
-            if derived != .unknown {
-                status = derived
-            } else {
-                status = TaskStatusTone(fromWire: sObj.token ?? group)
-            }
+            status = TaskStatusTone(workTone: sObj.tone, token: sObj.token ?? group)
         } else if let sStr = try? c.decode(String.self, forKey: .status) {
             status = TaskStatusTone(fromWire: sStr)
         } else {
@@ -315,6 +328,23 @@ public struct StepAgent: Codable, Sendable, Equatable {
         }
         return provider
     }
+}
+
+/// The agent one step of a task runs, from the task's own route (`chosen` "override": set for this task by a person).
+public struct TaskStepModel: Codable, Sendable, Equatable {
+    public let phase: String
+    public let provider: String
+    public let model: String
+    public let chosen: String
+
+    public init(phase: String, provider: String, model: String, chosen: String) {
+        self.phase = phase
+        self.provider = provider
+        self.model = model
+        self.chosen = chosen
+    }
+
+    public var displayLabel: String { "\(provider) · \(model)" }
 }
 
 public struct StepTermsRow: Codable, Sendable, Equatable {
@@ -712,6 +742,10 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let task: StepTaskSummary
     public let headline: String?
     public let liveRun: Int?
+    /// The task's newest run, live or finished: the build a cancel names as the one it showed.
+    public let latestRun: Int?
+    /// This task's own agent per step; nil from an older server or for a task without an exact route.
+    public let models: [TaskStepModel]?
     public let cards: [StepCard]
     public let review: TaskReview?
     public let failure: TaskFailure?
@@ -721,18 +755,21 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let held: TaskHold?
 
     enum CodingKeys: String, CodingKey {
-        case version, task, headline, cards, review, failure, plan, retry, held
+        case version, task, headline, cards, review, failure, plan, retry, held, models
         case liveRun = "live_run"
+        case latestRun = "latest_run"
         case planStopped = "plan_stopped"
     }
 
-    private enum CamelKeys: String, CodingKey { case liveRun, planStopped }
+    private enum CamelKeys: String, CodingKey { case liveRun, latestRun, planStopped }
 
     public init(
         version: Int = 1,
         task: StepTaskSummary,
         headline: String? = nil,
         liveRun: Int? = nil,
+        latestRun: Int? = nil,
+        models: [TaskStepModel]? = nil,
         cards: [StepCard] = [],
         review: TaskReview? = nil,
         failure: TaskFailure? = nil,
@@ -745,6 +782,8 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         self.task = task
         self.headline = headline
         self.liveRun = liveRun
+        self.latestRun = latestRun
+        self.models = models
         self.cards = cards
         self.review = review
         self.failure = failure
@@ -762,6 +801,9 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         headline = try c.decodeIfPresent(String.self, forKey: .headline)
         liveRun = (try? c.decodeIfPresent(Int.self, forKey: .liveRun))
             ?? (try? alt.decodeIfPresent(Int.self, forKey: .liveRun))
+        latestRun = (try? c.decodeIfPresent(Int.self, forKey: .latestRun))
+            ?? (try? alt.decodeIfPresent(Int.self, forKey: .latestRun))
+        models = try? c.decodeIfPresent([TaskStepModel].self, forKey: .models)
         cards = (try? c.decodeIfPresent([StepCard].self, forKey: .cards)) ?? []
         review = try? c.decodeIfPresent(TaskReview.self, forKey: .review)
         failure = try? c.decodeIfPresent(TaskFailure.self, forKey: .failure)
@@ -770,6 +812,17 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         plan = try? c.decodeIfPresent(PlanAsk.self, forKey: .plan)
         retry = try? c.decodeIfPresent(RetryPins.self, forKey: .retry)
         held = try? c.decodeIfPresent(TaskHold.self, forKey: .held)
+    }
+
+    /// The run a cancel must name as shown: the server's newest run. An older server without `latestRun` falls back
+    /// to the newest run the cards mention, which is the same id whenever every run sits on a card.
+    /// This task's model for a step ("plan", "build", "review"), as a label; nil when the server didn't say.
+    public func modelLabel(forPhase phase: String) -> String? {
+        models?.first { $0.phase == phase }?.displayLabel
+    }
+
+    public var shownRunForCancel: Int? {
+        latestRun ?? (cards.flatMap(\.runs) + [liveRun].compactMap { $0 }).max()
     }
 }
 

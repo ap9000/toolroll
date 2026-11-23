@@ -45,6 +45,22 @@ public struct WorkbenchNotice: Equatable, Sendable {
     }
     public let kind: Kind
     public let message: String
+    /// An undo the notice offers beside its message (Archive's "Undo" restores the task).
+    public var action: NoticeAction? = nil
+}
+
+public enum NoticeAction: Equatable, Sendable {
+    case restore(taskId: String)
+}
+
+/// A cancel waiting for the person's confirm: exactly the state and newest run they were shown, which the server proves.
+public struct PendingCancel: Equatable, Sendable, Identifiable {
+    public var id: String { taskId }
+    public let taskId: String
+    public let title: String
+    public let state: String
+    public let shownRun: Int?
+    public let alsoArchive: Bool
 }
 
 /// Central @Observable state coordinator for the native Toolroll Mac workbench.
@@ -57,8 +73,11 @@ public final class WorkbenchStore {
     public private(set) var isLocalSession: Bool = false
     public private(set) var sseConnected: Bool = false
     public private(set) var isLoading: Bool = false
-    public private(set) var busyLabel: String?
+    public internal(set) var busyLabel: String?
     public var notice: WorkbenchNotice?
+    public var pendingCancel: PendingCancel?
+    /// The task whose models the picker is changing (right-click → Change Models…); nil when it isn't open.
+    public var modelPickerTaskId: String?
 
     // Filters & Layout (persisted cleanly across launches)
     public var workspaceMode: WorkspaceMode = .workbench {
@@ -184,7 +203,7 @@ public final class WorkbenchStore {
     public let terminalSession = LiveTerminalSession()
 
     private let profileStore: ProfileStore
-    private var client: ToolrollClient?
+    private(set) var client: ToolrollClient?
     private var sseTask: Task<Void, Never>?
     private var sseRooms: [String] = []
     private var demoApprovedTasks: Set<String> = []
@@ -1893,20 +1912,8 @@ public final class WorkbenchStore {
     }
 
     public func cancelSelectedTask() async {
-        guard let taskId = stepCards?.task.id ?? selectedTaskId,
-              let state = stepCards?.task.state
-        else { return }
-        busyLabel = "Cancelling task…"
-        defer { busyLabel = nil }
-
-        guard let client else { return }
-        do {
-            let reply = try await client.cancelTask(taskId: taskId, state: state, runId: stepCards?.liveRun)
-            notice = WorkbenchNotice(kind: .info, message: reply)
-            await refreshAll()
-        } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
-        }
+        guard let taskId = stepCards?.task.id ?? selectedTaskId else { return }
+        await prepareCancel(taskId: taskId, alsoArchive: false)
     }
 
     public func createTask(title: String, project: String?, body: String, planFirst: Bool) async {

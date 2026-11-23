@@ -896,4 +896,33 @@ struct ToolrollCoreTests {
         #expect(AgentRequestStore.loadPending(databasePath: dbPath).isEmpty)
         #expect(AgentRequestStore.load(databasePath: dbPath).count == 1)
     }
+
+    @Test("A cancel names the newest run, not the live one: a queued task with a finished run has no live run")
+    func cancelNamesLatestRun() throws {
+        let json = """
+        {"version":1,"task":{"id":"t1","root":"t1","title":"Fix","state":"queued","project":null},
+         "headline":null,"liveRun":null,"latestRun":3,"models":[{"phase":"build","provider":"codex","model":"gpt-6-sol","chosen":"override"}],"cards":[{"key":"build","label":"Build","state":"stuck","mark":"stuck","sentence":"x","runs":[3]}]}
+        """
+        let steps = try JSONDecoder().decode(StepCardsResponse.self, from: Data(json.utf8))
+        #expect(steps.liveRun == nil)
+        #expect(steps.latestRun == 3)
+        #expect(steps.shownRunForCancel == 3)
+        #expect(steps.modelLabel(forPhase: "build") == "codex · gpt-6-sol")
+        #expect(steps.modelLabel(forPhase: "plan") == nil)
+        // An older server without latestRun: the newest run the cards mention.
+        let old = try JSONDecoder().decode(StepCardsResponse.self, from: Data(json.replacingOccurrences(of: "\"latestRun\":3,", with: "").utf8))
+        #expect(old.latestRun == nil)
+        #expect(old.shownRunForCancel == 3)
+    }
+
+    @Test("Work rows land in the right sidebar section: a Cancelled row is muted like Queued but has ended")
+    func workRowStatusFromToneAndToken() {
+        #expect(TaskStatusTone(workTone: "muted", token: "cancelled") == .finished)
+        #expect(TaskStatusTone(workTone: "muted", token: "ready") == .queued)
+        #expect(TaskStatusTone(workTone: "attention", token: "assignment-needs-decision") == .needs)
+        #expect(TaskStatusTone(workTone: "live", token: "assignment-working") == .running)
+        #expect(TaskStatusTone(workTone: "neutral", token: "assignment-working") == .queued)
+        #expect(TaskStatusTone(workTone: "problem", token: "failed") == .failed)
+        #expect(TaskStatusTone(workTone: "done", token: "assignment-complete") == .finished)
+    }
 }

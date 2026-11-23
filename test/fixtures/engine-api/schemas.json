@@ -1,5 +1,5 @@
 {
-  "digest": "e21d29319b6b8176a4c7167670807b3b7e7d709817980b5d5af7ba8fc52a7b39",
+  "digest": "2003f5d692f650d2ee57ac696d34521381bd576b553ac0b680beadc863349b16",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1616,6 +1616,57 @@
             }
           ]
         },
+        "latestRun": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "phase": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "chosen": {
+                    "type": "string",
+                    "enum": [
+                      "recommended",
+                      "override",
+                      "pinned"
+                    ]
+                  }
+                },
+                "required": [
+                  "phase",
+                  "provider",
+                  "model",
+                  "chosen"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cards": {
           "anyOf": [
             {
@@ -2231,6 +2282,8 @@
         "chain",
         "headline",
         "liveRun",
+        "latestRun",
+        "models",
         "cards",
         "review",
         "shell",

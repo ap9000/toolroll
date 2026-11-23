@@ -7,6 +7,8 @@ public struct ModelPickerPopover: View {
     @Bindable var store: WorkbenchStore
     let initialRoleKey: String
     let onDismiss: () -> Void
+    /// Set: the picker changes this task's models only, not the workspace defaults.
+    let taskId: String?
 
     @State private var selectedProvider: String? = nil // nil = All
     @State private var targetRoleKey: String = "all"   // "all" | "plan" | "build" | "review"
@@ -16,8 +18,9 @@ public struct ModelPickerPopover: View {
     @State private var highlightedIndex: Int? = nil
     @FocusState private var searchFocused: Bool
 
-    public init(store: WorkbenchStore, initialRoleKey: String = "all", onDismiss: @escaping () -> Void) {
+    public init(store: WorkbenchStore, initialRoleKey: String = "all", taskId: String? = nil, onDismiss: @escaping () -> Void) {
         self.store = store
+        self.taskId = taskId
         self.initialRoleKey = initialRoleKey
         self.onDismiss = onDismiss
     }
@@ -135,6 +138,15 @@ public struct ModelPickerPopover: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            if taskId != nil {
+                Text("Models for this task only")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                HairlineDivider()
+            }
             HStack(spacing: 0) {
                 // LEFT RAIL: Provider icons
                 VStack(spacing: 6) {
@@ -274,7 +286,7 @@ public struct ModelPickerPopover: View {
 
                     Spacer()
 
-                    if !store.modelsRead.presets.isEmpty {
+                    if taskId == nil, !store.modelsRead.presets.isEmpty {
                         HairlineDivider()
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Quick Presets")
@@ -412,9 +424,17 @@ public struct ModelPickerPopover: View {
         }
     }
 
+    private func apply(value: String, label: String) async {
+        if let taskId {
+            await store.setTaskModel(taskId: taskId, roleKey: targetRoleKey, value: value, label: label)
+        } else {
+            await store.selectModel(value: value, label: label, forRoleKey: targetRoleKey)
+        }
+    }
+
     private func applyModelEntry(_ entry: FlatModelEntry) {
         Task {
-            await store.selectModel(value: entry.formValue, label: entry.option.label, forRoleKey: targetRoleKey)
+            await apply(value: entry.formValue, label: entry.option.label)
             if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
                 onDismiss()
             }
@@ -522,7 +542,7 @@ public struct ModelPickerPopover: View {
     private func customModelChip(provider: String, label: String, modelId: String) -> some View {
         Button {
             Task {
-                await store.selectModel(value: "\(provider)|\(modelId)", label: "\(label) · \(modelId)", forRoleKey: targetRoleKey)
+                await apply(value: "\(provider)|\(modelId)", label: "\(label) · \(modelId)")
                 if store.modelPasswordPrompt == nil && store.modelChangeError == nil {
                     onDismiss()
                 }
