@@ -300,6 +300,8 @@ private struct KitButtonBody: View {
 
     var body: some View {
         configuration.label
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false) // a narrow panel never breaks a button's label mid-word
             .font(.system(size: compact ? 11.5 : 12.5, weight: variant == .primary ? .semibold : .medium))
             .padding(.horizontal, compact ? 9 : 12)
             .padding(.vertical, compact ? 4.5 : 6)

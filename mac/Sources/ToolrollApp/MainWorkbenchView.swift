@@ -56,7 +56,7 @@ public struct MainWorkbenchView: View {
                                 TaskCockpitView(store: store)
                             }
                         }
-                        .frame(minWidth: 360, maxWidth: .infinity)
+                        .frame(minWidth: MainWorkbenchView.mainPanelMinWidth, maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -157,6 +157,8 @@ public struct MainWorkbenchView: View {
 
     /// Every control in the top bar shares one height, so the left and right sides line up.
     static let chromeControlHeight: CGFloat = 28
+    /// The drawer can widen only until the main panel reaches this, so its text never gets crushed.
+    static let mainPanelMinWidth: CGFloat = 440
 
     /// Left: sidebar toggle and back/forward (past the traffic lights). Middle: where you are. Right: ⌘K and the drawer
     /// toggle, mirroring the sidebar toggle. The workspace menu lives on the sidebar's Toolroll row; the drawer's own tabs

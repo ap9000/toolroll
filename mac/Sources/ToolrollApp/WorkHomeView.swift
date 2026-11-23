@@ -47,14 +47,7 @@ struct WorkHomeView: View {
     // MARK: Summary
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text("Work")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(ToolrollPalette.ink)
-            Text(summaryLine)
-                .font(.system(size: 13))
-                .foregroundStyle(ToolrollPalette.muted)
-            Spacer()
+        ScreenHeader(title: "Work", detail: summaryLine) {
             Button { isCustomizing = true } label: {
                 Label("Customize", systemImage: "slider.horizontal.3")
                     .font(.system(size: 12.5, weight: .medium))

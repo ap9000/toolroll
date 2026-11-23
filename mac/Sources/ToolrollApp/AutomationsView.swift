@@ -47,22 +47,18 @@ struct AutomationsView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text("Automations")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(ToolrollPalette.ink)
-            if let count = store.automations?.automations.count, count > 0 {
-                Text(count == 1 ? "1 automation" : "\(count) automations")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-            Spacer()
+        ScreenHeader(title: "Automations", detail: countLine) {
             Button { store.startAutomationWithLead() } label: {
                 Label("New automation", systemImage: "plus").font(.system(size: 12.5, weight: .medium))
             }
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
             .help("Describe it to the Lead; it proposes the automation and you approve it")
         }
+    }
+
+    private var countLine: String? {
+        guard let count = store.automations?.automations.count, count > 0 else { return nil }
+        return count == 1 ? "1 automation" : "\(count) automations"
     }
 
     private var emptyState: some View {

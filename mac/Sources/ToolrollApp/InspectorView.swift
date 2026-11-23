@@ -12,38 +12,10 @@ public struct InspectorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Segmented tab bar — single-line tabs with crisp hover states
-            HStack(spacing: 3) {
-                ForEach(InspectorTab.allCases) { tab in
-                    let active = store.inspectorTab == tab
-                    Button {
-                        store.inspectorTab = tab
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: icon(for: tab))
-                                .font(.system(size: 10.5))
-                            Text(tab.rawValue)
-                                .font(.system(size: 11.5, weight: active ? .semibold : .medium))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                            if tab == .diff, let added = store.diffResponse?.totals?.added, added > 0 {
-                                Text("+\(added)")
-                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.success)
-                            }
-                        }
-                        .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .toolrollHoverSurface(cornerRadius: 4, isSelected: active)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer(minLength: 4)
+            // Tabs with their names; in a narrow drawer, icons only (the name is in each tab's tooltip).
+            ViewThatFits(in: .horizontal) {
+                tabBar(showsNames: true)
+                tabBar(showsNames: false)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
@@ -63,6 +35,46 @@ public struct InspectorView: View {
             }
         }
         .background(ToolrollPalette.paper)
+    }
+
+    private func tabBar(showsNames: Bool) -> some View {
+        HStack(spacing: 3) {
+            ForEach(InspectorTab.allCases) { tab in
+                let active = store.inspectorTab == tab
+                Button {
+                    store.inspectorTab = tab
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: icon(for: tab))
+                            .font(.system(size: 10.5))
+                        if showsNames {
+                            Text(tab.rawValue)
+                                .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        if tab == .diff, let added = store.diffResponse?.totals?.added, added > 0 {
+                            Text("+\(added)")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.success)
+                                .fixedSize()
+                        }
+                    }
+                    .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .toolrollHoverSurface(cornerRadius: 4, isSelected: active)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(tab.rawValue)
+                .accessibilityLabel(tab.rawValue)
+            }
+            Spacer(minLength: 0)
+        }
     }
 
     private func icon(for tab: InspectorTab) -> String {
@@ -586,13 +598,15 @@ private struct DiffInspectorView: View {
                 }
             } else {
                 VStack(spacing: 8) {
-                    Text("No diff recorded for this task yet.")
+                    Text(store.selectedRow == nil ? "Open a task to see what it changed." : "No changes yet.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(ToolrollPalette.muted)
-                    Text("Promote a Candidate or wait for the active Run to finish.")
+                    Text(store.selectedRow == nil ? "Its changes show here, file by file." : "They show here once the task's work changes files.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(ToolrollPalette.codeBg)
             }
