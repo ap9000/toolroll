@@ -861,4 +861,39 @@ struct ToolrollCoreTests {
         let told = LocalSessionCredentials(origin: "http://127.0.0.1:4180", account: "alex", cookieHeader: "s=1", csrf: "c", key: "k", epoch: "e", databasePath: "/tmp/x.db", passwordSet: false)
         #expect(told.passwordSet == false)
     }
+
+    @Test("AgentRequestStore decodes Node-filed requests from .toolroll-run and resolves them atomically")
+    func agentRequestStoreRoundTripAndResolve() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-agent-req-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+
+        let dbPath = tmpDir.appendingPathComponent("orders.db").path
+        let filePath = AgentRequestStore.requestsFilePath(databasePath: dbPath)
+        #expect(filePath.hasSuffix("/.toolroll-run/agent-requests.json"))
+
+        let req = AgentRequest(
+            id: "req_abc1234567",
+            kind: .network,
+            repo: "/tmp/site",
+            projectName: "site",
+            requester: "Claude Code",
+            summary: "Allow this Mac's local services (localhost / ::1)",
+            why: "Vite prerender needs localhost:3000",
+            params: AgentRequestParams(local: "any", mode: "allowlist", hosts: ["api.stripe.com"])
+        )
+        AgentRequestStore.appendForTesting(databasePath: dbPath, request: req)
+
+        let pending = AgentRequestStore.loadPending(databasePath: dbPath)
+        #expect(pending.count == 1)
+        #expect(pending[0].id == "req_abc1234567")
+        #expect(pending[0].params.local == "any")
+
+        let resolved = AgentRequestStore.resolve(databasePath: dbPath, id: req.id, status: .approved, note: "Touch ID")
+        #expect(resolved?.status == .approved)
+        #expect(resolved?.resolutionNote == "Touch ID")
+        #expect(AgentRequestStore.loadPending(databasePath: dbPath).isEmpty)
+        #expect(AgentRequestStore.load(databasePath: dbPath).count == 1)
+    }
 }

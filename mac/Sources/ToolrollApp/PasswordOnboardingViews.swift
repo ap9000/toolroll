@@ -9,6 +9,7 @@ public struct SetPasswordSheet: View {
     @Bindable var store: WorkbenchStore
     @State private var password = ""
     @State private var again = ""
+    @State private var saveToTouchID = true
 
     public init(store: WorkbenchStore) { self.store = store }
 
@@ -48,6 +49,16 @@ public struct SetPasswordSheet: View {
                 .foregroundStyle(ToolrollPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if store.isTouchIDAvailable {
+                Toggle(isOn: $saveToTouchID) {
+                    Text("Save in macOS Keychain for 1-tap \(store.touchIDLabel) approvals")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            }
+
             HStack {
                 Spacer()
                 Button("Not now") {
@@ -67,8 +78,9 @@ public struct SetPasswordSheet: View {
     private func submit() {
         guard !store.setPasswordBusy else { return }
         let typed = password, repeated = again
+        let enableBiometry = saveToTouchID
         Task {
-            if await store.setFirstPassword(typed, again: repeated) {
+            if await store.setFirstPassword(typed, again: repeated, saveToTouchID: enableBiometry) {
                 password = ""
                 again = ""
             }

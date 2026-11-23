@@ -1,4 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
+import { clearResolvedAgentRequests, fileAgentRequest, listAgentRequests, resolveAgentRequest, waitForAgentRequest, type AgentRequest } from "./agent-requests.js";
+import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
@@ -1046,6 +1048,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "preview", "apply",
   // config set flexible-sign-in: save without the live check; config show flexible-sign-in --check: check it again.
   "no-check", "check",
+  // agent --request: wait until the person approves or declines the filed request in Toolroll.app.
+  "wait",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -1640,7 +1644,10 @@ async function dispatch(
       if (positional[0] === "flexible") return projectFlexibleCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
+      if (positional[0] === "live-view") return projectLiveViewCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
+    case "request":
+      return requestCommand(positional, flags, context);
     case "assignment":
       // The person's own lead (its lead token) claims as the lead; coordinator credentials keep their own path.
       if (positional[0] === "claim" && currentActor()?.lead === true && !flags.has("token-env") && !flags.has("token-file")) return leadClaimCommand(positional, flags, context);
@@ -5928,8 +5935,30 @@ async function setupCommand(
     return EXIT.ok;
   }
 
-  if (action !== "set" && action !== "clear") return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] --yes|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
+  if (action !== "set" && action !== "clear") return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] [--yes|--request <why>]|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
   if (repo === undefined) return fail(write, json, `setup ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
+
+  if (action === "set" && flags.has("request")) {
+    const reqCmd = text(flags, "command");
+    if (reqCmd === undefined || reqCmd.trim() === "") return fail(write, json, "setup set", "usage", "--command <cmd> is what every fresh checkout will run", EXIT.usage);
+    if (reqCmd.length > 2000 || hasDisguisedText(reqCmd)) return fail(write, json, "setup set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
+    const reqCredShaped =
+      /([A-Za-z0-9_-]*(?:token|secret|password|passwd|apikey|api_key|authorization|bearer|credential)[A-Za-z0-9_-]*\s*[=:]\s*)(?![$"']?\$)\S+/i.test(reqCmd) ||
+      /\/\/[^\s/@]+:[^\s/@]+@/.test(reqCmd);
+    if (reqCredShaped) return fail(write, json, "setup set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
+    const reqTimeoutSeconds = Number(text(flags, "timeout-seconds") ?? "300");
+    if (!Number.isInteger(reqTimeoutSeconds) || reqTimeoutSeconds < 1 || reqTimeoutSeconds > 3600) return fail(write, json, "setup set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
+    const resolvedRepo = (await knownProject(context, repo, { listed: true, canonical: true })) ?? resolve(repo);
+    const req = fileAgentRequest(context.databaseFile, {
+      kind: "worktree-setup",
+      repo: resolvedRepo,
+      ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+      summary: `Set worktree setup: ${reqCmd}`,
+      why: text(flags, "why") ?? text(flags, "request") ?? "",
+      params: { command: reqCmd, timeoutSeconds: reqTimeoutSeconds },
+    }, clock());
+    return finishFiledRequest("setup set", req, flags, context);
+  }
 
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -11891,11 +11920,11 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
  */
 async function projectNetworkCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const command = "project network";
-  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "as", "token", "token-file", "token-env", "db", "json"]);
+  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "request", "why", "by", "wait", "timeout", "as", "token", "token-file", "token-env", "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project network option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
   const local = flags.get("local");
-  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none].", EXIT.usage);
+  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none] [--request <why>].", EXIT.usage);
   const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.projectNetwork(repo);
@@ -11919,6 +11948,24 @@ async function projectNetworkCommand(positional: readonly string[], flags: Map<s
     loopback: local === "any" ? "any" : local === "none" ? "proxy-only" : current.loopback,
   };
   if (next.hosts.length > MAX_NETWORK_HOSTS) return fail(context.write, context.json, command, "usage", `A project lists at most ${MAX_NETWORK_HOSTS} hosts.`, EXIT.usage);
+  if (flags.has("request")) {
+    const parts: string[] = [];
+    if (local === "any") parts.push("Allow this Mac's local services (localhost / ::1)");
+    if (local === "none") parts.push("Block local services (proxy-only)");
+    if (flags.has("open")) parts.push("Switch build network to open (any host)");
+    if (flags.has("allowlist")) parts.push("Switch build network to allowlist");
+    if (add.length > 0) parts.push(`Allow hosts: ${add.join(", ")}`);
+    if (remove.length > 0) parts.push(`Remove hosts: ${remove.join(", ")}`);
+    const req = fileAgentRequest(context.databaseFile, {
+      kind: "network",
+      repo,
+      ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+      summary: parts.join(" · ") || "Update project network policy",
+      why: text(flags, "why") ?? text(flags, "request") ?? "",
+      params: { local: next.loopback, mode: next.mode, hosts: next.hosts },
+    }, context.clock());
+    return finishFiledRequest(command, req, flags, context);
+  }
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
   if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes what its builds may reach, with their password: pass --as and --token.", EXIT.refused);
@@ -15683,4 +15730,143 @@ function builtinReplacementHeld(store: Store, source: string, target: string): b
     if (ref === null ? store.getTask(taskId) !== null : readCheckRecoveryHoldsForTaskRef(store, ref.id).kind !== "no-evidence") return true;
   }
   return false;
+}
+
+// Agent request helpers stay at EOF so existing password-proof function ordinals never shift.
+async function finishFiledRequest(
+  command: string,
+  req: AgentRequest,
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  if (flags.get("wait") === true) {
+    const timeoutSeconds = Number(text(flags, "timeout") ?? "300");
+    const safeTimeout = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.min(3600, Math.round(timeoutSeconds)) : 300;
+    const settled = await waitForAgentRequest(context.databaseFile, req.id, safeTimeout);
+    if (settled?.status === "approved") {
+      return succeed(context.write, context.json, command, { requested: true, request: settled }, () => [
+        `Approved (${settled.id}): ${settled.summary}`,
+      ]);
+    }
+    const reason = settled?.status === "declined" ? "declined" : "timeout";
+    const msg = settled?.status === "declined"
+      ? `Request ${req.id} was declined${settled.resolutionNote ? `: ${settled.resolutionNote}` : "."}`
+      : `Request ${req.id} is still pending in Toolroll.app after ${safeTimeout}s.`;
+    return fail(context.write, context.json, command, reason, msg, EXIT.refused);
+  }
+  return succeed(context.write, context.json, command, { requested: true, request: req }, () => [
+    `Requested (${req.id}): ${req.summary}`,
+    `Project: ${req.repo}`,
+    ...(req.why ? [`Why: ${req.why}`] : []),
+    `Waiting for your 1-click approval in Toolroll.app (or run \`toolroll request wait ${req.id}\`).`,
+  ]);
+}
+
+async function projectLiveViewCommand(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const command = "project live-view";
+  const allowed = new Set(["repo", "request", "why", "by", "wait", "timeout", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project live-view option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) {
+    return fail(context.write, context.json, command, "usage", "Use project live-view --repo <project path> [on | off] [--request <why>].", EXIT.usage);
+  }
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = liveCommandsShown(context.store, repo);
+  if (wanted === undefined) {
+    return succeed(context.write, context.json, command, { repo, showCommands: current }, () => [
+      `${repo}: Live View shell commands are ${current ? "shown" : "hidden (redacted)"}.`,
+    ]);
+  }
+  if (!flags.has("request")) {
+    return fail(context.write, context.json, command, "refused", "Changing Live View shell commands takes operator approval in Toolroll.app → Project Settings, or pass --request \"<why>\" to ask for 1-click approval.", EXIT.refused);
+  }
+  const showCommands = wanted === "on";
+  const req = fileAgentRequest(context.databaseFile, {
+    kind: "live-view",
+    repo,
+    ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+    summary: showCommands ? "Show live shell commands in Activity" : "Hide live shell commands in Activity",
+    why: text(flags, "why") ?? text(flags, "request") ?? "",
+    params: { showCommands },
+  }, context.clock());
+  return finishFiledRequest(command, req, flags, context);
+}
+
+async function requestCommand(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const action = positional[0] ?? "list";
+  const command = `request ${action}`;
+  const allowed = new Set(["all", "repo", "timeout", "note", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a request option.`, EXIT.usage);
+
+  if (action === "list") {
+    const repoFlag = text(flags, "repo");
+    const repo = repoFlag === undefined ? undefined : (await knownProject(context, repoFlag, { listed: true, canonical: true })) ?? resolve(repoFlag);
+    const items = listAgentRequests(context.databaseFile, {
+      ...(flags.has("all") ? {} : { status: "pending" }),
+      ...(repo === undefined ? {} : { repo }),
+    });
+    return succeed(context.write, context.json, command, { requests: items }, () =>
+      items.length === 0
+        ? ["No pending agent requests."]
+        : items.map(one => `${one.id} [${one.status}] (${one.requester} · ${one.projectName}) ${one.summary}${one.why ? ` — ${one.why}` : ""}`),
+    );
+  }
+
+  if (action === "show") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request show <id>`.", EXIT.usage);
+    const found = listAgentRequests(context.databaseFile).find(one => one.id === id) ?? null;
+    if (found === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    return succeed(context.write, context.json, command, { request: found }, () => [
+      `${found.id} [${found.status}] ${found.summary}`,
+      `Project: ${found.repo}`,
+      `By: ${found.requester}`,
+      ...(found.why ? [`Why: ${found.why}`] : []),
+    ]);
+  }
+
+  if (action === "wait") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request wait <id> [--timeout <seconds>]`.", EXIT.usage);
+    const timeoutSeconds = Number(text(flags, "timeout") ?? "300");
+    const safeTimeout = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.min(3600, Math.round(timeoutSeconds)) : 300;
+    const settled = await waitForAgentRequest(context.databaseFile, id, safeTimeout);
+    if (settled === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    if (settled.status === "approved") {
+      return succeed(context.write, context.json, command, { request: settled }, () => [`Approved (${settled.id}): ${settled.summary}`]);
+    }
+    return fail(
+      context.write,
+      context.json,
+      command,
+      settled.status === "declined" ? "declined" : "timeout",
+      settled.status === "declined" ? `Request ${settled.id} was declined.` : `Request ${settled.id} is still pending after ${safeTimeout}s.`,
+      EXIT.refused,
+    );
+  }
+
+  if (action === "decline") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request decline <id> [--note <reason>]`.", EXIT.usage);
+    const resolved = resolveAgentRequest(context.databaseFile, id, "declined", text(flags, "note"), context.clock());
+    if (resolved === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    return succeed(context.write, context.json, command, { request: resolved }, () => [`Declined (${resolved.id}): ${resolved.summary}`]);
+  }
+
+  if (action === "clear") {
+    const removed = clearResolvedAgentRequests(context.databaseFile);
+    return succeed(context.write, context.json, command, { removed }, () => [`Cleared ${removed} resolved agent request${removed === 1 ? "" : "s"}.`]);
+  }
+
+  return fail(context.write, context.json, "request", "usage", "Use `toolroll request [list [--all]|show <id>|wait <id>|decline <id>|clear]`.", EXIT.usage);
 }

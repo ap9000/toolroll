@@ -836,18 +836,32 @@ public struct TaskCockpitView: View {
                             .padding(.vertical, 6)
                             .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                        ForgotPasswordLink()
                             .onSubmit {
+                                guard !approvalPassword.isEmpty else { return }
                                 let pw = approvalPassword
                                 approvalPassword = ""
                                 Task { await store.approveSelectedTask(password: pw) }
                             }
+                        ForgotPasswordLink()
+
+                        if store.isTouchIDEnabled {
+                            Button {
+                                Task { await store.approveSelectedTaskWithTouchID() }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: store.touchIDSystemImage).font(.system(size: 11.5))
+                                    Text("Approve with \(store.touchIDLabel)")
+                                }
+                            }
+                            .buttonStyle(KitButtonStyle(.primary))
+                        }
+
                         Button("Confirm & Approve") {
                             let pw = approvalPassword
                             approvalPassword = ""
                             Task { await store.approveSelectedTask(password: pw) }
                         }
-                        .buttonStyle(KitButtonStyle(.primary))
+                        .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary))
                         .disabled(approvalPassword.isEmpty)
                     }
                 }
@@ -1651,8 +1665,8 @@ public struct TaskCockpitView: View {
                             .padding(.vertical, 6)
                             .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                        ForgotPasswordLink()
                             .onSubmit {
+                                guard !setupPasswordDraft.isEmpty else { return }
                                 let pw = setupPasswordDraft
                                 setupPasswordDraft = ""
                                 Task {
@@ -1661,6 +1675,26 @@ public struct TaskCockpitView: View {
                                     }
                                 }
                             }
+                        ForgotPasswordLink()
+
+                        if store.isTouchIDEnabled {
+                            Button {
+                                Task {
+                                    guard let pw = await store.unlockPasswordWithTouchID(
+                                        reason: "Approve worktree setup command for \(row.project ?? "project")"
+                                    ) else { return }
+                                    if await store.approveProjectWorktreeSetup(repoPath: repoPath, command: effectiveCmd, password: pw) {
+                                        showInlineSetupForm = false
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: store.touchIDSystemImage).font(.system(size: 11))
+                                    Text(store.touchIDLabel)
+                                }
+                            }
+                            .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        }
 
                         Button("Approve Setup") {
                             let pw = setupPasswordDraft
@@ -1671,7 +1705,7 @@ public struct TaskCockpitView: View {
                                 }
                             }
                         }
-                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary, compact: true))
                         .disabled(setupPasswordDraft.isEmpty)
 
                         Button("Cancel") {

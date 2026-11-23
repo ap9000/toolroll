@@ -149,6 +149,18 @@ public final class WorkbenchStore {
     public var isSetPasswordOpen: Bool = false
     public private(set) var setPasswordBusy: Bool = false
     public var setPasswordProblem: String? = nil
+    // Local DB path + Agent Requests + Touch ID + Background Service
+    public private(set) var localDatabasePath: String? = nil
+    public private(set) var pendingAgentRequests: [AgentRequest] = []
+    public private(set) var resolvingAgentRequestId: String? = nil
+    public private(set) var isTouchIDAvailable: Bool = TouchIDVault.isAuthenticationAvailable()
+    public private(set) var touchIDLabel: String = TouchIDVault.biometryLabel()
+    public private(set) var touchIDSystemImage: String = TouchIDVault.biometrySystemImage()
+    public private(set) var isTouchIDEnabled: Bool = false
+    public private(set) var backgroundServiceStatus: BackgroundServiceStatus? = nil
+    public private(set) var isUpdatingBackgroundService: Bool = false
+    private var knownAgentRequestIds: Set<String> = []
+    private var agentRequestPollTask: Task<Void, Never>?
     private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
     private static let passwordNudgeSnooze: TimeInterval = 7 * 24 * 60 * 60
     public private(set) var passwordNudgeSnoozedUntil: Date? = UserDefaults.standard.object(forKey: WorkbenchStore.passwordNudgeKey) as? Date
@@ -1359,7 +1371,7 @@ public final class WorkbenchStore {
     /// Set the account's first password, then reconnect (setting it ends every session, this one included) and read
     /// `passwordSet` again: only that says it worked. Length and match are checked here first, so a slip spends no sign-in try.
     @discardableResult
-    public func setFirstPassword(_ password: String, again: String) async -> Bool {
+    public func setFirstPassword(_ password: String, again: String, saveToTouchID: Bool = false) async -> Bool {
         setPasswordProblem = nil
         guard password.count >= 8 else { setPasswordProblem = "Use at least 8 characters."; return false }
         guard password == again else { setPasswordProblem = "The two passwords don't match. Type them again."; return false }
@@ -1386,8 +1398,15 @@ public final class WorkbenchStore {
             setPasswordProblem = "Toolroll didn't take that password. Try again, or set it in Terminal with `toolroll password set`."
             return false
         }
+        var touchMsg = ""
+        if saveToTouchID && isTouchIDAvailable {
+            let saved = enableTouchID(password: password)
+            if saved.ok {
+                touchMsg = " \(touchIDLabel) approvals enabled."
+            }
+        }
         isSetPasswordOpen = false
-        notice = WorkbenchNotice(kind: .info, message: "Password set. Use it whenever Toolroll asks; keep it in your password manager.")
+        notice = WorkbenchNotice(kind: .info, message: "Password set.\(touchMsg) Keep it in your password manager.")
         return true
     }
 
@@ -1406,8 +1425,12 @@ public final class WorkbenchStore {
             self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
             self.activeProfile = localProf
             self.isLocalSession = true
+            self.localDatabasePath = creds.databasePath
             self.client = ToolrollClient(localSession: creds)
             self.passwordSet = creds.passwordSet
+            refreshTouchIDState()
+            refreshAgentRequests(notifyNew: false)
+            startAgentRequestPolling()
             if let eq = creds.cookieHeader.firstIndex(of: "=") {
                 let cname = String(creds.cookieHeader[..<eq])
                 let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
@@ -1481,6 +1504,8 @@ public final class WorkbenchStore {
         isLoading = true
         defer { isLoading = false }
         refreshLocalDiscovery()
+        refreshAgentRequests(notifyNew: true)
+        refreshTouchIDState()
 
         if activeProfile.isDemo {
             let base = DemoFixtures.workRows
@@ -2166,7 +2191,7 @@ public final class WorkbenchStore {
     }
 
     private func processTaskNotifications(_ rows: [WorkRow]) {
-        let needsTotal = rows.filter { $0.status == .needs }.count
+        let needsTotal = rows.filter { $0.status == .needs }.count + pendingAgentRequests.count
         DesktopNotifier.shared.updateDockBadge(needsCount: needsTotal)
 
         let hadBaseline = !lastKnownTaskStatuses.isEmpty
@@ -2373,6 +2398,191 @@ public final class WorkbenchStore {
             handleSignInRefusal(error)
             return (false, error.localizedDescription)
         }
+    }
+
+    // MARK: - Touch ID, Agent Requests & Background Service
+
+    public var resolvedLocalDatabasePath: String? {
+        if let localDatabasePath, !localDatabasePath.isEmpty { return localDatabasePath }
+        return LocalConsoleConnector.candidateDatabasePaths().first {
+            FileManager.default.fileExists(atPath: $0)
+        }
+    }
+
+    public func refreshTouchIDState() {
+        isTouchIDAvailable = TouchIDVault.isAuthenticationAvailable()
+        touchIDLabel = TouchIDVault.biometryLabel()
+        touchIDSystemImage = TouchIDVault.biometrySystemImage()
+        isTouchIDEnabled = isTouchIDAvailable && TouchIDVault.hasStoredPassword(account: activeProfile.account)
+    }
+
+    @discardableResult
+    public func enableTouchID(password: String) -> (ok: Bool, message: String) {
+        let trimmed = password
+        guard !trimmed.isEmpty else {
+            return (false, "Enter your Toolroll password to enable \(touchIDLabel).")
+        }
+        do {
+            try TouchIDVault.savePassword(trimmed, account: activeProfile.account)
+            refreshTouchIDState()
+            return (true, "\(touchIDLabel) enabled for quick approvals.")
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    public func disableTouchID() {
+        TouchIDVault.deletePassword(account: activeProfile.account)
+        refreshTouchIDState()
+        notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
+    }
+
+    public func unlockPasswordWithTouchID(reason: String) async -> String? {
+        do {
+            return try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
+        } catch TouchIDVaultError.cancelled {
+            return nil
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            return nil
+        }
+    }
+
+    public func approveSelectedTaskWithTouchID() async {
+        let title = selectedRow?.title ?? selectedTaskId ?? "this task"
+        guard let pw = await unlockPasswordWithTouchID(reason: "Approve plan for \(title)") else { return }
+        await approveSelectedTask(password: pw)
+    }
+
+    public func refreshAgentRequests(notifyNew: Bool = true) {
+        guard !activeProfile.isDemo, let dbPath = resolvedLocalDatabasePath else {
+            pendingAgentRequests = []
+            return
+        }
+        let pending = AgentRequestStore.loadPending(databasePath: dbPath)
+        let hadBaseline = !knownAgentRequestIds.isEmpty || !pendingAgentRequests.isEmpty
+        if notifyNew {
+            for req in pending where !knownAgentRequestIds.contains(req.id) {
+                if hadBaseline || isLocalSession {
+                    DesktopNotifier.shared.notify(
+                        taskId: req.id,
+                        title: "\(req.requester) · \(req.projectName)",
+                        subtitle: "Approval requested",
+                        body: req.why.isEmpty ? req.summary : "\(req.summary) — \(req.why)"
+                    )
+                }
+            }
+        }
+        for req in pending {
+            knownAgentRequestIds.insert(req.id)
+        }
+        if pending != pendingAgentRequests {
+            pendingAgentRequests = pending
+            let needsTotal = workRowsResponse.rows.filter { $0.status == .needs }.count + pending.count
+            DesktopNotifier.shared.updateDockBadge(needsCount: needsTotal)
+        }
+    }
+
+    private func startAgentRequestPolling() {
+        agentRequestPollTask?.cancel()
+        agentRequestPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.refreshAgentRequests(notifyNew: true)
+            }
+        }
+    }
+
+    public func approveAgentRequest(_ request: AgentRequest, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
+        guard let dbPath = resolvedLocalDatabasePath else {
+            return (false, "No local Toolroll database connected.")
+        }
+        resolvingAgentRequestId = request.id
+        defer { resolvingAgentRequestId = nil }
+
+        let password: String
+        if let typed = typedPassword, !typed.isEmpty {
+            password = typed
+        } else {
+            guard let unlocked = await unlockPasswordWithTouchID(
+                reason: "Approve \(request.requester)'s request for \(request.projectName): \(request.summary)"
+            ) else {
+                return (false, "Cancelled.")
+            }
+            password = unlocked
+        }
+
+        let outcome: (ok: Bool, message: String)
+        switch request.kind {
+        case .network:
+            let open = request.params.mode == "open"
+            let localAny = request.params.local == "any"
+            let hosts = (request.params.hosts ?? []).joined(separator: ", ")
+            outcome = await updateProjectNetwork(
+                repoPath: request.repo,
+                open: open,
+                localAny: localAny,
+                hosts: hosts,
+                password: password
+            )
+        case .worktreeSetup:
+            let cmd = request.params.command ?? ""
+            let ok = await approveProjectWorktreeSetup(repoPath: request.repo, command: cmd, password: password)
+            outcome = (ok, notice?.message ?? (ok ? "Approved worktree setup." : "Could not approve worktree setup."))
+        case .liveView:
+            let show = request.params.showCommands ?? true
+            let snap = await loadProjectSettings(repoPath: request.repo)
+            outcome = await updateProjectLiveCommands(
+                repoPath: request.repo,
+                show: show,
+                nonce: snap?.liveViewNonce,
+                password: password
+            )
+        }
+
+        guard outcome.ok else {
+            return outcome
+        }
+
+        AgentRequestStore.resolve(
+            databasePath: dbPath,
+            id: request.id,
+            status: .approved,
+            note: outcome.message
+        )
+        refreshAgentRequests(notifyNew: false)
+        await refreshAll()
+        notice = WorkbenchNotice(kind: .info, message: "Approved \(request.requester) request: \(request.summary)")
+        return (true, outcome.message)
+    }
+
+    public func declineAgentRequest(_ request: AgentRequest, note: String? = nil) {
+        guard let dbPath = resolvedLocalDatabasePath else { return }
+        AgentRequestStore.resolve(
+            databasePath: dbPath,
+            id: request.id,
+            status: .declined,
+            note: note ?? "Declined in Toolroll.app"
+        )
+        refreshAgentRequests(notifyNew: false)
+        notice = WorkbenchNotice(kind: .info, message: "Declined request from \(request.requester).")
+    }
+
+    public func refreshBackgroundServiceStatus() async {
+        backgroundServiceStatus = await BackgroundServiceBridge.fetchStatus(databasePath: resolvedLocalDatabasePath)
+    }
+
+    @discardableResult
+    public func setBackgroundServiceEnabled(_ enabled: Bool) async -> (ok: Bool, message: String) {
+        isUpdatingBackgroundService = true
+        defer { isUpdatingBackgroundService = false }
+        let res = await BackgroundServiceBridge.setEnabled(enabled, databasePath: resolvedLocalDatabasePath)
+        await refreshBackgroundServiceStatus()
+        if res.ok {
+            notice = WorkbenchNotice(kind: .info, message: res.message)
+        }
+        return res
     }
 
     public func openExternalURL(_ raw: String) {

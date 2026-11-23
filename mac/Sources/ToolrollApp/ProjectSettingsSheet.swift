@@ -29,6 +29,9 @@ public struct ProjectSettingsSheet: View {
     // Concurrency
     @State private var concurrency: Int = 1
 
+    // Touch ID setup
+    @State private var touchIDPasswordDraft: String = ""
+
     public init(store: WorkbenchStore) {
         self.store = store
     }
@@ -151,11 +154,16 @@ public struct ProjectSettingsSheet: View {
                             .foregroundStyle(ToolrollPalette.muted)
                             .padding(.vertical, 16)
                     }
+
+                    HairlineDivider()
+
+                    touchIDSection
+                    backgroundServiceSection
                 }
                 .padding(18)
             }
         }
-        .frame(width: 560, height: 590)
+        .frame(width: 580, height: 640)
         .background(ToolrollPalette.paper)
         .onAppear {
             selectedProjectName = store.projectSettingsTargetName
@@ -164,7 +172,11 @@ public struct ProjectSettingsSheet: View {
                 ?? store.selectedProject
                 ?? store.allProjects.first
                 ?? ""
-            Task { await loadSettings() }
+            store.refreshTouchIDState()
+            Task {
+                await loadSettings()
+                await store.refreshBackgroundServiceStatus()
+            }
         }
     }
 
@@ -196,15 +208,28 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                    ForgotPasswordLink()
                         .onSubmit {
+                            guard !liveViewPassword.isEmpty else { return }
                             Task { await toggleLiveCommands(snap: snap, show: true) }
                         }
+                    ForgotPasswordLink()
+
+                    if store.isTouchIDEnabled {
+                        Button {
+                            Task { await toggleLiveCommandsWithTouchID(snap: snap, show: true) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: store.touchIDSystemImage).font(.system(size: 11))
+                                Text(store.touchIDLabel)
+                            }
+                        }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    }
 
                     Button("Show Commands") {
                         Task { await toggleLiveCommands(snap: snap, show: true) }
                     }
-                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary, compact: true))
                     .disabled(liveViewPassword.isEmpty)
                 }
             }
@@ -265,15 +290,28 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                    ForgotPasswordLink()
                         .onSubmit {
+                            guard !networkPassword.isEmpty else { return }
                             Task { await saveNetwork(snap: snap) }
                         }
+                    ForgotPasswordLink()
+
+                    if store.isTouchIDEnabled {
+                        Button {
+                            Task { await saveNetworkWithTouchID(snap: snap) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: store.touchIDSystemImage).font(.system(size: 11))
+                                Text(store.touchIDLabel)
+                            }
+                        }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    }
 
                     Button("Save Network") {
                         Task { await saveNetwork(snap: snap) }
                     }
-                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary, compact: true))
                     .disabled(networkPassword.isEmpty)
                 }
             }
@@ -306,15 +344,29 @@ public struct ProjectSettingsSheet: View {
                         .padding(.vertical, 6)
                         .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-                    ForgotPasswordLink()
                         .onSubmit {
+                            guard !setupCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !setupPassword.isEmpty else { return }
                             Task { await saveSetup(snap: snap) }
                         }
+                    ForgotPasswordLink()
+
+                    if store.isTouchIDEnabled {
+                        Button {
+                            Task { await saveSetupWithTouchID(snap: snap) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: store.touchIDSystemImage).font(.system(size: 11))
+                                Text(store.touchIDLabel)
+                            }
+                        }
+                        .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        .disabled(setupCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
 
                     Button("Approve Setup") {
                         Task { await saveSetup(snap: snap) }
                     }
-                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary, compact: true))
                     .disabled(setupCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || setupPassword.isEmpty)
                 }
             }
@@ -341,6 +393,85 @@ public struct ProjectSettingsSheet: View {
                     Task { await saveConcurrency(snap: snap) }
                 }
                 .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+        }
+    }
+
+    // MARK: - Section 5: Touch ID Approvals
+
+    private var touchIDSection: some View {
+        settingsCard(
+            title: "\(store.touchIDLabel) Approvals",
+            badge: store.isTouchIDEnabled ? "Enabled" : "Off",
+            badgeActive: store.isTouchIDEnabled,
+            subtitle: "Store your Toolroll password in macOS Keychain behind \(store.touchIDLabel) so approving plans, settings, and agent requests takes one tap. Never bypasses server authentication."
+        ) {
+            if !store.isTouchIDAvailable {
+                Text("Touch ID or Mac device-owner authentication is unavailable on this Mac.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+            } else if store.isTouchIDEnabled {
+                HStack(spacing: 8) {
+                    Image(systemName: store.touchIDSystemImage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.success)
+                    Text("Ready for 1-tap \(store.touchIDLabel) approvals across tasks, settings, and agent requests.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                    Button("Disable") {
+                        store.disableTouchID()
+                        feedback = (false, "\(store.touchIDLabel) disabled and removed from Keychain.")
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                }
+            } else {
+                HStack(spacing: 8) {
+                    SecureField("Enter Toolroll password once to enable \(store.touchIDLabel)…", text: $touchIDPasswordDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        .onSubmit {
+                            enableTouchIDFromDraft()
+                        }
+                    ForgotPasswordLink()
+                    Button("Enable \(store.touchIDLabel)") {
+                        enableTouchIDFromDraft()
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(touchIDPasswordDraft.isEmpty)
+                }
+            }
+        }
+    }
+
+    // MARK: - Section 6: Background Service (Login Item)
+
+    private var backgroundServiceSection: some View {
+        let status = store.backgroundServiceStatus
+        let isOn = status?.enabled ?? false
+        return settingsCard(
+            title: "Background Service (Start at Login)",
+            badge: isOn ? "Starts at login" : "Manual",
+            badgeActive: isOn,
+            subtitle: status?.detail ?? "Keep Toolroll running quietly in the background (`toolroll background on`) so Claude Code, Codex, and Toolroll.app can always reach it without running `toolroll up` manually."
+        ) {
+            HStack(spacing: 10) {
+                if store.isUpdatingBackgroundService {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                Button(isOn ? "Turn Off Login Item" : "Enable Background Service") {
+                    Task {
+                        let res = await store.setBackgroundServiceEnabled(!isOn)
+                        feedback = (!res.ok, res.message)
+                    }
+                }
+                .buttonStyle(KitButtonStyle(isOn ? .ghost : .primary, compact: true))
+                .disabled(store.isUpdatingBackgroundService)
             }
         }
     }
@@ -404,9 +535,17 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    private func toggleLiveCommands(snap: ToolrollClient.ProjectSettingsSnapshot, show: Bool) async {
-        let pw = liveViewPassword
-        liveViewPassword = ""
+    private func enableTouchIDFromDraft() {
+        let pw = touchIDPasswordDraft
+        touchIDPasswordDraft = ""
+        guard !pw.isEmpty else { return }
+        let res = store.enableTouchID(password: pw)
+        feedback = (!res.ok, res.message)
+    }
+
+    private func toggleLiveCommands(snap: ToolrollClient.ProjectSettingsSnapshot, show: Bool, passwordOverride: String? = nil) async {
+        let pw = passwordOverride ?? liveViewPassword
+        if passwordOverride == nil { liveViewPassword = "" }
         isLoading = true
         defer { isLoading = false }
         let res = await store.updateProjectLiveCommands(
@@ -421,9 +560,16 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    private func saveNetwork(snap: ToolrollClient.ProjectSettingsSnapshot) async {
-        let pw = networkPassword
-        networkPassword = ""
+    private func toggleLiveCommandsWithTouchID(snap: ToolrollClient.ProjectSettingsSnapshot, show: Bool) async {
+        guard let pw = await store.unlockPasswordWithTouchID(
+            reason: "\(show ? "Show" : "Hide") live shell commands for \(selectedProjectName)"
+        ) else { return }
+        await toggleLiveCommands(snap: snap, show: show, passwordOverride: pw)
+    }
+
+    private func saveNetwork(snap: ToolrollClient.ProjectSettingsSnapshot, passwordOverride: String? = nil) async {
+        let pw = passwordOverride ?? networkPassword
+        if passwordOverride == nil { networkPassword = "" }
         isLoading = true
         defer { isLoading = false }
         let res = await store.updateProjectNetwork(
@@ -439,9 +585,16 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    private func saveSetup(snap: ToolrollClient.ProjectSettingsSnapshot) async {
-        let pw = setupPassword
-        setupPassword = ""
+    private func saveNetworkWithTouchID(snap: ToolrollClient.ProjectSettingsSnapshot) async {
+        guard let pw = await store.unlockPasswordWithTouchID(
+            reason: "Save network & local services settings for \(selectedProjectName)"
+        ) else { return }
+        await saveNetwork(snap: snap, passwordOverride: pw)
+    }
+
+    private func saveSetup(snap: ToolrollClient.ProjectSettingsSnapshot, passwordOverride: String? = nil) async {
+        let pw = passwordOverride ?? setupPassword
+        if passwordOverride == nil { setupPassword = "" }
         isLoading = true
         defer { isLoading = false }
         let ok = await store.approveProjectWorktreeSetup(
@@ -450,6 +603,13 @@ public struct ProjectSettingsSheet: View {
             password: pw
         )
         feedback = (!ok, store.notice?.message ?? (ok ? "Saved worktree setup." : "Could not approve setup."))
+    }
+
+    private func saveSetupWithTouchID(snap: ToolrollClient.ProjectSettingsSnapshot) async {
+        guard let pw = await store.unlockPasswordWithTouchID(
+            reason: "Approve worktree setup command for \(selectedProjectName)"
+        ) else { return }
+        await saveSetup(snap: snap, passwordOverride: pw)
     }
 
     private func saveConcurrency(snap: ToolrollClient.ProjectSettingsSnapshot) async {

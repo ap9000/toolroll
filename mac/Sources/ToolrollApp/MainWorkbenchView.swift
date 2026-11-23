@@ -34,6 +34,8 @@ public struct MainWorkbenchView: View {
                         SetPasswordBanner(store: store)
                     }
 
+                    AgentRequestsBannerView(store: store)
+
                     HSplitView {
                         if store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight {
                             InboxSidebarView(store: store)
