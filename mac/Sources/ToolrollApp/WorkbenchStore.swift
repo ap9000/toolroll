@@ -905,6 +905,7 @@ public final class WorkbenchStore {
 
     public func openWorkHome() {
         if let current = selectedTaskId { backStack.append(current); forwardStack.removeAll() }
+        workspaceMode = .workbench
         isComposingNewWork = false
         selectedCliThreadId = nil
         selectedTaskId = nil
@@ -916,6 +917,8 @@ public final class WorkbenchStore {
             backStack.append(current)
             forwardStack.removeAll()
         }
+        // New task, Work, a task row or a CLI thread always lands on the task side, even from Canvas.
+        workspaceMode = .workbench
         selectedCliThreadId = nil
         isComposingNewWork = true
     }
@@ -1655,6 +1658,7 @@ public final class WorkbenchStore {
     }
 
     public func selectTask(_ taskId: String, recordHistory: Bool = true) async {
+        workspaceMode = .workbench
         if recordHistory && (selectedTaskId != taskId || isComposingNewWork) {
             backStack.append(isComposingNewWork ? nil : selectedTaskId)
             forwardStack.removeAll()

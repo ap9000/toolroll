@@ -155,6 +155,7 @@ public struct InboxSidebarView: View {
             VStack(spacing: 2) {
                 newTaskRow
                 workRow
+                canvasRow
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 6)
@@ -441,7 +442,7 @@ public struct InboxSidebarView: View {
             .padding(.horizontal, 10)
             .frame(height: 32)
             .background(
-                store.isShowingWorkHome ? Color.white.opacity(0.10) : Color.clear,
+                store.workspaceMode == .workbench && store.isShowingWorkHome ? Color.white.opacity(0.10) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
@@ -449,6 +450,37 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(store.needsRows.isEmpty ? "Work" : "Work, \(store.needsRows.count) waiting on you")
+    }
+
+    /// Canvas: every screen of the project, live. Leaving it is any other row (or New task).
+    private var canvasRow: some View {
+        Button {
+            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.workspaceMode = .canvas }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                Text("Canvas")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Text("⌘3")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                store.workspaceMode == .canvas ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Canvas")
+        .help("Canvas (⌘3)")
     }
 
     private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {

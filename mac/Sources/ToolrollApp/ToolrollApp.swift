@@ -27,7 +27,7 @@ struct ToolrollMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1380, height: 860)
         .commands {
-            CommandMenu("Workbench") {
+            CommandMenu("Work") {
                 Button("New Task") {
                     store.isSetupOpen = false
                     store.openNewWorkCanvas()
@@ -46,7 +46,7 @@ struct ToolrollMacApp: App {
 
                 Divider()
 
-                Button("Toggle Canvas Mode") {
+                Button("Canvas") {
                     store.workspaceMode = (store.workspaceMode == .canvas) ? .workbench : .canvas
                 }
                 .keyboardShortcut("3", modifiers: [.command])

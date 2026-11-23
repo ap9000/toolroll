@@ -149,7 +149,7 @@ public struct MainWorkbenchView: View {
         if store.isComposingNewWork || store.selectedRow == nil {
             return "New task"
         }
-        return store.selectedRow?.title ?? "Workbench"
+        return store.selectedRow?.title ?? "Work"
     }
 
     private var topChromeBar: some View {
@@ -287,35 +287,8 @@ public struct MainWorkbenchView: View {
 
             Spacer(minLength: 8)
 
-            // Right Liquid Glass cluster: Mode switch + ⌘K + Inspector drawer pills
+            // Right Liquid Glass cluster: ⌘K + Inspector drawer pills (Work and Canvas are sidebar rows)
             ToolrollGlassGroup(spacing: 6) {
-                // Workbench | Canvas glass capsule
-                HStack(spacing: 2) {
-                    ForEach(WorkspaceMode.allCases) { mode in
-                        let selected = store.workspaceMode == mode
-                        Button {
-                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                store.workspaceMode = mode
-                            }
-                        } label: {
-                            Text(mode.rawValue)
-                                .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
-                                .foregroundStyle(selected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 10)
-                                .frame(height: 22)
-                                .background(
-                                    selected ? Color.white.opacity(0.14) : Color.clear,
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .toolrollGlassCapsule(interactive: true)
-
                 // Quiet ⌘K glass pill
                 Button {
                     store.isCommandPaletteOpen.toggle()
