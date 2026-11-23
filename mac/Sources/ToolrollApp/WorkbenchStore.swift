@@ -2392,6 +2392,14 @@ public final class WorkbenchStore {
         }
     }
 
+    /// Asks the Lead about something on Canvas and shows the Lead drawer beside it. It goes to the conversation the drawer
+    /// shows, so the answer is in view; the message itself names the project, page and source.
+    public func askLeadAboutCanvas(_ message: String) async {
+        isInspectorVisible = true
+        inspectorTab = .lead
+        await sendLeadMessage(message)
+    }
+
     public func sendLeadMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

@@ -79,6 +79,21 @@ struct ScreenFocusLightboxView: View {
         pendingEdits.values.filter(\.hasChanges).sorted { $0.id < $1.id }
     }
 
+    /// Sends the question with the selection's context to the Lead and clears the box (the answer shows in the drawer).
+    private func askLead() {
+        let element = selectedElement
+        let message = LeadAskContext.message(
+            question: taskPrompt,
+            project: store.canvasProjectName,
+            route: board.route,
+            file: element?.file ?? board.sourceFile,
+            line: element?.line,
+            element: element
+        )
+        taskPrompt = ""
+        Task { await store.askLeadAboutCanvas(message) }
+    }
+
     private var canSubmitTask: Bool {
         !taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !activeLiveEdits.isEmpty
     }
@@ -1535,6 +1550,15 @@ struct ScreenFocusLightboxView: View {
                         .disabled(!canSubmitTask)
 
                         Spacer()
+
+                        Button {
+                            askLead()
+                        } label: {
+                            Label("Ask Lead", systemImage: "bubble.left")
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                        .disabled(taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Ask the Lead about this, with what you selected; the answer opens beside the canvas")
 
                         Button("File Task (⌘↵)") {
                             submitFromFocus(fileImmediately: true)

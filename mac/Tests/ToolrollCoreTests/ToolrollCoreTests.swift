@@ -1037,4 +1037,15 @@ struct ToolrollCoreTests {
         #expect(read.projects.map(\.name) == ["toolroll"])
         #expect(read.found.first?.id == "/Users/me/Documents/crate")
     }
+
+    @Test("Ask Lead from Canvas carries the screen, source and question; a bare question stays bare")
+    func leadAskContext() {
+        let withPlace = LeadAskContext.message(question: " how do we change this? ", project: "site", route: "/",
+                                               file: "src/routes/index.tsx", line: 61, element: nil)
+        #expect(withPlace.hasPrefix("how do we change this?"))
+        #expect(withPlace.contains("Screen: site /"))
+        #expect(withPlace.contains("Source: src/routes/index.tsx:61"))
+        let bare = LeadAskContext.message(question: "why?", project: nil, route: "", file: nil, line: nil, element: nil)
+        #expect(bare == "why?")
+    }
 }
