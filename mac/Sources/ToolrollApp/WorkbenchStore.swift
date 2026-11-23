@@ -70,7 +70,10 @@ public struct PendingCancel: Equatable, Sendable, Identifiable {
 public final class WorkbenchStore {
     // Profiles & Connection
     public private(set) var profiles: [ConnectionProfile] = []
-    public private(set) var activeProfile: ConnectionProfile
+    public private(set) var activeProfile: ConnectionProfile {
+        // A remembered password belongs to the workspace it was typed for: a switch drops it.
+        didSet { if oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account { passwordMemory.forget() } }
+    }
     public private(set) var isLocalSession: Bool = false
     public private(set) var sseConnected: Bool = false
     public private(set) var isLoading: Bool = false
@@ -2474,17 +2477,20 @@ public final class WorkbenchStore {
     /// A typed password is remembered for the chosen window; an empty one uses the remembered password, if any.
     func effectivePassword(_ typed: String) -> String {
         guard typed.isEmpty else {
-            passwordMemory.remember(typed)
+            passwordMemory.remember(typed, for: passwordOwner)
             return typed
         }
-        return passwordMemory.recall() ?? ""
+        return passwordMemory.recall(for: passwordOwner) ?? ""
     }
 
+    /// The account and Toolroll a remembered password belongs to: switching workspace never carries it across.
+    var passwordOwner: String { "\(activeProfile.account)|\(activeProfile.origin)" }
+
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
-        if let remembered = passwordMemory.recall() { return remembered }
+        if let remembered = passwordMemory.recall(for: passwordOwner) { return remembered }
         do {
             let unlocked = try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
-            passwordMemory.remember(unlocked)
+            passwordMemory.remember(unlocked, for: passwordOwner)
             return unlocked
         } catch TouchIDVaultError.cancelled {
             return nil

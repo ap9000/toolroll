@@ -31,6 +31,8 @@ public final class PasswordMemory {
 
     private var value: String?
     private var until: Date?
+    /// Whose password this is and for which Toolroll (account + origin): never recalled for any other.
+    private var owner: String?
     private var observers: [NSObjectProtocol] = []
 
     public init() {
@@ -50,9 +52,14 @@ public final class PasswordMemory {
         }
     }
 
-    /// The remembered password while its window lasts; nil once it has run out (and it is dropped then).
-    public func recall(now: Date = Date()) -> String? {
+    /// The remembered password for `owner` (account + origin) while its window lasts. A different owner gets nil and
+    /// the memory is dropped, so a password typed for one Toolroll is never sent to another.
+    public func recall(for owner: String, now: Date = Date()) -> String? {
         guard let value else { return nil }
+        guard owner == self.owner else {
+            forget()
+            return nil
+        }
         if let until, now >= until {
             forget()
             return nil
@@ -60,16 +67,18 @@ public final class PasswordMemory {
         return value
     }
 
-    public func remember(_ password: String, now: Date = Date()) {
+    public func remember(_ password: String, for owner: String, now: Date = Date()) {
         let chosen = window
         guard chosen != .everyTime, !password.isEmpty else { return }
         value = password
+        self.owner = owner
         until = chosen == .untilQuit ? nil : now.addingTimeInterval(TimeInterval(chosen.rawValue * 60))
     }
 
     public func forget() {
         value = nil
         until = nil
+        owner = nil
     }
 }
 
