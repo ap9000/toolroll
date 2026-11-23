@@ -1,5 +1,4 @@
-// Draws Toolroll's macOS app icon (a tool roll: a canvas band with three tool pockets and a rolled end, on a slate
-// squircle) at 1024×1024 and writes it as a PNG. `mac/scripts/make-app-icon.sh` turns it into Assets/AppIcon.icns.
+// Draws Toolroll's macOS app icon (the three-bar brand mark on the dark theme's neutral ground, in Apple's squircle) at 1024×1024 and writes it as a PNG. `mac/scripts/make-app-icon.sh` turns it into Assets/AppIcon.icns.
 //   swift mac/scripts/make-app-icon.swift <out.png>
 import AppKit
 import CoreGraphics
@@ -20,60 +19,38 @@ let body = CGRect(x: 100, y: 100, width: 824, height: 824)
 let bodyPath = CGPath(roundedRect: body, cornerWidth: 186, cornerHeight: 186, transform: nil)
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 34, color: rgb(0x000000, 0.35))
-ctx.addPath(bodyPath); ctx.setFillColor(rgb(0x14171C)); ctx.fillPath()
+ctx.addPath(bodyPath); ctx.setFillColor(rgb(0x161616)); ctx.fillPath()
 ctx.restoreGState()
 
 // Slate gradient, lighter at the top, and a hairline highlight on the upper edge.
 ctx.saveGState()
 ctx.addPath(bodyPath); ctx.clip()
-let bg = CGGradient(colorsSpace: space, colors: [rgb(0x2B313C), rgb(0x161920), rgb(0x0E1014)] as CFArray, locations: [0, 0.55, 1])!
+let bg = CGGradient(colorsSpace: space, colors: [rgb(0x262626), rgb(0x161616), rgb(0x0B0B0B)] as CFArray, locations: [0, 0.55, 1])!
 ctx.drawLinearGradient(bg, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
 ctx.restoreGState()
 ctx.addPath(CGPath(roundedRect: body.insetBy(dx: 1.5, dy: 1.5), cornerWidth: 184, cornerHeight: 184, transform: nil))
 ctx.setStrokeColor(rgb(0xFFFFFF, 0.10)); ctx.setLineWidth(3); ctx.strokePath()
 
-// The canvas band (the unrolled part), warm white with a gentle top-to-bottom shade.
-let band = CGRect(x: 236, y: 318, width: 470, height: 388)
-let bandPath = CGPath(roundedRect: band, cornerWidth: 46, cornerHeight: 46, transform: nil)
+// Toolroll's mark, as the web draws it (workspace.css .so-brand-mark): three bars, the middle one taller, slanted
+// 10°, in the dark theme's ink (#ededed) on its ground — the same symbol in the Dock, the sidebar and the browser.
+let unit: CGFloat = 26                         // 1 CSS px of the 16×20 mark, scaled into the icon body
+let barWidth = 3.5 * unit, gap = 3 * unit
+let heights: [CGFloat] = [13 * unit, 20 * unit, 13 * unit]
+let markWidth = barWidth * 3 + gap * 2
+let originX = 512 - markWidth / 2
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: rgb(0x000000, 0.45))
-ctx.addPath(bandPath); ctx.setFillColor(rgb(0xECEEF1)); ctx.fillPath()
-ctx.restoreGState()
-ctx.saveGState()
-ctx.addPath(bandPath); ctx.clip()
-let shade = CGGradient(colorsSpace: space, colors: [rgb(0xF6F7F9), rgb(0xD9DDE3)] as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(shade, start: CGPoint(x: 0, y: band.maxY), end: CGPoint(x: 0, y: band.minY), options: [])
-ctx.restoreGState()
-
-// Three tool pockets; the middle one carries the app's live blue.
-let pocketColors: [CGColor] = [rgb(0x232831), rgb(0x3D7BE0), rgb(0x232831)]
-for (index, color) in pocketColors.enumerated() {
-    let x = band.minX + 70 + CGFloat(index) * 112
-    let pocket = CGRect(x: x, y: band.minY + 64, width: 58, height: band.height - 128)
-    ctx.addPath(CGPath(roundedRect: pocket, cornerWidth: 29, cornerHeight: 29, transform: nil))
-    ctx.setFillColor(color); ctx.fillPath()
+// Slant around the icon's centre: y' = y + tan(10°)·(x − 512), so the bars rise to the right like the web's skewY(-10deg).
+ctx.translateBy(x: 512, y: 512)
+ctx.concatenate(CGAffineTransform(a: 1, b: tan(10 * .pi / 180), c: 0, d: 1, tx: 0, ty: 0))
+ctx.translateBy(x: -512, y: -512)
+ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 18, color: rgb(0x000000, 0.45))
+for (index, height) in heights.enumerated() {
+    let x = originX + CGFloat(index) * (barWidth + gap)
+    let bar = CGRect(x: x, y: 512 - height / 2, width: barWidth, height: height)
+    ctx.addPath(CGPath(roundedRect: bar, cornerWidth: unit, cornerHeight: unit, transform: nil))
+    ctx.setFillColor(rgb(0xEDEDED)); ctx.fillPath()
 }
-
-// The rolled end: a cylinder over the band's right edge, with two turns showing.
-let roll = CGPoint(x: band.maxX + 4, y: band.midY)
-ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: -8, height: -10), blur: 22, color: rgb(0x000000, 0.40))
-ctx.addEllipse(in: CGRect(x: roll.x - 132, y: roll.y - 132, width: 264, height: 264))
-ctx.setFillColor(rgb(0xE3E6EA)); ctx.fillPath()
 ctx.restoreGState()
-// An open spiral (rolled fabric, not rings): the radius grows as it turns, ending where the band leaves the roll.
-let spiral = CGMutablePath()
-let turns: CGFloat = 2.25
-let steps = 240
-for step in 0...steps {
-    let t = CGFloat(step) / CGFloat(steps)
-    let angle = t * turns * 2 * .pi + .pi
-    let radius = 18 + t * 92
-    let point = CGPoint(x: roll.x + cos(angle) * radius, y: roll.y + sin(angle) * radius)
-    if step == 0 { spiral.move(to: point) } else { spiral.addLine(to: point) }
-}
-ctx.addPath(spiral)
-ctx.setStrokeColor(rgb(0x7F8896)); ctx.setLineWidth(13); ctx.setLineCap(.round); ctx.setLineJoin(.round); ctx.strokePath()
 
 guard let image = ctx.makeImage(),
       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { fatalError("no image") }

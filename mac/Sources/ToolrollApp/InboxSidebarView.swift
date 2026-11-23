@@ -19,7 +19,21 @@ public struct InboxSidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Top bar: Glass Search pill (with integrated filter) + New Task button
+            // The brand, as the web shows it: the three-bar mark and "Toolroll".
+            HStack(spacing: 8) {
+                ToolrollBrandMark()
+                Text("Toolroll")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 10)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Toolroll")
+
+            // Top bar: Search pill (with integrated filter)
             HStack(spacing: 6) {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass")
@@ -201,9 +215,8 @@ public struct InboxSidebarView: View {
                                     Image(systemName: store.isSettledExpanded ? "chevron.down" : "chevron.right")
                                         .font(.system(size: 8.5, weight: .semibold))
                                         .frame(width: 10)
-                                    Text("SETTLED")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .tracking(0.7)
+                                    Text("Settled")
+                                        .font(.system(size: 12, weight: .medium))
                                     Spacer()
                                     Text("\(store.settledRows.count)")
                                         .font(.system(size: 10, design: .monospaced))
@@ -255,10 +268,8 @@ public struct InboxSidebarView: View {
                                 HStack(spacing: 5) {
                                     Image(systemName: store.isCliThreadsExpanded ? "chevron.down" : "chevron.right")
                                         .font(.system(size: 8.5, weight: .semibold))
-                                    Text("CLI Threads")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .textCase(.uppercase)
-                                        .tracking(0.6)
+                                    Text("CLI threads")
+                                        .font(.system(size: 12, weight: .medium))
                                     Spacer()
                                     Text("\(store.filteredCliThreads.count)")
                                         .font(.system(size: 10, design: .monospaced))
@@ -487,9 +498,7 @@ public struct InboxSidebarView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(title)
-                    .font(.system(size: 10, weight: .semibold))
-                    .textCase(.uppercase)
-                    .tracking(0.7)
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(solidBadge ? ToolrollPalette.ink : ToolrollPalette.muted)
                 Spacer()
                 Text("\(count)")
@@ -701,5 +710,25 @@ public struct InboxSidebarView: View {
         case .queued, .unknown:
             Circle().strokeBorder(ToolrollPalette.muted, lineWidth: 1).frame(width: 6, height: 6)
         }
+    }
+}
+
+/// Toolroll's mark, drawn as the web draws it (workspace.css .so-brand-mark): three 3.5pt bars, the middle one
+/// taller, 3pt apart, slanted 10°, in ink.
+struct ToolrollBrandMark: View {
+    var height: CGFloat = 20
+
+    var body: some View {
+        let scale = height / 20
+        HStack(alignment: .center, spacing: 3 * scale) {
+            ForEach(0..<3, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1 * scale)
+                    .fill(ToolrollPalette.ink)
+                    .frame(width: 3.5 * scale, height: (index == 1 ? 20 : 13) * scale)
+            }
+        }
+        .frame(width: 16 * scale, height: height)
+        .transformEffect(CGAffineTransform(a: 1, b: tan(-10 * .pi / 180), c: 0, d: 1, tx: 0, ty: 8 * scale * tan(10 * .pi / 180)))
+        .accessibilityHidden(true)
     }
 }

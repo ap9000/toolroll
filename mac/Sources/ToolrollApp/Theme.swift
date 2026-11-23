@@ -57,8 +57,8 @@ public final class WorkspaceThemeEngine {
             density: "comfortable",
             listSide: "left",
             showCosts: true,
-            glassChrome: true,
-            sidebarVibrancy: true
+            glassChrome: false,
+            sidebarVibrancy: false
         )
     }
 

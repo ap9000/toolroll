@@ -79,8 +79,9 @@ public struct WorkspaceAppearanceConfig: Sendable, Equatable {
         notifyAsks: Bool = true,
         notifyFinished: Bool = true,
         notifyFailed: Bool = true,
-        glassChrome: Bool = true,
-        sidebarVibrancy: Bool = true,
+        // Flat by default, like the web UI (solid neutral tokens); glass and vibrancy stay opt-in in Appearance.
+        glassChrome: Bool = false,
+        sidebarVibrancy: Bool = false,
         savedThemes: [String: CustomThemePalette] = [:],
         colorOverrides: CustomThemePalette? = nil
     ) {
