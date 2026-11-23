@@ -385,6 +385,10 @@ public struct ModelPickerPopover: View {
         }
         .frame(width: 516)
         .background(ToolrollPalette.paper)
+        .task {
+            // Task mode: the allowed models come from the picker's own read (`?choices=1`).
+            if let taskId { await store.loadPickerChoices(taskId: taskId) }
+        }
         .onAppear {
             targetRoleKey = taskId != nil && initialRoleKey == "review" ? "build" : initialRoleKey
             highlightedIndex = nil

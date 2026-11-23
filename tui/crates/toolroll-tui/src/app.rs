@@ -7272,8 +7272,9 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 .clone()
                 .unwrap_or_else(|| ask_word(asks).unwrap_or(&r.word.word).to_string());
             needs.push(item(Section::NeedsYou, r, word));
-        } else if r.status.token == "cancelled" {
-            // Cancelled (or Replaced by …): its own words, never the stage's "Stopped".
+        } else if matches!(r.status.token.as_str(), "cancelled" | "assignment-cancelled") {
+            // Cancelled (or Replaced by …): its own words, never the stage's "Stopped". The server's token is
+            // `assignment-cancelled` (work-index.ts `assignment-${state}`); bare `cancelled` is the older spelling.
             rest.push(item(section, r, r.status.label.clone()));
         } else if r.waiting.is_some() {
             // One word while it waits to try again, whatever the status says from moment to moment.

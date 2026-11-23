@@ -364,10 +364,13 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   /** GET /t/<task>/steps: the task's step cards. */
   async function taskSteps(ctx: HandlerContext): Promise<void> {
     const { url, request, response, who } = ctx;
-    if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
+    // One query key is known: `choices=1` (the model picker's read); anything else is refused as before.
+    const keys = [...url.searchParams.keys()];
+    const withChoices = url.searchParams.get("choices") === "1";
+    if (keys.some(key => key !== "choices") || keys.length > 1 || (keys.length === 1 && !withChoices)) return refusal(response, 400, "request");
     const family = familyAt(url, "steps");
     if (family === null) return refusal(response, 404, "task");
-    const payload = stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name });
+    const payload = stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name, withChoices });
     if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
       const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
       if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);

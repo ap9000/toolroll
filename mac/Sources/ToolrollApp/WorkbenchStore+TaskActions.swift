@@ -74,16 +74,22 @@ extension WorkbenchStore {
 
     /// The read the picker offers choices from: the open task's, or the one fetched for a right-clicked row.
     public func taskStepsForPicker(_ taskId: String) -> StepCardsResponse? {
-        for steps in [modelPickerSteps, stepCards].compactMap({ $0 }) where steps.task.id == taskId || steps.task.root == taskId {
+        for steps in [modelPickerSteps, stepCards].compactMap({ $0 }) where (steps.task.id == taskId || steps.task.root == taskId) && steps.agentChoices != nil {
             return steps
         }
         return nil
     }
 
+    /// The task screen's picker: read this task's allowed models when it opens (the regular steps read leaves them out).
+    public func loadPickerChoices(taskId: String) async {
+        guard taskStepsForPicker(taskId)?.agentChoices == nil else { return }
+        modelPickerSteps = try? await client?.fetchSteps(taskId: taskId, withChoices: true)
+    }
+
     /// Opens the picker for a row (right-click → Change Models…) with that task's allowed models read fresh.
     public func openTaskModelPicker(taskId: String) async {
         modelChangeError = nil
-        modelPickerSteps = try? await client?.fetchSteps(taskId: taskId)
+        modelPickerSteps = try? await client?.fetchSteps(taskId: taskId, withChoices: true)
         modelPickerTaskId = taskId
     }
 

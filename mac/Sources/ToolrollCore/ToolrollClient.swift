@@ -344,9 +344,10 @@ public actor ToolrollClient {
         try await send(try makeRequest(path: view.map { "/work/rows?view=\($0)" } ?? "/work/rows"), as: WorkRowsResponse.self)
     }
 
-    public func fetchSteps(taskId: String) async throws -> StepCardsResponse {
+    /// `withChoices`: also read the agents this task's steps may switch to (the model picker's read; costly, so only it asks).
+    public func fetchSteps(taskId: String, withChoices: Bool = false) async throws -> StepCardsResponse {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
-        return try await send(try makeRequest(path: "/t/\(enc)/steps"), as: StepCardsResponse.self)
+        return try await send(try makeRequest(path: "/t/\(enc)/steps\(withChoices ? "?choices=1" : "")"), as: StepCardsResponse.self)
     }
 
     public func fetchApprovalCard(taskId: String) async throws -> ApprovalCard {

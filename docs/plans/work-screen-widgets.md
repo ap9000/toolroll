@@ -141,3 +141,12 @@ Later, each its own reviewed slice (Codex "must"s carried):
 - Feeds (connector data): manual refresh first; one revocable writer bound to owner+feed+query+projection+audience;
   server-derived `by`/receipt time; replay rejection; staleness visible. Needs its own threat model and a feature-
   freeze decision (a scheduled agent session is flow territory). Toolroll stays an MCP server only.
+
+---
+
+## Correction (2026-11-22, docs/plans/automations-reintegration.md)
+
+§2's "Toolroll never calls Linear/GitHub itself" was wrong: flow triggers already poll GitHub (via `gh`) and Linear
+(HTTPS) on a timer, with cursor, failure state, pause and check-now (src/flow-triggers.ts). Owner decision: a connector
+feed for a widget is **a flow trigger whose result is "store rows" instead of "make a card"**: one mechanism, not a
+second scheduler. Design it that way; build it only after the feature freeze lifts. The MCP gateway stays server-only.

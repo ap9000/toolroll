@@ -89,7 +89,8 @@ async function connect(w: Pick<LocalWorld, "server" | "send" | "origin">) {
   return {
     key: body.key, csrf: body.csrf, cookie, get, post,
     rows: async (view?: string) => workRowsSchema.parse((await get(view === undefined ? "/work/rows" : `/work/rows?view=${view}`)).body).rows,
-    steps: async (id: string) => stepCardsSchema.parse((await get(`/t/${enc(id)}/steps`)).body),
+    // `choices`: the model picker's read (`?choices=1`); every other read leaves agentChoices null.
+    steps: async (id: string, choices = false) => stepCardsSchema.parse((await get(`/t/${enc(id)}/steps${choices ? "?choices=1" : ""}`)).body),
     models: async () => modelsReadSchema.parse((await get("/engine/models")).body),
     // The client's acts, field for field.
     cancelTask: (id: string, state: string, run: number | null, key?: string) => act(`/t/${enc(id)}/cancel`, [["state", state], ["run", run === null ? "none" : String(run)]], "Task cancelled.", key),
@@ -379,7 +380,9 @@ const ledgerOf = (w: LocalWorld, id: string, action: string) =>
 test("MO1: the local owner changes a waiting task's planner and builder (agent=provider|model, sawDigest), no password, each read back", async () => {
   opusConfigured(world);
   proposed(world, "mo1");
-  const shown = await mac.steps("mo1");
+  // A plain read leaves the costly choices out; the picker asks for them.
+  expect((await mac.steps("mo1")).agentChoices).toBeNull();
+  const shown = await mac.steps("mo1", true);
   // The picker's choices: exactly the configured, selectable agents; review is not a per-task role.
   for (const phase of ["plan", "build"] as const) expect(shown.agentChoices?.[phase]).toContainEqual({ provider: "claude", model: "claude-opus-5-5" });
   expect(Object.keys(shown.agentChoices ?? {}).sort()).toEqual(["build", "plan"]);

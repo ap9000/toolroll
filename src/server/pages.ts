@@ -1461,20 +1461,20 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     }
     const { view } = built, list = view.list;
     // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
+    // The providers' windows: the same audience, or this computer's own local owner. One operator check and one
+    // provider_limit read serve both (the wire budget counts every statement).
+    const operator = who.via === "cookie" && store.isInstanceOperator(who.name);
+    const providerRows = operator || (who.via === "cookie" && who.authority === "local-owner")
+      ? (() => { try { return store.providerLimits(); } catch { return null; } })()
+      : null;
     const spend = (() => {
-      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return null;
+      if (!operator || providerRows === null) return null;
       // Today's items only (one read of the day, never the month's), and the plan windows the providers last reported.
       const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), store.providerLimits(), now); } catch { return null; }
+      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), providerRows, now); } catch { return null; }
     })();
-    // The providers' windows, per provider: the cost line's audience, or this computer's own local owner.
-    const limits = (() => {
-      if (who.via !== "cookie" || !(store.isInstanceOperator(who.name) || who.authority === "local-owner")) return null;
-      try {
-        return store.providerLimits().map(one => ({ provider: one.provider, plan: one.plan, window: one.window, usedPercent: one.usedPercent,
-          reached: one.reached, resetsAt: one.resetsAt, observedAt: one.observedAt }));
-      } catch { return null; }
-    })();
+    const limits = providerRows === null ? null : providerRows.map(one => ({ provider: one.provider, plan: one.plan, window: one.window,
+      usedPercent: one.usedPercent, reached: one.reached, resetsAt: one.resetsAt, observedAt: one.observedAt }));
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
     // Every row's wait, read at once (one statement, never a few per row: the wire budgets hold it).

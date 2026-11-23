@@ -51,11 +51,14 @@ const AUTOMATIC = new Set(["auto-check", "auto-green"]);
 
 type StepRead = { store: Store; family: TaskFamily; now: Date; access: WorkSummaryAccess; evidenceRoot: string;
   /** Who is reading (their completion is what `review.accept.needs` speaks of); null: nobody in particular. */
-  viewer?: string | null };
+  viewer?: string | null;
+  /** Compute `agentChoices` (the model picker asks with `?choices=1`); every other read leaves it null — it is the
+   * costly part of the read and only the picker needs it. */
+  withChoices?: boolean };
 
 /** One task's step cards: the task page's road and rows (taskRoad, stepRowsOf) over the facts they read, each with
  * the agent, time and cost of the runs behind it. */
-export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer = null }: StepRead): StepCards {
+export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer = null, withChoices = false }: StepRead): StepCards {
   const current = family.current, root = family.root;
   const ref = store.lookupRef(current.id);
   const scope = store.getScope(current.id);
@@ -162,7 +165,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     // A model pick (POST /t/<task>/route): the digest it binds to, the configured choices it may name, and one waiting.
     scopeDigest: scope?.digest ?? null,
-    agentChoices: scope === null ? null : agentChoicesOf(store, current.id, ref, now),
+    agentChoices: scope === null || !withChoices ? null : agentChoicesOf(store, current.id, ref, now),
     pendingAgentChange: ref === null ? null : pendingAgentChangeOf(store, ref.id),
     room: `task:${encodeURIComponent(root.id)}`,
   };
