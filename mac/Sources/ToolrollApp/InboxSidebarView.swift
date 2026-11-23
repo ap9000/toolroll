@@ -170,6 +170,7 @@ public struct InboxSidebarView: View {
                 newTaskRow
                 workRow
                 canvasRow
+                automationsRow
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 6)
@@ -461,6 +462,42 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(store.needsRows.isEmpty ? "Work" : "Work, \(store.needsRows.count) waiting on you")
+    }
+
+    /// Automations: what runs on its own. Its badge counts automations waiting on a decision.
+    private var automationsRow: some View {
+        let waiting = store.automations?.automations.filter { $0.group == "needs" }.count ?? 0
+        return Button {
+            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.workspaceMode = .automations }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "clock.arrow.2.circlepath")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                Text("Automations")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                if waiting > 0 {
+                    Text("\(waiting)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(ToolrollPalette.ink, in: Capsule())
+                }
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                store.workspaceMode == .automations ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(waiting > 0 ? "Automations, \(waiting) waiting on you" : "Automations")
     }
 
     /// Canvas: every screen of the project, live. Leaving it is any other row (or New task).

@@ -45,6 +45,8 @@ public struct MainWorkbenchView: View {
                         Group {
                             if store.workspaceMode == .canvas {
                                 CanvasWorkspaceView(store: store)
+                            } else if store.workspaceMode == .automations {
+                                AutomationsView(store: store)
                             } else if let cliThread = store.selectedCliThread {
                                 LocalCliThreadView(store: store, thread: cliThread)
                             } else if store.isComposingNewWork {

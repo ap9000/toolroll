@@ -1003,4 +1003,25 @@ struct ToolrollCoreTests {
         // A sibling whose name merely starts the same is not inside.
         #expect(!PreviewServerManager.isInside("/Users/a/Documents/toolroll-old", root: "/Users/a/Documents/toolroll"))
     }
+
+    @Test("Automations decode, and Run now presses a button trigger, else checks a scheduled one, never a paused one")
+    func automationsRunNow() throws {
+        let json = """
+        {"version":1,"canAct":true,"automations":[
+          {"id":1,"name":"Morning triage","project":"oddcircle","group":"on","starts":"Every weekday at 09:00","nextAt":"2026-11-24T09:00:00.000Z",
+           "waiting":0,"inProgress":0,"trouble":null,
+           "triggers":[{"id":7,"kind":"schedule","words":"Every weekday at 09:00","state":"active","nextAt":"2026-11-24T09:00:00.000Z",
+                        "lastAt":null,"lastOutcome":null,"failures":0,"canPress":false,"canCheck":true}]},
+          {"id":2,"name":"Ship notes","project":null,"group":"paused","starts":"When someone presses Ship","nextAt":null,
+           "waiting":0,"inProgress":0,"trouble":null,
+           "triggers":[{"id":8,"kind":"button","words":"Ship","state":"paused","nextAt":null,"lastAt":null,"lastOutcome":null,
+                        "failures":0,"canPress":true,"canCheck":false}]}]}
+        """
+        let read = try JSONDecoder().decode(AutomationsResponse.self, from: Data(json.utf8))
+        #expect(read.automations.count == 2)
+        #expect(read.automations[0].runNowTrigger?.id == 7)
+        #expect(read.automations[0].isPaused == false)
+        #expect(read.automations[1].isPaused == true)
+        #expect(read.automations[1].runNowTrigger == nil)
+    }
 }

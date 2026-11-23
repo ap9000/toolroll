@@ -306,4 +306,36 @@ extension WorkbenchStore {
         let after = ordered[idx...].first { !archived.contains($0.id) } ?? remaining.last!
         await selectTask(after.id)
     }
+
+    // MARK: Automations
+
+    /// Pause, resume, check now or press: one trigger act, then the list again. The server keeps every rule.
+    public func automationAct(_ automation: Automation, trigger: AutomationTrigger, act: String) async {
+        guard let client, !activeProfile.isDemo else { return }
+        guard busyLabel == nil else { return }
+        busyLabel = act == "pause" ? "Pausing…" : act == "resume" ? "Resuming…" : "Starting…"
+        defer { busyLabel = nil }
+        do {
+            let reply = try await client.automationTrigger(flowId: automation.id, triggerId: trigger.id, act: act)
+            // The server's own words (what a check found, what started); our words only when it said nothing.
+            let ours = "\(automation.name): \(act == "pause" ? "paused" : act == "resume" ? "resumed" : "checked now")."
+            notice = WorkbenchNotice(kind: .info, message: reply == "Done." || reply.isEmpty ? ours : reply)
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+        automations = try? await client.fetchAutomations()
+    }
+
+    /// Pause every active trigger, or resume every paused one.
+    public func toggleAutomation(_ automation: Automation) async {
+        let act = automation.isPaused ? "resume" : "pause"
+        for trigger in automation.triggers where trigger.isPaused == (act == "resume") {
+            await automationAct(automation, trigger: trigger, act: act)
+        }
+    }
+
+    public func runAutomationNow(_ automation: Automation) async {
+        guard let trigger = automation.runNowTrigger else { return }
+        await automationAct(automation, trigger: trigger, act: "check")
+    }
 }

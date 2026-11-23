@@ -351,6 +351,64 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
     }
 }
 
+/// One trigger of an automation: what starts it, its state, and what it last did (GET /engine/automations).
+public struct AutomationTrigger: Codable, Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let kind: String
+    public let words: String
+    public let state: String
+    public let nextAt: String?
+    public let lastAt: String?
+    public let lastOutcome: String?
+    public let failures: Int
+    public let canPress: Bool
+    public let canCheck: Bool
+    /// A button trigger's label and the questions it asks before it starts (null for other kinds).
+    public let label: String?
+    public let questions: [String]?
+    /// Resuming this paused trigger may run it once right away (it fell due while paused, under a signed grant).
+    public let resumeRunsNow: Bool?
+
+    public var isPaused: Bool { state == "paused" }
+}
+
+/// A flow as the Automations screen shows it: the web /flows list's facts, as data.
+public struct Automation: Codable, Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let name: String
+    public let project: String?
+    /// "needs" | "running" | "on" | "paused"
+    public let group: String
+    public let starts: String
+    public let nextAt: String?
+    public let waiting: Int
+    public let inProgress: Int
+    public let trouble: String?
+    public let triggers: [AutomationTrigger]
+
+    /// The trigger "Run now" checks now: a polled one or a schedule that runs a script (the server says which with
+    /// `canCheck`). A plain schedule only fires when due; a button asks its questions first (a later "Start…").
+    public var runNowTrigger: AutomationTrigger? {
+        triggers.first { $0.canCheck && !$0.isPaused }
+    }
+
+    /// Resuming would run it once right away (a confirm says so first).
+    public var resumeRunsNow: Bool { triggers.contains { $0.isPaused && ($0.resumeRunsNow ?? false) } }
+    public var isPaused: Bool { !triggers.isEmpty && triggers.allSatisfy(\.isPaused) }
+}
+
+public struct AutomationsResponse: Codable, Sendable, Equatable {
+    public let version: Int
+    public let canAct: Bool
+    public let automations: [Automation]
+
+    public init(version: Int = 1, canAct: Bool = false, automations: [Automation] = []) {
+        self.version = version
+        self.canAct = canAct
+        self.automations = automations
+    }
+}
+
 /// One of the Work list's own groups, in the server's order and words.
 public struct WorkGroupSummary: Codable, Sendable, Equatable {
     public let key: String

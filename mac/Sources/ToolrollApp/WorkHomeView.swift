@@ -88,35 +88,29 @@ struct WorkHomeView: View {
         }
     }
 
-    // MARK: Automations (phase 1: the way in; the native "runs on its own" list comes with its own server read)
+    // MARK: Automations — the next few that run on their own (hidden when there are none)
 
-    private var automations: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "clock.arrow.2.circlepath")
-                .font(.system(size: 16))
-                .foregroundStyle(ToolrollPalette.muted)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Automations")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Text("Work that runs on its own, on a schedule or when something happens.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(ToolrollPalette.muted)
+    private static let automationsPreview = 3
+
+    @ViewBuilder private var automations: some View {
+        if let response = store.automations, !response.automations.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("Runs on its own").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
+                    Text("\(response.automations.count)").font(.system(size: 12.5)).foregroundStyle(ToolrollPalette.muted)
+                    Spacer()
+                    Button("All automations") { store.workspaceMode = .automations }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+                ForEach(Array(response.automations.prefix(Self.automationsPreview))) {
+                    AutomationRow(store: store, automation: $0, canAct: response.canAct)
+                }
             }
-            Spacer(minLength: 12)
-            Button("Open automations") { store.openInBrowser(path: "/flows") }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                .help("Opens the automations page in your browser: list, edit, pause and resume")
-            Button { store.startAutomationWithLead() } label: {
-                Label("New automation", systemImage: "plus").font(.system(size: 12.5, weight: .medium))
-            }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Describe it to the Lead; it proposes the automation and you approve it")
         }
-        .padding(14)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     // MARK: Work list

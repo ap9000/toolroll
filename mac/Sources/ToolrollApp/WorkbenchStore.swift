@@ -29,6 +29,7 @@ public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
 public enum WorkspaceMode: String, CaseIterable, Identifiable, Sendable {
     case workbench = "Workbench"
     case canvas = "Canvas"
+    case automations = "Automations"
     public var id: String { rawValue }
 }
 
@@ -1647,6 +1648,7 @@ public final class WorkbenchStore {
             if let chat = try? await leadReq { leadChat = chat }
             if let ag = try? await agentsReq { agentsRead = ag }
             if let mod = try? await modelsReq { modelsRead = mod }
+            automations = try? await client.fetchAutomations()
             if let archived = try? await archivedReq { archivedRows = archived.rows }
 
             if let id = selectedTaskId {
@@ -2398,6 +2400,11 @@ public final class WorkbenchStore {
 
     /// A message to start in the Lead chat's composer (the Lead panel takes it once and clears it).
     public var leadDraftSeed: String?
+
+    /// Automations the person can see (nil until read, or when this Toolroll doesn't offer the read yet).
+    public internal(set) var automations: AutomationsResponse?
+    /// An automation whose resume may run it right away: the confirm dialog's subject.
+    public var automationToResume: Automation?
 
     /// New automation: the Lead proposes the flow from a sentence and the person approves its card (existing road).
     public func startAutomationWithLead() {

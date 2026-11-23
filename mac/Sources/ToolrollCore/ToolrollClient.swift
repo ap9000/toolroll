@@ -940,6 +940,18 @@ public actor ToolrollClient {
         )
     }
 
+    /// Every automation the person can see, as the web /flows list shows them.
+    public func fetchAutomations() async throws -> AutomationsResponse {
+        try await send(try makeRequest(path: "/engine/automations"), as: AutomationsResponse.self)
+    }
+
+    /// One trigger act on an automation: "pause", "resume", "check" (run a scheduled or polled trigger now) or "press"
+    /// (start a button trigger). The server keeps every rule the web form has.
+    public func automationTrigger(flowId: Int, triggerId: Int, act: String) async throws -> String {
+        guard ["pause", "resume", "check", "press"].contains(act) else { throw ToolrollClientError.refused("Unknown automation action.") }
+        return try await sendFormAct(path: "/flows/\(flowId)/triggers/\(triggerId)/\(act)", fields: [], defaultDone: "Done.")
+    }
+
     /// Whether archive and restore can run here: they are a signed-in person's act, which a remote CLI bridge can't make.
     public var canArchive: Bool { transport.isLocalSession }
 
