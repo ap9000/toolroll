@@ -122,20 +122,6 @@ public struct InboxSidebarView: View {
                 .padding(.horizontal, 9)
                 .frame(height: 28)
                 .toolrollGlassCapsule(interactive: false)
-
-                // Crisp New Task glass circle (⌘N)
-                Button {
-                    store.openNewWorkCanvas()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(store.isComposingNewWork ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .toolrollGlassCapsule(interactive: true)
-                .help("New Task (⌘N)")
             }
             .padding(.horizontal, 10)
             .padding(.top, 4)
@@ -166,6 +152,10 @@ public struct InboxSidebarView: View {
                 .padding(.bottom, 6)
             }
 
+            newTaskRow
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+
             // Unified scrollable task list (Status-first default, or grouped by Project)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
@@ -193,22 +183,6 @@ public struct InboxSidebarView: View {
                         if !store.queuedRows.isEmpty {
                             activeSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
                         }
-                    }
-
-                    if store.needsRows.isEmpty && store.runningRows.isEmpty && store.queuedRows.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Nothing active")
-                                .font(.system(size: 12))
-                                .foregroundStyle(ToolrollPalette.muted)
-                            Button("Start something new (⌘N)") {
-                                store.openNewWorkCanvas()
-                            }
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(ToolrollPalette.ink)
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 8)
                     }
 
                     // Inline collapsible Settled section (clean like Linear's Completed/Archive)
@@ -406,6 +380,37 @@ public struct InboxSidebarView: View {
             }
             return true
         }
+    }
+
+    /// Starting work is always one row away, in the same place and shape as every other row (Mail, Notes).
+    private var newTaskRow: some View {
+        Button {
+            store.openNewWorkCanvas()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16)
+                Text("New task")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Text("⌘N")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .foregroundStyle(ToolrollPalette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                store.isComposingNewWork ? Color.white.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("New task")
+        .help("New task (⌘N)")
     }
 
     private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {

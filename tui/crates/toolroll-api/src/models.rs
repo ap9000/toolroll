@@ -611,6 +611,21 @@ pub struct StepCards {
     pub chain: String,
     pub headline: Option<String>,
     pub live_run: Option<i64>,
+    /// The task's newest run, live or finished: the run a cancel names as the one it showed.
+    #[serde(default)]
+    pub latest_run: Option<i64>,
+    /// The agent each step of this task runs (its route); null without an exact route.
+    #[serde(default)]
+    pub models: Option<Vec<TaskStepModel>>,
+    /// The scope digest this read shows: a model change sends it back as `sawDigest`.
+    #[serde(default)]
+    pub scope_digest: Option<String>,
+    /// The agents this task's plan and build steps may switch to (review is never per-task).
+    #[serde(default)]
+    pub agent_choices: Option<AgentChoices>,
+    /// A model change the server holds until the live run ends (or restarts), or why it couldn't apply.
+    #[serde(default)]
+    pub pending_agent_change: Option<PendingAgentChange>,
     pub cards: Option<Vec<StepCard>>,
     pub review: Option<Review>,
     /// Open build shell's build and why a terminal can't be opened on it (null `why`: it can be); null with no build.
@@ -655,6 +670,44 @@ pub struct Failure {
     pub suggestion: Option<String>,
     /// The agent's last lines before it stopped, cleaned by the engine (at most 8).
     pub agent_said: Option<Vec<String>>,
+}
+
+/// One step's agent on a task's own route; `chosen` says whether a person overrode the recommendation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskStepModel {
+    pub phase: String,
+    pub provider: String,
+    pub model: String,
+    pub chosen: String,
+}
+
+/// An agent a task step may run: one of the configured choices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentChoice {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentChoices {
+    pub plan: Vec<AgentChoice>,
+    pub build: Vec<AgentChoice>,
+}
+
+/// A model change waiting for the task's live run to end; `problem` when it couldn't apply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingAgentChange {
+    pub phase: String,
+    pub provider: String,
+    pub model: String,
+    pub when: String,
+    pub by: String,
+    pub at: String,
+    pub problem: Option<String>,
 }
 
 /// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last attempt.
