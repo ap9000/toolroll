@@ -25,7 +25,9 @@ public struct DetectedDevCommand: Sendable, Equatable {
         self.arguments = arguments
         self.displayCommand = displayCommand
         self.expectedPort = expectedPort
-        self.expectedURL = "http://127.0.0.1:\(expectedPort)"
+        // "localhost", not 127.0.0.1: Vite and others often listen only on IPv6 ([::1]); localhost reaches either, so a
+        // dev server that's already running is found and reused instead of a second copy failing on the same port.
+        self.expectedURL = "http://localhost:\(expectedPort)"
     }
 }
 
