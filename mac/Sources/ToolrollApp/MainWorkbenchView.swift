@@ -2,8 +2,7 @@ import SwiftUI
 import ToolrollCore
 
 /// Top-level native macOS Workbench — ultra-clean multiplexer chrome:
-/// Left: sidebar toggle + Toolroll workspace menu + ←/→ history.
-/// Center: project / task breadcrumb + 3 right-edge drawer toggles (Diff / Terminal / Lead).
+/// Left: sidebar toggle + ←/→ history. Middle: where you are. Right: ⌘K + the drawer toggle.
 public struct MainWorkbenchView: View {
     @Bindable var store: WorkbenchStore
 
@@ -134,237 +133,143 @@ public struct MainWorkbenchView: View {
         }
     }
 
-    private var breadcrumbProject: String {
+    /// The project segment, only where it names something real (a task's or a new task's project).
+    private var breadcrumbProject: String? {
         if let cliThread = store.selectedCliThread {
             return "\(cliThread.provider.displayName) · \(cliThread.projectName)"
         }
-        if store.isComposingNewWork {
-            return store.activeProject ?? store.selectedProject ?? store.allProjects.first ?? store.activeProfile.displayTitle
-        }
-        return store.selectedRow?.project ?? store.activeProject ?? store.selectedProject ?? store.activeProfile.displayTitle
+        guard store.workspaceMode == .workbench else { return nil }
+        if store.isComposingNewWork { return store.activeProject ?? store.selectedProject }
+        return store.selectedRow?.project
     }
 
+    /// Where you are: the screen's name, or the task's title.
     private var breadcrumbTitle: String {
-        if let cliThread = store.selectedCliThread {
-            return cliThread.title
+        if let cliThread = store.selectedCliThread { return cliThread.title }
+        switch store.workspaceMode {
+        case .canvas: return "Canvas"
+        case .automations: return "Automations"
+        case .workbench: break
         }
-        if store.isComposingNewWork || store.selectedRow == nil {
-            return "New task"
-        }
+        if store.isComposingNewWork { return "New task" }
         return store.selectedRow?.title ?? "Work"
     }
 
+    /// Every control in the top bar shares one height, so the left and right sides line up.
+    static let chromeControlHeight: CGFloat = 28
+
+    /// Left: sidebar toggle and back/forward (past the traffic lights). Middle: where you are. Right: ⌘K and the drawer
+    /// toggle, mirroring the sidebar toggle. The workspace menu lives on the sidebar's Toolroll row; the drawer's own tabs
+    /// pick Artifact / Diff / Terminal / Lead.
     private var topChromeBar: some View {
-        HStack(spacing: 10) {
-            // Left glass navigation cluster (aligned past traffic lights)
-            HStack(spacing: 6) {
-                Spacer().frame(width: 68)
+        HStack(spacing: 8) {
+            Spacer().frame(width: 70)
 
-                ToolrollGlassGroup(spacing: 6) {
-                    // Sidebar + Workspace menu glass capsule
-                    HStack(spacing: 2) {
-                        Button {
-                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                store.isSidebarVisible.toggle()
-                            }
-                        } label: {
-                            Image(systemName: "sidebar.left")
-                                .font(.system(size: 12))
-                                .foregroundStyle(store.isSidebarVisible ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                .frame(width: 26, height: 24)
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Toggle Sidebar (⌘B)")
-
-                        Menu {
-                            Section("Workspace") {
-                                ForEach(store.profiles) { profile in
-                                    Button {
-                                        Task { await store.switchProfile(name: profile.name) }
-                                    } label: {
-                                        HStack {
-                                            Text(profile.displayTitle)
-                                            if profile.name == store.activeProfile.name {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Divider()
-                            Button("Setup & Agents…") {
-                                store.isSetupOpen = true
-                            }
-                            Button("Add Project…") {
-                                store.isAddProjectSheetOpen = true
-                            }
-                            Button("Reconnect Local Toolroll") {
-                                Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
-                            }
-                            Button("Connect Remote Workspace…") {
-                                store.isPairSheetOpen = true
-                            }
-                            Button("Pair Phone for Push Alerts…") {
-                                store.isPhonePairSheetOpen = true
-                            }
-                            Button("Appearance & Lead Themes…") {
-                                store.isAppearanceSheetOpen = true
-                            }
-                            if !store.activeProfile.isDemo {
-                                Divider()
-                                Button("Preview Demo Workspace") {
-                                    Task { await store.switchProfile(name: "demo") }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Text("Toolroll")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.ink)
-                                    .lineLimit(1)
-                                Circle()
-                                    .fill(store.sseConnected ? ToolrollPalette.success : ToolrollPalette.muted)
-                                    .frame(width: 5.5, height: 5.5)
-                            }
-                            .padding(.trailing, 6)
-                            .frame(height: 24)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                    }
-                    .padding(.horizontal, 4)
-                    .toolrollGlassCapsule(interactive: true)
-
-                    // Back / Forward glass capsule (⌘[ / ⌘])
-                    HStack(spacing: 0) {
-                        Button {
-                            Task { await store.goBack() }
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(store.canGoBack ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.4))
-                                .frame(width: 24, height: 24)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!store.canGoBack)
-                        .help("Back (⌘[)")
-
-                        Button {
-                            Task { await store.goForward() }
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(store.canGoForward ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.4))
-                                .frame(width: 24, height: 24)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!store.canGoForward)
-                        .help("Forward (⌘])")
-                    }
-                    .padding(.horizontal, 2)
-                    .toolrollGlassCapsule(interactive: true)
-                }
+            ChromeIconButton(systemName: "sidebar.left", isOn: store.isSidebarVisible, help: "Show or Hide Sidebar (⌘B)") {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.isSidebarVisible.toggle() }
             }
 
-            // Quiet centered-left breadcrumb
+            HStack(spacing: 0) {
+                historyButton("chevron.left", enabled: store.canGoBack, help: "Back (⌘[)") { await store.goBack() }
+                historyButton("chevron.right", enabled: store.canGoForward, help: "Forward (⌘])") { await store.goForward() }
+            }
+            .padding(.horizontal, 2)
+            .frame(height: Self.chromeControlHeight)
+            .toolrollGlassCapsule(interactive: true)
+
             HStack(spacing: 5) {
-                Text(breadcrumbProject)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-                Text("/")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(ToolrollPalette.muted.opacity(0.45))
+                if let project = breadcrumbProject {
+                    Text(project)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                    Text("/")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted.opacity(0.45))
+                }
                 Text(breadcrumbTitle)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .padding(.leading, 4)
+            .padding(.leading, 6)
 
             Spacer(minLength: 8)
 
-            // Right Liquid Glass cluster: ⌘K + Inspector drawer pills (Work and Canvas are sidebar rows)
-            ToolrollGlassGroup(spacing: 6) {
-                // Quiet ⌘K glass pill
-                Button {
-                    store.isCommandPaletteOpen.toggle()
-                } label: {
-                    Text("⌘K")
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 8)
-                        .frame(height: 26)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .toolrollGlassCapsule(interactive: true)
-                .help("Command Palette (⌘K)")
-
-                // Right-edge Inspector toggles inside one unified glass capsule
-                HStack(spacing: 2) {
-                    drawerIconButton(systemName: "doc.richtext", tab: .artifact, help: "Toggle Artifact Window (⌘4)")
-                    diffDrawerButton
-                    drawerIconButton(systemName: "terminal", tab: .terminal, help: "Toggle Live Terminal (⌘1)")
-                    drawerIconButton(systemName: "sidebar.right", tab: .lead, help: "Toggle Lead / Drawer (⌘J)")
-                }
-                .padding(.horizontal, 3)
-                .frame(height: 26)
-                .toolrollGlassCapsule(interactive: true)
+            Button {
+                store.isCommandPaletteOpen.toggle()
+            } label: {
+                Text("⌘K")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.horizontal, 10)
+                    .frame(height: Self.chromeControlHeight)
+                    .contentShape(Capsule())
             }
-            .padding(.trailing, 10)
+            .buttonStyle(.plain)
+            .toolrollGlassCapsule(interactive: true)
+            .help("Command Palette (⌘K)")
+
+            ChromeIconButton(systemName: "sidebar.right", isOn: store.isInspectorVisible, badge: diffBadge, help: "Show or Hide Drawer (⌘J)") {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.isInspectorVisible.toggle() }
+            }
         }
+        .padding(.trailing, 10)
         .frame(height: 44)
     }
 
-    private var diffDrawerButton: some View {
-        let active = store.isInspectorVisible && store.inspectorTab == .diff
-        let added = store.diffResponse?.totals?.added ?? 0
-        return Button {
-            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                store.toggleInspector(tab: .diff)
-            }
+    /// "+12" beside the drawer toggle while the drawer is closed and the task has changes to look at.
+    private var diffBadge: String? {
+        guard !store.isInspectorVisible, let added = store.diffResponse?.totals?.added, added > 0 else { return nil }
+        return "+\(added)"
+    }
+
+    private func historyButton(_ systemName: String, enabled: Bool, help: String, action: @escaping () async -> Void) -> some View {
+        Button {
+            Task { await action() }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                if added > 0 {
-                    Text("+\(added)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(enabled ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.4))
+                .frame(width: 26, height: Self.chromeControlHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(help)
+    }
+}
+
+/// A top-bar toggle: one icon in a glass capsule, lit while its panel is showing.
+struct ChromeIconButton: View {
+    let systemName: String
+    let isOn: Bool
+    var badge: String? = nil
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemName)
+                    .font(.system(size: 13))
+                    .foregroundStyle(isOn ? ToolrollPalette.ink : ToolrollPalette.muted)
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.success)
-                        .lineLimit(1)
                 }
             }
-            .padding(.horizontal, added > 0 ? 7 : 5)
-            .frame(height: 22)
-            .background(active ? Color.white.opacity(0.14) : Color.clear, in: Capsule())
+            .padding(.horizontal, badge == nil ? 0 : 10)
+            .frame(minWidth: 34)
+            .frame(height: MainWorkbenchView.chromeControlHeight)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("Toggle Diff Inspector (⌘2)")
-    }
-
-    private func drawerIconButton(systemName: String, tab: InspectorTab, help: String) -> some View {
-        let active = store.isInspectorVisible && store.inspectorTab == tab
-        return Button {
-            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                store.toggleInspector(tab: tab)
-            }
-        } label: {
-            Image(systemName: systemName)
-                .font(.system(size: 11.5))
-                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .frame(width: 24, height: 22)
-                .background(active ? Color.white.opacity(0.14) : Color.clear, in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
+        .toolrollGlassCapsule(interactive: true)
         .help(help)
+        .accessibilityLabel(help)
+        .accessibilityValue(isOn ? "Showing" : "Hidden")
     }
 }

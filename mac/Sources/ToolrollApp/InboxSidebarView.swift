@@ -19,19 +19,11 @@ public struct InboxSidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // The brand, as the web shows it: the three-bar mark and "Toolroll".
-            HStack(spacing: 8) {
-                ToolrollBrandMark()
-                Text("Toolroll")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 10)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Toolroll")
+            // The brand, as the web shows it (the three-bar mark and "Toolroll"), and the workspace menu behind it.
+            WorkspaceMenu(store: store)
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
 
             // Top bar: Search pill (with integrated filter)
             HStack(spacing: 6) {
@@ -767,5 +759,67 @@ struct ToolrollBrandMark: View {
         .frame(width: 16 * scale, height: height)
         .transformEffect(CGAffineTransform(a: 1, b: tan(-10 * .pi / 180), c: 0, d: 1, tx: 0, ty: 8 * scale * tan(10 * .pi / 180)))
         .accessibilityHidden(true)
+    }
+}
+
+/// The sidebar's Toolroll row: the brand, a dot for the live connection, and the workspace menu (switch workspace,
+/// setup, add a project, connect, appearance).
+struct WorkspaceMenu: View {
+    @Bindable var store: WorkbenchStore
+
+    var body: some View {
+        Menu {
+            Section("Workspace") {
+                ForEach(store.profiles) { profile in
+                    Button {
+                        Task { await store.switchProfile(name: profile.name) }
+                    } label: {
+                        if profile.name == store.activeProfile.name {
+                            Label(profile.displayTitle, systemImage: "checkmark")
+                        } else {
+                            Text(profile.displayTitle)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Setup & Agents…") { store.isSetupOpen = true }
+            Button("Add Project…") { store.isAddProjectSheetOpen = true }
+            Button("Reconnect Local Toolroll") {
+                Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
+            }
+            Button("Connect Remote Workspace…") { store.isPairSheetOpen = true }
+            Button("Pair Phone for Push Alerts…") { store.isPhonePairSheetOpen = true }
+            Button("Appearance & Lead Themes…") { store.isAppearanceSheetOpen = true }
+            if !store.activeProfile.isDemo {
+                Divider()
+                Button("Preview Demo Workspace") {
+                    Task { await store.switchProfile(name: "demo") }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                ToolrollBrandMark()
+                Text("Toolroll")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Circle()
+                    .fill(store.sseConnected ? ToolrollPalette.success : ToolrollPalette.muted)
+                    .frame(width: 6, height: 6)
+                    .help(store.sseConnected ? "Connected" : "Not connected")
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+        .help("Workspace: \(store.activeProfile.displayTitle)")
+        .accessibilityLabel("Toolroll workspace menu, \(store.activeProfile.displayTitle), \(store.sseConnected ? "connected" : "not connected")")
     }
 }

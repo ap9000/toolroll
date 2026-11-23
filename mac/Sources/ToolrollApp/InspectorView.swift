@@ -26,6 +26,11 @@ public struct InspectorView: View {
                                 .font(.system(size: 11.5, weight: active ? .semibold : .medium))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
+                            if tab == .diff, let added = store.diffResponse?.totals?.added, added > 0 {
+                                Text("+\(added)")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.success)
+                            }
                         }
                         .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
                         .padding(.horizontal, 8)
@@ -39,14 +44,6 @@ public struct InspectorView: View {
                     .buttonStyle(.plain)
                 }
                 Spacer(minLength: 4)
-                Button {
-                    store.isInspectorVisible = false
-                } label: {
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(ToolrollIconButtonStyle(size: 26))
-                .help("Hide Inspector (⌘J)")
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
