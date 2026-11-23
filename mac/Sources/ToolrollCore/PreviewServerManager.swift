@@ -122,7 +122,9 @@ public final class PreviewServerManager {
             return preferred
         }
 
-        guard let detected = Self.detectDevCommand(projectRoot: projectRoot) else {
+        // package.json (possibly cloud-only) is read off the main thread, so the app never freezes on it.
+        let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
+        guard let detected = detectedCommand else {
             stopManagedServer()
             activeProjectRoot = projectRoot
             status = .asleep
@@ -133,7 +135,9 @@ public final class PreviewServerManager {
         // between projects (alekseypelletier.com and toolroll both default to :3000), and another project's pages
         // would fill this canvas with its 404s.
         if await isReachable(urlString: detected.expectedURL) {
-            if let owner = Self.listenerDirectory(port: detected.expectedPort), !Self.isInside(owner, root: projectRoot) {
+            let port = detected.expectedPort
+            let listener = await Task.detached(priority: .userInitiated) { Self.listenerDirectory(port: port) }.value
+            if let owner = listener, !Self.isInside(owner, root: projectRoot) {
                 stopManagedServer()
                 activeProjectRoot = projectRoot
                 status = .failed("Port \(detected.expectedPort) is in use by another project (\((owner as NSString).lastPathComponent)). Stop it, or start this project's dev server on another port.")
@@ -200,7 +204,9 @@ public final class PreviewServerManager {
 
     /// Runs `<pm> install` (e.g. `pnpm install`) inside `projectRoot` and immediately boots the dev server!
     public func installDependenciesAndRun(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
-        guard let detected = Self.detectDevCommand(projectRoot: projectRoot) else {
+        // package.json (possibly cloud-only) is read off the main thread, so the app never freezes on it.
+        let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
+        guard let detected = detectedCommand else {
             return await ensureRunning(projectRoot: projectRoot, preferredOrigin: preferredOrigin)
         }
         stopManagedServer()

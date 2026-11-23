@@ -386,15 +386,23 @@ public final class WorkbenchStore {
         // Another project's server address never carries over: this project's is found again on wake.
         if projectChanged { canvasBaseURL = "" }
 
-        let stateKey = (root.map { YouiCanvasStorage.gitStateKey(projectRoot: $0) } ?? "latest") + canvasOriginTag(for: root)
-        let baselineKey = root.map { YouiCanvasStorage.mainBranchKey(projectRoot: $0) } ?? "baseline"
+        // git and the project's files are read off the main thread: a slow or cloud-only repository never freezes the app.
+        let facts = await Task.detached(priority: .userInitiated) { () -> (git: String, baseline: String, routes: [YouiScreenEntry]?, pins: [CanvasPin]) in
+            guard let root else { return ("latest", "baseline", nil, []) }
+            return (YouiCanvasStorage.gitStateKey(projectRoot: root), YouiCanvasStorage.mainBranchKey(projectRoot: root),
+                    YouiCanvasStorage.discoverRoutes(projectRoot: root), YouiCanvasStorage.loadPins(projectRoot: root))
+        }.value
+        // The person may have switched project while that ran; a stale answer never lands on the new one.
+        guard canvasProjectRoot == root else { return }
+        canvasGitKey = facts.git
+        let stateKey = facts.git + canvasOriginTag(for: root)
+        let baselineKey = facts.baseline
         canvasStateKey = stateKey
         canvasBaselineKey = baselineKey
 
         if projectChanged || canvasArtboards.isEmpty || forceRefresh {
             hydratingBoardIds.removeAll()
-            let rawDiscovered = root.map { YouiCanvasStorage.discoverRoutes(projectRoot: $0) }
-                ?? [YouiScreenEntry(route: "/", path: "/")]
+            let rawDiscovered = facts.routes ?? [YouiScreenEntry(route: "/", path: "/")]
             let discovered = resolveDynamicTaskRoutes(rawDiscovered)
             discoveredCanvasRoutes = discovered
             // Cap initial canvas to 8 clean artboards (remaining routes live in `+ Screen`)
@@ -407,7 +415,7 @@ public final class WorkbenchStore {
                 columns: initial.count <= 2 ? max(1, initial.count) : 3,
                 viewport: canvasViewport
             )
-            canvasPins = root.map { YouiCanvasStorage.loadPins(projectRoot: $0) } ?? []
+            canvasPins = facts.pins
         }
 
         // Lazy-wake preview server ONLY if any tile is missing/stale for the current git state!
@@ -418,6 +426,8 @@ public final class WorkbenchStore {
     }
 
     private static let canvasOriginKeyPrefix = "toolroll.canvasOrigin|"
+    /// The project's git fingerprint as last read (off the main thread); the origin tag is appended to it.
+    var canvasGitKey: String = "latest"
 
     /// Screens are cached per git state AND per server they were captured from: a capture from the wrong server
     /// (another project on the same port) never stands in for this project's.
@@ -434,7 +444,7 @@ public final class WorkbenchStore {
         let key = Self.canvasOriginKeyPrefix + root
         guard UserDefaults.standard.string(forKey: key) != url else { return }
         UserDefaults.standard.set(url, forKey: key)
-        canvasStateKey = YouiCanvasStorage.gitStateKey(projectRoot: root) + canvasOriginTag(for: root)
+        canvasStateKey = canvasGitKey + canvasOriginTag(for: root)
         for idx in canvasArtboards.indices { canvasArtboards[idx].cachedStateKey = nil }
     }
 

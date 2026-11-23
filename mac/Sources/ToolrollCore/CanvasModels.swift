@@ -965,23 +965,53 @@ public enum YouiCanvasStorage {
         return nil
     }
 
+    /// Longest a git call may take. A repository whose files are cloud-only (iCloud "Optimize Mac Storage") can make git
+    /// wait forever on a download; past this the answer is "unknown" (screens re-capture) instead of a frozen app.
+    static let gitTimeout: TimeInterval = 3
+
     private static func runGit(_ args: [String], in cwd: String) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
+        proc.arguments = ["--no-optional-locks"] + args
         proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
+        let output = GitOutputBuffer()
+        pipe.fileHandleForReading.readabilityHandler = { handle in output.append(handle.availableData) }
+        let finished = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in finished.signal() }
         do {
             try proc.run()
-            proc.waitUntilExit()
-            guard proc.terminationStatus == 0 else { return nil }
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
             return nil
         }
+        guard finished.wait(timeout: .now() + gitTimeout) == .success else {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            proc.terminate()
+            return nil
+        }
+        pipe.fileHandleForReading.readabilityHandler = nil
+        output.append(pipe.fileHandleForReading.readDataToEndOfFile())
+        guard proc.terminationStatus == 0 else { return nil }
+        return String(data: output.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Collects a child process's output from the pipe's reader thread.
+private final class GitOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var collected = Data()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.lock(); collected.append(chunk); lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock(); defer { lock.unlock() }
+        return collected
     }
 }
 
