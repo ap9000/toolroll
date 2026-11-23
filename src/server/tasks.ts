@@ -2170,7 +2170,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
                 : "Use at most 500 plain characters, without hidden or control characters.",
               400, undefined, reason ?? "");
           }
-          return taskScreen(response, who, taskId, `not cancelled: ${cancelled.reason}`, 409);
+          const words = cancelled.reason === "claimed" ? "This task is running right now. Stop it first, then cancel it."
+            : cancelled.reason === "already-terminal" ? "This task has already ended."
+            : `not cancelled: ${cancelled.reason}`;
+          return taskScreen(response, who, taskId, words, 409);
         }
         return redirect(response, taskHref(taskId));
       }

@@ -488,6 +488,8 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .accessibilityLabel("\(row.title), \(row.word)")
+        .accessibilityHint("Opens the task. More actions in its context menu.")
         .contextMenu { TaskRowMenuItems(store: store, row: row) }
     }
 
@@ -557,6 +559,7 @@ public struct InboxSidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .accessibilityLabel(archived ? "\(row.title), archived" : "\(row.title), \(row.word)")
         .contextMenu {
             if archived { ArchivedRowMenuItems(store: store, row: row) } else { TaskRowMenuItems(store: store, row: row) }
         }
@@ -605,6 +608,7 @@ public struct InboxSidebarView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .help("\(thread.provider.displayName) · \(thread.projectName)\n\(thread.title)")
+        .accessibilityLabel("\(thread.provider.displayName) thread: \(thread.title), \(thread.projectName)")
         .contextMenu { CliThreadMenuItems(thread: thread) }
     }
 

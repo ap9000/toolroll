@@ -125,7 +125,7 @@
       "status": {
         "label": "Cancelled",
         "tone": "muted",
-        "token": "cancelled"
+        "token": "assignment-cancelled"
       },
       "word": {
         "word": "Cancelled",

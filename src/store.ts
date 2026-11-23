@@ -14126,6 +14126,11 @@ export class Store {
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+      // An ended task says so before anything else: a second confirm (a double click, a cancel from another screen)
+      // hears "already ended", never "changed since it was shown".
+      const cancellable: readonly TaskState[] = ["queued", "failed", "running"];
+      const stateNow = String(this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"]);
+      if (!(cancellable as readonly string[]).includes(stateNow)) return { ok: false as const, reason: "already-terminal" as const };
       if (seen !== undefined) {
         const state = this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"];
         const last = this.db.prepare("SELECT MAX(id) AS id FROM run WHERE task_ref = ?").get(Number(ref["id"]))?.["id"];
@@ -14139,7 +14144,7 @@ export class Store {
         taskId,
         { kind: "operator", text: reason ?? null },
         now,
-        ["queued", "failed", "running"],
+        cancellable,
       );
       if (done.reason !== undefined) return { ok: false as const, reason: done.reason };
       if (!done.changed) return { ok: false as const, reason: "already-terminal" as const };

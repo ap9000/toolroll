@@ -53,15 +53,19 @@ public enum TaskStatusTone: String, Codable, Sendable, Equatable {
     /// the tone is shared: a Cancelled row is "muted" like a Queued one, but it has ended and belongs in Settled.
     public init(workTone tone: String, token: String) {
         switch token {
-        case "cancelled", "assignment-complete": self = .finished
-        case "failed": self = .failed
+        // The server's tokens are `assignment-<state>` (work-index.ts); the bare words are older fixtures' spelling.
+        case "cancelled", "assignment-cancelled", "complete", "assignment-complete": self = .finished
+        case "failed", "assignment-failed": self = .failed
         default:
             switch tone {
             case "attention": self = .needs
             case "live": self = .running
             case "problem": self = .failed
             case "done": self = .finished
-            case "muted", "ready", "neutral": self = .queued   // waiting its turn, retrying later, or on hold
+            // A finished result waiting for the person to check it is theirs to act on (work-index.ts ranks it with
+            // Needs you); any other "ready" row is waiting its turn.
+            case "ready": self = token == "assignment-ready-to-check" ? .needs : .queued
+            case "muted", "neutral": self = .queued   // waiting its turn, retrying later, or on hold
             default: self = TaskStatusTone(fromWire: token)
             }
         }

@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import SwiftUI
 
 /// How long the app keeps your Toolroll password after you type it or unlock it with Touch ID, so a run of approvals
 /// asks once. In memory only: never written to disk, and forgotten when the Mac sleeps, the screen locks, or the app quits.
@@ -26,16 +25,21 @@ public final class PasswordMemory {
         }
     }
 
-    static let defaultsKey = "toolroll.passwordRememberMinutes"
-    static let defaultWindow: Window = .fifteenMinutes
+    public static let defaultsKey = "toolroll.passwordRememberMinutes"
+    public static let defaultWindow: Window = .fifteenMinutes
 
     private var value: String?
     private var until: Date?
+    /// When it was typed or unlocked: a changed window counts from here, so a shorter one applies at once.
+    private var rememberedAt: Date?
     /// Whose password this is and for which Toolroll (account + origin): never recalled for any other.
     private var owner: String?
     private var observers: [NSObjectProtocol] = []
+    /// Where the chosen window is kept (the app's own defaults; a test passes its own suite).
+    private let defaults: UserDefaults
 
-    public init() {
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let forget: @Sendable (Notification) -> Void = { [weak self] _ in Task { @MainActor in self?.forget() } }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main, using: forget))
         observers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main, using: forget))
@@ -43,12 +47,16 @@ public final class PasswordMemory {
 
     public var window: Window {
         get {
-            let stored = UserDefaults.standard.object(forKey: Self.defaultsKey) as? Int
+            let stored = defaults.object(forKey: Self.defaultsKey) as? Int
             return stored.flatMap(Window.init(rawValue:)) ?? Self.defaultWindow
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: Self.defaultsKey)
-            if newValue == .everyTime { forget() }
+            defaults.set(newValue.rawValue, forKey: Self.defaultsKey)
+            if newValue == .everyTime {
+                forget()
+            } else if let rememberedAt, value != nil {
+                until = newValue == .untilQuit ? nil : rememberedAt.addingTimeInterval(TimeInterval(newValue.rawValue * 60))
+            }
         }
     }
 
@@ -72,6 +80,7 @@ public final class PasswordMemory {
         guard chosen != .everyTime, !password.isEmpty else { return }
         value = password
         self.owner = owner
+        rememberedAt = now
         until = chosen == .untilQuit ? nil : now.addingTimeInterval(TimeInterval(chosen.rawValue * 60))
     }
 
@@ -79,22 +88,6 @@ public final class PasswordMemory {
         value = nil
         until = nil
         owner = nil
-    }
-}
-
-/// Settings row: how long a typed or Touch ID password is remembered.
-struct RememberPasswordPicker: View {
-    let memory: PasswordMemory
-    @State private var window: PasswordMemory.Window = PasswordMemory.defaultWindow
-
-    var body: some View {
-        Picker("Remember password for", selection: $window) {
-            ForEach(PasswordMemory.Window.allCases) { Text($0.label).tag($0) }
-        }
-        .pickerStyle(.menu)
-        .font(.system(size: 12))
-        .fixedSize()
-        .onAppear { window = memory.window }
-        .onChange(of: window) { _, chosen in memory.window = chosen }
+        rememberedAt = nil
     }
 }

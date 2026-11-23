@@ -27,6 +27,12 @@ extension WorkbenchStore {
         guard let client else { return }
         do {
             let steps = try await client.fetchSteps(taskId: taskId)
+            // A worker's claim leaves the task "queued" while it builds: the live run is what says it's running, and
+            // the server refuses a cancel under it. Say so instead of confirming a cancel that would be refused.
+            if steps.liveRun != nil {
+                notice = WorkbenchNotice(kind: .info, message: "This task is running right now. Stop it first, or use Stop & Archive.")
+                return
+            }
             guard let state = steps.task.state, Self.cancellableStates.contains(state) else {
                 notice = WorkbenchNotice(kind: .info, message: "This task has already ended, so there's nothing to cancel.")
                 return
