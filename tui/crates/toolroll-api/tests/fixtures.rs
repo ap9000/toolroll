@@ -54,6 +54,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("term-start-refused.json", "termStarted"),
     ("automations.json", "automations"),
     ("automations-every-kind.json", "automations"),
+    ("projects.json", "projects"),
 ];
 
 #[test]
@@ -108,6 +109,7 @@ fn every_fixture_round_trips_exactly() {
             "termState" => drop(round_trip::<TermState>(name)),
             "termStarted" => drop(round_trip::<TermStarted>(name)),
             "automations" => drop(round_trip::<AutomationsRead>(name)),
+            "projects" => drop(round_trip::<ProjectsRead>(name)),
             other => panic!("no model for {other}"),
         }
     }

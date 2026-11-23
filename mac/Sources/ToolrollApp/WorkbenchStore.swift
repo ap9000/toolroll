@@ -83,7 +83,12 @@ public final class WorkbenchStore {
     public private(set) var profiles: [ConnectionProfile] = []
     public private(set) var activeProfile: ConnectionProfile {
         // A remembered password belongs to the workspace it was typed for: a switch drops it.
-        didSet { if oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account { passwordMemory.forget() } }
+        didSet {
+            guard oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account else { return }
+            passwordMemory.forget()
+            // Another workspace's projects and found folders never show under this one.
+            projectsRead = nil
+        }
     }
     public private(set) var isLocalSession: Bool = false
     public private(set) var sseConnected: Bool = false
@@ -148,6 +153,8 @@ public final class WorkbenchStore {
     public var isCliThreadsExpanded: Bool = true
     public var cliThreadsDisplayLimit: Int = 10
     public private(set) var discoveredGitRepos: [DiscoveredGitRepo] = []
+    /// The console's own list of projects and found repositories (nil from an older Toolroll, or before the first read).
+    public internal(set) var projectsRead: ProjectsResponse?
     public private(set) var localCliThreads: [LocalCliThread] = []
     public var selectedCliThreadId: String? = nil
     public private(set) var selectedCliThreadMessages: [LocalCliMessage] = []
@@ -834,9 +841,11 @@ public final class WorkbenchStore {
         isLocalSession || activeProfile.isDemo
     }
 
+    /// Every project: the console's own list, plus any a task names (an older Toolroll sends no list).
     public var allProjects: [String] {
-        let names = Set(workRowsResponse.rows.compactMap(\.project).filter { !$0.isEmpty })
-        return names.sorted()
+        let fromTasks = workRowsResponse.rows.compactMap(\.project).filter { !$0.isEmpty }
+        let fromConsole = projectsRead?.projects.map(\.name) ?? []
+        return Set(fromTasks + fromConsole).sorted()
     }
 
     public var filteredRows: [WorkRow] {
@@ -896,7 +905,16 @@ public final class WorkbenchStore {
         }
     }
 
+    /// Repositories that could become projects. The console's scan when it has one (its disk, so right for a remote
+    /// workspace too); this Mac's own scan only for an older local Toolroll that sends none.
     public var unconnectedGitRepos: [DiscoveredGitRepo] {
+        if let read = projectsRead {
+            guard read.canAdd else { return [] }
+            return read.found.map {
+                DiscoveredGitRepo(name: $0.name, path: $0.path, branch: nil, suggestedSetupCommand: nil, lastModified: .distantPast)
+            }
+        }
+        guard isLocalSession else { return [] }
         let connected = Set(allProjects.map { $0.lowercased() })
         return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
     }
@@ -1649,6 +1667,7 @@ public final class WorkbenchStore {
             if let ag = try? await agentsReq { agentsRead = ag }
             if let mod = try? await modelsReq { modelsRead = mod }
             automations = try? await client.fetchAutomations()
+            projectsRead = try? await client.fetchProjects()
             if let archived = try? await archivedReq { archivedRows = archived.rows }
 
             if let id = selectedTaskId {

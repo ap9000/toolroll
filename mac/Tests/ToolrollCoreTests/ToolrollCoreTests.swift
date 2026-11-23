@@ -1024,4 +1024,17 @@ struct ToolrollCoreTests {
         #expect(read.automations[1].isPaused == true)
         #expect(read.automations[1].runNowTrigger == nil)
     }
+
+    @Test("Projects decode: the console's projects and the repositories it found")
+    func projectsDecode() throws {
+        let json = """
+        {"version":1,"canAdd":true,
+         "projects":[{"name":"toolroll","path":"/Users/me/Documents/toolroll"}],
+         "found":[{"name":"crate","path":"/Users/me/Documents/crate"}]}
+        """
+        let read = try JSONDecoder().decode(ProjectsResponse.self, from: Data(json.utf8))
+        #expect(read.canAdd)
+        #expect(read.projects.map(\.name) == ["toolroll"])
+        #expect(read.found.first?.id == "/Users/me/Documents/crate")
+    }
 }

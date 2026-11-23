@@ -24,6 +24,8 @@
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
  *   GET  /engine/models              the installation's planner, builder and reviewer and what each may be (models)
  *   GET  /engine/automations         the flows the caller can see, as the web /flows list groups them (automations)
+ *   GET  /engine/projects            the projects the caller can see, and the repositories on the server's disk it could
+ *                                    add, for an approver signed in through a browser or this computer's session (projects)
  *   GET  /term/state                 this session's live terminals (termState): the browser's Live page reads it too
  *   POST /term/start                 start one (termStarted); a take-over names its task and build (solo-workbench T4)
  *                                    and attaches through the console's one WebSocket, GET /term/<id>/socket
@@ -634,6 +636,23 @@ export const automationsSchema = z.object({
   })),
 });
 
+// ---- Projects ------------------------------------------------------------------------------------------------------
+
+const namedPathSchema = z.object({ name: z.string(), path: z.string() });
+/** `GET /engine/projects` (the Mac app's project list): `projects` are the projects the caller can see, as the web's
+ * Projects page lists them (pages.ts visibleProjects, with or without tasks), each with the name it shows. `found` are
+ * git repositories on the server's disk that are not projects yet, from the folder picker's own look (pages.ts
+ * foundRepos: the picker's places inside a projects folder, one level down, hidden folders and Toolroll's own left
+ * out), at most 40 by name. Only for a caller who may add one: an approver signed in through a browser or this
+ * computer's session whose account isn't limited to listed projects (`canAdd`); everyone else gets `found: []`. Adding
+ * one posts the projects page's own form, POST /projects/open with `path`, which proves everything again. */
+export const projectsSchema = z.object({
+  version,
+  canAdd: z.boolean(),
+  projects: z.array(namedPathSchema),
+  found: z.array(namedPathSchema).max(40),
+});
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -681,6 +700,7 @@ export const ENGINE_RESPONSES = {
   models: { route: "GET /engine/models", schema: modelsReadSchema },
   leadChat: { route: "GET /engine/chat", schema: leadChatSchema },
   automations: { route: "GET /engine/automations", schema: automationsSchema },
+  projects: { route: "GET /engine/projects", schema: projectsSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
   termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
 } as const;
@@ -703,6 +723,7 @@ export type LeadChatCard = z.infer<typeof leadChatCardSchema>;
 export type LeadChatLink = z.infer<typeof leadLinkSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
 export type AutomationsRead = z.infer<typeof automationsSchema>;
+export type ProjectsRead = z.infer<typeof projectsSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

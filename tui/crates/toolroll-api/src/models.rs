@@ -1302,6 +1302,28 @@ pub struct AutomationTrigger {
     pub resume_runs_now: bool,
 }
 
+// ---- Projects ---------------------------------------------------------------------------------------------------
+
+/// `GET /engine/projects`: the projects the caller can see (named as the web names them) and, for a caller who may add
+/// one (`can_add`), git repositories on the server's disk that are not projects yet (at most 40). Adding one posts
+/// `/projects/open` with its `path`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProjectsRead {
+    pub version: u32,
+    pub can_add: bool,
+    pub projects: Vec<NamedPath>,
+    pub found: Vec<NamedPath>,
+}
+
+/// A project or a found repository: its display name and its path on the server's disk.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NamedPath {
+    pub name: String,
+    pub path: String,
+}
+
 /// `GET /engine/chat`: the person's central Lead conversation (messages, structured cards, proposals, queue).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

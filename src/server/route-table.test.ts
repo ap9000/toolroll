@@ -32,6 +32,8 @@ const LIMITED_ACCESS = {
   'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
   // The engine API's Automations read, admitted as /flows is.
   'engine.automations': 'resource',
+  // The engine API's Projects read, admitted as /projects is.
+  'engine.projects': 'unscoped',
   'flow.insights': 'resource', 'flow.scripts': 'resource', 'flow.export': 'resource', 'flow.page': 'resource',
   'recipes': 'collection', 'recipes.run': 'collection', 'recipes.start': 'collection',
   'recipes.new': 'collection', 'recipes.edit': 'collection', 'recipes.from-task': 'collection',

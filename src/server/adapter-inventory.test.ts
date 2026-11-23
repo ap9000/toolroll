@@ -77,6 +77,8 @@ test("every route row is marked for the local owner; an allow names one of its a
   ]);
   // The engine API's Automations read is a console GET like the others (a read), never an edge row.
   expect(ROUTES.find(row => row.id === "engine.automations")).toMatchObject({ stage: "console", method: "GET", local: "allow", localAct: "read" });
+  // So is its Projects read (the Mac app's project list and the repositories it could add).
+  expect(ROUTES.find(row => row.id === "engine.projects")).toMatchObject({ stage: "console", method: "GET", local: "allow", localAct: "read" });
   // Every console GET is a read.
   for (const row of ROUTES.filter(one => one.stage === "console" && one.method !== "POST")) expect([row.local, row.localAct], row.id).toEqual(["allow", "read"]);
 });

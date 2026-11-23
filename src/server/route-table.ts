@@ -464,6 +464,9 @@ get("settings", "engine.models", "/engine/models", { limited: "unscoped", caller
 // The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
 // The engine API's Automations read: the flows the web /flows list shows, as data, admitted as /flows is.
 get("flows", "engine.automations", "/engine/automations", { limited: "resource", ...free });
+// The engine API's Projects read: the projects the person can see (as /projects lists them) and, for an approver from a
+// browser or this computer's session, the repositories the picker's own look finds that they could add. Writes nothing.
+get("pages", "engine.projects", "/engine/projects", { limited: "unscoped", ...free });
 get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie", "bearer"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });

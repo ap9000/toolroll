@@ -5,7 +5,9 @@
  * the followed redirect's `problem`/`said`; TaskStatusTone(workTone:token:) for a Work row's sidebar section). One test
  * per requirement id. A `test.fails` is a recorded disagreement between the app and the server, left visible until fixed.
  */
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { IncomingHttpHeaders } from "node:http";
 import { acquire, finalize, release } from "../claim.js";
@@ -17,7 +19,8 @@ import { sealVerificationReceipt } from "../verification-evidence.js";
 import { presented } from "../../test/serve-kit.js";
 import { csrfOf, signIn } from "../../test/loopback-key-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
-import { automationsSchema, linkRedemptionSchema, modelsReadSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { automationsSchema, linkRedemptionSchema, modelsReadSchema, projectsSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { childLook, type FolderLookRunner } from "../folder-look.js";
 import { addFlowTriggerTo } from "../flow-triggers.js";
 import { saveScript } from "../flow-scripts.js";
 import { activeUnattendedGrant, signUnattended } from "../flow-unattended.js";
@@ -106,6 +109,9 @@ async function connect(w: Pick<LocalWorld, "server" | "send" | "origin">) {
     routeTask: (id: string, phase: string, agent: string, sawDigest: string, when?: string) =>
       act(`/t/${enc(id)}/route`, [["phase", phase], ["agent", agent], ["sawDigest", sawDigest], ...(when === undefined ? [] : [["when", when] as [string, string]])], "Models changed for this task."),
     automations: async () => automationsSchema.parse((await get("/engine/automations")).body),
+    projects: async () => projectsSchema.parse((await get("/engine/projects")).body),
+    // openLocalProject(path:): the projects page's exact-path form, returning to Work.
+    openLocalProject: (path: string) => act("/projects/open", [["path", path], ["via", "path"], ["return", "/work"]], `Added project ${path.slice(path.lastIndexOf("/") + 1)}.`),
     // automationTrigger(flowId:triggerId:act:): no fields, "Done." when the server says nothing (it always does here).
     automationTrigger: (flow: number, trigger: number, verb: string, fields: [string, string][] = []) => act(`/flows/${flow}/triggers/${trigger}/${verb}`, fields, "Done."),
     holdTask: (id: string) => act(`/t/${enc(id)}/hold`, [["reason", "Paused from Toolroll Mac"]], "Paused."),
@@ -769,4 +775,69 @@ test("AU5: a trigger act the app doesn't offer (share, remove) is refused in the
   world.store.updateFlowTrigger(button!, { state: "removed" }, now());
   expect(await mac.automationTrigger(flow, button!, "resume")).toEqual({ refused: "That trigger isn't on this flow." });
   expect(await mac.automationTrigger(999_999, button!, "pause")).toEqual({ refused: "No such flow in your projects." });
+});
+
+// ---- Projects -------------------------------------------------------------------------------------------------------
+
+describe("projects", () => {
+  // A laptop whose projects folder (beside the world's own folders: Toolroll's folders are never offered) holds a
+  // repository not added yet, another, a hidden one and a plain folder; and a repository outside it. Every folder look
+  // is counted (the real look, in a child process).
+  let shelf: LocalWorld, owner: Mac, folder = "", elsewhere = "", looks = 0, later = 0;
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const gitInit = (path: string) => { mkdirSync(path, { recursive: true }); execFileSync("git", ["init", "-q", path], { env: gitEnv }); };
+  const counted: FolderLookRunner = (request, deadlineMs) => { if (request.op === "list") looks += 1; return childLook(request, deadlineMs); };
+  beforeAll(async () => {
+    shelf = await openLocalWorld(root => {
+      folder = `${root}-projects`; elsewhere = `${root}-elsewhere`;
+      return { browserKey: true, projectRoots: [folder], folderLook: counted, clock: () => new Date(Date.now() + later) };
+    });
+    for (const name of ["storefront", "docs-site", ".hidden-repo"]) gitInit(join(folder, name));
+    mkdirSync(join(folder, "notes"));
+    gitInit(elsewhere);
+    owner = await connect(shelf);
+  }, LOCAL_WORLD_SETUP_MS);
+  afterAll(async () => {
+    await shelf.close();
+    for (const one of [folder, elsewhere]) rmSync(one, { recursive: true, force: true });
+  });
+
+  test("PR1: the read names every project the person can see, and offers the repositories in the projects folder they could add", async () => {
+    const read = await owner.projects();
+    expect(read.canAdd).toBe(true);
+    expect(read.projects).toEqual([{ name: "repo", path: shelf.repo }]);
+    // Not the project already added, a hidden folder, a plain folder or anything outside the projects folder; by name.
+    expect(read.found).toEqual([{ name: "docs-site", path: join(folder, "docs-site") }, { name: "storefront", path: join(folder, "storefront") }]);
+    // Any query is refused, as the other engine reads refuse one.
+    expect(await owner.get("/engine/projects?all=1")).toEqual({ status: 400, body: { error: "request" } });
+  });
+
+  test("PR2: a project stays listed with every task archived, and one added from found is listed with no tasks at all", async () => {
+    expect(await owner.archiveTask("one")).toEqual({ done: "Archived." });
+    expect((await owner.rows()).length).toBe(0);
+    expect((await owner.projects()).projects.map(one => one.name)).toEqual(["repo"]);
+    const storefront = join(folder, "storefront");
+    expect(await owner.openLocalProject(storefront)).toEqual({ done: "Added project storefront." });
+    const read = await owner.projects();
+    expect(read.projects).toContainEqual({ name: "storefront", path: storefront });
+    expect(read.found.map(one => one.name)).toEqual(["docs-site"]);
+  });
+
+  test("PR3: a repository outside the projects folder is never offered, and adding it without a password is refused in words", async () => {
+    expect((await owner.projects()).found.map(one => one.path)).not.toContain(elsewhere);
+    const refused = await owner.openLocalProject(elsewhere);
+    expect(refused).toMatchObject({ refused: expect.stringContaining("only an approver signed in with a password can add one from elsewhere") });
+    expect(shelf.store.listProjects().map(one => one.path)).not.toContain(elsewhere);
+  });
+
+  test("PR4: one look serves every read for a minute; a later read looks again", async () => {
+    await owner.projects();
+    const after = looks;
+    await owner.projects();
+    await owner.projects();
+    expect(looks).toBe(after);
+    later = 61_000;
+    await owner.projects();
+    expect(looks).toBeGreaterThan(after);
+  });
 });

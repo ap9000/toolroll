@@ -1,5 +1,5 @@
 {
-  "digest": "3dcaf0afd104dc0c5bec9f1c9cc70748ead2facc969bf4105f0b2c9b5725f7a1",
+  "digest": "78fe037718ecf203bbc24c54f0075554c056c51c93daa9e47e04d988ef223e84",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -4224,6 +4224,64 @@
         "version",
         "canAct",
         "automations"
+      ],
+      "additionalProperties": false
+    },
+    "projects": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "canAdd": {
+          "type": "boolean"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "found": {
+          "maxItems": 40,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "canAdd",
+        "projects",
+        "found"
       ],
       "additionalProperties": false
     },

@@ -941,6 +941,10 @@ public actor ToolrollClient {
     }
 
     /// Every automation the person can see, as the web /flows list shows them.
+    public func fetchProjects() async throws -> ProjectsResponse {
+        try await send(try makeRequest(path: "/engine/projects"), as: ProjectsResponse.self)
+    }
+
     public func fetchAutomations() async throws -> AutomationsResponse {
         try await send(try makeRequest(path: "/engine/automations"), as: AutomationsResponse.self)
     }

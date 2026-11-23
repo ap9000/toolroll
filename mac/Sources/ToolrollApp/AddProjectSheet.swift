@@ -91,7 +91,7 @@ public struct AddProjectSheet: View {
                             .padding(.vertical, 6)
 
                         HStack {
-                            Text("Detected Git Repos on this Mac (\(store.unconnectedGitRepos.count))")
+                            Text("Found on \(store.projectsRead == nil ? "this Mac" : store.isLocalSession ? "this Mac" : "this workspace") (\(store.unconnectedGitRepos.count))")
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .textCase(.uppercase)
                                 .tracking(0.5)

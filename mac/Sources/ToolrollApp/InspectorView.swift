@@ -782,54 +782,43 @@ private struct LeadThreadView: View {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool) {
+        let target: AnyHashable? = store.leadChat.busy
+            ? AnyHashable(LeadMessageRow.thinkingId)
+            : store.leadChat.messages.last.map { AnyHashable($0.id) }
+        guard let target else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(target, anchor: .bottom)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(store.leadChat.leadName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                if store.leadChat.busy {
-                    Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
-                    Text("Thinking")
-                        .font(.system(size: 11))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(ToolrollPalette.raised)
-
-            HairlineDivider()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(store.leadChat.messages) { msg in
-                        let isUser = msg.role == "user"
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(isUser ? "You" : store.leadChat.leadName)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                Spacer()
-                                if let at = msg.at {
-                                    Text(at)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                }
-                            }
-                            Text(msg.text)
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(ToolrollPalette.ink)
-                                .textSelection(.enabled)
+            // The tab already says Lead: no title bar. Your messages are bubbles on the right; the Lead's are plain text.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(store.leadChat.messages) { msg in
+                            LeadMessageRow(message: msg).id(msg.id)
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(isUser ? ToolrollPalette.raised : ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        if store.leadChat.busy {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("\(store.leadChat.leadName) is thinking…")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                            }
+                            .id(LeadMessageRow.thinkingId)
+                        }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
                 }
-                .padding(12)
+                .onAppear { scrollToEnd(proxy, animated: false) }
+                .onChange(of: store.leadChat.messages.count) { scrollToEnd(proxy, animated: true) }
+                .onChange(of: store.leadChat.busy) { scrollToEnd(proxy, animated: true) }
             }
 
             HairlineDivider()

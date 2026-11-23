@@ -579,18 +579,18 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
-    "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@23": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@26": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@31><anonymous>@1": 2,
     // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
-    "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>kitAct@22><anonymous>@1": 2,
     // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3>personMethod@15": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>changed@3": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1>changed@3": 1,
     // Backup consent proves the password inside the Settings write transaction.
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>done:subagentSettings(store,mate,_,who.name,now,_).proveBackup@4": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1>done:subagentSettings(store,mate,_,who.name,now,_).proveBackup@4": 1,
     "src/server/guards.ts#<module>": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 1,
@@ -771,7 +771,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#sendStep@14": 3,
     // The re-read card (`fresh`), never a password: its tasks are recorded for the step it admits (task-tidy.md).
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 7,
-    "src/flow-triggers.ts#checkTrigger@51": 3,
+    "src/flow-triggers.ts#checkTrigger@53": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
@@ -1026,7 +1026,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1": 3,
     "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@305": 2,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
-    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@33><anonymous>@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/pages.ts#createPagesHandlers@1": 2,
@@ -1045,7 +1045,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Passwordless review round 1: reviewed new sites.
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@31><anonymous>@1": 3,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectFallback@121": 1,

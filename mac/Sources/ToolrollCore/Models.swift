@@ -1897,3 +1897,21 @@ public enum LiveSignal: Sendable, Equatable {
     case reload
     case ended
 }
+
+// MARK: - Projects (GET /engine/projects)
+
+/// A project the console runs, or a Git repository it found on its own disk that isn't a project yet.
+public struct ProjectRef: Codable, Hashable, Sendable, Identifiable {
+    public let name: String
+    public let path: String
+    public var id: String { path }
+}
+
+/// The console's projects (what this person can see) and, for someone who may add projects, the repositories it found
+/// on its disk. The server scans, not this Mac, so it works for a remote workspace and isn't blocked by macOS privacy.
+public struct ProjectsResponse: Codable, Sendable {
+    public let version: Int
+    public let canAdd: Bool
+    public let projects: [ProjectRef]
+    public let found: [ProjectRef]
+}
