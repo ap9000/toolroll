@@ -950,9 +950,15 @@ public actor ToolrollClient {
 
     /// Sets one step's agent for this task only (POST /t/<id>/route). `agent` is `provider|model`. If the task's plan
     /// was approved, the server marks that approval out of date and the task asks for approval again.
-    public func routeTask(taskId: String, phase: String, agent: String) async throws -> String {
+    /// `when`: "now" (no run going), "next-run" (the server keeps it until the live run ends) or "restart" (the server
+    /// stops the run, applies it, and starts the task again). `sawDigest` binds it to the scope the person was shown.
+    public func routeTask(taskId: String, phase: String, agent: String, sawDigest: String, when: String = "now") async throws -> String {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
-        return try await sendFormAct(path: "/t/\(enc)/route", fields: [("phase", phase), ("agent", agent)], defaultDone: "Models changed for this task.")
+        return try await sendFormAct(
+            path: "/t/\(enc)/route",
+            fields: [("phase", phase), ("agent", agent), ("sawDigest", sawDigest), ("when", when)],
+            defaultDone: "Models changed for this task."
+        )
     }
 
     public func restoreTask(taskId: String) async throws -> String {

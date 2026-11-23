@@ -100,7 +100,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
-import { planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
+import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -2853,6 +2853,8 @@ async function tickCommand(
   // in. Statuses land in the store; the gate inside the claim transaction is
   // what acts on them.
   await probeRepo(store, repo, runner, clock());
+  // A model pick kept for when its run ended applies before the ready set is read, so the next run is the one it named.
+  applyPendingAgentChanges(store, clock());
 
   // Flows move before the ready set is read: a card entering
   // a build or research zone files its task now (as does a schedule's
@@ -4041,6 +4043,8 @@ async function reconcileCommand(
   // asked to confirm a build stopped, so a release waiting on its check moves on by itself.
   await proveFinishedRunsStopped(store, clock);
   store.settleQuiescentStops(clock());
+  // A model pick kept for when its run ended (or stopped) applies now, as the person who picked it (local-owner-acts.ts).
+  applyPendingAgentChanges(store, clock());
   // A vanished build whose old process is now proven stopped gets its retry decision (vanished-retry.ts).
   retryVanishedWhenStopped(store, clock());
   // A fast start that didn't start in time goes back to the ordinary Approve plan (fast-start.ts).

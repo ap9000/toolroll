@@ -43,7 +43,22 @@ public struct ModelPickerPopover: View {
         return store.modelsRead.roles.first(where: { $0.key == targetRoleKey }) ?? store.modelsRead.roles.first
     }
 
+    /// In task mode: the agents this task's steps accept (the server's configured choices), never the full catalog.
+    private var taskChoices: TaskAgentChoices? {
+        taskId.flatMap { store.taskStepsForPicker($0)?.agentChoices }
+    }
+
     private var providers: [ModelChoice] {
+        if let taskChoices {
+            let allowed = taskChoices.forRole(targetRoleKey)
+            return Dictionary(grouping: allowed, by: \.provider).keys.sorted().map { provider in
+                ModelChoice(
+                    provider: provider,
+                    label: provider.prefix(1).uppercased() + provider.dropFirst(),
+                    models: allowed.filter { $0.provider == provider }.map { ModelOption(value: $0.model, label: $0.model) }
+                )
+            }
+        }
         var list = activeRole?.choices ?? []
         let installedIds = Set(store.agentsRead.agents.filter(\.ready).map { $0.id.lowercased() })
 
@@ -220,7 +235,7 @@ public struct ModelPickerPopover: View {
                                         .font(.system(size: 12))
                                         .foregroundStyle(ToolrollPalette.muted)
                                     let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if !trimmedQuery.isEmpty {
+                                    if !trimmedQuery.isEmpty && taskId == nil {
                                         Text("Use custom model ID directly:")
                                             .font(.system(size: 10.5, weight: .semibold))
                                             .foregroundStyle(ToolrollPalette.muted)
@@ -277,8 +292,8 @@ public struct ModelPickerPopover: View {
                     HairlineDivider()
 
                     VStack(alignment: .leading, spacing: 2) {
-                        roleOption(key: "all", title: "All roles", subtitle: "Planner, Builder & Reviewer")
-                        ForEach(store.modelsRead.roles) { role in
+                        roleOption(key: "all", title: "All roles", subtitle: taskId == nil ? "Planner, Builder & Reviewer" : "Planner & Builder")
+                        ForEach(store.modelsRead.roles.filter { taskId == nil || $0.key == "plan" || $0.key == "build" }) { role in
                             roleOption(key: role.key, title: role.label, subtitle: role.words)
                         }
                     }
@@ -371,7 +386,7 @@ public struct ModelPickerPopover: View {
         .frame(width: 516)
         .background(ToolrollPalette.paper)
         .onAppear {
-            targetRoleKey = initialRoleKey
+            targetRoleKey = taskId != nil && initialRoleKey == "review" ? "build" : initialRoleKey
             highlightedIndex = nil
             store.modelChangeError = nil
             searchFocused = true

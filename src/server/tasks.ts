@@ -32,7 +32,7 @@ import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
-import { LOCAL_TASK_CHANGED, PLAN_AGAIN_FIRST, planAgainAsLocalOwner, planSourceOf, RESOLVE_INCIDENT_FIRST, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf } from "../local-owner-acts.js";
+import { AGENTS_PICK_AGAIN, LOCAL_TASK_CHANGED, localOwnerChangeAgents, PLAN_AGAIN_FIRST, planAgainAsLocalOwner, planSourceOf, RESOLVE_INCIDENT_FIRST, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf, type AgentPickWhen } from "../local-owner-acts.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
@@ -2179,6 +2179,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       case "route": {
         const body = readForm(posted, CONSOLE_FORMS.taskRoute);
+        // The Mac app's Change Models for the laptop's local owner (docs/plans/mac-change-models.md): only a planner or
+        // builder pick, on its own road; the writer proves everything in one transaction. A password session's edit below
+        // is unchanged.
+        if (who.via === "cookie" && who.authority === "local-owner") {
+          const changed = localOwnerRoute(store, taskId, body, now);
+          if (!changed.ok) return taskScreen(response, who, taskId, changed.message, changed.status);
+          const back = body.get("return") === "chat" ? taskChatHref(taskId) : taskHref(taskId);
+          return redirect(response, body.get("return") === "chat" ? chatReturnWithSaid(back, changed.words) : `${chatReturnWithSaid(back, changed.words)}#agents`);
+        }
         // THE AGENTS EDIT (v47): an approver's session sets the size,
         // overrides one role to an exact agent, or clears an override — ONE
         // authenticated transaction in the store that CAS-checks the scope
@@ -3516,4 +3525,36 @@ export function requeueBlockedWords(store: Store, taskId: string, run: string | 
   if (open === undefined) return null;
   if (open["role"] === "planner" && PLANNER_INCIDENT_KINDS.has(String(open["kind"]))) return PLAN_AGAIN_FIRST;
   return local ? RESOLVE_INCIDENT_FIRST : null;
+}
+
+// ---- Change Models from the Mac app (docs/plans/mac-change-models.md, revised). Kept last. -------------------------------
+
+/** The route fields the local owner's road never takes: a size, a risky flag, clearing a role, or the older split agent. */
+const LOCAL_ROUTE_REFUSED_FIELDS = ["size", "risky", "clear-phase", "provider", "model"] as const;
+
+/**
+ * POST /t/<task>/route for the laptop's local owner: `phase` (plan or build), `agent` (`provider|model`), `sawDigest` (the
+ * scope digest the picker read; required) and `when` (`now`, the default, `next-run` or `restart`). Anything else this
+ * route takes is refused here in words, never ignored. The form is read strictly; the writer (local-owner-acts.ts
+ * localOwnerChangeAgents) proves the person, the task, the plan, the configured choice and the approval in one write.
+ */
+export function localOwnerRoute(store: Store, taskId: string, body: { get(name: string): string | null; has(name: string): boolean }, now: Date):
+  { ok: true; words: string } | { ok: false; status: number; message: string } {
+  if (LOCAL_ROUTE_REFUSED_FIELDS.some(field => body.has(field))) return { ok: false, status: 400, message: "Only the planner's or the builder's model can be changed here." };
+  const phase = body.get("phase");
+  if (phase !== "plan" && phase !== "build") return { ok: false, status: 400, message: "Pick a model for the planner or the builder." };
+  const agent = (body.get("agent") ?? "").trim();
+  const bar = agent.indexOf("|");
+  const provider = bar === -1 ? agent : agent.slice(0, bar), model = bar === -1 ? "" : agent.slice(bar + 1).trim();
+  if (!isProviderId(provider) || model === "") return { ok: false, status: 400, message: "Pick one of the models offered." };
+  const valid = validateSpec({ provider, model });
+  if (!valid.ok) return { ok: false, status: 400, message: `That model can't be used: ${valid.problem}` };
+  if (phase === "plan" && isAcpProvider(provider)) return { ok: false, status: 400, message: `${ACP_AGENTS[provider].name} builds and repairs only. Choose another agent to plan.` };
+  const sawDigest = body.get("sawDigest") ?? "";
+  if (!/^[a-f0-9]{32}$/.test(sawDigest)) return { ok: false, status: 409, message: AGENTS_PICK_AGAIN };
+  const whenGiven = body.get("when") ?? "";
+  const when: AgentPickWhen | null = whenGiven === "" || whenGiven === "now" ? "now" : whenGiven === "next-run" || whenGiven === "restart" ? whenGiven : null;
+  if (when === null) return { ok: false, status: 400, message: "Say when: now, next run, or restart." };
+  const done = localOwnerChangeAgents(store, taskId, { phase, provider, model, sawDigest }, when, now);
+  return done.ok ? { ok: true, words: done.words } : done;
 }

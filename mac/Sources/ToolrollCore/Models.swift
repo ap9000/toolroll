@@ -351,6 +351,38 @@ public struct TaskStepModel: Codable, Sendable, Equatable {
     public var displayLabel: String { "\(provider) · \(model)" }
 }
 
+/// One agent a task's step may run (the server's configured choices for that step; what the route accepts).
+public struct TaskAgentChoice: Codable, Sendable, Equatable, Hashable {
+    public let provider: String
+    public let model: String
+    public var formValue: String { "\(provider)|\(model)" }
+}
+
+/// The agents this task's own steps may switch to; review is never per-task.
+public struct TaskAgentChoices: Codable, Sendable, Equatable {
+    public let plan: [TaskAgentChoice]
+    public let build: [TaskAgentChoice]
+
+    public func forRole(_ role: String) -> [TaskAgentChoice] {
+        switch role {
+        case "plan": return plan
+        case "build": return build
+        default: return plan.filter { build.contains($0) }   // "all": what both steps accept
+        }
+    }
+}
+
+/// A model change waiting for the task's live run to end (kept by the server; `problem` when it couldn't apply).
+public struct PendingAgentChange: Codable, Sendable, Equatable {
+    public let phase: String
+    public let provider: String
+    public let model: String
+    public let when: String
+    public let by: String?
+    public let at: String?
+    public let problem: String?
+}
+
 public struct StepTermsRow: Codable, Sendable, Equatable {
     public let label: String
     public let words: String
@@ -467,6 +499,8 @@ public struct StepCard: Codable, Sendable, Equatable, Identifiable {
 
 public struct StepTaskSummary: Codable, Sendable, Equatable {
     public let id: String
+    /// The family's first version (a sidebar row's id); `id` is the current version.
+    public var root: String? = nil
     public let title: String
     public let project: String?
     public let state: String?
@@ -750,6 +784,10 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let latestRun: Int?
     /// This task's own agent per step; nil from an older server or for a task without an exact route.
     public let models: [TaskStepModel]?
+    /// The scope digest this read shows: a model change sends it back so it applies only to what the person saw.
+    public let scopeDigest: String?
+    public let agentChoices: TaskAgentChoices?
+    public let pendingAgentChange: PendingAgentChange?
     public let cards: [StepCard]
     public let review: TaskReview?
     public let failure: TaskFailure?
@@ -759,7 +797,7 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let held: TaskHold?
 
     enum CodingKeys: String, CodingKey {
-        case version, task, headline, cards, review, failure, plan, retry, held, models
+        case version, task, headline, cards, review, failure, plan, retry, held, models, scopeDigest, agentChoices, pendingAgentChange
         case liveRun = "live_run"
         case latestRun = "latest_run"
         case planStopped = "plan_stopped"
@@ -774,6 +812,9 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         liveRun: Int? = nil,
         latestRun: Int? = nil,
         models: [TaskStepModel]? = nil,
+        scopeDigest: String? = nil,
+        agentChoices: TaskAgentChoices? = nil,
+        pendingAgentChange: PendingAgentChange? = nil,
         cards: [StepCard] = [],
         review: TaskReview? = nil,
         failure: TaskFailure? = nil,
@@ -788,6 +829,9 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         self.liveRun = liveRun
         self.latestRun = latestRun
         self.models = models
+        self.scopeDigest = scopeDigest
+        self.agentChoices = agentChoices
+        self.pendingAgentChange = pendingAgentChange
         self.cards = cards
         self.review = review
         self.failure = failure
@@ -808,6 +852,9 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         latestRun = (try? c.decodeIfPresent(Int.self, forKey: .latestRun))
             ?? (try? alt.decodeIfPresent(Int.self, forKey: .latestRun))
         models = try? c.decodeIfPresent([TaskStepModel].self, forKey: .models)
+        scopeDigest = try? c.decodeIfPresent(String.self, forKey: .scopeDigest)
+        agentChoices = try? c.decodeIfPresent(TaskAgentChoices.self, forKey: .agentChoices)
+        pendingAgentChange = try? c.decodeIfPresent(PendingAgentChange.self, forKey: .pendingAgentChange)
         cards = (try? c.decodeIfPresent([StepCard].self, forKey: .cards)) ?? []
         review = try? c.decodeIfPresent(TaskReview.self, forKey: .review)
         failure = try? c.decodeIfPresent(TaskFailure.self, forKey: .failure)

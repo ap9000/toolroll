@@ -69,33 +69,75 @@ extension WorkbenchStore {
 
     // MARK: Models for one task
 
-    /// The steps a task's own model choice covers ("all" sets each).
-    static let taskModelPhases = ["plan", "build", "review"]
+    /// The steps a task's own model choice covers; review is never per-task.
+    static let taskModelPhases = ["plan", "build"]
 
-    /// Sets the model for one step (or every step) of this task only. Leaves the picker open with the server's words
-    /// when it refuses (a run holding the task, a model that can't do that step).
+    /// The read the picker offers choices from: the open task's, or the one fetched for a right-clicked row.
+    public func taskStepsForPicker(_ taskId: String) -> StepCardsResponse? {
+        for steps in [modelPickerSteps, stepCards].compactMap({ $0 }) where steps.task.id == taskId || steps.task.root == taskId {
+            return steps
+        }
+        return nil
+    }
+
+    /// Opens the picker for a row (right-click → Change Models…) with that task's allowed models read fresh.
+    public func openTaskModelPicker(taskId: String) async {
+        modelChangeError = nil
+        modelPickerSteps = try? await client?.fetchSteps(taskId: taskId)
+        modelPickerTaskId = taskId
+    }
+
+    /// Sets this task's model for one step or both. No password: picking is the yes. While an agent is working the
+    /// person chooses when it applies (`pendingModelPick` drives that dialog).
     public func setTaskModel(taskId: String, roleKey: String, value: String, label: String) async {
         guard let client, !activeProfile.isDemo else {
             modelChangeError = "Demo tasks keep their models."
             return
         }
         modelChangeError = nil
-        busyLabel = "Changing models…"
-        defer { busyLabel = nil }
         do {
-            // A row's id is its family's root; the route belongs to the current version.
-            let current = try await client.fetchSteps(taskId: taskId).task.id
-            let phases = roleKey == "all" ? Self.taskModelPhases : [roleKey]
+            let steps = try await client.fetchSteps(taskId: taskId)
+            guard let digest = steps.scopeDigest else {
+                modelChangeError = "This task has no plan to change models on yet."
+                return
+            }
+            if steps.liveRun != nil {
+                // One change waits per task, and the builder is what runs next: "all" waits as the build change.
+                let phase = roleKey == "all" ? "build" : roleKey
+                modelPickerTaskId = nil
+                pendingModelPick = ModelPick(taskId: steps.task.id, phase: phase, value: value, label: label, sawDigest: digest)
+                return
+            }
+            busyLabel = "Changing models…"
+            defer { busyLabel = nil }
+            var sawDigest = digest
             var reply = ""
-            for phase in phases {
-                reply = try await client.routeTask(taskId: current, phase: phase, agent: value)
+            for phase in roleKey == "all" ? Self.taskModelPhases : [roleKey] {
+                reply = try await client.routeTask(taskId: steps.task.id, phase: phase, agent: value, sawDigest: sawDigest)
+                // The first change re-files the scope; the next one is checked against what that change produced.
+                sawDigest = (try? await client.fetchSteps(taskId: steps.task.id).scopeDigest ?? sawDigest) ?? sawDigest
             }
             modelPickerTaskId = nil
-            notice = WorkbenchNotice(kind: .info, message: "\(label) for this task. \(reply)")
+            notice = WorkbenchNotice(kind: .info, message: reply)
             await refreshAll()
         } catch {
             modelChangeError = error.localizedDescription
         }
+    }
+
+    /// The running-task choice: "next-run" (the server keeps it until this run ends) or "restart" (stop, apply, rerun).
+    public func applyModelPick(_ pick: ModelPick, when: String) async {
+        pendingModelPick = nil
+        guard let client else { return }
+        busyLabel = when == "restart" ? "Restarting on \(pick.label)…" : "Saving the change…"
+        defer { busyLabel = nil }
+        do {
+            let reply = try await client.routeTask(taskId: pick.taskId, phase: pick.phase, agent: pick.value, sawDigest: pick.sawDigest, when: when)
+            notice = WorkbenchNotice(kind: .info, message: reply)
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+        await refreshAll()
     }
 
     // MARK: Archive / restore

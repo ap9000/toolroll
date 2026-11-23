@@ -338,6 +338,18 @@ export const stepCardsSchema = z.object({
   /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
    * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
   approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),
+  /** The task's current scope digest: what a model pick posts back to POST /t/<task>/route as `sawDigest` (a pick made
+   * against another digest is refused). Null while the task has no plan to pick against. */
+  scopeDigest: z.string().nullable(),
+  /** The agents a model pick may name for this task, by role (agentconfig.ts agentChoicesFor, selectable only: exactly the
+   * choices the route proves again), posted as `agent` = `provider|model`. Review is never per task. Null while the task
+   * has no plan to pick against. */
+  agentChoices: z.object({ plan: z.array(z.object({ provider: z.string(), model: z.string() })), build: z.array(z.object({ provider: z.string(), model: z.string() })) }).nullable(),
+  /** A model pick kept while a run held the task (local-owner-acts.ts): it applies when that run ends (`next-run`) or once
+   * it has stopped (`restart`), as the person who picked it (`by`, at `at`). `problem`: why it couldn't be applied then,
+   * in words; it waits for a new pick. Null when none waits. */
+  pendingAgentChange: z.object({ phase: z.enum(["plan", "build"]), provider: z.string(), model: z.string(), when: z.enum(["next-run", "restart"]), by: z.string(), at: z.string(),
+    problem: z.string().nullable() }).nullable(),
   room: z.string(),
 });
 

@@ -53,7 +53,7 @@ describe("v179", () => {
     expect(UPDATE_SAFE_MIGRATIONS).toContain(179);
     expect(updateSafeSchema(178)).toBe(true);
     expect(V179_STEPS).toEqual(["antigravity-provider"]);
-    expect(SCHEMA_VERSION).toBe(179);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(179);
     const fresh = openStore(":memory:");
     try {
       fresh.setPhaseConfig("installation", "build", "antigravity", "gemini-4-neon", "alex", T0);

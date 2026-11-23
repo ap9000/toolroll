@@ -81,7 +81,7 @@ struct StaleSessionTests {
         let (client, old, fresh, _) = await setUp(refuseReconnect: false,
                                                   old: { _, _ in .refused(403, Self.notConnected) },
                                                   resend: { _ in .done("Models changed for this task.") })
-        _ = try await client.routeTask(taskId: "t-7", phase: "build", agent: "codex|gpt-6-sol")
+        _ = try await client.routeTask(taskId: "t-7", phase: "build", agent: "codex|gpt-6-sol", sawDigest: "d1")
         #expect(old.requests.count == 1)
         #expect(fresh.requests.filter { $0.path == "/t/t-7/route" }.count == 1)
     }

@@ -1,5 +1,5 @@
 {
-  "digest": "2003f5d692f650d2ee57ac696d34521381bd576b553ac0b680beadc863349b16",
+  "digest": "4287d1a32db70a1294ad56bcc337333505c45e2aa7424aa971b1eab8e40a7f40",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2272,6 +2272,121 @@
             }
           ]
         },
+        "scopeDigest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentChoices": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plan": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "provider": {
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "model"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "build": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "provider": {
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "model"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "plan",
+                "build"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingAgentChange": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "plan",
+                    "build"
+                  ]
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "when": {
+                  "type": "string",
+                  "enum": [
+                    "next-run",
+                    "restart"
+                  ]
+                },
+                "by": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string"
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "phase",
+                "provider",
+                "model",
+                "when",
+                "by",
+                "at",
+                "problem"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "room": {
           "type": "string"
         }
@@ -2295,6 +2410,9 @@
         "plan",
         "planQueued",
         "approval",
+        "scopeDigest",
+        "agentChoices",
+        "pendingAgentChange",
         "room"
       ],
       "additionalProperties": false

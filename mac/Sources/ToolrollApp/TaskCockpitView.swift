@@ -1893,7 +1893,27 @@ public struct TaskCockpitView: View {
             .padding(.vertical, 8)
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            if let pending = store.stepCards?.pendingAgentChange {
+                pendingAgentChangeLine(pending)
+            }
         }
+    }
+
+    /// A model change the server is holding for this run's end (or restart), or why it couldn't apply.
+    private func pendingAgentChangeLine(_ pending: PendingAgentChange) -> some View {
+        let step = pending.phase == "plan" ? "Planner" : "Builder"
+        let model = "\(pending.provider) · \(pending.model)"
+        let words = pending.problem.map { "\(step) didn't switch to \(model): \($0)" }
+            ?? (pending.when == "restart" ? "Restarting: \(step) switches to \(model)." : "\(step) switches to \(model) when this run ends.")
+        return HStack(spacing: 6) {
+            Image(systemName: pending.problem == nil ? "clock.arrow.circlepath" : "exclamationmark.circle")
+                .font(.system(size: 10.5))
+            Text(words)
+                .font(.system(size: 11.5))
+                .lineLimit(2)
+        }
+        .foregroundStyle(pending.problem == nil ? ToolrollPalette.muted : ToolrollPalette.danger)
+        .padding(.horizontal, 4)
     }
 
     private func activeAgentIdentity(isRunning: Bool, status: TaskStatusTone, stage: String, agentName: String, at: String?) -> some View {

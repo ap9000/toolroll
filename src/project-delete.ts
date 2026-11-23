@@ -319,7 +319,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("publication", IN("id"), publications);
   del("artifact", IN("id"), A);
 
-  // Tasks and their versions.
+  // Tasks and their versions. A pending model change names a run, so it goes first.
+  del("pending_agent_change", IN("task_ref"), T);
   del("run", IN("id"), R);
   del("plan_revision", IN("task_ref"), T);
   for (const table of ["claim", "hold", "task_steer"]) del(table, IN("task_ref"), T);

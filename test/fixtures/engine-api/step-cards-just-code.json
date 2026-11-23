@@ -125,5 +125,29 @@
   "room": "task:t-done",
   "planStopped": null,
   "plan": null,
-  "planQueued": false
+  "planQueued": false,
+  "scopeDigest": "5f2c0a9e7b1d4c3a8e6f0b2d9c7a1e43",
+  "agentChoices": {
+    "plan": [
+      {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "provider": "claude",
+        "model": "claude-opus-5-5"
+      }
+    ],
+    "build": [
+      {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "provider": "codex",
+        "model": "gpt-5.5-codex"
+      }
+    ]
+  },
+  "pendingAgentChange": null
 }

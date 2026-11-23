@@ -118,6 +118,7 @@ public struct MainWorkbenchView: View {
             SetPasswordSheet(store: store)
         }
         .modifier(CancelConfirmation(store: store))
+        .modifier(ModelPickConfirmation(store: store))
         .sheet(isPresented: Binding(get: { store.modelPickerTaskId != nil }, set: { if !$0 { store.modelPickerTaskId = nil } })) {
             if let taskId = store.modelPickerTaskId {
                 ModelPickerPopover(store: store, initialRoleKey: "all", taskId: taskId, onDismiss: { store.modelPickerTaskId = nil })

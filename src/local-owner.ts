@@ -119,6 +119,12 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // now (LOCAL_PASSWORD_ACTS); the handlers' own credential checks are unchanged.
   "project-network",
   "project-live-view",
+  // The Mac app's per-task Change Models (docs/plans/mac-change-models.md, the owner's decisions of 2026-11-22): the
+  // planner or builder of one task, to an agent configured for that role, with no password. On an approved task the pick
+  // is the owner's yes to the new agent only (approve()'s narrow branch re-proves that nothing else changed); a running
+  // task keeps the pick until its run ends or stops. The writer (local-owner-acts.ts localOwnerChangeAgents) checks this
+  // exact act. Not Settings → Models (`change-models`): this changes no default.
+  "change-task-agents",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 /**

@@ -120,12 +120,13 @@ struct ClientRequestTests {
         for request in server.requests { #expect(request.form["return"] == "/") }
     }
 
-    @Test("Route posts phase and agent=provider|model to /t/<id>/route")
+    @Test("Route posts phase, agent=provider|model, the digest shown and when to /t/<id>/route")
     func routeShape() async throws {
         let server = StubServer { _, _ in .done("Models changed for this task.") }
         let (client, _) = client(server)
-        _ = try await client.routeTask(taskId: "t-7.2", phase: "build", agent: "codex|gpt-6-sol")
-        expectFormAct(server.requests[0], path: "/t/t-7.2/route", fields: [("phase", "build"), ("agent", "codex|gpt-6-sol")])
+        _ = try await client.routeTask(taskId: "t-7.2", phase: "build", agent: "codex|gpt-6-sol", sawDigest: "d1", when: "next-run")
+        expectFormAct(server.requests[0], path: "/t/t-7.2/route",
+                      fields: [("phase", "build"), ("agent", "codex|gpt-6-sol"), ("sawDigest", "d1"), ("when", "next-run")])
         // The pipe is percent-encoded on the wire, never sent raw.
         #expect(server.requests[0].body.contains("agent=codex%7Cgpt-6-sol"))
     }

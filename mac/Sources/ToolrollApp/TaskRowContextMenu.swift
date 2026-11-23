@@ -54,8 +54,7 @@ struct TaskRowMenuItems: View {
             Divider()
             // A run holds the task's route while it works, so a running task keeps its models until it stops.
             Button("Change Models…") {
-                store.modelChangeError = nil
-                store.modelPickerTaskId = row.id
+                Task { await store.openTaskModelPicker(taskId: row.id) }
             }
         }
         Divider()
@@ -138,6 +137,26 @@ struct CancelConfirmation: ViewModifier {
         let run = pending.shownRun.map { " Last run #\($0)." } ?? ""
         let state = pending.state.prefix(1).uppercased() + pending.state.dropFirst()
         return "\(state).\(run) This can't be undone."
+    }
+}
+
+/// A model picked for a task whose agent is working now: switch on the next turn, or restart on it now.
+struct ModelPickConfirmation: ViewModifier {
+    @Bindable var store: WorkbenchStore
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Switch to \(store.pendingModelPick?.label ?? "this model")?",
+            isPresented: Binding(get: { store.pendingModelPick != nil }, set: { if !$0 { store.pendingModelPick = nil } }),
+            titleVisibility: .visible,
+            presenting: store.pendingModelPick
+        ) { pick in
+            Button("From the Next Turn") { Task { await store.applyModelPick(pick, when: "next-run") } }
+            Button("Restart Now") { Task { await store.applyModelPick(pick, when: "restart") } }
+            Button("Cancel", role: .cancel) { store.pendingModelPick = nil }
+        } message: { pick in
+            Text("An agent is working on this task. The \(pick.phase == "plan" ? "planner" : "builder") can switch when this run ends, or restart now.")
+        }
     }
 }
 

@@ -64,6 +64,9 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.task-sizing=task-sizing-switch",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
     "task.act.pause=pause-run", "task.act.plan=request-plan", "task.act.reply=answer-question", "task.act.requeue=retry-build", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
+    // The Mac app's Change Models for one task (local-owner-acts.ts localOwnerChangeAgents re-checks this exact act; an
+    // approved task stays approved only when nothing but the picked agent changed).
+    "task.act.route=change-task-agents",
     "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "tasks.fast=build-now",
     // Solo-workbench T4: one's own live terminal; terminals.ts admits a local owner only while the install is solo.
     "term.agent-install=agent-install", "term.agent-sign-in=agent-sign-in", "term.close=take-over", "term.remove=take-over", "term.start=take-over", "welcome.sample=add-project",

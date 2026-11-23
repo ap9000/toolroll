@@ -49,6 +49,16 @@ public struct WorkbenchNotice: Equatable, Sendable {
     public var action: NoticeAction? = nil
 }
 
+/// A model picked for a running task, waiting for the person's "next turn" or "restart now".
+public struct ModelPick: Equatable, Sendable, Identifiable {
+    public var id: String { taskId }
+    public let taskId: String
+    public let phase: String
+    public let value: String
+    public let label: String
+    public let sawDigest: String
+}
+
 public enum NoticeAction: Equatable, Sendable {
     case restore(taskId: String)
     case restoreAll(taskIds: [String])
@@ -82,6 +92,10 @@ public final class WorkbenchStore {
     public var pendingCancel: PendingCancel?
     /// The task whose models the picker is changing (right-click → Change Models…); nil when it isn't open.
     public var modelPickerTaskId: String?
+    /// The task read the picker offers that task's allowed models from (right-click on a row that isn't open).
+    public var modelPickerSteps: StepCardsResponse?
+    /// A model picked for a task whose agent is working now: waits for "next turn" or "restart now".
+    public var pendingModelPick: ModelPick?
     /// Your password for a short while after you type it or use Touch ID (Settings → Remember password).
     public let passwordMemory = PasswordMemory()
 

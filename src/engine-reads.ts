@@ -10,7 +10,7 @@
  */
 import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
 import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
-import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
+import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
@@ -28,7 +28,7 @@ import { scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
 import { wasInterrupted } from "./run-ending.js";
-import { routeOfTask } from "./agentconfig.js";
+import { agentChoicesFor, routeOfTask } from "./agentconfig.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
@@ -160,6 +160,10 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     planQueued: planQueuedOf(store, current.state, ref, scope, live !== null, now),
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
+    // A model pick (POST /t/<task>/route): the digest it binds to, the configured choices it may name, and one waiting.
+    scopeDigest: scope?.digest ?? null,
+    agentChoices: scope === null ? null : agentChoicesOf(store, current.id, ref, now),
+    pendingAgentChange: ref === null ? null : pendingAgentChangeOf(store, ref.id),
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }
@@ -587,4 +591,13 @@ function planQueuedOf(store: Store, state: string, ref: { id: number; plan: stri
   if (ref === null || ref.plan !== "requested" || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return false;
   if (scope !== null && approvalOf(scope).approved) return false;
   return store.activeHolds(ref.id, now).length === 0;
+}
+
+/** The agents a model pick may name for this task, by role: the configured, selectable choices the route edit proves again
+ * (agentconfig.ts agentChoicesFor over the task's own route). */
+function agentChoicesOf(store: Store, taskId: string, ref: ReturnType<Store["lookupRef"]>, now: Date): NonNullable<StepCards["agentChoices"]> {
+  const routed = routeOfTask(store, taskId, ref, now);
+  const choices = agentChoicesFor(store, ref?.repo ?? null, routed?.kind === "route" ? routed.route : null);
+  const pairs = (phase: "plan" | "build") => choices[phase].filter(one => one.selectable).map(one => ({ provider: one.provider, model: one.model }));
+  return { plan: pairs("plan"), build: pairs("build") };
 }

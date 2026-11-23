@@ -193,6 +193,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.plan": "request-plan",
   // Local-owner slice 3: Retry, on its own road (tasks.ts localOwnerRetry; the writer checks this exact act).
   "task.act.requeue": "retry-build",
+  // The Mac app's Change Models for one task, on its own road (tasks.ts localOwnerRoute; the writer checks this exact act).
+  // A password session's route edit is unchanged.
+  "task.act.route": "change-task-agents",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",

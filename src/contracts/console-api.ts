@@ -300,7 +300,7 @@ export const CONSOLE_FORMS = {
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),
   taskCancel: formContract("POST /t/<task>/cancel", ["reason", "state", "run"]),
-  taskRoute: formContract("POST /t/<task>/route", ["size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "return"]),
+  taskRoute: formContract("POST /t/<task>/route", ["size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "when", "return"]),
   taskScope: formContract("POST /t/<task>/scope", ["sawDigest", "permission-mode", "quality-mode", "budget-usd", "budget-microusd", "requirement", "requirement-new", "requirement-how", "requirement-new-how", "goal-brief", "goal", "not", "touches", "acceptance"]),
   taskApprove: formContract("POST /t/<task>/approve", ["return", "digest", "token", "nonce", "rebuild", "sheet"]),
   taskAcceptProof: formContract("POST /t/<task>/accept-proof", ["run", "note", "return"]),

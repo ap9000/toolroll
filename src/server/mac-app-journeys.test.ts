@@ -18,6 +18,7 @@ import { presented } from "../../test/serve-kit.js";
 import { csrfOf, signIn } from "../../test/loopback-key-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
 import { linkRedemptionSchema, modelsReadSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { AGENTS_DRIFTED, AGENTS_PICK_AGAIN, applyPendingAgentChanges, LOCAL_AGENT_CHANGE_ACTION, TASK_RUNNING_NOW } from "../local-owner-acts.js";
 
 type Answer = { status: number; body: string; headers: IncomingHttpHeaders };
 type MacOutcome = { done: string } | { refused: string };
@@ -95,7 +96,9 @@ async function connect(w: Pick<LocalWorld, "server" | "send" | "origin">) {
     stopTask: (id: string, run: number) => act(`/t/${enc(id)}/stop`, [["run", String(run)], ["return", "task"]], "Stopping active run."),
     archiveTask: (id: string, key?: string) => act(`/t/${enc(id)}/archive`, [["reason", ARCHIVE_REASON], ["return", "/"]], "Archived.", key),
     restoreTask: (id: string) => act(`/t/${enc(id)}/restore`, [["return", "/"]], "Restored."),
-    routeTask: (id: string, phase: string, agent: string) => act(`/t/${enc(id)}/route`, [["phase", phase], ["agent", agent]], "Models changed for this task."),
+    // setTaskModel: phase, agent (provider|model), the scope digest the picker read, and when (omitted: now).
+    routeTask: (id: string, phase: string, agent: string, sawDigest: string, when?: string) =>
+      act(`/t/${enc(id)}/route`, [["phase", phase], ["agent", agent], ["sawDigest", sawDigest], ...(when === undefined ? [] : [["when", when] as [string, string]])], "Models changed for this task."),
     holdTask: (id: string) => act(`/t/${enc(id)}/hold`, [["reason", "Paused from Toolroll Mac"]], "Paused."),
     acceptResult: (id: string, run: number, receipt: string) => act(`/t/${enc(id)}/complete`, [["receipt", receipt], ["run", String(run)]], "Accepted. Task complete."),
   };
@@ -356,61 +359,223 @@ test("AR4: a bulk archive of N archives each by its row id; one Undo (restore ea
 
 // ---- Models per task ----------------------------------------------------------------------------------------------
 
-// FINDING (MO1–MO4): POST /t/<id>/route is not a local-owner act (route-table.ts LOCAL_POSTS has no "task.act.route"),
-// so the app's only session for it, the local owner's, is refused before the handler runs: "Set a password to do this."
-// before a password exists, "Sign in with your password to do this." after. Change Models… never changes anything.
-const LOCAL_OWNER_REFUSALS = ["Set a password to do this.", "Sign in with your password to do this."];
+// The Mac app's Change Models (docs/plans/mac-change-models.md, revised): the local owner's own road, no password. The
+// picker offers the steps read's `agentChoices` (plan and build; review is never per task) and posts `phase`, `agent`,
+// `sawDigest` (the steps read's `scopeDigest`) and `when` (now, next-run or restart while a run holds the task).
 
-test.fails("MO1: a route change on the current version (phase, agent=provider|model) shows in the steps read as an override", async () => {
+/** Opus 5.5 configured for the planner and the builder (their strong tier): a choice the route accepts. Sonnet stays
+ * the routine tier every medium task is routed to. */
+function opusConfigured(w: LocalWorld): void {
+  for (const phase of ["plan", "build"]) w.store.setPhaseTierConfig("installation", phase, "strong", "claude", "claude-opus-5-5", "test", now());
+}
+/** setTaskModel: read the steps for the digest, then post the pick. */
+async function pick(m: Mac, id: string, phase: string, agent: string, when?: string): Promise<MacOutcome> {
+  const steps = await m.steps(id);
+  return m.routeTask(steps.task.id, phase, agent, steps.scopeDigest ?? "", when);
+}
+const ledgerOf = (w: LocalWorld, id: string, action: string) =>
+  w.store.handle.prepare("SELECT actor, outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id").all(id, action).map(row => ({ ...row, detail: JSON.parse(String(row["detail"])) as Record<string, unknown> }));
+
+test("MO1: the local owner changes a waiting task's planner and builder (agent=provider|model, sawDigest), no password, each read back", async () => {
+  opusConfigured(world);
   proposed(world, "mo1");
-  const current = (await mac.steps("mo1")).task.id;
-  // setTaskModel(roleKey: "all"): plan, build and review, in that order; the first refusal ends it.
-  for (const phase of ["plan", "build", "review"]) expect(await mac.routeTask(current, phase, OPUS)).toHaveProperty("done");
+  const shown = await mac.steps("mo1");
+  // The picker's choices: exactly the configured, selectable agents; review is not a per-task role.
+  for (const phase of ["plan", "build"] as const) expect(shown.agentChoices?.[phase]).toContainEqual({ provider: "claude", model: "claude-opus-5-5" });
+  expect(Object.keys(shown.agentChoices ?? {}).sort()).toEqual(["build", "plan"]);
+  expect(shown.pendingAgentChange).toBeNull();
+  // setTaskModel(roleKey: "all"): plan, then build, each with the digest read just before it.
+  expect(await pick(mac, "mo1", "plan", OPUS)).toEqual({ done: "The planner is now Claude claude-opus-5-5." });
+  expect(await pick(mac, "mo1", "build", OPUS)).toEqual({ done: "The builder is now Claude claude-opus-5-5." });
   const models = (await mac.steps("mo1")).models ?? [];
-  for (const phase of ["plan", "build", "review"]) {
-    expect(models.find(one => one.phase === phase)).toEqual({ phase, provider: "claude", model: "claude-opus-5-5", chosen: "override" });
+  expect(models.find(one => one.phase === "build")).toEqual({ phase: "build", provider: "claude", model: "claude-opus-5-5", chosen: "override" });
+  expect(models.find(one => one.phase === "plan")).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+  // Nothing was approved by the pick, and each change is in the ledger under the person.
+  expect(world.store.getScope("mo1")?.approvedAt ?? null).toBeNull();
+  expect(ledgerOf(world, "mo1", LOCAL_AGENT_CHANGE_ACTION).map(row => [row["actor"], row["outcome"], row.detail["phase"], row.detail["how"]]))
+    .toEqual([["operator:alex", "changed", "plan", "now"], ["operator:alex", "changed", "build", "now"]]);
+  // The same pick again writes nothing.
+  const before = world.store.getScope("mo1")!.digest;
+  expect(await pick(mac, "mo1", "build", OPUS)).toEqual({ done: "Claude claude-opus-5-5 is already the builder." });
+  expect(world.store.getScope("mo1")!.digest).toBe(before);
+});
+
+test("MO1: a pick is refused in words, with nothing changed: a stale or missing digest, an unconfigured model, review, a size or clear edit, an unknown when", async () => {
+  opusConfigured(world);
+  proposed(world, "mo1-refused");
+  const steps = await mac.steps("mo1-refused");
+  const id = steps.task.id, digest = steps.scopeDigest!;
+  const state = () => JSON.stringify([world.store.getScope("mo1-refused"), world.store.lookupRef("mo1-refused")]);
+  const before = state();
+  const refusals: [string, Promise<MacOutcome>, string][] = [
+    ["stale digest", mac.routeTask(id, "build", OPUS, "0".repeat(32)), AGENTS_PICK_AGAIN],
+    ["no digest", mac.routeTask(id, "build", OPUS, ""), AGENTS_PICK_AGAIN],
+    ["not configured", mac.routeTask(id, "build", "claude|claude-haiku-4-5", digest), "Claude claude-haiku-4-5 isn't one of the configured builders right now. Pick again."],
+    ["review", mac.routeTask(id, "review", OPUS, digest), "Pick a model for the planner or the builder."],
+    ["unknown when", mac.routeTask(id, "build", OPUS, digest, "later"), "Say when: now, next run, or restart."],
+  ];
+  for (const [name, answer, words] of refusals) expect(await answer, name).toEqual({ refused: words });
+  for (const extra of [["size", "large"], ["risky", "yes"], ["clear-phase", "build"], ["provider", "claude"], ["model", "x"]] as [string, string][]) {
+    const answer = await mac.post(`/t/${id}/route`, [["phase", "build"], ["agent", OPUS], ["sawDigest", digest], extra]);
+    expect(answer.status, extra[0]).toBe(400);
+    expect((JSON.parse(answer.body) as { words: string }).words).toBe("Only the planner's or the builder's model can be changed here.");
   }
+  expect(state()).toBe(before);
 });
 
 test("MO2: the workspace defaults are unchanged by a per-task change", async () => {
+  opusConfigured(world);
   const before = await mac.models();
   const stored = ["plan", "build", "review"].map(phase => world.store.phaseConfig("installation", phase));
   proposed(world, "mo2");
-  // Holds whatever the route answers (today it is refused: see MO1); the full-session check below proves it after a change.
-  await mac.routeTask((await mac.steps("mo2")).task.id, "build", OPUS);
+  expect(await pick(mac, "mo2", "build", OPUS)).toHaveProperty("done");
   const after = await mac.models();
   expect(after.roles.map(role => [role.key, role.current])).toEqual(before.roles.map(role => [role.key, role.current]));
   expect(["plan", "build", "review"].map(phase => world.store.phaseConfig("installation", phase))).toEqual(stored);
 });
 
-test.fails("MO3: a route change on an approved task marks the approval out of date, and the task asks for approval again", async () => {
+test("MO3: on an approved task the pick is the owner's yes to the new agent only: still approved, the new builder sealed, in the ledger", async () => {
+  opusConfigured(world);
   placed(world, "mo3");
   expect(macSection((await rowOf("mo3"))!.status)).toBe("Queued");
-  const answer = await mac.routeTask((await mac.steps("mo3")).task.id, "build", OPUS);
-  // The words the app shows say so (the redirect's `said`).
-  expect((answer as { done?: string }).done ?? "").toMatch(/approve it again/);
-  expect((await mac.steps("mo3")).cards?.find(card => card.key === "approve")).toMatchObject({ needsYou: true });
-  expect(macSection((await rowOf("mo3"))!.status)).toBe("Needs you");
+  const sealedBefore = world.store.getScope("mo3")!;
+  expect(await pick(mac, "mo3", "build", OPUS)).toEqual({ done: "The builder is now Claude claude-opus-5-5. Still approved." });
+  const scope = world.store.getScope("mo3")!;
+  expect(scope.approvedDigest).toBe(scope.digest);
+  expect(scope.digest).not.toBe(sealedBefore.digest);
+  expect(scope.approvedBy).toBe("alex");
+  const sealed = JSON.parse(scope.approvedRouteJson!) as { legs: { phase: string; provider: string; model: string }[] };
+  const was = JSON.parse(sealedBefore.approvedRouteJson!) as { legs: { phase: string; provider: string; model: string }[] };
+  // Only the builder (and its repair twin) moved; the planner and reviewer are as sealed.
+  for (const phase of ["plan", "review"]) expect(sealed.legs.find(one => one.phase === phase)).toMatchObject({ provider: was.legs.find(one => one.phase === phase)!.provider, model: was.legs.find(one => one.phase === phase)!.model });
+  expect(sealed.legs.find(one => one.phase === "build")).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+  expect(scope.approvedProfile).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+  const steps = await mac.steps("mo3");
+  expect(steps.approval).toMatchObject({ by: "alex" });
+  expect(steps.cards?.find(card => card.key === "approve")?.needsYou ?? false).toBe(false);
+  expect(macSection((await rowOf("mo3"))!.status)).toBe("Queued");
+  expect(ledgerOf(world, "mo3", LOCAL_AGENT_CHANGE_ACTION).map(row => row.detail)).toEqual([{ v: 1, phase: "build",
+    from: { provider: "claude", model: "sonnet" }, to: { provider: "claude", model: "claude-opus-5-5" }, sealed: scope.digest, act: "change-task-agents", how: "now", via: "browser" }]);
+  // The yes was proved as this computer's owner, for exactly the new digest.
+  expect(world.store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id = 'mo3' AND action = 'approval proved' AND detail LIKE ?").all(`%${scope.digest}%`)).toEqual([{ outcome: "local-owner" }]);
 });
 
-test.fails("MO4: a route change while a run holds the task is refused in words about the run, and nothing changes", async () => {
+test("MO3: a model setup that changed since the approval leaves the task waiting for a yes, in the plan's words", async () => {
+  opusConfigured(world);
+  placed(world, "mo3-drift");
+  // The planner's default moved after the approval: a pick would carry more than the builder.
+  world.store.setPhaseConfig("installation", "plan", "claude", "claude-haiku-4-5", "test", now());
+  try {
+    expect(await pick(mac, "mo3-drift", "build", OPUS)).toEqual({ done: `The builder is now Claude claude-opus-5-5. ${AGENTS_DRIFTED}` });
+    const scope = world.store.getScope("mo3-drift")!;
+    expect(scope.approvedDigest).not.toBe(scope.digest);
+    expect((await mac.steps("mo3-drift")).cards?.find(card => card.key === "approve")).toMatchObject({ needsYou: true });
+    expect(macSection((await rowOf("mo3-drift"))!.status)).toBe("Needs you");
+  } finally {
+    world.store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", now());
+  }
+});
+
+test("MO3: a planner change on an approved task with a drafted plan asks for a new plan and waits for its yes", async () => {
+  opusConfigured(world);
+  const ref = placed(world, "mo3-plan");
+  world.store.handle.prepare("UPDATE task_ref SET plan = 'drafted' WHERE id = ?").run(ref);
+  expect(await pick(mac, "mo3-plan", "plan", OPUS)).toEqual({ done: "The planner is now Claude claude-opus-5-5. A new plan is coming; approve it when it's ready." });
+  expect(world.store.lookupRef("mo3-plan")).toMatchObject({ plan: "requested" });
+  const scope = world.store.getScope("mo3-plan")!;
+  expect(scope.approvedDigest).not.toBe(scope.digest);
+});
+
+test("MO4: while a run holds the task, apply-now is refused in exactly these words and nothing changes", async () => {
+  opusConfigured(world);
   building(world, placed(world, "mo4"));
   const before = (await mac.steps("mo4")).models;
-  const answer = await mac.routeTask((await mac.steps("mo4")).task.id, "build", OPUS);
+  expect(await pick(mac, "mo4", "build", OPUS)).toEqual({ refused: TASK_RUNNING_NOW });
+  expect(await pick(mac, "mo4", "build", OPUS, "now")).toEqual({ refused: TASK_RUNNING_NOW });
+  expect(TASK_RUNNING_NOW).toBe("This task is running right now.");
   expect((await mac.steps("mo4")).models).toEqual(before);
-  expect(answer).toHaveProperty("refused");
-  // Refused for the run holding the task, not for who is asking.
-  expect(LOCAL_OWNER_REFUSALS).not.toContain((answer as { refused: string }).refused);
+  expect((await mac.steps("mo4")).pendingAgentChange).toBeNull();
+});
+
+test("MO4: next run — the pick waits while the run holds the task, then applies as the owner when the run ends, still approved", async () => {
+  opusConfigured(world);
+  const build = building(world, placed(world, "mo4-next"));
+  const before = (await mac.steps("mo4-next")).models;
+  expect(await pick(mac, "mo4-next", "build", OPUS, "next-run")).toEqual({ done: "Switches to Claude claude-opus-5-5 when this run ends." });
+  const waiting = await mac.steps("mo4-next");
+  expect(waiting.models).toEqual(before);
+  expect(waiting.pendingAgentChange).toMatchObject({ phase: "build", provider: "claude", model: "claude-opus-5-5", when: "next-run", by: "alex", problem: null });
+  // Still running: the worker's pass leaves it waiting.
+  expect(applyPendingAgentChanges(world.store, now())).toBe(0);
+  endRun(world, build, "failed");
+  expect(applyPendingAgentChanges(world.store, now())).toBe(1);
+  const after = await mac.steps("mo4-next");
+  expect(after.pendingAgentChange).toBeNull();
+  expect(after.models?.find(one => one.phase === "build")).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
+  const scope = world.store.getScope("mo4-next")!;
+  expect(scope.approvedDigest).toBe(scope.digest);
+  expect(ledgerOf(world, "mo4-next", LOCAL_AGENT_CHANGE_ACTION).map(row => [row["outcome"], row.detail["how"]])).toEqual([["resealed", "next-run"]]);
+});
+
+test("MO4: restart — the run is asked to stop, the pick applies once it has stopped, and the task dispatches again", async () => {
+  opusConfigured(world);
+  const ref = placed(world, "mo4-restart");
+  const build = building(world, ref);
+  expect(await pick(mac, "mo4-restart", "build", OPUS, "restart")).toEqual({ done: "Stopping the run; it starts again on Claude claude-opus-5-5." });
+  expect(world.store.stopOf(build.run)).not.toBeNull();
+  expect(world.store.activeHolds(ref, now()).map(one => one.ownerKind)).toContain("stop");
+  expect((await mac.steps("mo4-restart")).pendingAgentChange).toMatchObject({ when: "restart", problem: null });
+  // The worker seals the stopped attempt; until then nothing applies.
+  expect(applyPendingAgentChanges(world.store, now())).toBe(0);
+  expect(finalize(world.store, build.lease, { kind: "interrupted", runId: build.run, taskId: "mo4-restart", stopRun: build.run, now: now() })).toMatchObject({ ok: true });
+  if (world.store.stopOf(build.run)?.settledAt == null) world.store.settleRunStop(build.run, "interrupted", now());
+  expect(applyPendingAgentChanges(world.store, now())).toBe(1);
+  expect(world.store.stopOf(build.run)?.resumedAt).not.toBeNull();
+  expect(world.store.activeHolds(ref, now()).map(one => one.ownerKind)).not.toContain("stop");
+  const scope = world.store.getScope("mo4-restart")!;
+  expect(scope.approvedDigest).toBe(scope.digest);
+  expect(JSON.parse(scope.approvedRouteJson!).legs.find((one: { phase: string }) => one.phase === "build")).toMatchObject({ model: "claude-opus-5-5" });
+  // It can be claimed again: the next run is on the new builder.
+  const again = acquire(world.store, ref, "mac-runner", { token: "tok-mac-runner", now: now(), ttlMs: 3_600_000 });
+  expect(again).toMatchObject({ ok: true });
+  if (again.ok) release(world.store, again.claim.leaseId, now());
+});
+
+test("MO4: a pending pick that can't apply when its run ends keeps its words in the steps read (and a restart keeps the run's stop)", async () => {
+  opusConfigured(world);
+  const nextRef = placed(world, "mo4-problem");
+  const next = building(world, nextRef);
+  expect(await pick(mac, "mo4-problem", "build", OPUS, "next-run")).toHaveProperty("done");
+  // The plan changed under the run (its words were edited): the pick was made against another plan.
+  propose(world.store, { taskId: "mo4-problem", goal: "Fix mo4-problem, differently", now: now() });
+  endRun(world, next, "failed");
+  expect(applyPendingAgentChanges(world.store, now())).toBe(0);
+  expect((await mac.steps("mo4-problem")).pendingAgentChange).toMatchObject({ problem: AGENTS_PICK_AGAIN });
+  expect(world.store.getScope("mo4-problem")!.digest).not.toBe("");
+  // A later pass doesn't try it again; a newer pick replaces it.
+  expect(applyPendingAgentChanges(world.store, now())).toBe(0);
+
+  const stopRef = placed(world, "mo4-problem-restart");
+  const stopped = building(world, stopRef);
+  expect(await pick(mac, "mo4-problem-restart", "build", OPUS, "restart")).toHaveProperty("done");
+  propose(world.store, { taskId: "mo4-problem-restart", goal: "Fix it, differently", now: now() });
+  expect(finalize(world.store, stopped.lease, { kind: "interrupted", runId: stopped.run, taskId: "mo4-problem-restart", stopRun: stopped.run, now: now() })).toMatchObject({ ok: true });
+  if (world.store.stopOf(stopped.run)?.settledAt == null) world.store.settleRunStop(stopped.run, "interrupted", now());
+  expect(applyPendingAgentChanges(world.store, now())).toBe(0);
+  expect((await mac.steps("mo4-problem-restart")).pendingAgentChange).toMatchObject({ when: "restart", problem: AGENTS_PICK_AGAIN });
+  expect(world.store.stopOf(stopped.run)?.resumedAt ?? null).toBeNull();
+  expect(world.store.activeHolds(stopRef, now()).map(one => one.ownerKind)).toContain("stop");
 });
 
 /** A laptop whose owner set a password, read by the app's local session, and the same person signed in with that password
- * (a full session) for the acts the local owner may not make: `route` is POST /t/<id>/route as the app sends it. */
+ * (a full session): `route` is POST /t/<id>/route as a browser page sends it. */
 async function passwordWorld() {
   const w = await openLocalWorld({ browserKey: true });
   register(w.store, { name: "mac-runner", host: "here", capacity: 4, repos: [w.repo], now: now(), newToken: () => "tok-mac-runner" });
+  opusConfigured(w);
   const first = await connect(w);
   proposed(w, "pw-first");
-  const beforePassword = await first.routeTask("pw-first", "build", OPUS);
+  const beforePassword = await pick(first, "pw-first", "build", OPUS);
   // setFirstPassword: the console's own form, then reconnect (setting it ends every session).
   const password = "correct horse battery";
   await w.send("/password/set", "POST", { cookie: first.cookie, origin: w.origin, "x-csrf-token": first.csrf, "x-toolroll-client": "terminal", "x-toolroll-key": first.key, "x-toolroll-act": "in-place",
@@ -426,67 +591,22 @@ async function passwordWorld() {
   return { w, local, route, beforePassword };
 }
 
-// FINDING: the picker offers every model /engine/models lists for a step (ModelPickerPopover), but a task's route takes
-// only the installation's configured tiers for that step (agentconfig.ts agentChoicesFor; store.ts editTaskRoute
-// "is not one of the configured agents"). Here: Opus 5.5 is offered for the planner, only Sonnet is configured.
-test.fails("MO1: a model /engine/models offers for a step is one the task's route accepts", async () => {
-  const { w, local, route } = await passwordWorld();
-  try {
-    const plan = (await local.models()).roles.find(role => role.key === "plan")!;
-    const offered = plan.choices.flatMap(choice => choice.models.map(model => `${choice.provider}|${model.value}`));
-    expect(offered).toContain(OPUS);
-    expect(await route("pw-first", "plan", OPUS)).toHaveProperty("done");
-  } finally {
-    await w.close();
-  }
-}, LOCAL_WORLD_SETUP_MS);
-
-// FINDING: setTaskModel(roleKey: "all") sends plan, build, then review, and a per-task route never takes review
-// (agentconfig.ts agentChoicesFor offers no review choices: "no configured agent can take the reviewer role for this
-// task right now"). The planner and builder change, then the picker reports a failure: a partial change. And the
-// planner's change reads `chosen: "pinned"`, not "override" (the route reconciles the planner pin).
-test.fails("MO1: the app's \"all\" change (plan, build, review) lands on every step it sends, each read as an override", async () => {
-  const { w, local, route } = await passwordWorld();
-  try {
-    for (const phase of ["plan", "build", "review"]) w.store.setPhaseTierConfig("installation", phase, "strong", "claude", "claude-opus-5-5", "test", now());
-    for (const phase of ["plan", "build", "review"]) expect.soft(await route("pw-first", phase, OPUS)).toHaveProperty("done");
-    const models = (await local.steps("pw-first")).models ?? [];
-    for (const phase of ["plan", "build", "review"]) expect.soft(models.find(one => one.phase === phase)).toEqual({ phase, provider: "claude", model: "claude-opus-5-5", chosen: "override" });
-  } finally {
-    await w.close();
-  }
-}, LOCAL_WORLD_SETUP_MS);
-
-test("MO1–MO4, server side: the local owner is refused either way; a password session, on a configured agent, gets what the app expects", async () => {
+test("MO1–MO4, server side: the local owner's road needs no password, before or after one is set; a password session keeps today's edit", async () => {
   const { w, local, route, beforePassword } = await passwordWorld();
   try {
-    expect(beforePassword).toEqual({ refused: "Set a password to do this." });
-    expect(await local.routeTask("pw-first", "build", OPUS)).toEqual({ refused: "Sign in with your password to do this." });
-    // Opus 5.5 as each step's strong tier: a configured agent the route accepts.
+    expect(beforePassword).toEqual({ done: "The builder is now Claude claude-opus-5-5." });
+    expect(await pick(local, "pw-first", "plan", OPUS)).toEqual({ done: "The planner is now Claude claude-opus-5-5." });
+    // The password session: today's edit, unchanged (no sawDigest needed, review still its own refusal, approvals staled).
     for (const phase of ["plan", "build", "review"]) w.store.setPhaseTierConfig("installation", phase, "strong", "claude", "claude-opus-5-5", "test", now());
-    const defaults = ["plan", "build", "review"].map(phase => w.store.phaseConfig("installation", phase));
-    const currentBefore = (await local.models()).roles.map(role => role.current);
-    // MO1
-    // (plan and build: review is its own finding below)
-    for (const phase of ["plan", "build"]) expect(await route("pw-first", phase, OPUS)).toHaveProperty("done");
-    const models = (await local.steps("pw-first")).models ?? [];
-    expect(models.find(one => one.phase === "build")).toEqual({ phase: "build", provider: "claude", model: "claude-opus-5-5", chosen: "override" });
-    // (the planner's reads "pinned": part of the finding below)
-    expect(models.find(one => one.phase === "plan")).toMatchObject({ provider: "claude", model: "claude-opus-5-5" });
-    // MO2
-    expect(["plan", "build", "review"].map(phase => w.store.phaseConfig("installation", phase))).toEqual(defaults);
-    expect((await local.models()).roles.map(role => role.current)).toEqual(currentBefore);
-    // MO3
     placed(w, "pw-mo3");
     expect(((await route("pw-mo3", "build", OPUS)) as { done?: string }).done ?? "").toMatch(/approve it again/);
     expect((await local.steps("pw-mo3")).cards?.find(card => card.key === "approve")).toMatchObject({ needsYou: true });
-    // MO4
     building(w, placed(w, "pw-mo4"));
     const held = (await local.steps("pw-mo4")).models;
     const refused = await route("pw-mo4", "build", OPUS);
     expect(refused).toHaveProperty("refused");
-    expect((refused as { refused: string }).refused.trim()).not.toBe("");
     expect((await local.steps("pw-mo4")).models).toEqual(held);
+    expect((await local.steps("pw-mo4")).pendingAgentChange).toBeNull();
   } finally {
     await w.close();
   }

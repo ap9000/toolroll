@@ -925,4 +925,23 @@ struct ToolrollCoreTests {
         #expect(TaskStatusTone(workTone: "problem", token: "failed") == .failed)
         #expect(TaskStatusTone(workTone: "done", token: "assignment-complete") == .finished)
     }
+
+    @Test("A task's own model choices, its shown digest and a change waiting for the run to end decode from the steps read")
+    func taskModelChoicesDecode() throws {
+        let json = """
+        {"version":1,"task":{"id":"t1.2","root":"t1","title":"Fix","state":"queued","project":null},"headline":null,
+         "liveRun":5,"latestRun":5,"scopeDigest":"abc","cards":[],
+         "agentChoices":{"plan":[{"provider":"claude","model":"sonnet"},{"provider":"codex","model":"gpt-6-sol"}],
+                         "build":[{"provider":"codex","model":"gpt-6-sol"}]},
+         "pendingAgentChange":{"phase":"build","provider":"codex","model":"gpt-6-sol","when":"next-run","by":"alex","at":"2026-11-22T10:00:00Z","problem":null}}
+        """
+        let steps = try JSONDecoder().decode(StepCardsResponse.self, from: Data(json.utf8))
+        #expect(steps.task.root == "t1")
+        #expect(steps.scopeDigest == "abc")
+        #expect(steps.agentChoices?.forRole("plan").count == 2)
+        // "All roles" offers only what both steps accept.
+        #expect(steps.agentChoices?.forRole("all").map(\.formValue) == ["codex|gpt-6-sol"])
+        #expect(steps.pendingAgentChange?.when == "next-run")
+        #expect(steps.pendingAgentChange?.problem == nil)
+    }
 }
