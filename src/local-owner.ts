@@ -125,6 +125,15 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // task keeps the pick until its run ends or stops. The writer (local-owner-acts.ts localOwnerChangeAgents) checks this
   // exact act. Not Settings → Models (`change-models`): this changes no default.
   "change-task-agents",
+  // The Mac app's Automations screen (docs/plans/mac-automations.md, the owner's decision of 2026-11-22: surfacing
+  // existing automations is Work-screen work): pause, resume and run now of a flow's EXISTING trigger, with no password.
+  // Pause only lowers; resume and run now cause work only under the flow's already-approved terms (a run now is never
+  // the clock's own firing, so it never runs on its own under a grant). Never share, renew, a secret, set-up, sender,
+  // scope, remove, unshare or creating or editing a flow. The handler (server/flows.ts triggerAct) checks this exact act;
+  // never reuse pause-run or resume-run (those are a task's).
+  "trigger-pause",
+  "trigger-resume",
+  "trigger-run",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 /**

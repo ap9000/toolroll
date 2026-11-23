@@ -1,5 +1,5 @@
 {
-  "digest": "0b88c973de6f29a22592b5e0f319d84ee2eeaacdd6d0d3ad5a1188411ab91cb4",
+  "digest": "3dcaf0afd104dc0c5bec9f1c9cc70748ead2facc969bf4105f0b2c9b5725f7a1",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -4039,6 +4039,191 @@
         "pendingProposals",
         "queued",
         "messages"
+      ],
+      "additionalProperties": false
+    },
+    "automations": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "canAct": {
+          "type": "boolean"
+        },
+        "automations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "name": {
+                "type": "string"
+              },
+              "project": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group": {
+                "type": "string",
+                "enum": [
+                  "needs",
+                  "running",
+                  "on",
+                  "paused"
+                ]
+              },
+              "starts": {
+                "type": "string"
+              },
+              "nextAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "waiting": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "inProgress": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "trouble": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "triggers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "words": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "paused"
+                      ]
+                    },
+                    "nextAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "lastAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "lastOutcome": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "failures": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "canPress": {
+                      "type": "boolean"
+                    },
+                    "canCheck": {
+                      "type": "boolean"
+                    },
+                    "label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "questions": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resumeRunsNow": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "words",
+                    "state",
+                    "nextAt",
+                    "lastAt",
+                    "lastOutcome",
+                    "failures",
+                    "canPress",
+                    "canCheck",
+                    "label",
+                    "questions",
+                    "resumeRunsNow"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "project",
+              "group",
+              "starts",
+              "nextAt",
+              "waiting",
+              "inProgress",
+              "trouble",
+              "triggers"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "canAct",
+        "automations"
       ],
       "additionalProperties": false
     },

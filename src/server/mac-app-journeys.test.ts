@@ -17,7 +17,12 @@ import { sealVerificationReceipt } from "../verification-evidence.js";
 import { presented } from "../../test/serve-kit.js";
 import { csrfOf, signIn } from "../../test/loopback-key-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
-import { linkRedemptionSchema, modelsReadSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { automationsSchema, linkRedemptionSchema, modelsReadSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { addFlowTriggerTo } from "../flow-triggers.js";
+import { saveScript } from "../flow-scripts.js";
+import { activeUnattendedGrant, signUnattended } from "../flow-unattended.js";
+import { validateFlowDefinition } from "../flows.js";
+import { NO_OS_FENCE } from "../../test/inside-fence.js";
 import { AGENTS_DRIFTED, AGENTS_PICK_AGAIN, applyPendingAgentChanges, LOCAL_AGENT_CHANGE_ACTION, TASK_RUNNING_NOW } from "../local-owner-acts.js";
 
 type Answer = { status: number; body: string; headers: IncomingHttpHeaders };
@@ -100,6 +105,9 @@ async function connect(w: Pick<LocalWorld, "server" | "send" | "origin">) {
     // setTaskModel: phase, agent (provider|model), the scope digest the picker read, and when (omitted: now).
     routeTask: (id: string, phase: string, agent: string, sawDigest: string, when?: string) =>
       act(`/t/${enc(id)}/route`, [["phase", phase], ["agent", agent], ["sawDigest", sawDigest], ...(when === undefined ? [] : [["when", when] as [string, string]])], "Models changed for this task."),
+    automations: async () => automationsSchema.parse((await get("/engine/automations")).body),
+    // automationTrigger(flowId:triggerId:act:): no fields, "Done." when the server says nothing (it always does here).
+    automationTrigger: (flow: number, trigger: number, verb: string, fields: [string, string][] = []) => act(`/flows/${flow}/triggers/${trigger}/${verb}`, fields, "Done."),
     holdTask: (id: string) => act(`/t/${enc(id)}/hold`, [["reason", "Paused from Toolroll Mac"]], "Paused."),
     acceptResult: (id: string, run: number, receipt: string) => act(`/t/${enc(id)}/complete`, [["receipt", receipt], ["run", String(run)]], "Accepted. Task complete."),
   };
@@ -172,7 +180,10 @@ function verifiedResult(w: LocalWorld, id: string): void {
 const rowOf = async (id: string, view?: string) => (await mac.rows(view)).find(row => row.id === id);
 
 beforeAll(async () => {
-  world = await openLocalWorld({ browserKey: true });
+  world = await openLocalWorld({ browserKey: true,
+    // A schedule's script never spawns here: each run prints one new item.
+    flowTriggerIo: { shell: async () => ({ code: 0, stdout: JSON.stringify([{ key: `item-${Date.now()}-${Math.random()}`, title: "Bump a dependency" }]), stderr: "" }) } });
+  if (NO_OS_FENCE) world.store.setUnfencedAgentsAllowed(true, "alex", now());
   register(world.store, { name: "mac-runner", host: "here", capacity: 16, repos: [world.repo], now: now(), newToken: () => "tok-mac-runner" });
   mac = await connect(world);
 }, LOCAL_WORLD_SETUP_MS);
@@ -675,4 +686,87 @@ test("LIMITS: the local owner reads each provider's windows on the Work rows (wh
     ["claude", "weekly", 100, true], ["codex", "weekly", 24, false],
   ]));
   expect(read.limits?.find(one => one.provider === "claude")?.resetsAt).toBe(reset);
+});
+
+// ---- Automations ----------------------------------------------------------------------------------------------------
+
+/** A flow owned by alex, starting in a build step (`task`) or a decision (`approval`), with each trigger given. */
+function automation(name: string, start: "task" | "approval", raws: unknown[]): { flow: number; triggers: number[] } {
+  const definition = JSON.stringify(validateFlowDefinition({ version: 1, start: "first", stages: start === "task"
+    ? [{ id: "first", title: "Update it", kind: "task", instructions: "{{card.title}}", planning: "skip", next: "done" }, { id: "done", title: "Done", kind: "done" }]
+    : [{ id: "first", title: "Review it", kind: "approval", next: "done" }, { id: "done", title: "Done", kind: "done" }] }));
+  const flow = world.store.createFlow({ repo: world.repo, name, by: "alex", definitionJson: definition }, now());
+  const triggers = raws.map(raw => {
+    const made = addFlowTriggerTo(world.store, world.store.getFlow(flow)!, raw, "alex", now(), world.configDir, { widening: "proved" });
+    if (!made.ok) throw new Error(made.message);
+    return made.id;
+  });
+  return { flow, triggers };
+}
+const automationOf = async (flow: number) => (await mac.automations()).automations.find(one => one.id === flow);
+const BUTTON = { kind: "button", label: "Report a bug", questions: ["What broke?", "Steps"] };
+const DAILY = { kind: "schedule", schedule: "daily 09:00", title: "Upkeep", description: null };
+
+test("AU1: each flow reads in its group, with its triggers' facts; a removed trigger is never sent", async () => {
+  const needs = automation("AU1 needs", "approval", [BUTTON]);
+  world.store.addFlowCard({ flow: needs.flow, title: "Check the copy", description: null, stage: "first", by: "alex", byKind: "person" }, now());
+  const running = automation("AU1 running", "task", [BUTTON]);
+  world.store.addFlowCard({ flow: running.flow, title: "Bump react", description: null, stage: "first", by: "alex", byKind: "person" }, now());
+  const on = automation("AU1 on", "task", [DAILY, BUTTON, BUTTON]);
+  world.store.updateFlowTrigger(on.triggers[2]!, { state: "removed" }, now());
+  const paused = automation("AU1 paused", "task", [DAILY]);
+  // Signed to run on its own, then paused with its slot come round: pausing a schedule ends the grant
+  // (store.updateFlowTrigger), so resuming fires that slot once as a person's card, never on its own.
+  const signed = await signUnattended(world.store, { flow: paused.flow, signer: "alex", ask: { days: 2, budgetMicrousd: null, dailyRunCap: null } }, now());
+  if (!signed.ok) throw new Error(signed.message);
+  world.store.updateFlowTrigger(paused.triggers[0]!, { state: "paused", nextAt: new Date(Date.now() - 60_000).toISOString() }, now());
+  expect(activeUnattendedGrant(world.store, paused.flow, now())).toBeNull();
+  const read = await mac.automations();
+  expect(read.canAct).toBe(true);
+  const shown = (flow: number) => read.automations.find(one => one.id === flow)!;
+  expect(shown(needs.flow)).toMatchObject({ group: "needs", waiting: 1, inProgress: 1, starts: "When someone presses Report a bug", project: "repo" });
+  expect(shown(running.flow)).toMatchObject({ group: "running", waiting: 0, inProgress: 1 });
+  const onRead = shown(on.flow);
+  expect(onRead).toMatchObject({ group: "on", starts: "Daily at 09:00 and 1 more" });
+  expect(onRead.nextAt).toBe(new Date(onRead.nextAt!).toISOString());
+  // A plain schedule has no manual run; a button is pressed with its own questions.
+  expect(onRead.triggers.map(one => [one.id, one.kind, one.state, one.canCheck, one.canPress, one.label, one.questions])).toEqual([
+    [on.triggers[0], "schedule", "active", false, false, null, null], [on.triggers[1], "button", "active", false, true, "Report a bug", ["What broke?", "Steps"]]]);
+  expect(shown(paused.flow)).toMatchObject({ group: "paused", nextAt: null, triggers: [expect.objectContaining({ state: "paused", resumeRunsNow: false, canCheck: false })] });
+});
+
+test("AU2: pause and resume answer in the server's words and read back", async () => {
+  const { flow, triggers: [daily] } = automation("AU2", "task", [DAILY]);
+  expect(await mac.automationTrigger(flow, daily!, "pause")).toEqual({ done: "Trigger paused." });
+  expect(await automationOf(flow)).toMatchObject({ group: "paused", triggers: [expect.objectContaining({ state: "paused", resumeRunsNow: false })] });
+  expect(await mac.automationTrigger(flow, daily!, "resume")).toEqual({ done: "Trigger on again." });
+  expect(await automationOf(flow)).toMatchObject({ group: "on", triggers: [expect.objectContaining({ state: "active" })] });
+});
+
+test("AU3: run now checks a schedule that runs a script; a plain schedule is refused in words, and nothing changes", async () => {
+  const saved = saveScript(world.store, world.repo, { name: "outdated", about: "Outdated packages", language: "shell", body: "echo '[]'", file: null, timeoutMinutes: 1 }, "alex", now());
+  if (!saved.ok) throw new Error(saved.message);
+  const script = automation("AU3 script", "task", [{ kind: "schedule", schedule: "daily 09:00", script: "outdated" }]);
+  expect((await automationOf(script.flow))?.triggers[0]?.canCheck).toBe(true);
+  expect(await mac.automationTrigger(script.flow, script.triggers[0]!, "check")).toEqual({ done: "Added 1 card." });
+  expect(await automationOf(script.flow)).toMatchObject({ group: "running", triggers: [expect.objectContaining({ lastOutcome: "Added 1 card." })] });
+  const plain = automation("AU3 plain", "task", [DAILY]);
+  expect(await mac.automationTrigger(plain.flow, plain.triggers[0]!, "check")).toEqual({ refused: "Only GitHub, Linear and email triggers that are checked, schedules that run a script, and plane reviews can be run now." });
+  expect(world.store.flowCards(plain.flow, false)).toHaveLength(0);
+});
+
+test("AU4: press as the app sends it today (no answers) is refused in words; with its answers it adds a card", async () => {
+  const { flow, triggers: [button] } = automation("AU4", "task", [BUTTON]);
+  expect(await mac.automationTrigger(flow, button!, "press")).toEqual({ refused: "Answer “What broke?”." });
+  expect(await mac.automationTrigger(flow, button!, "press", [["answers", JSON.stringify(["The footer overlaps", ""])]])).toEqual({ done: "Card added." });
+  expect(await automationOf(flow)).toMatchObject({ group: "running", inProgress: 1 });
+});
+
+test("AU5: a trigger act the app doesn't offer (share, remove) is refused in the local-owner words; a removed trigger in plain words", async () => {
+  const { flow, triggers: [button] } = automation("AU5", "task", [BUTTON]);
+  for (const verb of ["share", "remove"]) expect(await mac.automationTrigger(flow, button!, verb)).toEqual({ refused: "Set a password to do this." });
+  expect(world.store.getFlowTrigger(button!)?.state).toBe("active");
+  world.store.updateFlowTrigger(button!, { state: "removed" }, now());
+  expect(await mac.automationTrigger(flow, button!, "resume")).toEqual({ refused: "That trigger isn't on this flow." });
+  expect(await mac.automationTrigger(999_999, button!, "pause")).toEqual({ refused: "No such flow in your projects." });
 });

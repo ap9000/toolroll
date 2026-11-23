@@ -30,6 +30,7 @@
     "engine.hello": {"kind":"data","path":"/engine/hello","what":"the engine API's handshake: build and contract digest (JSON)"},
     "engine.agents": {"kind":"data","path":"/engine/agents","what":"the coding agents on this computer and who the first task goes to (JSON, the engine API)"},
     "engine.models": {"kind":"data","path":"/engine/models","what":"which agent and model each step uses (JSON, the engine API; Settings → Models' own view)"},
+    "engine.automations": {"kind":"data","path":"/engine/automations","what":"the flows the person can see, grouped as the Flows list groups them (JSON, the engine API; the Mac app's Automations screen)"},
     "engine.chat": {"kind":"data","path":"/engine/chat","what":"Lead chat history and state (JSON, the engine API)"},
     "search": {"kind":"page","path":"/search"},
     "inbox": {"kind":"alias","path":"/inbox","to":"/"},

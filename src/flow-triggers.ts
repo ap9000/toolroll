@@ -523,6 +523,17 @@ function polled(config: TriggerConfig): config is Extract<TriggerConfig, { kind:
   return config.kind === "email" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "poll");
 }
 
+/** Whether Check now / Run now can run this trigger (checkFlowTriggerNow): a polled GitHub, Linear or email trigger, a
+ * schedule that runs a script, or a plane review. A plain schedule has no manual run: it fires only when it is due. */
+export function canCheckTrigger(config: TriggerConfig): boolean {
+  return polled(config) || (config.kind === "schedule" && config.script !== undefined) || config.kind === "plane-review";
+}
+
+/** Whether a person can press this trigger now (pressFlowButton): an active button. */
+export function canPressTrigger(trigger: FlowTriggerRow): boolean {
+  return trigger.state === "active" && triggerConfigOf(trigger)?.kind === "button";
+}
+
 // ---------------------------------------------------------- making cards
 
 /** `onTime`: the clock's own firing of a schedule (never Run now or Check now); only those can run on their own.
@@ -683,10 +694,12 @@ export async function runFlowTriggers(store: Store, repo: string, now: Date, io:
 /** "Check now" on the canvas: one trigger, right away, in words. */
 export async function checkFlowTriggerNow(store: Store, trigger: FlowTriggerRow, now: Date, io: TriggerIo): Promise<{ ok: boolean; said: string }> {
   const config = triggerConfigOf(trigger);
+  const refused = { ok: false, said: "Only GitHub, Linear and email triggers that are checked, schedules that run a script, and plane reviews can be run now." };
+  if (config === null || !canCheckTrigger(config)) return refused;
   // A schedule's script runs now, once; its schedule stays as it is.
-  if (config?.kind === "schedule" && config.script !== undefined) { const fired = await fireScript(store, trigger, config, now, io, false); return { ok: fired.ok, said: fired.said }; }
-  if (config?.kind === "plane-review") { const fired = await firePlaneReview(store, trigger, config, now, false); return { ok: true, said: fired.said }; }
-  if (config === null || !polled(config)) return { ok: false, said: "Only GitHub, Linear and email triggers that are checked, schedules that run a script, and plane reviews can be run now." };
+  if (config.kind === "schedule" && config.script !== undefined) { const fired = await fireScript(store, trigger, config, now, io, false); return { ok: fired.ok, said: fired.said }; }
+  if (config.kind === "plane-review") { const fired = await firePlaneReview(store, trigger, config, now, false); return { ok: true, said: fired.said }; }
+  if (!polled(config)) return refused;
   const checked = await checkTrigger(store, trigger, config, now, io);
   return { ok: checked.ok, said: checked.said };
 }

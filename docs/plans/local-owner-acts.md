@@ -418,3 +418,23 @@ The laptop's local owner may change one task's planner or builder with no passwo
   (pending_agent_change, v180); `restart` also asks the run to stop. The worker applies it once the claim is gone, as the
   owner bound to the local-mode and account generations of the pick (still standing), through the same writer; a
   restart then lifts its stop's hold. A refusal keeps the row with its words and (restart) the hold.
+
+## Exception (owner's decision, 2026-11-22): pause, resume and run now of an automation from the Mac app
+
+The laptop's local owner may pause, resume and run now a flow's existing trigger with no password, from the Mac app's
+Automations screen (docs/plans/mac-automations.md, "Revised after critic review"). Surfacing existing automations is
+Work-screen work under the feature freeze (AGENTS.md); nothing here creates, edits or widens a flow.
+
+- **The acts.** `trigger-pause`, `trigger-resume` and `trigger-run` (local-owner.ts; not password acts), on
+  `flow.trigger.pause`, `flow.trigger.resume`, and `flow.trigger.check` / `flow.trigger.press` only. Every other trigger
+  act stays refused to a local owner at the route table: share, unshare, renew, secret, setup, sender, scope, remove,
+  dropped. `pause-run` / `resume-run` stay a task's.
+- **The handler** (server/flows.ts triggerAct) keeps all of its own rules (the approver role from a browser sign-in,
+  the flow's project in the session's reach, the trigger on this flow and not removed) and, for a local owner, checks
+  `localActNow` for exactly the verb's act: inside the write's transaction for pause and resume (which re-reads the
+  trigger there) and press, and right before a check starts (each write it makes re-checks that the owner stands).
+- **What it can cause.** Pause only lowers (and, as for any person, ends a "runs on its own" grant over that schedule).
+  Resume and run now cause work only under the flow's terms as they are. A run now is never the clock's own firing
+  (`onTime` false), so its cards never run on their own under a grant: they wait for a person like any other card.
+- **The read.** `GET /engine/automations` is a console read (the same projects as `/flows`), with `canAct` true only for
+  an approver signed in through a browser or this computer's session.

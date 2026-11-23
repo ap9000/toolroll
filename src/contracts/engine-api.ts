@@ -23,6 +23,7 @@
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
  *   GET  /engine/models              the installation's planner, builder and reviewer and what each may be (models)
+ *   GET  /engine/automations         the flows the caller can see, as the web /flows list groups them (automations)
  *   GET  /term/state                 this session's live terminals (termState): the browser's Live page reads it too
  *   POST /term/start                 start one (termStarted); a take-over names its task and build (solo-workbench T4)
  *                                    and attaches through the console's one WebSocket, GET /term/<id>/socket
@@ -591,6 +592,48 @@ export const leadChatSchema = z.object({
   messages: z.array(leadMessageSchema),
 });
 
+// ---- Automations ---------------------------------------------------------------------------------------------------
+
+/** One trigger of an automation (flows-ui.ts automationsOf). Removed triggers are never sent. `canCheck`: Run now / Check
+ * now runs it (an active polled trigger, a schedule that runs a script, a plane review; a plain schedule only fires when
+ * due); `canPress`: an active button, whose `label` and `questions` are its form; `resumeRunsNow`: it is paused, fell due
+ * while off, and a live "runs on its own" grant covers it, so Resume may run it once right away. Times are ISO. */
+const automationTriggerSchema = z.object({
+  id: z.number().int(),
+  kind: z.string(),
+  words: z.string(),
+  state: z.enum(["active", "paused"]),
+  nextAt: iso.nullable(),
+  lastAt: iso.nullable(),
+  lastOutcome: z.string().max(200).nullable(),
+  failures: z.number().int(),
+  canPress: z.boolean(),
+  canCheck: z.boolean(),
+  label: z.string().nullable(),
+  questions: z.array(z.string()).nullable(),
+  resumeRunsNow: z.boolean(),
+});
+/** `GET /engine/automations`: the flows the web /flows list shows (the projects the caller can see, at most 100), each
+ * grouped as that list groups it. Pause, resume and run now post the canvas's own trigger forms,
+ * POST /flows/<id>/triggers/<trigger>/{pause,resume,check,press}; `canAct` says whether this caller may (an approver
+ * signed in through a browser or this computer's session). */
+export const automationsSchema = z.object({
+  version,
+  canAct: z.boolean(),
+  automations: z.array(z.object({
+    id: z.number().int(),
+    name: z.string(),
+    project: z.string().nullable(),
+    group: z.enum(["needs", "running", "on", "paused"]),
+    starts: z.string(),
+    nextAt: iso.nullable(),
+    waiting: z.number().int(),
+    inProgress: z.number().int(),
+    trouble: z.string().nullable(),
+    triggers: z.array(automationTriggerSchema),
+  })),
+});
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -637,6 +680,7 @@ export const ENGINE_RESPONSES = {
   agents: { route: "GET /engine/agents", schema: agentsReadSchema },
   models: { route: "GET /engine/models", schema: modelsReadSchema },
   leadChat: { route: "GET /engine/chat", schema: leadChatSchema },
+  automations: { route: "GET /engine/automations", schema: automationsSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
   termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
 } as const;
@@ -658,6 +702,7 @@ export type LeadChat = z.infer<typeof leadChatSchema>;
 export type LeadChatCard = z.infer<typeof leadChatCardSchema>;
 export type LeadChatLink = z.infer<typeof leadLinkSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
+export type AutomationsRead = z.infer<typeof automationsSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

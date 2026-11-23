@@ -45,7 +45,11 @@ test("every route row is marked for the local owner; an allow names one of its a
     "decision.answer=answer-question",
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
-    "engine.agents-check=check-agents", "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
+    "engine.agents-check=check-agents",
+    // The Mac app's Automations screen: pause, resume and run now (check or press) of an existing trigger, each its own act
+    // (flows.ts triggerAct re-checks it); share, renew, secret, setup, sender, scope, remove, unshare and dropped stay denied.
+    "flow.trigger.check=trigger-run", "flow.trigger.pause=trigger-pause", "flow.trigger.press=trigger-run", "flow.trigger.resume=trigger-resume",
+    "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
     "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
     // Threads' setup from the workbench's `w` link (threads-everyday S6): saving, checking and turning terms on take a
     // password typed into the form (local-owner.ts LOCAL_PASSWORD_ACTS); removing your own sign-in only narrows.
@@ -71,6 +75,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     // Solo-workbench T4: one's own live terminal; terminals.ts admits a local owner only while the install is solo.
     "term.agent-install=agent-install", "term.agent-sign-in=agent-sign-in", "term.close=take-over", "term.remove=take-over", "term.start=take-over", "welcome.sample=add-project",
   ]);
+  // The engine API's Automations read is a console GET like the others (a read), never an edge row.
+  expect(ROUTES.find(row => row.id === "engine.automations")).toMatchObject({ stage: "console", method: "GET", local: "allow", localAct: "read" });
   // Every console GET is a read.
   for (const row of ROUTES.filter(one => one.stage === "console" && one.method !== "POST")) expect([row.local, row.localAct], row.id).toEqual(["allow", "read"]);
 });

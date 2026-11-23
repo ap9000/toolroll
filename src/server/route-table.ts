@@ -196,6 +196,13 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // The Mac app's Change Models for one task, on its own road (tasks.ts localOwnerRoute; the writer checks this exact act).
   // A password session's route edit is unchanged.
   "task.act.route": "change-task-agents",
+  // The Mac app's Automations screen: pause, resume and run now (check or press) of an existing trigger, each its own
+  // act (flows.ts triggerAct checks it). Every other trigger act (share, renew, secret, setup, sender, scope, remove,
+  // unshare, dropped) stays refused to a local owner.
+  "flow.trigger.pause": "trigger-pause",
+  "flow.trigger.resume": "trigger-resume",
+  "flow.trigger.check": "trigger-run",
+  "flow.trigger.press": "trigger-run",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",
@@ -455,6 +462,8 @@ get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: 
 // The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
 get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
 // The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
+// The engine API's Automations read: the flows the web /flows list shows, as data, admitted as /flows is.
+get("flows", "engine.automations", "/engine/automations", { limited: "resource", ...free });
 get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie", "bearer"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });

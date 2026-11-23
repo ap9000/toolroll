@@ -925,6 +925,13 @@ pub struct LinkRedemption {
     pub csrf: String,
     pub key: String,
     pub epoch: String,
+    /// Whether the account has a password yet (the Mac app offers to set one); an older console doesn't say.
+    #[serde(
+        rename = "passwordSet",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub password_set: Option<bool>,
 }
 
 impl fmt::Debug for LinkRedemption {
@@ -1242,6 +1249,57 @@ pub struct LeadQueued {
     pub text: String,
     pub status: String,
     pub detail: Option<String>,
+}
+
+// ---- Automations ----------------------------------------------------------------------------------------------
+
+/// `GET /engine/automations`: the flows the caller can see, grouped as the web /flows list groups them. Pause, resume
+/// and run now post `/flows/<id>/triggers/<trigger>/{pause,resume,check,press}`; `can_act` says whether this caller may.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationsRead {
+    pub version: u32,
+    pub can_act: bool,
+    pub automations: Vec<Automation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Automation {
+    pub id: i64,
+    pub name: String,
+    pub project: Option<String>,
+    /// needs | running | on | paused
+    pub group: String,
+    /// What starts it, in a few words ("Weekdays at 09:00", "Cards added by hand").
+    pub starts: String,
+    /// ISO; the earliest next run of its active triggers.
+    pub next_at: Option<String>,
+    pub waiting: i64,
+    pub in_progress: i64,
+    pub trouble: Option<String>,
+    pub triggers: Vec<AutomationTrigger>,
+}
+
+/// One trigger (removed ones are never sent). `can_check`: Run now / Check now runs it (a plain schedule only fires when
+/// due); `can_press`: an active button, with its `label` and `questions`; `resume_runs_now`: resuming may run it once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationTrigger {
+    pub id: i64,
+    pub kind: String,
+    pub words: String,
+    /// active | paused
+    pub state: String,
+    pub next_at: Option<String>,
+    pub last_at: Option<String>,
+    pub last_outcome: Option<String>,
+    pub failures: i64,
+    pub can_press: bool,
+    pub can_check: bool,
+    pub label: Option<String>,
+    pub questions: Option<Vec<String>>,
+    pub resume_runs_now: bool,
 }
 
 /// `GET /engine/chat`: the person's central Lead conversation (messages, structured cards, proposals, queue).
