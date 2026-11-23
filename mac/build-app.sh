@@ -91,7 +91,7 @@ if command -v codesign >/dev/null 2>&1; then
     echo "==> Signing with stable identity: $SIGN_ID"
     codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
   else
-    codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null || { echo "codesign failed once; retrying after clearing attributes" >&2; xattr -cr "$APP_DIR" 2>/dev/null || true; codesign --force --deep --sign - "$APP_DIR" >/dev/null; } # guard: allow — xattr cleanup is best effort before the retry
   fi
 fi
 
