@@ -971,12 +971,12 @@ struct ToolrollCoreTests {
         WorkLayout(widgets: [WorkWidgetInstance(id: "list", kind: .list, isHidden: false),
                              WorkWidgetInstance(id: "list2", kind: .list, isHidden: true)]).save(to: defaults)
         let loaded = WorkLayout.load(from: defaults)
-        #expect(loaded.widgets.map(\.kind) == [.list, .header, .limits])
+        #expect(loaded.widgets.map(\.kind) == [.list, .header, .limits, .automations])
         // Reorder and hide round-trip.
         let edited = loaded.moving("header", by: -1).togglingHidden("limits")
         edited.save(to: defaults)
-        #expect(WorkLayout.load(from: defaults).widgets.map(\.kind) == [.header, .list, .limits])
-        #expect(WorkLayout.load(from: defaults).widgets.last?.isHidden == true)
+        #expect(WorkLayout.load(from: defaults).widgets.map(\.kind) == [.header, .list, .limits, .automations])
+        #expect(WorkLayout.load(from: defaults).widgets.first { $0.kind == .limits }?.isHidden == true)
     }
 
     @Test("Limits read honestly: plain window names, plan casing, and a passed reset means probably clear, not reached")

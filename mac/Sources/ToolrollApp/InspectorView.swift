@@ -842,6 +842,8 @@ private struct LeadThreadView: View {
                     )
 
                     TextField("Ask Lead or paste screenshot…", text: $draft)
+                        .onAppear { takeLeadDraftSeed() }
+                        .onChange(of: store.leadDraftSeed) { _, _ in takeLeadDraftSeed() }
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                         .foregroundStyle(ToolrollPalette.ink)
@@ -881,5 +883,12 @@ private struct LeadThreadView: View {
         draft = ""
         attachments = []
         Task { await store.sendLeadMessage(composed.combinedMessage) }
+    }
+
+    /// Takes the seed a "New automation" (or similar) left for the composer, once.
+    private func takeLeadDraftSeed() {
+        guard let seed = store.leadDraftSeed else { return }
+        draft = seed
+        store.leadDraftSeed = nil
     }
 }

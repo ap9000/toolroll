@@ -6,12 +6,14 @@ public enum WorkWidgetKind: String, Codable, CaseIterable, Sendable {
     case header
     case limits
     case list
+    case automations
 
     public var title: String {
         switch self {
         case .header: return "Summary"
         case .limits: return "Limits"
         case .list: return "Work list"
+        case .automations: return "Automations"
         }
     }
 
@@ -20,6 +22,7 @@ public enum WorkWidgetKind: String, Codable, CaseIterable, Sendable {
         case .header: return "What waits on you, what's running, what settled"
         case .limits: return "Plan usage and today's spend (shown to the workspace owner)"
         case .list: return "Every task, grouped by what it needs"
+        case .automations: return "Work that runs on its own, and a way to add more"
         }
     }
 }

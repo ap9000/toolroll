@@ -2386,6 +2386,26 @@ public final class WorkbenchStore {
         }
     }
 
+    /// Opens one of the web UI's pages in the browser (its own sign-in applies).
+    public func openInBrowser(path: String) {
+        if activeProfile.isDemo {
+            notice = WorkbenchNotice(kind: .info, message: "Demo mode: connect a workspace to open that page.")
+            return
+        }
+        let base = activeProfile.origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let url = URL(string: base + (path.hasPrefix("/") ? path : "/" + path)) { NSWorkspace.shared.open(url) }
+    }
+
+    /// A message to start in the Lead chat's composer (the Lead panel takes it once and clears it).
+    public var leadDraftSeed: String?
+
+    /// New automation: the Lead proposes the flow from a sentence and the person approves its card (existing road).
+    public func startAutomationWithLead() {
+        inspectorTab = .lead
+        isInspectorVisible = true
+        leadDraftSeed = "Set up an automation: every "
+    }
+
     public func openTaskInBrowser(taskId: String) {
         if activeProfile.isDemo {
             notice = WorkbenchNotice(kind: .info, message: "Demo mode — connect a workspace to open \(taskId).")

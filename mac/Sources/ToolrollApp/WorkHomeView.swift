@@ -19,6 +19,7 @@ struct WorkHomeView: View {
                     case .header: header
                     case .limits: limits
                     case .list: list
+                    case .automations: automations
                     }
                 }
             }
@@ -85,6 +86,37 @@ struct WorkHomeView: View {
                 if let spend { SpendTile(spend: spend) }
             }
         }
+    }
+
+    // MARK: Automations (phase 1: the way in; the native "runs on its own" list comes with its own server read)
+
+    private var automations: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "clock.arrow.2.circlepath")
+                .font(.system(size: 16))
+                .foregroundStyle(ToolrollPalette.muted)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Automations")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("Work that runs on its own, on a schedule or when something happens.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            Spacer(minLength: 12)
+            Button("Open automations") { store.openInBrowser(path: "/flows") }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                .help("Opens the automations page in your browser: list, edit, pause and resume")
+            Button { store.startAutomationWithLead() } label: {
+                Label("New automation", systemImage: "plus").font(.system(size: 12.5, weight: .medium))
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .help("Describe it to the Lead; it proposes the automation and you approve it")
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     // MARK: Work list
