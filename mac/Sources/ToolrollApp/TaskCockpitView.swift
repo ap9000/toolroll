@@ -4,8 +4,6 @@ import ToolrollCore
 
 public struct TaskCockpitView: View {
     @Bindable var store: WorkbenchStore
-    @State private var steerDraft: String = ""
-    @State private var steerAttachments: [ComposerAttachment] = []
     @State private var isComposerDropTargeted: Bool = false
     @FocusState private var steerFocused: Bool
     @State private var approvalPassword: String = ""
@@ -2232,15 +2230,41 @@ public struct TaskCockpitView: View {
         store.stepCards?.modelLabel(forPhase: role) ?? store.modelsRead.roles.first(where: { $0.key == role })?.words
     }
 
-    private var canSubmitSteer: Bool {
-        !steerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !steerAttachments.isEmpty
+    private func steerDraftBinding(for taskId: String) -> Binding<String> {
+        Binding(
+            get: { store.taskSteerDrafts[taskId] ?? "" },
+            set: { store.taskSteerDrafts[taskId] = $0 }
+        )
+    }
+
+    private func steerAttachments(for taskId: String) -> [ComposerAttachment] {
+        store.taskSteerAttachments[taskId] ?? []
+    }
+
+    private func addSteerAttachments(_ incoming: [ComposerAttachment], for taskId: String) {
+        var list = store.taskSteerAttachments[taskId] ?? []
+        appendUniqueAttachments(incoming, to: &list)
+        store.taskSteerAttachments[taskId] = list
+    }
+
+    private func removeSteerAttachment(_ id: UUID, for taskId: String) {
+        var list = store.taskSteerAttachments[taskId] ?? []
+        list.removeAll { $0.id == id }
+        store.taskSteerAttachments[taskId] = list
+    }
+
+    private func canSubmitSteer(for taskId: String) -> Bool {
+        let text = store.taskSteerDrafts[taskId] ?? ""
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !steerAttachments(for: taskId).isEmpty
     }
 
     private func composerBar(taskId: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !steerAttachments.isEmpty {
-                ComposerAttachmentStrip(attachments: steerAttachments) { removedId in
-                    steerAttachments.removeAll { $0.id == removedId }
+        let taskAttachments = steerAttachments(for: taskId)
+        let canSubmit = canSubmitSteer(for: taskId)
+        return VStack(alignment: .leading, spacing: 8) {
+            if !taskAttachments.isEmpty {
+                ComposerAttachmentStrip(attachments: taskAttachments) { removedId in
+                    removeSteerAttachment(removedId, for: taskId)
                 }
             }
 
@@ -2248,14 +2272,14 @@ public struct TaskCockpitView: View {
                 ComposerAttachMenuButton(
                     compact: true,
                     onAddAttachments: { incoming in
-                        appendUniqueAttachments(incoming, to: &steerAttachments)
+                        addSteerAttachments(incoming, for: taskId)
                     },
                     onNoClipboardImage: {
                         store.notice = WorkbenchNotice(kind: .info, message: "No image found on the clipboard — copy a screenshot (⌘⌃⇧4) or image first.")
                     }
                 )
 
-                TextField("Steer task, paste screenshot, or leave a note…", text: $steerDraft)
+                TextField("Steer task, paste screenshot, or leave a note…", text: steerDraftBinding(for: taskId))
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .foregroundStyle(ToolrollPalette.ink)
@@ -2299,21 +2323,21 @@ public struct TaskCockpitView: View {
                         .foregroundStyle(ToolrollPalette.inverseInk)
                         .frame(width: 26, height: 26)
                         .background(
-                            canSubmitSteer
+                            canSubmit
                                 ? ToolrollPalette.ink
                                 : ToolrollPalette.muted.opacity(0.32),
                             in: Circle()
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(!canSubmitSteer)
+                .disabled(!canSubmit)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .toolrollGlassPanel(cornerRadius: steerAttachments.isEmpty ? 20 : 16, interactive: true)
+        .toolrollGlassPanel(cornerRadius: taskAttachments.isEmpty ? 20 : 16, interactive: true)
         .overlay(
-            RoundedRectangle(cornerRadius: steerAttachments.isEmpty ? 20 : 16, style: .continuous)
+            RoundedRectangle(cornerRadius: taskAttachments.isEmpty ? 20 : 16, style: .continuous)
                 .strokeBorder(
                     isComposerDropTargeted ? ToolrollPalette.live : Color.clear,
                     style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])
@@ -2321,11 +2345,11 @@ public struct TaskCockpitView: View {
         )
         .shadow(color: Color.black.opacity(0.28), radius: 14, y: 4)
         .onComposerPaste(isActive: steerFocused) { incoming in
-            appendUniqueAttachments(incoming, to: &steerAttachments)
+            addSteerAttachments(incoming, for: taskId)
         }
         .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
             ComposerDropHelper.handleDrop(providers: providers) { incoming in
-                appendUniqueAttachments(incoming, to: &steerAttachments)
+                addSteerAttachments(incoming, for: taskId)
             }
         }
         .padding(.horizontal, 16)
@@ -2334,10 +2358,12 @@ public struct TaskCockpitView: View {
     }
 
     private func submitSteer(taskId: String) {
-        guard canSubmitSteer else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: steerDraft, attachments: steerAttachments)
-        steerDraft = ""
-        steerAttachments = []
+        guard canSubmitSteer(for: taskId) else { return }
+        let draft = store.taskSteerDrafts[taskId] ?? ""
+        let list = steerAttachments(for: taskId)
+        let composed = ComposerAttachmentStore.composeSubmission(text: draft, attachments: list)
+        store.taskSteerDrafts[taskId] = ""
+        store.taskSteerAttachments[taskId] = []
         Task { await store.steerTask(taskId: taskId, note: composed.combinedMessage) }
     }
 

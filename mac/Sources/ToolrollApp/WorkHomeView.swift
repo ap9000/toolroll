@@ -4,9 +4,6 @@ import ToolrollCore
 
 struct WorkHomeView: View {
     @Bindable var store: WorkbenchStore
-    @State private var quickPrompt = ""
-    @State private var quickPlanFirst = true
-    @State private var attachments: [ComposerAttachment] = []
     @State private var isComposerDropTargeted = false
     @FocusState private var quickPromptFocused: Bool
 
@@ -60,7 +57,17 @@ struct WorkHomeView: View {
         }
         .background(ToolrollPalette.ground)
         .onAppear {
+            if let pending = store.pendingComposerDraft, !pending.isEmpty {
+                store.workDraftText = store.workDraftText.isEmpty ? pending : "\(store.workDraftText)\n\(pending)"
+                store.pendingComposerDraft = nil
+            }
             quickPromptFocused = true
+        }
+        .onChange(of: store.pendingComposerDraft) { _, pending in
+            if let pending, !pending.isEmpty {
+                store.workDraftText = store.workDraftText.isEmpty ? pending : "\(store.workDraftText)\n\(pending)"
+                store.pendingComposerDraft = nil
+            }
         }
         .onChange(of: store.composerFocusTick) { _, _ in
             quickPromptFocused = true
@@ -119,15 +126,15 @@ struct WorkHomeView: View {
 
     private var unifiedComposer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !attachments.isEmpty {
-                ComposerAttachmentStrip(attachments: attachments) { removedId in
-                    attachments.removeAll { $0.id == removedId }
+            if !store.workDraftAttachments.isEmpty {
+                ComposerAttachmentStrip(attachments: store.workDraftAttachments) { removedId in
+                    store.workDraftAttachments.removeAll { $0.id == removedId }
                 }
             }
 
             TextField(
                 composerPlaceholder,
-                text: $quickPrompt,
+                text: $store.workDraftText,
                 axis: .vertical
             )
             .textFieldStyle(.plain)
@@ -141,7 +148,7 @@ struct WorkHomeView: View {
 
             HStack(spacing: 8) {
                 ComposerAttachMenuButton(compact: true) { incoming in
-                    appendUniqueAttachments(incoming, to: &attachments)
+                    appendUniqueAttachments(incoming, to: &store.workDraftAttachments)
                 }
 
                 projectSelectorMenu
@@ -167,7 +174,7 @@ struct WorkHomeView: View {
                     .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
-                .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
+                .disabled(store.workDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.workDraftAttachments.isEmpty)
             }
         }
         .padding(16)
@@ -180,18 +187,18 @@ struct WorkHomeView: View {
                 )
         )
         .onComposerPaste(isActive: quickPromptFocused) { incoming in
-            appendUniqueAttachments(incoming, to: &attachments)
+            appendUniqueAttachments(incoming, to: &store.workDraftAttachments)
         }
         .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
             ComposerDropHelper.handleDrop(providers: providers) { incoming in
-                appendUniqueAttachments(incoming, to: &attachments)
+                appendUniqueAttachments(incoming, to: &store.workDraftAttachments)
             }
         }
     }
 
     private var composerPlaceholder: String {
         if isTaskMode {
-            return quickPlanFirst
+            return store.workDraftPlanFirst
                 ? "Describe a task to plan & verify in \(activeProject ?? "your workspace")…"
                 : "Describe a task to build in an isolated worktree…"
         }
@@ -203,7 +210,7 @@ struct WorkHomeView: View {
 
     private var submitLabel: String {
         if isTaskMode {
-            return quickPlanFirst ? "Plan" : "Build"
+            return store.workDraftPlanFirst ? "Plan" : "Build"
         }
         if store.useLeadForNextChat {
             return "Ask Lead"
@@ -288,15 +295,15 @@ struct WorkHomeView: View {
 
     private var planFirstChip: some View {
         Button {
-            quickPlanFirst.toggle()
+            store.workDraftPlanFirst.toggle()
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: quickPlanFirst ? "checkmark.circle.fill" : "circle")
+                Image(systemName: store.workDraftPlanFirst ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 10))
                 Text("Plan first")
                     .font(.system(size: 11, weight: .medium))
             }
-            .foregroundStyle(quickPlanFirst ? ToolrollPalette.ink : ToolrollPalette.muted)
+            .foregroundStyle(store.workDraftPlanFirst ? ToolrollPalette.ink : ToolrollPalette.muted)
             .padding(.horizontal, 9)
             .frame(height: 26)
             .background(ToolrollPalette.ground, in: Capsule())
@@ -586,15 +593,15 @@ struct WorkHomeView: View {
     }
 
     private func submitQuickPrompt() {
-        let raw = quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty || !attachments.isEmpty else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: raw, attachments: attachments)
-        quickPrompt = ""
-        attachments = []
+        let raw = store.workDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty || !store.workDraftAttachments.isEmpty else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: raw, attachments: store.workDraftAttachments)
+        store.workDraftText = ""
+        store.workDraftAttachments = []
         let targetProject = activeProject
 
         if isTaskMode {
-            let planFirst = quickPlanFirst
+            let planFirst = store.workDraftPlanFirst
             Task {
                 await store.createTask(
                     title: composed.title,

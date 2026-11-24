@@ -142,6 +142,13 @@ public final class WorkbenchStore {
     public var selectedCliThreadId: String? = nil
     public private(set) var selectedCliThreadMessages: [LocalCliMessage] = []
     public var pendingComposerDraft: String? = nil
+    public var workDraftText: String = ""
+    public var workDraftPlanFirst: Bool = true
+    public var workDraftAttachments: [ComposerAttachment] = []
+    public var chatReplyDrafts: [String: String] = [:]
+    public var chatReplyAttachments: [String: [ComposerAttachment]] = [:]
+    public var taskSteerDrafts: [String: String] = [:]
+    public var taskSteerAttachments: [String: [ComposerAttachment]] = [:]
     private var preZenSidebar: Bool = true
     private var preZenInspector: Bool = false
 

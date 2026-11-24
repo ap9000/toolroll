@@ -6,14 +6,39 @@ public struct AgentChatView: View {
     @Bindable var store: WorkbenchStore
     let thread: AgentChatThread
 
-    @State private var replyText: String = ""
-    @State private var attachments: [ComposerAttachment] = []
     @State private var isComposerDropTargeted: Bool = false
     @FocusState private var replyFocused: Bool
 
     public init(store: WorkbenchStore, thread: AgentChatThread) {
         self.store = store
         self.thread = thread
+    }
+
+    private var replyTextBinding: Binding<String> {
+        Binding(
+            get: { store.chatReplyDrafts[thread.id] ?? "" },
+            set: { store.chatReplyDrafts[thread.id] = $0 }
+        )
+    }
+
+    private var currentReplyText: String {
+        store.chatReplyDrafts[thread.id] ?? ""
+    }
+
+    private var currentAttachments: [ComposerAttachment] {
+        store.chatReplyAttachments[thread.id] ?? []
+    }
+
+    private func addChatAttachments(_ incoming: [ComposerAttachment]) {
+        var list = store.chatReplyAttachments[thread.id] ?? []
+        appendUniqueAttachments(incoming, to: &list)
+        store.chatReplyAttachments[thread.id] = list
+    }
+
+    private func removeChatAttachment(_ id: UUID) {
+        var list = store.chatReplyAttachments[thread.id] ?? []
+        list.removeAll { $0.id == id }
+        store.chatReplyAttachments[thread.id] = list
     }
 
     private var isRunning: Bool {
@@ -184,15 +209,15 @@ public struct AgentChatView: View {
 
     private var composerFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !attachments.isEmpty {
-                ComposerAttachmentStrip(attachments: attachments) { removedId in
-                    attachments.removeAll { $0.id == removedId }
+            if !currentAttachments.isEmpty {
+                ComposerAttachmentStrip(attachments: currentAttachments) { removedId in
+                    removeChatAttachment(removedId)
                 }
             }
 
             TextField(
                 "Message \(thread.provider.displayName) in \(thread.projectName)…",
-                text: $replyText,
+                text: replyTextBinding,
                 axis: .vertical
             )
             .textFieldStyle(.plain)
@@ -207,7 +232,7 @@ public struct AgentChatView: View {
 
             HStack(spacing: 8) {
                 ComposerAttachMenuButton(compact: true) { incoming in
-                    appendUniqueAttachments(incoming, to: &attachments)
+                    addChatAttachments(incoming)
                 }
                 Spacer()
                 if isRunning {
@@ -234,7 +259,7 @@ public struct AgentChatView: View {
                         .font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(KitButtonStyle(.primary, compact: true))
-                    .disabled(replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
+                    .disabled(currentReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && currentAttachments.isEmpty)
                 }
             }
         }
@@ -245,11 +270,11 @@ public struct AgentChatView: View {
                 .strokeBorder(isComposerDropTargeted ? ToolrollPalette.live : (replyFocused ? ToolrollPalette.inputLine : ToolrollPalette.line), lineWidth: 1)
         )
         .onComposerPaste(isActive: replyFocused) { incoming in
-            appendUniqueAttachments(incoming, to: &attachments)
+            addChatAttachments(incoming)
         }
         .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
             ComposerDropHelper.handleDrop(providers: providers) { incoming in
-                appendUniqueAttachments(incoming, to: &attachments)
+                addChatAttachments(incoming)
             }
         }
         .padding(.horizontal, 24)
@@ -260,11 +285,11 @@ public struct AgentChatView: View {
     }
 
     private func sendReply() {
-        let trimmed = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
-        replyText = ""
-        attachments = []
+        let trimmed = currentReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !currentAttachments.isEmpty else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: currentAttachments)
+        store.chatReplyDrafts[thread.id] = ""
+        store.chatReplyAttachments[thread.id] = []
         Task {
             await store.sendChatMessage(threadId: thread.id, text: composed.combinedMessage)
         }
