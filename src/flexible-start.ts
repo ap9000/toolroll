@@ -9,7 +9,8 @@
  * What the card says, every time: the project; the level (Full access, inside the sandbox only); the agent and how it
  * signs in (the relay tier: the login stays with Toolroll); where it works (its own copy of the repository); the network
  * (the thread's own, read from Toolroll's records); the limits (turns hard, a dollar limit soft, and what an unmeasured
- * cost holds); what Ship will do (one press, a merge only on a passing required check of that exact commit); and the
+ * cost holds); what Ship will do (one press, a merge only on a passing required check of that exact commit), or what it
+ * needs first when the project has no check command or can't open pull requests; and the
  * disclosures (history beyond the base, secrets in what it writes, the open network's risks when the network is open).
  *
  * The one entry point checks the interactive agent threads' switch (flexible-available.ts flexibleAvailable: off unless
@@ -21,6 +22,7 @@ import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexi
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
 import { FLEXIBLE_RELAY_UPSTREAMS } from "./flexible-relay-upstreams.js";
 import { flexibleSignInBilling, flexibleSignInStatus } from "./flexible-sign-in.js";
+import { flexibleShipNeeds } from "./flexible-ship.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { CLAUDE_EXACT } from "./model-catalog.js";
@@ -90,6 +92,9 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const open = network.mode === "open";
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(input.repo)?.["name"];
   const caps = terms.caps;
+  // What Ship needs that this project hasn't got (a check command, pull requests): said here, before the thread starts,
+  // instead of a promise the press would then refuse.
+  const shipNeeds = flexibleShipNeeds(store, input.repo);
 
   const decisions: SummaryRow[] = [
     { label: "Project", words: typeof project === "string" ? project : input.repo, lines: typeof project === "string" ? [input.repo] : [], fields: ["flexible.repo"] },
@@ -105,7 +110,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
         caps.measuredMicrousdPerDay === null ? "No dollar limit: a turn runs until it finishes." : `New turns stop once today's measured spend reaches ${money(caps.measuredMicrousdPerDay)}; a turn already running may go past it.`,
         FLEXIBLE_UNKNOWN_COST_WORDS,
       ], fields: ["flexible.caps"], ...(caps.measuredMicrousdPerDay === null ? { risky: true } : {}) },
-    { label: "Ship", words: FLEXIBLE_SHIP_WORDS, fields: ["flexible.ship"] },
+    shipNeeds === null ? { label: "Ship", words: FLEXIBLE_SHIP_WORDS, fields: ["flexible.ship"] }
+      : { label: "Ship", words: shipNeeds.short, lines: [`After that: ${lowerFirst(FLEXIBLE_SHIP_WORDS)}`], fields: ["flexible.ship"] },
     { label: "Terms", words: `this project's Flexible terms, turned on by ${terms.signer}`, lines: [`They last until someone turns them off or lowers them, or ${terms.signer}'s account or access changes.`], fields: ["flexible.terms"] },
   ];
   if (runtime === "interactive") {

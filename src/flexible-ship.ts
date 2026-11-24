@@ -247,6 +247,33 @@ function destinationOf(store: Store, repo: string): FlexibleShipTerms["github"] 
   return { repo: grant.githubRepo, remote: grant.remote, base: grant.base, method: grant.mergeMethod ?? "squash", capabilities: [...grant.capabilities].sort(), draft: grant.draft };
 }
 
+/** A path as one shell word, for a command a person copies. */
+const shellWord = (text: string): string => /^[A-Za-z0-9_./~+@%=:,-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
+
+/**
+ * What a Ship needs that `repo` hasn't got, from Toolroll's records: a check command (the merge waits for it to pass)
+ * and pull requests Toolroll may push and open (the merge goes through one). Every missing piece is named at once,
+ * with what to do next, so a surface says so before it asks for anything (a password, a key press): `short` for the
+ * thread's terms, `message` for a refusal. Null when nothing is missing. It only reads: the press itself still refuses
+ * on each (flexibleShipTerms), and nothing about it changes here.
+ *
+ * Note (stranger test round 11): a local project with no remote can't ship at all. Merging a thread's work locally,
+ * without a pull request, would be a new road for Ship's authority; that is the owner's product decision, not built.
+ */
+export function flexibleShipNeeds(store: Store, repo: string): { reason: "no-check" | "no-publishing"; short: string; message: string } | null {
+  const noCheck = store.liveVerifyCommand(repo) === null;
+  const noPullRequests = destinationOf(store, repo) === null;
+  if (!noCheck && !noPullRequests) return null;
+  const setCheck = `toolroll verify set --repo ${shellWord(repo)} --command "<your test command>"`;
+  const setPullRequests = `toolroll publish setup --repo ${shellWord(repo)} --yes`;
+  if (noCheck && noPullRequests) return { reason: "no-check", short: "Needs a check command and pull requests, which this project doesn't have yet.",
+    message: `This project has no check command and can't open pull requests yet, and Ship needs both. Set a check with \`${setCheck}\`, then turn on pull requests with \`${setPullRequests}\` (or both in Settings → Projects). Nothing was shipped.` };
+  if (noCheck) return { reason: "no-check", short: "Needs a check command, which this project doesn't have yet.",
+    message: `This project has no check command yet, and Ship needs one: Toolroll merges only once it passes. Set one with \`${setCheck}\` (or in Settings → Projects). Nothing was shipped.` };
+  return { reason: "no-publishing", short: "Needs pull requests, which this project can't open yet.",
+    message: `This project can't open pull requests yet, and Ship needs them: the merge goes through one. Turn them on with \`${setPullRequests}\` (or in Settings → Projects). Nothing was shipped.` };
+}
+
 // ---- the terms, and the one press -------------------------------------------------------------------------------------
 
 export type FlexibleShipText = { title?: string; goal?: string; acceptance?: unknown };

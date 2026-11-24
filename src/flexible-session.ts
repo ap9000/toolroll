@@ -47,7 +47,7 @@ import {
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
-import { cancelFlexibleShip, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
+import { cancelFlexibleShip, flexibleShipNeeds, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
 import type { ApprovalSummary } from "./approval-summary.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleSignInBilling } from "./flexible-sign-in.js";
@@ -960,11 +960,16 @@ export const FLEXIBLE_SHIP_WORKING = "The agent is still working on your last me
 /** Said when the thread's agent is still being stopped before a Ship. */
 export const FLEXIBLE_SHIP_STOPPING = "Toolroll is stopping the thread's agent first. Nothing was shipped yet: try again in a moment.";
 
-/** The exact terms a Ship of `thread` would sign now (flexible-ship.ts flexibleShipTerms), for its owner only. */
+/** The exact terms a Ship of `thread` would sign now (flexible-ship.ts flexibleShipTerms), for its owner only. A
+ * project that lacks what Ship needs (a check command, pull requests) is refused first, every missing piece named at
+ * once with what to do next (flexibleShipNeeds). */
 export async function flexibleThreadShipTerms(store: Store, input: { thread: string; by: { name: string; generation: number } }):
   Promise<{ ok: true; digest: string; summary: ApprovalSummary } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
-  if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+  const owned = ownThread(store, input.thread, input.by);
+  if (owned === null) return refuse("thread-unknown");
+  const needs = flexibleShipNeeds(store, owned.repo);
+  if (needs !== null) return { ok: false, reason: needs.reason, message: needs.message };
   const shown = await flexibleShipTerms(store, { thread: input.thread, by: input.by.name });
   if (!shown.ok) return shown;
   return { ok: true, digest: shown.digest, summary: shown.summary };
@@ -1377,4 +1382,18 @@ export async function removeFlexibleThreadCopy(store: Store, input: { thread: st
   if (ownThread(store, input.thread, { name: input.by }) === null) return refuse("thread-unknown");
   const removed = await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.now, ...(input.prove === undefined ? {} : { prove: input.prove }) });
   return removed.ok ? { ok: true } : { ok: false, reason: removed.reason, message: removed.message };
+}
+
+/**
+ * What a Ship of the thread named by `asked` (its id, or the first 8 or more characters of it) needs that its project
+ * hasn't got (flexible-ship.ts flexibleShipNeeds), or null: for the command line to say before it asks for a password.
+ * Only a thread that is ready and the only one matching counts; anything else is left to the owner's own checks after.
+ * It reads the project's setup only (a check command, pull requests), which the command line reads anyway.
+ */
+export function flexibleShipNeedsFor(store: Store, asked: string): { reason: string; message: string } | null {
+  if (typeof asked !== "string" || !/^[0-9a-f]{8,32}$/.test(asked)) return null;
+  const found = store.handle.prepare("SELECT repo FROM flexible_thread WHERE state = 'ready' AND substr(id, 1, ?) = ? LIMIT 2").all(asked.length, asked);
+  if (found.length !== 1) return null;
+  const needs = flexibleShipNeeds(store, String(found[0]!["repo"]));
+  return needs === null ? null : { reason: needs.reason, message: needs.message };
 }
