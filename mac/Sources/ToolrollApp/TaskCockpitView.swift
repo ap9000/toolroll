@@ -455,37 +455,38 @@ public struct TaskCockpitView: View {
         .background(notice.kind == .refusal ? ToolrollPalette.danger.opacity(0.06) : ToolrollPalette.raised)
     }
 
-    private var approvalStatusBadge: some View {
+    private var approvalStatusLabel: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(ToolrollPalette.ink)
+                .fill(ToolrollPalette.warning)
                 .frame(width: 6, height: 6)
             Text("Needs approval")
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.ink)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(ToolrollPalette.paper, in: Capsule())
-        .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
-        .fixedSize()
     }
 
     private var fullPlanButton: some View {
         Button {
             store.openTaskArtifact()
         } label: {
-            HStack(spacing: 4) {
-                Text("Full Plan")
+            HStack(spacing: 3) {
+                Text("Plan")
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                 Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
             }
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(ToolrollPalette.muted)
+            .padding(.horizontal, 7)
+            .frame(height: 24)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+        .buttonStyle(.plain)
+        .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
         .fixedSize()
         .help("Read full plan in the right-hand Artifact Window (⌘4)")
     }
@@ -495,10 +496,11 @@ public struct TaskCockpitView: View {
             Task { await store.approveSelectedTask() }
         } label: {
             Text("Approve & Build")
+                .font(.system(size: 11.5, weight: .semibold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
-        .buttonStyle(KitButtonStyle(.primary))
+        .buttonStyle(KitButtonStyle(.primary, compact: true))
         .fixedSize()
     }
 
@@ -506,92 +508,105 @@ public struct TaskCockpitView: View {
         let digest = ApprovalPlanDigest.parse(from: card.terms)
         let visibleChecks = showFullApprovalChecks ? digest.checks : Array(digest.checks.prefix(3))
         let hiddenCheckCount = max(0, digest.checks.count - 3)
+        let hasScopeDetails = digest.wontTouch != nil || !digest.extraTerms.isEmpty
+        let hasSecondaryMeta = digest.agent != nil || !digest.files.isEmpty
 
-        return VStack(alignment: .leading, spacing: 14) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    approvalStatusBadge
-                    if let rev = digest.revision {
-                        Text(rev)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(ToolrollPalette.muted)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    Spacer(minLength: 8)
-                    fullPlanButton
-                    if store.approvalPasswordPrompt == nil {
-                        approveAndBuildButton
-                    }
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                approvalStatusLabel
+
+                if let rev = digest.revision {
+                    Text(rev)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        approvalStatusBadge
-                        Spacer(minLength: 6)
-                        if store.approvalPasswordPrompt == nil {
-                            approveAndBuildButton
+                if hasScopeDetails {
+                    Button {
+                        withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                            showStandardSandboxDetails.toggle()
                         }
-                    }
-                    HStack(spacing: 8) {
-                        if let rev = digest.revision {
-                            Text(rev)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("Scope")
                                 .font(.system(size: 11.5))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                            Image(systemName: showStandardSandboxDetails ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
                         }
-                        Spacer(minLength: 6)
-                        fullPlanButton
+                        .foregroundStyle(showStandardSandboxDetails ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .padding(.horizontal, 6)
+                        .frame(height: 24)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
+                    .help(card.digest.map { "Scope & sandbox details (\($0.prefix(16)))" } ?? "Scope & sandbox details")
+                }
+
+                Spacer(minLength: 6)
+
+                if store.approvalPasswordPrompt == nil {
+                    if store.stepCards?.plan != nil || store.stepCards?.planStopped?.again != nil {
+                        Button("Replan") {
+                            Task { await store.planAgainSelectedTask() }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .padding(.horizontal, 6)
+                        .frame(height: 24)
+                        .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
+                    }
+
+                    Button("Cancel") {
+                        Task { await store.cancelSelectedTask() }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.horizontal, 6)
+                    .frame(height: 24)
+                    .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
+                }
+
+                fullPlanButton
+
+                if store.approvalPasswordPrompt == nil {
+                    approveAndBuildButton
                 }
             }
 
             if let goal = digest.goal {
                 Text(goal)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .lineSpacing(3.5)
+                    .font(.system(size: 13))
+                    .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
+                    .lineSpacing(3)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if !digest.addedFiles.isEmpty || !digest.removedFiles.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("PLAN CHANGES")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .tracking(0.6)
-                        .foregroundStyle(ToolrollPalette.muted)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(digest.addedFiles, id: \.self) { file in
-                                HStack(spacing: 5) {
-                                    Text("+")
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.success)
-                                    Text(file)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(digest.addedFiles, id: \.self) { file in
+                            HStack(spacing: 3) {
+                                Text("+")
+                                    .foregroundStyle(ToolrollPalette.success)
+                                Text(file)
+                                    .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                             }
-                            ForEach(digest.removedFiles, id: \.self) { file in
-                                HStack(spacing: 5) {
-                                    Text("−")
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.danger)
-                                    Text(file)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                            .font(.system(size: 11, design: .monospaced))
+                        }
+                        ForEach(digest.removedFiles, id: \.self) { file in
+                            HStack(spacing: 3) {
+                                Text("−")
+                                    .foregroundStyle(ToolrollPalette.danger)
+                                Text(file)
+                                    .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                             }
+                            .font(.system(size: 11, design: .monospaced))
                         }
                     }
                 }
@@ -602,204 +617,137 @@ public struct TaskCockpitView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
-                if let agent = digest.agent {
-                    HStack(spacing: 5) {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(ToolrollPalette.muted)
+            if hasSecondaryMeta {
+                HStack(spacing: 12) {
+                    if let agent = digest.agent {
                         Text(agent)
-                            .font(.system(size: 11.5))
+                            .font(.system(size: 11))
                             .foregroundStyle(ToolrollPalette.muted)
                             .lineLimit(1)
                     }
-                }
 
-                if !digest.files.isEmpty {
-                    Button {
-                        withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                            showApprovalFiles.toggle()
+                    if !digest.files.isEmpty {
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                showApprovalFiles.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("\(digest.files.count) file\(digest.files.count == 1 ? "" : "s")")
+                                    .font(.system(size: 11, design: .monospaced))
+                                Image(systemName: showApprovalFiles ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
+                            .foregroundStyle(ToolrollPalette.muted)
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 10))
-                            Text("\(digest.files.count) allowed file\(digest.files.count == 1 ? "" : "s")")
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            Image(systemName: showApprovalFiles ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8.5, weight: .semibold))
-                        }
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .toolrollHoverSurface(cornerRadius: 4)
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
 
-                Spacer()
-
-                if let hash = card.digest {
-                    Text(String(hash.prefix(8)))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted.opacity(0.65))
-                        .help("Plan digest: \(hash)")
+                    Spacer()
                 }
             }
 
             if showApprovalFiles && !digest.files.isEmpty {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 6)], alignment: .leading, spacing: 6) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 6)], alignment: .leading, spacing: 4) {
                     ForEach(digest.files, id: \.self) { path in
                         Text(path)
                             .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.ink)
+                            .foregroundStyle(ToolrollPalette.muted)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3.5)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
                     }
                 }
             }
 
-            if !digest.checks.isEmpty || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !visibleChecks.isEmpty {
-                        HStack {
-                            Text("VERIFICATION CHECKS (\(digest.checks.count))")
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .tracking(0.6)
-                                .foregroundStyle(ToolrollPalette.muted)
-                            Spacer()
-                            Text("Click any check to expand")
-                                .font(.system(size: 10))
-                                .foregroundStyle(ToolrollPalette.muted.opacity(0.65))
-                        }
-
-                        VStack(alignment: .leading, spacing: 5) {
-                            ForEach(visibleChecks) { item in
-                                let isRowExpanded = expandedCheckIds.contains(item.id)
-                                Button {
-                                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                        if isRowExpanded {
-                                            expandedCheckIds.remove(item.id)
-                                        } else {
-                                            expandedCheckIds.insert(item.id)
-                                        }
-                                    }
-                                } label: {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Image(systemName: "checkmark.circle")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(ToolrollPalette.muted)
-                                            .padding(.top, 2)
-                                        Text(item.text)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
-                                            .lineLimit(isRowExpanded ? nil : 1)
-                                            .truncationMode(.tail)
-                                            .multilineTextAlignment(.leading)
-                                            .fixedSize(horizontal: false, vertical: isRowExpanded)
-                                        Spacer(minLength: 6)
-                                        if let badge = item.badge {
-                                            Text(badge)
-                                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                                                .foregroundStyle(ToolrollPalette.muted)
-                                                .padding(.horizontal, 5)
-                                                .padding(.vertical, 1.5)
-                                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
-                                                .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                    .contentShape(Rectangle())
+            if !visibleChecks.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    HairlineDivider()
+                        .padding(.bottom, 2)
+                    ForEach(visibleChecks) { item in
+                        let isRowExpanded = expandedCheckIds.contains(item.id)
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                if isRowExpanded {
+                                    expandedCheckIds.remove(item.id)
+                                } else {
+                                    expandedCheckIds.insert(item.id)
                                 }
-                                .buttonStyle(.plain)
                             }
+                        } label: {
+                            HStack(alignment: .top, spacing: 7) {
+                                Image(systemName: "checkmark.circle")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .padding(.top, 2)
+                                Text(item.text)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
+                                    .lineLimit(isRowExpanded ? nil : 1)
+                                    .truncationMode(.tail)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: isRowExpanded)
+                                Spacer(minLength: 6)
+                                if let badge = item.badge {
+                                    Text(badge)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
 
-                    HStack(spacing: 14) {
-                        if hiddenCheckCount > 0 {
-                            Button {
-                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                    showFullApprovalChecks.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(showFullApprovalChecks ? "Show fewer checks" : "Show all \(digest.checks.count) checks")
-                                        .font(.system(size: 11, weight: .medium))
-                                    Image(systemName: showFullApprovalChecks ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 8.5, weight: .semibold))
-                                }
-                                .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
+                    if hiddenCheckCount > 0 {
+                        Button {
+                            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                                showFullApprovalChecks.toggle()
                             }
-                            .buttonStyle(.plain)
-                        }
-
-                        if digest.wontTouch != nil || !digest.extraTerms.isEmpty {
-                            Button {
-                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                    showStandardSandboxDetails.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "shield")
-                                        .font(.system(size: 10))
-                                    Text("Scope & sandbox details")
-                                        .font(.system(size: 11))
-                                    Image(systemName: showStandardSandboxDetails ? "chevron.up" : "chevron.right")
-                                        .font(.system(size: 8, weight: .semibold))
-                                }
+                        } label: {
+                            Text(showFullApprovalChecks ? "Show fewer" : "+\(hiddenCheckCount) more checks")
+                                .font(.system(size: 11))
                                 .foregroundStyle(ToolrollPalette.muted)
-                            }
-                            .buttonStyle(.plain)
                         }
-
-                        Spacer()
+                        .buttonStyle(.plain)
+                        .padding(.top, 2)
                     }
-                    .padding(.top, 2)
+                }
+            }
 
-                    if showStandardSandboxDetails {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HairlineDivider().padding(.vertical, 2)
-                            if let wontTouch = digest.wontTouch {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("Won't touch")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                        .frame(width: 84, alignment: .leading)
-                                    Text(wontTouch)
-                                        .font(.system(size: 11.5))
-                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                            ForEach(digest.extraTerms) { extra in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(extra.label)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                        .frame(width: 84, alignment: .leading)
-                                    Text(extra.words)
-                                        .font(.system(size: 11.5))
-                                        .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
+            if showStandardSandboxDetails && hasScopeDetails {
+                VStack(alignment: .leading, spacing: 6) {
+                    HairlineDivider()
+                    if let wontTouch = digest.wontTouch {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("Won't touch")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .frame(width: 82, alignment: .leading)
+                            Text(wontTouch)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    ForEach(digest.extraTerms) { extra in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(extra.label)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .frame(width: 82, alignment: .leading)
+                            Text(extra.words)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-                .padding(12)
-                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
 
             if let prompt = store.approvalPasswordPrompt {
                 VStack(alignment: .leading, spacing: 6) {
+                    HairlineDivider()
                     Text(prompt)
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(ToolrollPalette.warning)
@@ -809,8 +757,8 @@ public struct TaskCockpitView: View {
                             .font(.system(size: 12.5))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 6)
-                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 5))
-                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                            .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
                             .onSubmit {
                                 guard !approvalPassword.isEmpty else { return }
                                 let pw = approvalPassword
@@ -825,88 +773,71 @@ public struct TaskCockpitView: View {
                             } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: store.touchIDSystemImage).font(.system(size: 11.5))
-                                    Text("Approve with \(store.touchIDLabel)")
+                                    Text(store.touchIDLabel)
                                 }
                             }
-                            .buttonStyle(KitButtonStyle(.primary))
+                            .buttonStyle(KitButtonStyle(.primary, compact: true))
                         }
 
-                        Button("Confirm & Approve") {
+                        Button("Confirm") {
                             let pw = approvalPassword
                             approvalPassword = ""
                             Task { await store.approveSelectedTask(password: pw) }
                         }
-                        .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary))
+                        .buttonStyle(KitButtonStyle(store.isTouchIDEnabled ? .ghost : .primary, compact: true))
                         .disabled(approvalPassword.isEmpty)
                     }
                 }
-            } else {
-                HStack(spacing: 8) {
-                    if store.stepCards?.plan != nil || store.stepCards?.planStopped?.again != nil {
-                        Button("Plan Again") {
-                            Task { await store.planAgainSelectedTask() }
-                        }
-                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                    }
-
-                    Button("Cancel Task") {
-                        Task { await store.cancelSelectedTask() }
-                    }
-                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
-                    Spacer()
-                }
             }
         }
-        .padding(16)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(ToolrollPalette.line, lineWidth: 1)
         )
     }
 
     private func fallbackApprovalCard(taskId: String, summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                StatusChip(tone: .needs, label: "Needs your approval")
-                Spacer()
-            }
+        HStack(spacing: 10) {
+            Circle()
+                .fill(ToolrollPalette.warning)
+                .frame(width: 6, height: 6)
             Text(summary)
-                .font(.system(size: 13))
+                .font(.system(size: 12.5))
                 .foregroundStyle(ToolrollPalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                if store.canApproveInApp {
-                    Button("Review & Approve") {
-                        Task { await store.approveSelectedTask() }
-                    }
-                    .buttonStyle(KitButtonStyle(.primary))
-                } else {
-                    Button {
-                        store.openTaskInBrowser(taskId: taskId)
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text("Approve in Browser")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 10.5, weight: .semibold))
-                        }
-                    }
-                    .buttonStyle(KitButtonStyle(.primary))
-
-                    Button("Ping Phone") {
-                        Task { await store.pingApproval(taskId: taskId) }
-                    }
-                    .buttonStyle(KitButtonStyle(.ghost))
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if store.canApproveInApp {
+                Button("Approve") {
+                    Task { await store.approveSelectedTask() }
                 }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+            } else {
+                Button("Ping Phone") {
+                    Task { await store.pingApproval(taskId: taskId) }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                Button {
+                    store.openTaskInBrowser(taskId: taskId)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Approve")
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
             }
         }
-        .padding(14)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(ToolrollPalette.line, lineWidth: 1)
         )
     }
 

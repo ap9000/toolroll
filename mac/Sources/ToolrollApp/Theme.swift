@@ -211,32 +211,25 @@ public struct StatusChip: View {
     }
 
     public var body: some View {
-        HStack(spacing: 5) {
-            if tone == .running {
-                Circle()
-                    .fill(ToolrollPalette.live)
-                    .frame(width: 6, height: 6)
-            } else if tone == .finished {
-                Circle()
-                    .fill(ToolrollPalette.success)
-                    .frame(width: 6, height: 6)
-            } else if tone == .failed {
-                Circle()
-                    .fill(ToolrollPalette.danger)
-                    .frame(width: 6, height: 6)
-            }
+        HStack(spacing: 6) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 6, height: 6)
             Text(label)
-                .font(.system(size: 11, weight: tone == .needs ? .semibold : .medium))
+                .font(.system(size: 12, weight: tone == .needs ? .semibold : .medium))
+                .foregroundStyle(tone == .failed ? ToolrollPalette.danger : ToolrollPalette.ink)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .foregroundStyle(foregroundColor)
-        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .strokeBorder(borderColor, lineWidth: tone == .needs ? 0 : 1)
-        )
+    }
+
+    private var dotColor: Color {
+        switch tone {
+        case .needs: return ToolrollPalette.warning
+        case .running: return ToolrollPalette.live
+        case .finished: return ToolrollPalette.success
+        case .failed: return ToolrollPalette.danger
+        case .queued, .unknown: return ToolrollPalette.muted
+        }
     }
 
     private var foregroundColor: Color {

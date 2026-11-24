@@ -271,9 +271,6 @@ public struct MainWorkbenchView: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(thread.provider.shortBadge)
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
                     Text(thread.provider.label(for: thread.modelId))
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(ToolrollPalette.ink)

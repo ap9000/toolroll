@@ -569,14 +569,12 @@ public struct InboxSidebarView: View {
                 if isRunning {
                     ProgressView()
                         .controlSize(.mini)
-                        .frame(width: 22, height: 18)
+                        .frame(width: 14, height: 14)
                 } else {
-                    Text(thread.provider.shortBadge)
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    Image(systemName: "bubble.left")
+                        .font(.system(size: 10.5))
                         .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .frame(width: 22, height: 18)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        .frame(width: 14, height: 14)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -586,8 +584,8 @@ public struct InboxSidebarView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     HStack(spacing: 5) {
-                        Text(thread.projectName)
-                            .font(.system(size: 10.5, design: .monospaced))
+                        Text("\(thread.projectName) · \(thread.provider.displayName)")
+                            .font(.system(size: 10.5))
                             .foregroundStyle(ToolrollPalette.muted)
                             .lineLimit(1)
                         if changedCount > 0 {

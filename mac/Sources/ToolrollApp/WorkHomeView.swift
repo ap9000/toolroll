@@ -269,10 +269,7 @@ struct WorkHomeView: View {
             }
         } label: {
             HStack(spacing: 5) {
-                Text(store.useLeadForNextChat ? "LD" : store.defaultChatProvider.shortBadge)
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Text(store.useLeadForNextChat ? "Lead" : store.defaultChatProvider.label(for: store.defaultChatModelId))
+                Text(store.useLeadForNextChat ? "Workspace Lead" : store.defaultChatProvider.label(for: store.defaultChatModelId))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
                 Image(systemName: "chevron.up.chevron.down")
