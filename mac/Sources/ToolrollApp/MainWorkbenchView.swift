@@ -43,8 +43,8 @@ public struct MainWorkbenchView: View {
                                 CanvasWorkspaceView(store: store)
                             } else if store.workspaceMode == .automations {
                                 AutomationsView(store: store)
-                            } else if let cliThread = store.selectedCliThread {
-                                LocalCliThreadView(store: store, thread: cliThread)
+                            } else if let chatThread = store.selectedChatThread {
+                                AgentChatView(store: store, thread: chatThread)
                             } else if store.isComposingNewWork {
                                 NewWorkCanvasView(store: store)
                             } else if store.selectedRow == nil {
@@ -131,8 +131,8 @@ public struct MainWorkbenchView: View {
     }
 
     private var breadcrumbProject: String? {
-        if let cliThread = store.selectedCliThread {
-            return "\(cliThread.provider.displayName) · \(cliThread.projectName)"
+        if let chatThread = store.selectedChatThread {
+            return "\(chatThread.provider.displayName) · \(chatThread.projectName)"
         }
         guard store.workspaceMode == .workbench else { return nil }
         if store.isComposingNewWork { return store.activeProject ?? store.selectedProject }
@@ -140,7 +140,7 @@ public struct MainWorkbenchView: View {
     }
 
     private var breadcrumbTitle: String {
-        if let cliThread = store.selectedCliThread { return cliThread.title }
+        if let chatThread = store.selectedChatThread { return chatThread.title }
         switch store.workspaceMode {
         case .canvas: return "Canvas"
         case .automations: return "Automations"

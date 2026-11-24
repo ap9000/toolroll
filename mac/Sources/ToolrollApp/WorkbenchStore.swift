@@ -193,6 +193,21 @@ public final class WorkbenchStore {
     public private(set) var isRefreshingUsage: Bool = false
     public private(set) var lastUsageRefreshAt: Date? = nil
     private var didAutoRefreshUsage: Bool = false
+    public private(set) var chatThreads: [AgentChatThread] = AgentChatPersistence.load()
+    public var selectedChatThreadId: String? = nil
+    public private(set) var runningChatThreadIds: Set<String> = []
+    public private(set) var chatThreadDiffs: [String: AgentChatGitDiff] = [:]
+    public var isChatThreadsExpanded: Bool = true
+    public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "chat" {
+        didSet { UserDefaults.standard.set(preferredOrchestrationMode, forKey: "toolroll.orchestrationMode") }
+    }
+    public var defaultChatProvider: AgentChatProvider = AgentChatProvider(rawValue: UserDefaults.standard.string(forKey: "toolroll.chatProvider") ?? "claude") ?? .claude {
+        didSet { UserDefaults.standard.set(defaultChatProvider.rawValue, forKey: "toolroll.chatProvider") }
+    }
+    public var defaultChatModelId: String = UserDefaults.standard.string(forKey: "toolroll.chatModelId") ?? AgentChatProvider.claude.defaultModelId {
+        didSet { UserDefaults.standard.set(defaultChatModelId, forKey: "toolroll.chatModelId") }
+    }
+    private var chatProcessHandles: [String: AgentChatProcessHandle] = [:]
     private var knownAgentRequestIds: Set<String> = []
     private var agentRequestPollTask: Task<Void, Never>?
     private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
@@ -881,13 +896,35 @@ public final class WorkbenchStore {
         return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
     }
 
-    public var isShowingWorkHome: Bool { !isComposingNewWork && selectedTaskId == nil && selectedCliThreadId == nil }
+    public var isShowingWorkHome: Bool { !isComposingNewWork && selectedTaskId == nil && selectedCliThreadId == nil && selectedChatThreadId == nil }
+
+    public var selectedChatThread: AgentChatThread? {
+        guard let id = selectedChatThreadId else { return nil }
+        return chatThreads.first(where: { $0.id == id })
+    }
+
+    public var filteredChatThreads: [AgentChatThread] {
+        chatThreads.filter { thread in
+            if let proj = selectedProject, !proj.isEmpty {
+                guard thread.projectName.caseInsensitiveCompare(proj) == .orderedSame else { return false }
+            }
+            let trimmed = sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                let q = trimmed.lowercased()
+                return thread.title.lowercased().contains(q)
+                    || thread.projectName.lowercased().contains(q)
+                    || thread.provider.displayName.lowercased().contains(q)
+            }
+            return true
+        }
+    }
 
     public func openWorkHome() {
         if let current = selectedTaskId { backStack.append(current); forwardStack.removeAll() }
         workspaceMode = .workbench
         isComposingNewWork = false
         selectedCliThreadId = nil
+        selectedChatThreadId = nil
         selectedTaskId = nil
         stepCards = nil
     }
@@ -899,17 +936,192 @@ public final class WorkbenchStore {
         }
         workspaceMode = .workbench
         selectedCliThreadId = nil
+        selectedChatThreadId = nil
         isComposingNewWork = true
+    }
+
+    public func selectChatThread(_ id: String) {
+        workspaceMode = .workbench
+        isComposingNewWork = false
+        selectedCliThreadId = nil
+        selectedChatThreadId = nil
+        selectedTaskId = nil
+        selectedChatThreadId = id
+        if let thread = chatThreads.first(where: { $0.id == id }) {
+            activeProject = thread.projectName
+        }
+    }
+
+    public func setDefaultChatModel(provider: AgentChatProvider, modelId: String) {
+        defaultChatProvider = provider
+        defaultChatModelId = modelId
+    }
+
+    public func startChatThread(
+        prompt: String,
+        project: String?,
+        provider: AgentChatProvider? = nil,
+        modelId: String? = nil
+    ) async {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let chosenProvider = provider ?? defaultChatProvider
+        let chosenModel = modelId ?? (provider == nil ? defaultChatModelId : chosenProvider.defaultModelId)
+        let projName = project ?? activeProject ?? selectedProject ?? allProjects.first ?? "Workspace"
+        let projPath = localFolderPath(for: projName)
+            ?? terminalsResponse?.projects?.first(where: { $0.name.caseInsensitiveCompare(projName) == .orderedSame })?.path
+            ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let firstLine = trimmed.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
+        let title = String(firstLine.prefix(64))
+
+        let thread = AgentChatThread(
+            title: title,
+            projectName: projName,
+            projectPath: projPath,
+            provider: chosenProvider,
+            modelId: chosenModel
+        )
+        chatThreads.insert(thread, at: 0)
+        AgentChatPersistence.save(chatThreads)
+        selectChatThread(thread.id)
+        await sendChatMessage(threadId: thread.id, text: trimmed)
+    }
+
+    public func sendChatMessage(threadId: String, text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let idx = chatThreads.firstIndex(where: { $0.id == threadId }),
+              !runningChatThreadIds.contains(threadId)
+        else { return }
+
+        let userMsg = AgentChatMessage(role: .user, text: trimmed)
+        let assistantMsg = AgentChatMessage(role: .assistant, text: "", isStreaming: true)
+        chatThreads[idx].messages.append(userMsg)
+        chatThreads[idx].messages.append(assistantMsg)
+        chatThreads[idx].updatedAt = Date()
+        let assistantId = assistantMsg.id
+        let provider = chatThreads[idx].provider
+        let modelId = chatThreads[idx].modelId
+        let projectPath = chatThreads[idx].projectPath
+        let sessionId = chatThreads[idx].sessionId
+        AgentChatPersistence.save(chatThreads)
+
+        runningChatThreadIds.insert(threadId)
+        let handle = AgentChatProcessHandle()
+        chatProcessHandles[threadId] = handle
+
+        let stream = AgentChatRunner.streamTurn(
+            provider: provider,
+            modelId: modelId,
+            projectPath: projectPath,
+            prompt: trimmed,
+            sessionId: sessionId,
+            handle: handle
+        )
+
+        for await event in stream {
+            guard let tIdx = chatThreads.firstIndex(where: { $0.id == threadId }),
+                  let mIdx = chatThreads[tIdx].messages.firstIndex(where: { $0.id == assistantId })
+            else { break }
+
+            switch event {
+            case .sessionId(let sid):
+                chatThreads[tIdx].sessionId = sid
+            case .textDelta(let delta):
+                chatThreads[tIdx].messages[mIdx].text += delta
+                chatThreads[tIdx].updatedAt = Date()
+            case .textReplace(let full):
+                chatThreads[tIdx].messages[mIdx].text = full
+                chatThreads[tIdx].updatedAt = Date()
+            case .tool(let toolEvent):
+                if let existing = chatThreads[tIdx].messages[mIdx].tools.firstIndex(where: { $0.id == toolEvent.id }) {
+                    chatThreads[tIdx].messages[mIdx].tools[existing] = toolEvent
+                } else {
+                    chatThreads[tIdx].messages[mIdx].tools.append(toolEvent)
+                }
+                chatThreads[tIdx].updatedAt = Date()
+            case .completed:
+                chatThreads[tIdx].messages[mIdx].isStreaming = false
+                for i in chatThreads[tIdx].messages[mIdx].tools.indices {
+                    if chatThreads[tIdx].messages[mIdx].tools[i].status == "running" {
+                        chatThreads[tIdx].messages[mIdx].tools[i].status = "done"
+                    }
+                }
+                chatThreads[tIdx].updatedAt = Date()
+            case .failed(let message):
+                chatThreads[tIdx].messages[mIdx].isStreaming = false
+                chatThreads[tIdx].messages[mIdx].isError = true
+                if chatThreads[tIdx].messages[mIdx].text.isEmpty {
+                    chatThreads[tIdx].messages[mIdx].text = message
+                } else {
+                    chatThreads[tIdx].messages[mIdx].text += "\n\n\(message)"
+                }
+                chatThreads[tIdx].updatedAt = Date()
+            }
+        }
+
+        if let tIdx = chatThreads.firstIndex(where: { $0.id == threadId }),
+           let mIdx = chatThreads[tIdx].messages.firstIndex(where: { $0.id == assistantId })
+        {
+            chatThreads[tIdx].messages[mIdx].isStreaming = false
+        }
+        runningChatThreadIds.remove(threadId)
+        chatProcessHandles.removeValue(forKey: threadId)
+        chatThreads.sort { $0.updatedAt > $1.updatedAt }
+        AgentChatPersistence.save(chatThreads)
+        await refreshChatDiff(threadId: threadId)
+    }
+
+    public func stopChatThread(threadId: String) {
+        chatProcessHandles[threadId]?.stop()
+    }
+
+    public func updateChatThreadModel(threadId: String, provider: AgentChatProvider, modelId: String) {
+        guard let idx = chatThreads.firstIndex(where: { $0.id == threadId }) else { return }
+        if chatThreads[idx].provider != provider {
+            chatThreads[idx].sessionId = nil
+        }
+        chatThreads[idx].provider = provider
+        chatThreads[idx].modelId = modelId
+        setDefaultChatModel(provider: provider, modelId: modelId)
+        AgentChatPersistence.save(chatThreads)
+    }
+
+    public func deleteChatThread(id: String) {
+        stopChatThread(threadId: id)
+        chatThreads.removeAll { $0.id == id }
+        chatThreadDiffs.removeValue(forKey: id)
+        if selectedChatThreadId == id {
+            selectedChatThreadId = nil
+        }
+        AgentChatPersistence.save(chatThreads)
+    }
+
+    public func refreshChatDiff(threadId: String) async {
+        guard let thread = chatThreads.first(where: { $0.id == threadId }) else { return }
+        let diff = await AgentChatRunner.fetchGitDiff(projectPath: thread.projectPath)
+        chatThreadDiffs[threadId] = diff
+    }
+
+    public func promoteChatToTask(threadId: String) async {
+        guard let thread = chatThreads.first(where: { $0.id == threadId }) else { return }
+        let summaryLines = thread.messages.suffix(6).map { msg in
+            "\(msg.role == .user ? "User" : thread.provider.displayName): \(String(msg.text.prefix(400)))"
+        }.joined(separator: "\n\n")
+        await createTask(
+            title: thread.title,
+            project: thread.projectName,
+            body: "Ship and verify work started in Chat (\(thread.provider.displayName) · \(thread.modelId)):\n\n\(summaryLines)",
+            planFirst: true
+        )
     }
 
     public func refreshLocalDiscovery() {
         Task.detached(priority: .utility) {
             let repos = LocalWorkspaceDiscovery.scanGitRepositories(limit: 40)
-            let threads = LocalWorkspaceDiscovery.scanCliThreads(limit: 36)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.discoveredGitRepos = repos
-                self.localCliThreads = threads
             }
         }
     }
@@ -1623,6 +1835,7 @@ public final class WorkbenchStore {
         }
         isComposingNewWork = false
         selectedCliThreadId = nil
+        selectedChatThreadId = nil
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
         taskViewMode = .activity

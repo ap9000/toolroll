@@ -6,6 +6,7 @@ public struct NewWorkCanvasView: View {
     @Bindable var store: WorkbenchStore
 
     enum ComposeMode: String, CaseIterable, Identifiable {
+        case chat = "Chat"
         case planFirst = "Plan first"
         case justCode = "Just code"
         case askLead = "Ask Lead"
@@ -14,7 +15,7 @@ public struct NewWorkCanvasView: View {
 
     @State private var promptText: String = ""
     @State private var attachments: [ComposerAttachment] = []
-    @State private var mode: ComposeMode = .planFirst
+    @State private var mode: ComposeMode = .chat
     @State private var isWorkspaceWide: Bool = false
     @State private var isModelPickerOpen: Bool = false
     @State private var isDropTargeted: Bool = false
@@ -35,6 +36,7 @@ public struct NewWorkCanvasView: View {
     }
 
     private var activeModelBadge: String {
+        if mode == .chat { return store.defaultChatProvider.label(for: store.defaultChatModelId) }
         if mode == .askLead { return "Central Lead" }
         let key = (mode == .planFirst) ? "plan" : "build"
         if let role = store.modelsRead.roles.first(where: { $0.key == key }), !role.words.isEmpty {
@@ -287,6 +289,8 @@ public struct NewWorkCanvasView: View {
 
     private var promptPlaceholder: String {
         switch mode {
+        case .chat:
+            return "Chat interactively with \(store.defaultChatProvider.displayName) in \(activeProjectLabel)…"
         case .planFirst:
             return "Describe the outcome, constraints, or visual change to plan…"
         case .justCode:
@@ -637,6 +641,7 @@ public struct NewWorkCanvasView: View {
 
     private var modeHint: String {
         switch mode {
+        case .chat: return "Interactive back-and-forth thread (promote to Task anytime)"
         case .planFirst: return "Review plan & checks in-app before building"
         case .justCode: return "Starts straight in an isolated worktree"
         case .askLead: return "Opens in Lead Thread"
@@ -650,6 +655,11 @@ public struct NewWorkCanvasView: View {
         promptText = ""
         attachments = []
         let cleanProj = resolvedProject
+
+        if mode == .chat {
+            Task { await store.startChatThread(prompt: composed.combinedMessage, project: cleanProj) }
+            return
+        }
 
         if mode == .askLead {
             store.isInspectorVisible = true

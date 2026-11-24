@@ -240,20 +240,20 @@ public struct InboxSidebarView: View {
                         .padding(.top, 4)
                     }
 
-                    if !store.filteredCliThreads.isEmpty {
+                    if !store.filteredChatThreads.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Button {
                                 withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                    store.isCliThreadsExpanded.toggle()
+                                    store.isChatThreadsExpanded.toggle()
                                 }
                             } label: {
                                 HStack(spacing: 5) {
-                                    Image(systemName: store.isCliThreadsExpanded ? "chevron.down" : "chevron.right")
+                                    Image(systemName: store.isChatThreadsExpanded ? "chevron.down" : "chevron.right")
                                         .font(.system(size: 8.5, weight: .semibold))
-                                    Text("CLI threads")
+                                    Text("Chats")
                                         .font(.system(size: 12, weight: .medium))
                                     Spacer()
-                                    Text("\(store.filteredCliThreads.count)")
+                                    Text("\(store.filteredChatThreads.count)")
                                         .font(.system(size: 10, design: .monospaced))
                                 }
                                 .foregroundStyle(ToolrollPalette.muted)
@@ -263,26 +263,9 @@ public struct InboxSidebarView: View {
                             }
                             .buttonStyle(.plain)
 
-                            if store.isCliThreadsExpanded {
-                                let visibleThreads = Array(store.filteredCliThreads.prefix(store.cliThreadsDisplayLimit))
-                                ForEach(visibleThreads) { thread in
-                                    cliThreadRow(thread)
-                                }
-                                if store.filteredCliThreads.count > store.cliThreadsDisplayLimit {
-                                    Button {
-                                        store.cliThreadsDisplayLimit += 12
-                                    } label: {
-                                        HStack(spacing: 5) {
-                                            Image(systemName: "chevron.down")
-                                                .font(.system(size: 9))
-                                            Text("Show \(store.filteredCliThreads.count - store.cliThreadsDisplayLimit) more")
-                                                .font(.system(size: 11))
-                                        }
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 6)
-                                    }
-                                    .buttonStyle(.plain)
+                            if store.isChatThreadsExpanded {
+                                ForEach(store.filteredChatThreads) { thread in
+                                    chatThreadRow(thread)
                                 }
                             }
                         }
@@ -658,6 +641,61 @@ public struct InboxSidebarView: View {
         .accessibilityLabel(archived ? "\(row.title), archived" : "\(row.title), \(row.word)")
         .contextMenu {
             if archived { ArchivedRowMenuItems(store: store, row: row) } else { TaskRowMenuItems(store: store, row: row) }
+        }
+    }
+
+    private func chatThreadRow(_ thread: AgentChatThread) -> some View {
+        let isSelected = store.selectedChatThreadId == thread.id
+        let isRunning = store.runningChatThreadIds.contains(thread.id)
+
+        return Button {
+            store.selectChatThread(thread.id)
+        } label: {
+            HStack(alignment: .center, spacing: 8) {
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 22, height: 18)
+                } else {
+                    Text(thread.provider.shortBadge)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: 22, height: 18)
+                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(thread.title)
+                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.ink.opacity(0.9))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(thread.projectName)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(thread.relativeAge)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: isSelected)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .contextMenu {
+            Button("Ship as Toolroll Task") {
+                Task { await store.promoteChatToTask(threadId: thread.id) }
+            }
+            Divider()
+            Button("Delete Chat", role: .destructive) {
+                store.deleteChatThread(id: thread.id)
+            }
         }
     }
 

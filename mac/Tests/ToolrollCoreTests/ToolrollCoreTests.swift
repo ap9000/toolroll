@@ -884,6 +884,62 @@ struct ToolrollCoreTests {
         #expect(AgentRequestStore.load(databasePath: dbPath).count == 1)
     }
 
+    @Test("AgentChatStreamParser parses Claude, Codex, and Gemini streams and builds resume commands")
+    func agentChatParserAndPersistence() throws {
+        let claudeEvents = AgentChatStreamParser.parse(
+            line: #"{"type":"result","session_id":"cl-123","is_error":false,"result":"Done"}"#,
+            provider: .claude
+        )
+        #expect(claudeEvents.contains(.sessionId("cl-123")))
+        #expect(claudeEvents.contains(.textReplace("Done")))
+        #expect(claudeEvents.contains(.completed))
+
+        let codexStart = AgentChatStreamParser.parse(
+            line: #"{"type":"thread.started","thread_id":"cx-999"}"#,
+            provider: .codex
+        )
+        #expect(codexStart == [.sessionId("cx-999")])
+        let codexMsg = AgentChatStreamParser.parse(
+            line: #"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Shipped"}}"#,
+            provider: .codex
+        )
+        #expect(codexMsg == [.textReplace("Shipped")])
+
+        let geminiDelta = AgentChatStreamParser.parse(
+            line: #"{"event":"step_update","conversation_id":"gm-42","step_update":{"step_type":"agent_response","text_delta":"Hi"}}"#,
+            provider: .gemini
+        )
+        #expect(geminiDelta.contains(.sessionId("gm-42")))
+        #expect(geminiDelta.contains(.textDelta("Hi")))
+
+        let codexResume = AgentChatRunner.buildCommand(provider: .codex, modelId: "gpt-6-astra", prompt: "Next", sessionId: "cx-999")
+        #expect(codexResume.prefix(3) == ["exec", "resume", "--json"])
+        #expect(codexResume.contains("cx-999"))
+
+        let geminiResume = AgentChatRunner.buildCommand(provider: .gemini, modelId: "gemini-4-neon-high", prompt: "Next", sessionId: "gm-42")
+        #expect(geminiResume.contains("--conversation"))
+        #expect(geminiResume.contains("gm-42"))
+
+        let tmpUrl = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-chat-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tmpUrl) }
+
+        let thread = AgentChatThread(
+            title: "Build chat mode",
+            projectName: "toolroll",
+            projectPath: "/tmp/toolroll",
+            provider: .gemini,
+            modelId: "gemini-4-neon-high",
+            sessionId: "gm-42",
+            messages: [AgentChatMessage(role: .user, text: "Hi")]
+        )
+        AgentChatPersistence.save([thread], to: tmpUrl)
+        let loaded = AgentChatPersistence.load(from: tmpUrl)
+        #expect(loaded.count == 1)
+        #expect(loaded[0].sessionId == "gm-42")
+        #expect(loaded[0].provider == .gemini)
+    }
+
     @Test("A cancel names the newest run, not the live one: a queued task with a finished run has no live run")
     func cancelNamesLatestRun() throws {
         let json = """

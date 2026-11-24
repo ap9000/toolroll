@@ -8,11 +8,20 @@ struct WorkHomeView: View {
     @State private var showsAllSettled = false
     @State private var quickPrompt = ""
     @State private var quickPlanFirst = true
-    @State private var quickAskLead = false
     @FocusState private var quickPromptFocused: Bool
 
     private static let settledPreview = 6
     private static let automationsPreview = 3
+
+    private enum OrchestrationTab: String {
+        case chat
+        case task
+        case lead
+    }
+
+    private var activeTab: OrchestrationTab {
+        OrchestrationTab(rawValue: store.preferredOrchestrationMode) ?? .chat
+    }
 
     var body: some View {
         ScrollView {
@@ -202,13 +211,13 @@ struct WorkHomeView: View {
         VStack(alignment: .leading, spacing: 20) {
             heroQuickComposer
 
-            if !store.allProjects.isEmpty {
-                projectsGridSection
+            let recentChats = Array(store.filteredChatThreads.prefix(4))
+            if !recentChats.isEmpty {
+                recentChatsSection(recentChats)
             }
 
-            let recentThreads = Array(store.localCliThreads.prefix(4))
-            if !recentThreads.isEmpty {
-                recentCliThreadsSection(recentThreads)
+            if !store.allProjects.isEmpty {
+                projectsGridSection
             }
         }
     }
@@ -216,9 +225,7 @@ struct WorkHomeView: View {
     private var heroQuickComposer: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField(
-                quickAskLead
-                    ? "Ask Lead across your workspace…"
-                    : "Describe what you want built in \(activeProject ?? "your workspace")…",
+                composerPlaceholder,
                 text: $quickPrompt,
                 axis: .vertical
             )
@@ -236,12 +243,17 @@ struct WorkHomeView: View {
                     projectSelectorMenu
                 }
                 modeTogglePills
+                if activeTab == .chat {
+                    chatModelSelectorMenu
+                } else if activeTab == .task {
+                    planFirstChip
+                }
                 Spacer(minLength: 8)
                 Button {
                     submitQuickPrompt()
                 } label: {
                     HStack(spacing: 5) {
-                        Text(quickAskLead ? "Ask Lead" : (quickPlanFirst ? "Plan task" : "Start build"))
+                        Text(submitLabel)
                         Image(systemName: "arrow.up")
                             .font(.system(size: 10.5, weight: .bold))
                     }
@@ -259,13 +271,32 @@ struct WorkHomeView: View {
         )
     }
 
+    private var composerPlaceholder: String {
+        switch activeTab {
+        case .chat:
+            return "Chat with \(store.defaultChatProvider.displayName) in \(activeProject ?? "your workspace")…"
+        case .task:
+            return "Describe a task to plan & build in \(activeProject ?? "your workspace")…"
+        case .lead:
+            return "Ask Lead across your workspace…"
+        }
+    }
+
+    private var submitLabel: String {
+        switch activeTab {
+        case .chat: return "Start chat"
+        case .task: return quickPlanFirst ? "Plan task" : "Start build"
+        case .lead: return "Ask Lead"
+        }
+    }
+
     private var compactQuickInput: some View {
         HStack(spacing: 10) {
-            Image(systemName: "plus")
+            Image(systemName: activeTab == .chat ? "bubble.left" : "plus")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.muted)
             TextField(
-                "Quick task for \(activeProject ?? "workspace")…",
+                composerPlaceholder,
                 text: $quickPrompt
             )
             .textFieldStyle(.plain)
@@ -278,7 +309,9 @@ struct WorkHomeView: View {
                 projectSelectorMenu
             }
 
-            Button(quickPlanFirst ? "Plan" : "Build") {
+            modeTogglePills
+
+            Button(activeTab == .chat ? "Chat" : (activeTab == .lead ? "Ask" : (quickPlanFirst ? "Plan" : "Build"))) {
                 submitQuickPrompt()
             }
             .buttonStyle(KitButtonStyle(.primary, compact: true))
@@ -294,22 +327,79 @@ struct WorkHomeView: View {
     }
 
     private var modeTogglePills: some View {
-        HStack(spacing: 4) {
-            modeChip(title: "Plan first", active: !quickAskLead && quickPlanFirst) {
-                quickAskLead = false
-                quickPlanFirst = true
+        HStack(spacing: 3) {
+            modeChip(title: "Chat", active: activeTab == .chat) {
+                store.preferredOrchestrationMode = OrchestrationTab.chat.rawValue
             }
-            modeChip(title: "Just code", active: !quickAskLead && !quickPlanFirst) {
-                quickAskLead = false
-                quickPlanFirst = false
+            modeChip(title: "Task", active: activeTab == .task) {
+                store.preferredOrchestrationMode = OrchestrationTab.task.rawValue
             }
-            modeChip(title: "Ask Lead", active: quickAskLead) {
-                quickAskLead = true
+            modeChip(title: "Lead", active: activeTab == .lead) {
+                store.preferredOrchestrationMode = OrchestrationTab.lead.rawValue
             }
         }
         .padding(3)
         .background(ToolrollPalette.ground, in: Capsule())
         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private var chatModelSelectorMenu: some View {
+        Menu {
+            ForEach(AgentChatProvider.allCases) { provider in
+                Section(provider.displayName) {
+                    ForEach(provider.presets, id: \.id) { preset in
+                        Button {
+                            store.setDefaultChatModel(provider: provider, modelId: preset.id)
+                        } label: {
+                            HStack {
+                                Text(preset.label)
+                                if store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(store.defaultChatProvider.shortBadge)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Text(store.defaultChatProvider.label(for: store.defaultChatModelId))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(ToolrollPalette.ground, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var planFirstChip: some View {
+        Button {
+            quickPlanFirst.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: quickPlanFirst ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 10))
+                Text("Plan first")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(quickPlanFirst ? ToolrollPalette.ink : ToolrollPalette.muted)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(ToolrollPalette.ground, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private func modeChip(title: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -456,13 +546,13 @@ struct WorkHomeView: View {
         }
     }
 
-    private func recentCliThreadsSection(_ threads: [LocalCliThread]) -> some View {
+    private func recentChatsSection(_ threads: [AgentChatThread]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Recent CLI sessions")
+                Text("Recent chats")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
-                Text("\(store.localCliThreads.count)")
+                Text("\(store.filteredChatThreads.count)")
                     .font(.system(size: 12))
                     .foregroundStyle(ToolrollPalette.muted)
                 Spacer()
@@ -476,7 +566,7 @@ struct WorkHomeView: View {
                             .padding(.leading, 44)
                     }
                     Button {
-                        store.selectCliThread(thread)
+                        store.selectChatThread(thread.id)
                     } label: {
                         HStack(spacing: 10) {
                             Text(thread.provider.shortBadge)
@@ -492,7 +582,7 @@ struct WorkHomeView: View {
                                     .foregroundStyle(ToolrollPalette.ink)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
-                                Text("\(thread.provider.displayName) · \(thread.projectName)")
+                                Text("\(thread.provider.label(for: thread.modelId)) · \(thread.projectName)")
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(ToolrollPalette.muted)
                                     .lineLimit(1)
@@ -655,21 +745,26 @@ struct WorkHomeView: View {
         let trimmed = quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         quickPrompt = ""
-        if quickAskLead {
+        let targetProject = activeProject
+        switch activeTab {
+        case .chat:
+            Task {
+                await store.startChatThread(prompt: trimmed, project: targetProject)
+            }
+        case .lead:
             store.isInspectorVisible = true
             store.inspectorTab = .lead
             Task { await store.sendLeadMessage(trimmed) }
-            return
-        }
-        let targetProject = activeProject
-        let planFirst = quickPlanFirst
-        Task {
-            await store.createTask(
-                title: trimmed,
-                project: targetProject,
-                body: "",
-                planFirst: planFirst
-            )
+        case .task:
+            let planFirst = quickPlanFirst
+            Task {
+                await store.createTask(
+                    title: trimmed,
+                    project: targetProject,
+                    body: "",
+                    planFirst: planFirst
+                )
+            }
         }
     }
 }
