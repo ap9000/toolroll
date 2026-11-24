@@ -529,6 +529,9 @@ export async function invokeAgent(
     if (own !== null) grants.codexState = own;
     if (process.platform === "darwin") grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];
   }
+  if (fence.length > 0 && spec.provider === "antigravity" && process.platform === "darwin") {
+    grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];
+  }
   const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const fenced = fenceLaunch(spec.provider, fence);

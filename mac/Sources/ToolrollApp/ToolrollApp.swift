@@ -2,9 +2,72 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
+@MainActor
+final class ToolrollWindowCoordinator {
+    static let shared = ToolrollWindowCoordinator()
+    var openMainWindow: (() -> Void)?
+
+    func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        let mainWindows = NSApp.windows.filter { window in
+            window.identifier?.rawValue == ToolrollMacApp.mainWindowId
+                || window.title == "Toolroll"
+                || (window.canBecomeMain && !(window is NSPanel))
+        }
+        if let existing = mainWindows.first {
+            if existing.isMiniaturized {
+                existing.deminiaturize(nil)
+            }
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        openMainWindow?()
+        DispatchQueue.main.async {
+            if let created = NSApp.windows.first(where: { $0.canBecomeMain && !($0 is NSPanel) }) {
+                created.makeKeyAndOrderFront(nil)
+            }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+final class ToolrollAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            if !flag {
+                ToolrollWindowCoordinator.shared.showMainWindow()
+            } else {
+                sender.activate(ignoringOtherApps: true)
+            }
+        }
+        return true
+    }
+}
+
+private struct WindowOpenerRegistrar: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            ToolrollWindowCoordinator.shared.openMainWindow = { [openWindow] in
+                openWindow(id: ToolrollMacApp.mainWindowId)
+            }
+        }
+    }
+}
+
 @main
 struct ToolrollMacApp: App {
     static let mainWindowId = "main"
+    @NSApplicationDelegateAdaptor(ToolrollAppDelegate.self) private var appDelegate
     @State private var store = WorkbenchStore()
 
     private func archiveSelectedTask() {
@@ -21,6 +84,7 @@ struct ToolrollMacApp: App {
         Window("Toolroll", id: ToolrollMacApp.mainWindowId) {
             MainWorkbenchView(store: store)
                 .frame(minWidth: 740, minHeight: 580)
+                .modifier(WindowOpenerRegistrar())
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.previewServer.stopManagedServer()
                 }
@@ -29,7 +93,13 @@ struct ToolrollMacApp: App {
         .defaultSize(width: 1380, height: 860)
         .commands {
             CommandMenu("Work") {
+                Button("Show Toolroll Window") {
+                    ToolrollWindowCoordinator.shared.showMainWindow()
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+
                 Button("New Task") {
+                    ToolrollWindowCoordinator.shared.showMainWindow()
                     store.isSetupOpen = false
                     store.openNewWorkCanvas()
                 }
@@ -190,8 +260,10 @@ private struct ToolrollMenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     private func showMain() {
-        openWindow(id: ToolrollMacApp.mainWindowId)
-        NSApp.activate(ignoringOtherApps: true)
+        ToolrollWindowCoordinator.shared.openMainWindow = { [openWindow] in
+            openWindow(id: ToolrollMacApp.mainWindowId)
+        }
+        ToolrollWindowCoordinator.shared.showMainWindow()
     }
 
     var body: some View {
@@ -221,5 +293,10 @@ private struct ToolrollMenuBarContent: View {
             }
         }
         .padding(6)
+        .onAppear {
+            ToolrollWindowCoordinator.shared.openMainWindow = { [openWindow] in
+                openWindow(id: ToolrollMacApp.mainWindowId)
+            }
+        }
     }
 }

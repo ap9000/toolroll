@@ -72,6 +72,8 @@ describe("the network a scope is written with", () => {
   test("the defaults are the narrow ones: no local services, provider-only for launches nothing sealed, legacy approvals narrowed", () => {
     expect(PROJECT_NETWORK_DEFAULT).toEqual({ mode: "allowlist", hosts: [], loopback: "proxy-only" });
     expect(providerOnlyNetwork("codex")).toEqual({ version: 1, mode: "allowlist", hosts: [...PROVIDER_HOSTS["codex"]!].sort(), loopback: "proxy-only" });
+    expect(providerOnlyNetwork("antigravity")).toEqual({ version: 1, mode: "allowlist", hosts: [...PROVIDER_HOSTS["antigravity"]!].sort(), loopback: "any" });
+    expect(resolveNetwork("antigravity", PROJECT_NETWORK_DEFAULT, []).loopback).toBe("any");
     expect(legacyNetwork("claude", ["python"]).hosts).toEqual([...PROVIDER_HOSTS["claude"]!, ...REGISTRY_HOSTS.python].sort());
     expect(legacyNetwork("claude", []).loopback).toBe("proxy-only");
     expect(networkWords(null, "claude")).toContain("approved before network rules");

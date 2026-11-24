@@ -177,19 +177,26 @@ export function repositoryEcosystems(repo: string): Ecosystem[] {
 }
 
 /** The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries. */
+const PROVIDER_NEEDS_LOOPBACK: ReadonlySet<string> = new Set(["antigravity"]);
+
 export function resolveNetwork(provider: string, project: ProjectNetwork, ecosystems: readonly Ecosystem[]): NetworkProfile {
-  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback: project.loopback };
+  const loopback: LoopbackMode = PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : project.loopback;
+  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback };
   const hosts = new Set<string>([
     ...(PROVIDER_HOSTS[provider] ?? []),
     ...ecosystems.flatMap(one => REGISTRY_HOSTS[one]),
     ...project.hosts,
   ]);
-  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback: project.loopback };
+  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback };
 }
 
-/** The network of a launch nothing sealed one for (a planner, a check): its provider's own hosts and nothing else. */
 export function providerOnlyNetwork(provider: string): NetworkProfile {
-  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(), loopback: "proxy-only" };
+  return {
+    version: NETWORK_POLICY_VERSION,
+    mode: "allowlist",
+    hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(),
+    loopback: PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : "proxy-only",
+  };
 }
 
 /**
