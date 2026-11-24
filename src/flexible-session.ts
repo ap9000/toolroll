@@ -818,20 +818,22 @@ export function flexibleThreadEnded(store: Store, thread: string): boolean {
  *   ended thread, reads the billing of their own sign-in now, and admits the turn (F2e admitFlexibleTurn: the terms
  *   the thread's last turn ran under must still stand for this person, every limit has room) at the thread's level,
  *   with the thread's agent and model. The same `key` again never takes a second turn.
+ * - The same `key` again after its turn ended before its agent ever started (nothing ran) sends it again as a new turn
+ *   (`resent`, said to the person); after its agent did start, it is refused with that turn's state.
  * - Then the turn begins (beginFlexibleThreadTurn) with a fresh agent, which doesn't remember earlier turns (`fresh`,
  *   said to the person): an earlier turn's agent is replaced, never reused (flexible-agents.ts startFlexibleTurn).
  * A person's surface only; the caller proves the person (their session re-read, and the proof a start takes).
  */
 export async function continueFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; message: string; key: string;
   freshProof: boolean; held: () => boolean; launcher: FlexibleLauncher | null; clock?: FlexibleClock; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }):
-  Promise<{ ok: true; turn: string; seq: number; fresh: boolean; replayed: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  Promise<{ ok: true; turn: string; seq: number; fresh: boolean; replayed: boolean; resent?: { seq: number; detail: string | null } } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000
     || typeof input.key !== "string" || !ID.test(input.key) || typeof input.held !== "function") return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
   const clock = input.clock ?? systemClock;
   const locked = await withFlexibleThreadLock(input.thread, async () => {
-    const admitted = store.transact((): { ok: true; turn: string; seq: number; replayed: boolean } | { ok: false; reason: string; message: string } => {
+    const admitted = store.transact((): { ok: true; turn: string; seq: number; replayed: boolean; resent?: { seq: number; detail: string | null } } | { ok: false; reason: string; message: string } => {
       if (!input.held()) return { ok: false, reason: "session", message: "Your session here changed. Sign in again, then reply. Nothing was sent." };
       if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
       if (flexibleThreadEnded(store, input.thread)) return { ok: false, reason: "thread-ended", message: FLEXIBLE_THREAD_ENDED };
@@ -851,7 +853,7 @@ export async function continueFlexibleThread(store: Store, sessions: FlexibleSes
     const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock,
       ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
     if (!begun.ok) return begun;
-    return { ok: true as const, turn: admitted.turn, seq: admitted.seq, fresh: begun.launched === "started", replayed: admitted.replayed };
+    return { ok: true as const, turn: admitted.turn, seq: admitted.seq, fresh: begun.launched === "started", replayed: admitted.replayed, ...(admitted.resent === undefined ? {} : { resent: admitted.resent }) };
   });
   return locked;
 }

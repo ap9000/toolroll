@@ -496,7 +496,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const sent = await continueFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, message, key, freshProof: FRESH_PROOFS.has(proved.method),
       held, launcher });
     if (!sent.ok) return acted(response, 409, "refused", sent.message);
-    return json(response, 200, { outcome: "done", words: sent.replayed ? "That reply was already sent." : sent.fresh ? `Sent. Turn ${sent.seq} started with a fresh agent: it doesn't remember earlier turns.` : `Sent. Turn ${sent.seq} started.`,
+    // A resend after an attempt that never reached the agent says so, with why that one ended.
+    const again = sent.resent === undefined ? "" : `Your earlier send (turn ${sent.resent.seq}) never reached the agent${sent.resent.detail === null ? "" : ` (${sent.resent.detail.slice(0, 200)})`}, so it was sent again. `;
+    return json(response, 200, { outcome: "done", words: again + (sent.replayed ? "That reply was already sent." : sent.fresh ? `Sent. Turn ${sent.seq} started with a fresh agent: it doesn't remember earlier turns.` : `Sent. Turn ${sent.seq} started.`),
       turn: sent.turn });
   }
 

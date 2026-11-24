@@ -166,7 +166,10 @@ export type FlexibleTurnRequest = {
   /** Where the time comes from, read once after the write lock is held (default: the system clock). */
   clock?: FlexibleClock;
 };
-export type FlexibleTurnAdmission = { ok: true; turn: string; seq: number; replayed: boolean };
+export type FlexibleTurnAdmission = { ok: true; turn: string; seq: number; replayed: boolean;
+  /** The same request's earlier attempt ended before its agent ever started (nothing ran), so this one was admitted as a
+   * new turn: that attempt's number and why it ended, said to the person. */
+  resent?: { seq: number; detail: string | null } };
 
 /** Today's turns, threads at once and spend, within one project or across every project (repo null). */
 function usageOf(store: Store, day: string, repo: string | null): { threads: number; turns: number; spent: number; blind: number } {
@@ -295,9 +298,25 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
     const delegation = flexibleDelegationAtUse(store, { repo, starter: input.starter, digest: input.digest, level: input.level, freshProof: input.freshProof });
     if (!delegation.ok) return delegation;
 
-    const same = readTurn(store.handle.prepare("SELECT * FROM thread_turn WHERE thread = ? AND request_key = ? AND status <> 'withdrawn'").get(input.thread, input.requestKey) as Record<string, unknown> | undefined);
+    // Every attempt of this request: its own key, then each resend of it after an attempt that provably ran nothing
+    // (`<key>:again-<n>`). The latest decides.
+    const attempts = store.handle.prepare(`SELECT * FROM thread_turn WHERE thread = ? AND (request_key = ? OR substr(request_key, 1, ?) = ?) AND status <> 'withdrawn' ORDER BY seq DESC`)
+      .all(input.thread, input.requestKey, input.requestKey.length + AGAIN.length, `${input.requestKey}${AGAIN}`) as Record<string, unknown>[];
+    let same = readTurn(attempts[0]);
+    let requestKey = input.requestKey;
+    let resent: { seq: number; detail: string | null } | undefined;
+    if (same !== null && same.status !== "admitted") {
+      const detail = text(attempts[0]!["end_detail"]);
+      // Delivered (its agent started: running, or ended after it ran): never a second turn. Said with its state.
+      if (same.status === "running" || turnLaunched(store, same.id)) return { ok: false as const, reason: "already-sent" as const, message: deliveredWords(same, detail) };
+      // It ended before its agent ever started: nothing of it ran, so this request is sent again, as a new turn under
+      // its next key (the earlier one stays on the record as it ended).
+      requestKey = `${input.requestKey}${AGAIN}${attempts.length}`;
+      if (requestKey.length > 128) return refuse("already-sent");
+      resent = { seq: same.seq, detail };
+      same = null;
+    }
     if (same !== null) {
-      if (same.status !== "admitted") return refuse("already-sent");
       if (same.termsId !== delegation.termsId) {
         // Admitted under terms that have since ended (off and on again, even with the same words): it can never start.
         // It is withdrawn, and this request is admitted afresh under the live terms, every limit checked again.
@@ -346,13 +365,13 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
     const at = now.toISOString();
     store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing, request_key, holder, admitted_at, utc_day, rail_reserved, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted')`).run(id, input.thread, seq, repo, input.starter.name, input.starter.generation, delegation.termsId, delegation.digest,
-      input.level, input.provider, input.model, input.billing, input.requestKey, input.holder, at, day, railReserved);
+      input.level, input.provider, input.model, input.billing, requestKey, input.holder, at, day, railReserved);
     if (chosenLevel !== null && FLEXIBLE_LEVELS.indexOf(input.level) > FLEXIBLE_LEVELS.indexOf(chosenLevel)) {
       store.handle.prepare("UPDATE flexible_thread_level SET level = ?, set_by = ?, set_at = ? WHERE thread = ?").run(input.level, input.starter.name, at, input.thread);
     }
     store.recordAction({ at, actor: input.starter.name, repo, taskId: null, runId: null, source: "policy", action: "flexible turn admitted", outcome: "admitted",
       detail: `thread ${input.thread} · turn ${seq} · ${input.level} · ${input.provider} ${input.model} · ${input.billing} · terms ${delegation.digest}` });
-    return { ok: true as const, turn: id, seq, replayed: false };
+    return { ok: true as const, turn: id, seq, replayed: false, ...(resent === undefined ? {} : { resent }) };
   });
 }
 
@@ -672,4 +691,20 @@ export function interruptFlexibleTurnSignIn(store: Store, input: { turn: string;
     if (done) relayCancel({ turn: turn.id });
     return { ok: true as const, interrupted: done };
   });
+}
+
+/** The suffix a resent request's key carries after an attempt that ran nothing (admitFlexibleTurn). */
+const AGAIN = ":again-";
+
+/** Whether a turn's agent ever started: its start gate opened, which the launch records in the ledger in the same
+ * transaction (flexible-launch.ts flexibleTurnLaunched; read here directly, that module imports this one). */
+function turnLaunched(store: Store, turn: string): boolean {
+  return store.handle.prepare("SELECT 1 AS hit FROM action_ledger WHERE action = 'flexible agent launched' AND detail LIKE ? LIMIT 1").get(`turn ${turn} · %`) !== undefined;
+}
+
+/** What a resend of a delivered request says: the turn it started, its state now and how it ended. */
+function deliveredWords(turn: FlexibleTurnRow, detail: string | null): string {
+  const state = turn.status === "running" ? "it is still working" : turn.status === "finished" ? "it finished" : turn.status === "interrupted" ? "it was stopped" : "its outcome is unknown";
+  const why = detail === null || detail.trim() === "" || turn.status === "running" || turn.status === "finished" ? "" : ` (${detail.trim().slice(0, 300)})`;
+  return `That message already reached the agent in turn ${turn.seq}, and ${state}${why}. Nothing new was started.`;
 }

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
-import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn } from "./flexible-turns.js";
+import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn, interruptFlexibleThreadTurns } from "./flexible-turns.js";
 import { continueFlexibleThread, FLEXIBLE_THREAD_ENDED, openFlexibleSessions, type FlexibleSessions } from "./flexible-session.js";
 import type { FlexibleLauncher } from "./flexible-launcher.js";
 import { hashPassword } from "./scope.js";
@@ -100,6 +100,39 @@ describe("Reply admits the thread's next turn, and only that", () => {
     expect(working.ok).toBe(true);
     expect(await reply()).toMatchObject({ ok: false, reason: "turn-in-progress" });
     expect(turns().map(row => row["request_key"])).toEqual(["start:first", "reply:other"]);
+  });
+
+  /** An earlier attempt of this reply's key: begun, launched or not (its start gate's ledger line), then ended. */
+  const earlier = (outcome: "finished" | "unknown" | "interrupted", launched: boolean, detail: string): void => {
+    const made = admitFlexibleTurn(world.store, { thread: T1, starter: pat(), digest, level: "full", freshProof: false, provider: "claude", model: "claude-sonnet-4-5", billing: "subscription",
+      requestKey: `reply:${KEY}`, holder: sessions.holder, clock: () => NOW });
+    if (!made.ok) throw new Error(made.message);
+    expect(beginFlexibleTurn(world.store, { turn: made.turn, holder: sessions.holder, clock: () => NOW })).toMatchObject({ ok: true });
+    if (launched) world.store.recordAction({ at: NOW.toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible agent launched", outcome: "launched",
+      detail: `turn ${made.turn} · launch x` });
+    if (outcome === "interrupted") expect(interruptFlexibleThreadTurns(world.store, { thread: T1, detail, clock: () => NOW })).toMatchObject({ ok: true, interrupted: 1 });
+    else expect(finishFlexibleTurn(world.store, { turn: made.turn, holder: sessions.holder, outcome, usage: null, detail, clock: () => NOW })).toMatchObject({ ok: true });
+  };
+
+  test.each([
+    ["finished", "That message already reached the agent in turn 2, and it finished. Nothing new was started."],
+    ["unknown", "That message already reached the agent in turn 2, and its outcome is unknown (The agent stopped with an error.). Nothing new was started."],
+    ["interrupted", "That message already reached the agent in turn 2, and it was stopped (The agent stopped with an error.). Nothing new was started."],
+  ] as const)("delivered: the same key again after its agent started (%s) is refused with that turn's state, never a second turn", async (outcome, words) => {
+    earlier(outcome, true, "The agent stopped with an error.");
+    expect(await reply()).toEqual({ ok: false, reason: "already-sent", message: words });
+    expect(turns()).toHaveLength(2);
+  });
+
+  test("failed before launch: the same key again after its turn ended with no agent ever started is sent again, as a new turn under its next key", async () => {
+    earlier("unknown", false, "the agent didn't start: its sandbox couldn't be made");
+    // Admitted afresh (the stand-in launcher then refuses, so this new attempt is withdrawn: it is the attempt that counts here).
+    expect(await reply()).toMatchObject({ ok: false, reason: "storage" });
+    expect(turns().map(row => [row["seq"], row["request_key"], row["status"]])).toEqual([
+      [1, "start:first", "finished"], [2, `reply:${KEY}`, "unknown"], [3, `reply:${KEY}:again-1`, "withdrawn"]]);
+    // And the attempt after that is the next key again: an attempt that ran nothing never holds the request.
+    expect(await reply()).toMatchObject({ ok: false, reason: "storage" });
+    expect(turns().at(-1)).toMatchObject({ seq: 4, request_key: `reply:${KEY}:again-1`, status: "withdrawn" });
   });
 
   test("two replies at once take the thread's lock in turn: one admission at a time", async () => {
