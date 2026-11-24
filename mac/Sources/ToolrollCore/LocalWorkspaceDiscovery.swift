@@ -185,8 +185,8 @@ public enum LocalWorkspaceDiscovery {
     public static func scanGitRepositories(
         roots: [URL]? = nil,
         extraRoots: [URL] = [],
-        maxDepth: Int = 2,
-        limit: Int = 40
+        maxDepth: Int = 3,
+        limit: Int = 50
     ) -> [DiscoveredGitRepo] {
         let fm = FileManager.default
         let searchRoots = (roots ?? defaultSearchRoots()) + extraRoots

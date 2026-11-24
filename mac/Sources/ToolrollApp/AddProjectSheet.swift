@@ -100,33 +100,34 @@ public struct AddProjectSheet: View {
                         .padding(.bottom, 2)
 
                         ScrollView {
-                            VStack(spacing: 3) {
-                                ForEach(store.unconnectedGitRepos.prefix(16)) { repo in
+                            VStack(spacing: 2) {
+                                ForEach(store.unconnectedGitRepos.prefix(24)) { repo in
                                     Button {
                                         store.isAddProjectSheetOpen = false
                                         dismiss()
                                         Task { await store.addLocalProject(path: repo.path) }
                                     } label: {
                                         HStack(spacing: 8) {
-                                            Image(systemName: "folder.fill")
+                                            Image(systemName: "folder")
                                                 .font(.system(size: 11.5))
                                                 .foregroundStyle(ToolrollPalette.muted)
-                                                .frame(width: 18)
+                                                .frame(width: 16)
                                             VStack(alignment: .leading, spacing: 1) {
                                                 HStack(spacing: 6) {
                                                     Text(repo.name)
                                                         .font(.system(size: 12.5, weight: .medium))
+                                                        .tracking(-0.1)
                                                         .foregroundStyle(ToolrollPalette.ink)
                                                         .lineLimit(1)
                                                     if let branch = repo.branch {
                                                         Text(branch)
-                                                            .font(.system(size: 10, design: .monospaced))
+                                                            .font(.system(size: 10.5))
                                                             .foregroundStyle(ToolrollPalette.muted)
                                                             .lineLimit(1)
                                                     }
                                                 }
                                                 Text(ComposerAttachmentStore.abbreviateHomePath(repo.path))
-                                                    .font(.system(size: 10.5, design: .monospaced))
+                                                    .font(.system(size: 10.5))
                                                     .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
                                                     .lineLimit(1)
                                                     .truncationMode(.middle)
@@ -134,11 +135,7 @@ public struct AddProjectSheet: View {
                                             Spacer()
                                             Text("Add")
                                                 .font(.system(size: 11, weight: .medium))
-                                                .foregroundStyle(ToolrollPalette.ink.opacity(0.8))
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 3)
-                                                .background(ToolrollPalette.raised, in: Capsule())
-                                                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                                .foregroundStyle(ToolrollPalette.muted)
                                         }
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 6)
@@ -148,7 +145,7 @@ public struct AddProjectSheet: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 200)
+                        .frame(maxHeight: 240)
                     }
                 }
 
@@ -190,6 +187,9 @@ public struct AddProjectSheet: View {
         .padding(18)
         .frame(width: 440)
         .background(ToolrollPalette.paper)
+        .onAppear {
+            store.refreshLocalDiscovery()
+        }
     }
 
     private var headerTitle: String {

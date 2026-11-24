@@ -895,15 +895,46 @@ public final class WorkbenchStore {
     }
 
     public var unconnectedGitRepos: [DiscoveredGitRepo] {
-        if let read = projectsRead {
-            guard read.canAdd else { return [] }
-            return read.found.map {
-                DiscoveredGitRepo(name: $0.name, path: $0.path, branch: nil, suggestedSetupCommand: nil, lastModified: .distantPast)
+        let connectedNames = Set(allProjects.map { $0.lowercased() })
+        let connectedPaths = Set((projectsRead?.projects ?? []).map { URL(fileURLWithPath: $0.path).standardizedFileURL.path.lowercased() })
+
+        var merged: [DiscoveredGitRepo] = []
+        var seenPaths: Set<String> = []
+
+        if let read = projectsRead, read.canAdd {
+            for item in read.found {
+                let normPath = URL(fileURLWithPath: item.path).standardizedFileURL.path.lowercased()
+                guard !connectedPaths.contains(normPath),
+                      !connectedNames.contains(item.name.lowercased()),
+                      !seenPaths.contains(normPath)
+                else { continue }
+                seenPaths.insert(normPath)
+                let localMatch = discoveredGitRepos.first {
+                    URL(fileURLWithPath: $0.path).standardizedFileURL.path.lowercased() == normPath
+                }
+                merged.append(DiscoveredGitRepo(
+                    name: item.name,
+                    path: item.path,
+                    branch: localMatch?.branch,
+                    suggestedSetupCommand: localMatch?.suggestedSetupCommand,
+                    lastModified: localMatch?.lastModified ?? .distantPast
+                ))
             }
         }
-        guard isLocalSession else { return [] }
-        let connected = Set(allProjects.map { $0.lowercased() })
-        return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
+
+        if isLocalSession || projectsRead == nil {
+            for repo in discoveredGitRepos {
+                let normPath = URL(fileURLWithPath: repo.path).standardizedFileURL.path.lowercased()
+                guard !connectedPaths.contains(normPath),
+                      !connectedNames.contains(repo.name.lowercased()),
+                      !seenPaths.contains(normPath)
+                else { continue }
+                seenPaths.insert(normPath)
+                merged.append(repo)
+            }
+        }
+
+        return merged
     }
 
     public var isShowingWorkHome: Bool { !isComposingNewWork && selectedTaskId == nil && selectedCliThreadId == nil && selectedChatThreadId == nil }

@@ -327,7 +327,17 @@ struct WorkHomeView: View {
                     }
                 }
             }
-            if !store.allProjects.isEmpty {
+            if !store.unconnectedGitRepos.isEmpty {
+                Divider()
+                Menu("Found on this Mac (\(store.unconnectedGitRepos.count))") {
+                    ForEach(store.unconnectedGitRepos.prefix(20)) { repo in
+                        Button(repo.branch.map { "\(repo.name) (\($0))" } ?? repo.name) {
+                            Task { await store.addLocalProject(path: repo.path) }
+                        }
+                    }
+                }
+            }
+            if !store.allProjects.isEmpty || !store.unconnectedGitRepos.isEmpty {
                 Divider()
             }
             Button("Add Local Project…") {
