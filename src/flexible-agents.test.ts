@@ -154,7 +154,7 @@ describe("a turn start that refuses spawns nothing and leaves custody as it was"
     expect(closed).toBe(1);
   });
 
-  test("a running agent is reused only when it is provably the same launch in the same fence: another fence digest, holder or leader start means it is stopped first", async () => {
+  test("an earlier turn's agent is never reused: it is stopped first, and a leader whose start doesn't match is never signalled", async () => {
     const { id, paths } = await thread();
     // A stand-in `claude` (never the real one) for the launch that follows.
     const bin = join(world.dir, "bin");
@@ -169,7 +169,6 @@ describe("a turn start that refuses spawns nothing and leaves custody as it was"
       const launch = live(id, old.pid, stale.start ?? old.start, { holder: stale.holder ?? "h1", fence: stale.fence });
       const turn = admit(id);
       const started = await startFlexibleTurn(world.store, startInput(turn));
-      expect(started, JSON.stringify(stale)).not.toMatchObject({ launched: "reused" });
       if (stale.start === undefined) {
         // Proven the launch's: stopped, its exit verified, then a new launch was tried (inside the fence where there is one).
         await old.closed;

@@ -665,7 +665,7 @@ export async function lowerFlexibleThreadSession(store: Store, sessions: Flexibl
  * stopped, or at once when the turn launches nothing.
  */
 export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, input: { turn: string; message: string; launcher: FlexibleLauncher | null; clock?: FlexibleClock;
-  expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started" | "reused"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.turn !== "string" || !ID.test(input.turn) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
@@ -698,15 +698,11 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
     throw error;
   }
   if (!started.ok) { bump(sessions, turn.thread); return started; }
-  if (started.launched === "started") {
-    const child = started.child;
-    if (child.stdout === null || child.stdin === null) return refuse("invalid-request");
-    const attached = attachFlexibleAgent(store, sessions, { thread: turn.thread, turn: input.turn, launch: started.launchId, stdout: child.stdout, stdin: child.stdin,
-      exited: listener => { child.once("exit", listener); }, ...clocked });
-    if (!attached.ok) return attached;
-  } else if (session.agent !== null && session.agent.launch === started.launchId) {
-    session.agent.turn = input.turn;
-  }
+  const child = started.child;
+  if (child.stdout === null || child.stdin === null) return refuse("invalid-request");
+  const attached = attachFlexibleAgent(store, sessions, { thread: turn.thread, turn: input.turn, launch: started.launchId, stdout: child.stdout, stdin: child.stdin,
+    exited: listener => { child.once("exit", listener); }, ...clocked });
+  if (!attached.ok) return attached;
   session.title ??= cardText(input.message.split("\n")[0], 80) || null;
   try { session.agent?.stdin.write(`${userFrame(input.message, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
   bump(sessions, turn.thread);
@@ -829,8 +825,8 @@ export function flexibleThreadEnded(store: Store, thread: string): boolean {
  *   ended thread, reads the billing of their own sign-in now, and admits the turn (F2e admitFlexibleTurn: the terms
  *   the thread's last turn ran under must still stand for this person, every limit has room) at the thread's level,
  *   with the thread's agent and model. The same `key` again never takes a second turn.
- * - Then the turn begins (beginFlexibleThreadTurn): the thread's running agent takes it when it is provably the same
- *   launch; otherwise a fresh agent starts, which doesn't remember earlier turns (`fresh`, said to the person).
+ * - Then the turn begins (beginFlexibleThreadTurn) with a fresh agent, which doesn't remember earlier turns (`fresh`,
+ *   said to the person): an earlier turn's agent is replaced, never reused (flexible-agents.ts startFlexibleTurn).
  * A person's surface only; the caller proves the person (their session re-read, and the proof a start takes).
  */
 export async function continueFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; message: string; key: string;
