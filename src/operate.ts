@@ -1,5 +1,6 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { clearResolvedAgentRequests, fileAgentRequest, listAgentRequests, resolveAgentRequest, waitForAgentRequest, type AgentRequest } from "./agent-requests.js";
+import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usage.js";
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
@@ -1050,6 +1051,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-check", "check",
   // agent --request: wait until the person approves or declines the filed request in Toolroll.app.
   "wait",
+  "refresh",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -12168,11 +12170,15 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
 }
 
 /** `spend [--month YYYY-MM] [--csv]` (v105): what agent work cost in a month, by project, person, subagent and model. */
-function spendCommand(flags: Map<string, string | true>, context: Context): number {
+async function spendCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
   const command = "spend";
-  for (const name of flags.keys()) if (!["month", "csv", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
+  for (const name of flags.keys()) if (!["month", "csv", "refresh", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
   const month = text(flags, "month") === undefined ? monthOf(context.clock()) : monthNamed(text(flags, "month") ?? null);
   if (month === null) return fail(context.write, context.json, command, "usage", "Use spend --month YYYY-MM.", EXIT.usage);
+  const refreshed = flags.has("refresh")
+    ? await refreshSubscriptions(context.store, context.databaseFile, { forceClaude: true, forceGemini: true, now: context.clock() })
+    : null;
+  const gemini = refreshed?.gemini ?? readStoredGeminiStatus(context.databaseFile);
   const items = spendItems(context.store.handle, month.from, month.to);
   const names = subagentNames(context.store.handle);
   if (flags.has("csv")) { context.write(spendCsv(items, names).replace(/^\ufeff/, "").trimEnd()); return EXIT.ok; }
@@ -12181,14 +12187,11 @@ function spendCommand(flags: Map<string, string | true>, context: Context): numb
   const unpriced = items.filter(item => item.microusd === null && (item.tokensIn !== null || item.kind !== "run")).length;
   const byProject = new Map<string, number>();
   for (const item of items) if (item.project !== null) byProject.set(item.project, (byProject.get(item.project) ?? 0) + (item.microusd ?? 0));
-  // v105: subscription work is $0; what binds it is its plan's windows, as the provider last said.
   const limits = context.store.providerLimits();
   const windows = limitsView(limits, [], { project: repo => basename(repo), subagent: id => String(id) }, context.clock())?.tiles ?? [];
-  // Sized routing: each tier's tasks, time to a result and plan use, and what the tiers saved.
   const tiers = tierReport(context.store.handle, month.from, month.to, items);
-  // Suggestions and rules (results-routing slice 4): what each rule, trial and suggestion observed, over 90 days a side.
   const suggestions = savingsReportOrError(context.store, context.store.knownRepos(), context.clock());
-  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
+  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, gemini, tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
     `${month.name}: ${spendUsd(total)} (${items.length} pieces of work${unpriced > 0 ? `, ${unpriced} unpriced` : ""}; subscription work is $0)`,
     ...windows.map(tile => `  ${`${tile.name} ${tile.window}`.padEnd(24)} ${tile.value}% · ${tile.detail}`),
     ...[...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([repo, microusd]) => `  ${basename(repo).padEnd(24)} ${spendUsd(microusd)}`),

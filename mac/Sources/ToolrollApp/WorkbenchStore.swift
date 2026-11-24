@@ -189,6 +189,10 @@ public final class WorkbenchStore {
     public private(set) var isTouchIDEnabled: Bool = false
     public private(set) var backgroundServiceStatus: BackgroundServiceStatus? = nil
     public private(set) var isUpdatingBackgroundService: Bool = false
+    public private(set) var geminiSubscription: GeminiSubscriptionStatus? = nil
+    public private(set) var isRefreshingUsage: Bool = false
+    public private(set) var lastUsageRefreshAt: Date? = nil
+    private var didAutoRefreshUsage: Bool = false
     private var knownAgentRequestIds: Set<String> = []
     private var agentRequestPollTask: Task<Void, Never>?
     private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
@@ -1553,6 +1557,7 @@ public final class WorkbenchStore {
         refreshLocalDiscovery()
         refreshAgentRequests(notifyNew: true)
         refreshTouchIDState()
+        loadCachedGeminiSubscription()
 
         if activeProfile.isDemo {
             let base = DemoFixtures.workRows
@@ -1604,6 +1609,7 @@ public final class WorkbenchStore {
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
             }
+            maybeAutoRefreshSubscriptionUsage()
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
@@ -2651,6 +2657,49 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: res.message)
         }
         return res
+    }
+
+    public func loadCachedGeminiSubscription() {
+        guard !activeProfile.isDemo, let dbPath = resolvedLocalDatabasePath else { return }
+        if let stored = SubscriptionUsageBridge.loadGeminiStatus(databasePath: dbPath) {
+            geminiSubscription = stored
+        }
+    }
+
+    private func maybeAutoRefreshSubscriptionUsage() {
+        guard isLocalSession, !activeProfile.isDemo, !didAutoRefreshUsage, !isRefreshingUsage else { return }
+        let limits = workRowsResponse.limits ?? []
+        let hasStale = limits.contains { limit in
+            if case .passed = limit.resetState(now: Date()) { return true }
+            return false
+        }
+        let missingGemini = geminiSubscription == nil
+        guard hasStale || missingGemini else { return }
+        didAutoRefreshUsage = true
+        Task { await refreshSubscriptionUsage(silent: true) }
+    }
+
+    public func refreshSubscriptionUsage(silent: Bool = false) async {
+        guard !activeProfile.isDemo, !isRefreshingUsage else { return }
+        isRefreshingUsage = true
+        defer { isRefreshingUsage = false }
+        let res = await SubscriptionUsageBridge.refreshAll(databasePath: resolvedLocalDatabasePath)
+        if let gemini = res.gemini {
+            geminiSubscription = gemini
+        } else {
+            loadCachedGeminiSubscription()
+        }
+        if res.ok {
+            lastUsageRefreshAt = Date()
+            if let client, let rows = try? await client.fetchWorkRows() {
+                workRowsResponse = rows
+            }
+            if !silent {
+                notice = WorkbenchNotice(kind: .info, message: "Updated Claude, Codex, and Gemini usage.")
+            }
+        } else if !silent, let msg = res.message {
+            notice = WorkbenchNotice(kind: .refusal, message: msg)
+        }
     }
 
     public func openExternalURL(_ raw: String) {

@@ -16,7 +16,7 @@ struct WorkHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 18) {
                 ForEach(layout.widgets.filter { !$0.isHidden }) { widget in
                     switch widget.kind {
                     case .header: header
@@ -28,7 +28,7 @@ struct WorkHomeView: View {
             }
             .padding(.horizontal, 36)
             .padding(.vertical, 28)
-            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: 960, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(ToolrollPalette.ground)
@@ -44,6 +44,7 @@ struct WorkHomeView: View {
     private var queued: [WorkRow] { rows.filter { $0.rank == 2 } }
     private var settled: [WorkRow] { rows.filter { $0.rank >= 3 } }
     private var asks: [NeedRow] { store.workRowsResponse.needs.flatMap(\.rows) }
+    private var isIdle: Bool { rows.isEmpty && asks.isEmpty }
 
     private var activeProject: String? {
         store.activeProject ?? store.selectedProject ?? store.allProjects.first
@@ -58,24 +59,36 @@ struct WorkHomeView: View {
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
             .help("Reorder or hide what Work shows")
 
-            Button { store.openNewWorkCanvas() } label: {
-                Label("New task", systemImage: "plus")
-                    .font(.system(size: 12, weight: .medium))
+            if !isIdle {
+                Button { store.openNewWorkCanvas() } label: {
+                    Label("New task", systemImage: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                .help("New task (⌘N)")
             }
-            .buttonStyle(KitButtonStyle(.primary, compact: true))
-            .help("New task (⌘N)")
         }
     }
 
     private var summaryLine: String {
+        if isIdle { return "All clear" }
+        var parts: [String] = []
         let waitingCount = waiting.count + asks.count
-        return "\(waitingCount) waiting on you · \(running.count) running · \(settled.count) settled"
+        if waitingCount > 0 { parts.append("\(waitingCount) waiting") }
+        if !running.isEmpty { parts.append("\(running.count) running") }
+        if !queued.isEmpty { parts.append("\(queued.count) queued") }
+        if !settled.isEmpty { parts.append("\(settled.count) settled") }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var telemetryStrip: some View {
         let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
         let spend = store.workRowsResponse.spend
-        if !perProvider.isEmpty || spend != nil {
+        let showSpend = (spend?.todayUsd ?? 0) > 0.004
+        let gemini = store.geminiSubscription
+        let hasAny = !perProvider.isEmpty || gemini != nil || showSpend
+
+        if hasAny {
             HStack(spacing: 0) {
                 ForEach(Array(perProvider.enumerated()), id: \.element.provider) { idx, limit in
                     if idx > 0 {
@@ -85,22 +98,66 @@ struct WorkHomeView: View {
                     LimitTile(limit: limit)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let spend {
+
+                if let gemini {
                     if !perProvider.isEmpty {
+                        HairlineDivider(vertical: true)
+                            .padding(.vertical, 10)
+                    }
+                    GeminiSubscriptionTile(status: gemini)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if showSpend, let spend {
+                    if !perProvider.isEmpty || gemini != nil {
                         HairlineDivider(vertical: true)
                             .padding(.vertical, 10)
                     }
                     SpendTile(spend: spend)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                HairlineDivider(vertical: true)
+                    .padding(.vertical, 10)
+
+                Button {
+                    Task { await store.refreshSubscriptionUsage(silent: false) }
+                } label: {
+                    Group {
+                        if store.isRefreshingUsage {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                    }
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isRefreshingUsage)
+                .padding(.horizontal, 6)
+                .help(refreshTooltip)
+                .accessibilityLabel("Refresh subscription usage")
             }
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
+    private var refreshTooltip: String {
+        if store.isRefreshingUsage { return "Checking Claude, Codex, and Gemini…" }
+        if let at = store.lastUsageRefreshAt {
+            let mins = max(0, Int(Date().timeIntervalSince(at) / 60))
+            return mins == 0 ? "Refresh usage (updated just now)" : "Refresh usage (updated \(mins)m ago)"
+        }
+        return "Refresh Claude, Codex, and Gemini usage"
+    }
+
     @ViewBuilder private var workSection: some View {
-        if rows.isEmpty && asks.isEmpty {
+        if isIdle {
             idleWorkspace
         } else {
             VStack(alignment: .leading, spacing: 18) {
@@ -158,19 +215,6 @@ struct WorkHomeView: View {
 
     private var heroQuickComposer: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(ToolrollPalette.success)
-                    .frame(width: 6, height: 6)
-                Text("All clear — ready for your next task")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Spacer()
-                if !store.allProjects.isEmpty {
-                    projectSelectorMenu
-                }
-            }
-
             TextField(
                 quickAskLead
                     ? "Ask Lead across your workspace…"
@@ -185,28 +229,14 @@ struct WorkHomeView: View {
             .focused($quickPromptFocused)
             .onSubmit { submitQuickPrompt() }
             .padding(.horizontal, 2)
-            .padding(.vertical, 4)
+            .padding(.top, 2)
 
             HStack(spacing: 8) {
+                if !store.allProjects.isEmpty {
+                    projectSelectorMenu
+                }
                 modeTogglePills
                 Spacer(minLength: 8)
-                Button {
-                    if let proj = activeProject { store.activeProject = proj }
-                    store.workspaceMode = .canvas
-                } label: {
-                    Label("Canvas", systemImage: "macwindow.on.rectangle")
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
-                Button {
-                    Task { await store.startProjectTerminal(project: activeProject, program: "shell") }
-                } label: {
-                    Label("Shell", systemImage: "terminal")
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
-
                 Button {
                     submitQuickPrompt()
                 } label: {
@@ -321,7 +351,7 @@ struct WorkHomeView: View {
                     .foregroundStyle(ToolrollPalette.muted)
             }
             .padding(.horizontal, 9)
-            .frame(height: 24)
+            .frame(height: 26)
             .background(ToolrollPalette.ground, in: Capsule())
             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
@@ -696,32 +726,25 @@ struct LimitTile: View {
         let state = limit.resetState(now: now)
         let stale: Bool = { if case .passed = state { return true }; return false }()
 
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Text(limit.providerLabel)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
-                if let plan = limit.planLabel {
-                    Text(plan)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                }
                 Spacer(minLength: 6)
-                Text(limit.windowLabel)
+                Text(resetText(state))
                     .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
             }
 
             HStack(spacing: 8) {
                 Text(stale ? "—" : "\(percent)%")
-                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
                     .foregroundStyle(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
 
                 if stale {
-                    Text("Not checked since reset")
+                    Text("Checking…")
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                         .lineLimit(1)
@@ -737,30 +760,24 @@ struct LimitTile: View {
                     .frame(height: 4)
                 }
             }
-
-            Text(footer(state))
-                .font(.system(size: 11))
-                .foregroundStyle(ToolrollPalette.muted)
-                .lineLimit(1)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 11)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility(percent: percent, reachedNow: reachedNow, state: state))
     }
 
-    private func footer(_ state: ProviderLimit.ResetState) -> String {
+    private func resetText(_ state: ProviderLimit.ResetState) -> String {
         switch state {
         case .upcoming(let date): return "Resets \(Self.when(date))"
         case .passed(let date): return "Reset \(Self.day.string(from: date))"
-        case .unknown: return "Reset time not reported"
+        case .unknown: return limit.windowLabel
         }
     }
 
     private func accessibility(percent: Int, reachedNow: Bool, state: ProviderLimit.ResetState) -> String {
-        let name = limit.providerLabel + (limit.planLabel.map { " \($0)" } ?? "")
-        let used = reachedNow ? "limit reached" : "\(percent) percent of its \(limit.windowLabel.lowercased()) limit used"
-        return "\(name): \(used). \(footer(state))"
+        let used = reachedNow ? "limit reached" : "\(percent) percent used"
+        return "\(limit.providerLabel): \(used). \(resetText(state))"
     }
 
     static func when(_ date: Date, now: Date = Date()) -> String {
@@ -775,37 +792,60 @@ struct LimitTile: View {
     private static let day: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
 }
 
+struct GeminiSubscriptionTile: View {
+    let status: GeminiSubscriptionStatus
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("Gemini")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Spacer(minLength: 6)
+                Text("Antigravity")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(status.connected ? ToolrollPalette.success : ToolrollPalette.muted)
+                    .frame(width: 6, height: 6)
+                Text(status.connected ? (status.topModel ?? "Ready") : (status.note ?? "Not connected"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(status.connected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct SpendTile: View {
     let spend: SpendSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Text("Spend")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                 Spacer(minLength: 6)
-                Text("UTC day")
+                Text("Today")
                     .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.muted)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(spend.todayUsd, format: .currency(code: "USD"))
-                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(ToolrollPalette.ink)
-                Text("today")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-
-            Text("Pay-as-you-go use")
-                .font(.system(size: 11))
-                .foregroundStyle(ToolrollPalette.muted)
-                .lineLimit(1)
+            Text(spend.todayUsd, format: .currency(code: "USD"))
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .foregroundStyle(ToolrollPalette.ink)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 11)
         .accessibilityElement(children: .combine)
     }
 }
