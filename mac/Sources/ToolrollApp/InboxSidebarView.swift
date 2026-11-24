@@ -151,40 +151,32 @@ public struct InboxSidebarView: View {
             }
 
             VStack(spacing: 2) {
-                newTaskRow
-                workRow
-                canvasRow
-                automationsRow
+                newThreadRow
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 6)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
+                    if !store.needsRows.isEmpty {
+                        activeSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
+                    }
+
+                    let activeTasks = store.runningRows + store.queuedRows
+                    let activeChats = store.filteredChatThreads
                     if store.sidebarGrouping == .project {
-                        let activeAll = store.needsRows + store.runningRows + store.queuedRows
-                        let grouped = Dictionary(grouping: activeAll) { ($0.project?.isEmpty == false ? $0.project! : "Workspace") }
-                        let keys = grouped.keys.sorted()
+                        let taskGroups = Dictionary(grouping: activeTasks) { ($0.project?.isEmpty == false ? $0.project! : "Workspace") }
+                        let chatGroups = Dictionary(grouping: activeChats) { ($0.projectName.isEmpty ? "Workspace" : $0.projectName) }
+                        let keys = Set(taskGroups.keys).union(chatGroups.keys).sorted()
                         ForEach(keys, id: \.self) { projKey in
-                            if let rows = grouped[projKey], !rows.isEmpty {
-                                activeSection(
-                                    title: projKey,
-                                    count: rows.count,
-                                    solidBadge: rows.contains(where: { $0.status == .needs }),
-                                    rows: rows
-                                )
+                            let projTasks = taskGroups[projKey] ?? []
+                            let projChats = chatGroups[projKey] ?? []
+                            if !projTasks.isEmpty || !projChats.isEmpty {
+                                unifiedThreadsSection(title: projKey, tasks: projTasks, chats: projChats)
                             }
                         }
-                    } else {
-                        if !store.needsRows.isEmpty {
-                            activeSection(title: "Needs you", count: store.needsRows.count, solidBadge: true, rows: store.needsRows)
-                        }
-                        if !store.runningRows.isEmpty {
-                            activeSection(title: "Running", count: store.runningRows.count, solidBadge: false, rows: store.runningRows)
-                        }
-                        if !store.queuedRows.isEmpty {
-                            activeSection(title: "Queued", count: store.queuedRows.count, solidBadge: false, rows: store.queuedRows)
-                        }
+                    } else if !activeTasks.isEmpty || !activeChats.isEmpty {
+                        unifiedThreadsSection(title: "Threads", tasks: activeTasks, chats: activeChats)
                     }
 
                     if !store.settledRows.isEmpty || !store.archivedRows.isEmpty {
@@ -198,7 +190,7 @@ public struct InboxSidebarView: View {
                                     Image(systemName: store.isSettledExpanded ? "chevron.down" : "chevron.right")
                                         .font(.system(size: 8.5, weight: .semibold))
                                         .frame(width: 10)
-                                    Text("Settled")
+                                    Text("History")
                                         .font(.system(size: 12, weight: .medium))
                                     Spacer()
                                     Text("\(store.settledRows.count)")
@@ -239,113 +231,12 @@ public struct InboxSidebarView: View {
                         }
                         .padding(.top, 4)
                     }
-
-                    if !store.filteredChatThreads.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Button {
-                                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                                    store.isChatThreadsExpanded.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: store.isChatThreadsExpanded ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 8.5, weight: .semibold))
-                                    Text("Chats")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text("\(store.filteredChatThreads.count)")
-                                        .font(.system(size: 10, design: .monospaced))
-                                }
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            if store.isChatThreadsExpanded {
-                                ForEach(store.filteredChatThreads) { thread in
-                                    chatThreadRow(thread)
-                                }
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
                 }
                 .padding(.vertical, 6)
             }
             .frame(maxHeight: .infinity)
 
-            HStack(spacing: 8) {
-                Menu {
-                    if let spend = store.workRowsResponse.spend {
-                        Text(String(format: "Today's spend: $%.2f", spend.todayUsd))
-                        Divider()
-                    }
-                    Button("Project Settings…") {
-                        store.openProjectSettings()
-                    }
-                    Button("Setup & Agents…") {
-                        store.isSetupOpen = true
-                    }
-                    Button("Appearance & Lead Themes…") {
-                        store.isAppearanceSheetOpen = true
-                    }
-                    Button("Add Local Project…") {
-                        store.isAddProjectSheetOpen = true
-                    }
-                    Button("Pair Phone for Push Alerts…") {
-                        store.isPhonePairSheetOpen = true
-                    }
-                    Divider()
-                    Button("Refresh Workspace") {
-                        Task { await store.refreshAll() }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(ToolrollPalette.muted)
-                        Text("Settings")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(ToolrollPalette.ink)
-                            .lineLimit(1)
-                    }
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .padding(.horizontal, 11)
-                .frame(height: 28)
-                .contentShape(Capsule())
-                .toolrollGlassCapsule(interactive: true)
-                .help("Workspace Settings, Spend & Projects")
-
-                Spacer(minLength: 4)
-
-                if WorkspaceThemeEngine.shared.config.showCosts, let spend = store.workRowsResponse.spend {
-                    Text(String(format: "$%.2f", spend.todayUsd))
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                        .help("Today's total spend")
-                }
-
-                Button {
-                    store.isAppearanceSheetOpen = true
-                } label: {
-                    Image(systemName: "paintbrush")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .toolrollGlassCapsule(interactive: true)
-                .help("Appearance & Lead Themes (⌘⇧T)")
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            sidebarUtilityFooter
         }
         .background(Color.clear)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -361,15 +252,16 @@ public struct InboxSidebarView: View {
         }
     }
 
-    private var newTaskRow: some View {
-        Button {
+    private var newThreadRow: some View {
+        let isHomeActive = store.workspaceMode == .workbench && store.isShowingWorkHome
+        return Button {
             store.openNewWorkCanvas()
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 16)
-                Text("New task")
+                Text("New")
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
                 Text("⌘N")
@@ -380,114 +272,135 @@ public struct InboxSidebarView: View {
             .padding(.horizontal, 10)
             .frame(height: 32)
             .background(
-                store.isComposingNewWork ? Color.white.opacity(0.10) : Color.clear,
+                isHomeActive ? Color.white.opacity(0.10) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("New task")
-        .help("New task (⌘N)")
+        .accessibilityLabel("New thread")
+        .help("New chat or task (⌘N)")
     }
 
-    private var workRow: some View {
-        Button {
-            store.openWorkHome()
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "square.grid.2x2")
+    private func unifiedThreadsSection(title: String, tasks: [WorkRow], chats: [AgentChatThread]) -> some View {
+        let total = tasks.count + chats.count
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(title)
                     .font(.system(size: 12, weight: .medium))
-                    .frame(width: 16)
-                Text("Work")
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                if store.needsRows.count > 0 {
-                    Text("\(store.needsRows.count)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.inverseInk)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(ToolrollPalette.ink, in: Capsule())
-                }
-            }
-            .foregroundStyle(ToolrollPalette.ink)
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(
-                store.workspaceMode == .workbench && store.isShowingWorkHome ? Color.white.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(store.needsRows.isEmpty ? "Work" : "Work, \(store.needsRows.count) waiting on you")
-    }
-
-    private var automationsRow: some View {
-        let waiting = store.automations?.automations.filter { $0.group == "needs" }.count ?? 0
-        return Button {
-            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.workspaceMode = .automations }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "clock.arrow.2.circlepath")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 16)
-                Text("Automations")
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                if waiting > 0 {
-                    Text("\(waiting)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.inverseInk)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(ToolrollPalette.ink, in: Capsule())
-                }
-            }
-            .foregroundStyle(ToolrollPalette.ink)
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(
-                store.workspaceMode == .automations ? Color.white.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(waiting > 0 ? "Automations, \(waiting) waiting on you" : "Automations")
-    }
-
-    private var canvasRow: some View {
-        Button {
-            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.workspaceMode = .canvas }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "rectangle.on.rectangle")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 16)
-                Text("Canvas")
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                Text("⌘3")
-                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
+                Spacer()
+                Text("\(total)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.horizontal, 2)
             }
-            .foregroundStyle(ToolrollPalette.ink)
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(
-                store.workspaceMode == .canvas ? Color.white.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.bottom, 2)
+
+            ForEach(tasks) { row in
+                activeRow(row)
+            }
+            ForEach(chats) { thread in
+                chatThreadRow(thread)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Canvas")
-        .help("Canvas (⌘3)")
+    }
+
+    private var sidebarUtilityFooter: some View {
+        let automationsWaiting = store.automations?.automations.filter { $0.group == "needs" }.count ?? 0
+        return HStack(spacing: 6) {
+            Button {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                    store.workspaceMode = (store.workspaceMode == .canvas) ? .workbench : .canvas
+                }
+            } label: {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(store.workspaceMode == .canvas ? ToolrollPalette.ink : ToolrollPalette.muted)
+                    .frame(width: 28, height: 28)
+                    .background(store.workspaceMode == .canvas ? Color.white.opacity(0.10) : Color.clear, in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .toolrollGlassCapsule(interactive: true)
+            .help("Canvas (⌘3)")
+            .accessibilityLabel("Canvas")
+
+            Button {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                    store.workspaceMode = (store.workspaceMode == .automations) ? .workbench : .automations
+                }
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "clock.arrow.2.circlepath")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(store.workspaceMode == .automations ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: 28, height: 28)
+                        .background(store.workspaceMode == .automations ? Color.white.opacity(0.10) : Color.clear, in: Circle())
+                        .contentShape(Circle())
+                    if automationsWaiting > 0 {
+                        Circle()
+                            .fill(ToolrollPalette.ink)
+                            .frame(width: 6, height: 6)
+                            .offset(x: -4, y: 4)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .toolrollGlassCapsule(interactive: true)
+            .help(automationsWaiting > 0 ? "Automations (\(automationsWaiting) waiting)" : "Automations")
+            .accessibilityLabel("Automations")
+
+            Spacer(minLength: 4)
+
+            Menu {
+                if let spend = store.workRowsResponse.spend, spend.todayUsd > 0.004 {
+                    Text(String(format: "Today's spend: $%.2f", spend.todayUsd))
+                    Divider()
+                }
+                Button("Project Settings…") {
+                    store.openProjectSettings()
+                }
+                Button("Setup & Agents…") {
+                    store.isSetupOpen = true
+                }
+                Button("Appearance & Themes…") {
+                    store.isAppearanceSheetOpen = true
+                }
+                Button("Add Local Project…") {
+                    store.isAddProjectSheetOpen = true
+                }
+                Button("Pair Phone for Push Alerts…") {
+                    store.isPhonePairSheetOpen = true
+                }
+                Divider()
+                Button("Refresh Workspace") {
+                    Task { await store.refreshAll() }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Text("Settings")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .contentShape(Capsule())
+            .toolrollGlassCapsule(interactive: true)
+            .help("Settings, Projects & Appearance")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private func activeSection(title: String, count: Int, solidBadge: Bool, rows: [WorkRow]) -> some View {
@@ -647,6 +560,7 @@ public struct InboxSidebarView: View {
     private func chatThreadRow(_ thread: AgentChatThread) -> some View {
         let isSelected = store.selectedChatThreadId == thread.id
         let isRunning = store.runningChatThreadIds.contains(thread.id)
+        let changedCount = store.chatThreadDiffs[thread.id]?.changedFiles.count ?? 0
 
         return Button {
             store.selectChatThread(thread.id)
@@ -671,23 +585,38 @@ public struct InboxSidebarView: View {
                         .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.ink.opacity(0.9))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    Text(thread.projectName)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(thread.projectName)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(1)
+                        if changedCount > 0 {
+                            Text("+\(changedCount)")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.success)
+                        }
+                    }
                 }
                 Spacer(minLength: 4)
                 Text(thread.relativeAge)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            .background(
+                isSelected ? Color.white.opacity(0.11) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? Color.white.opacity(0.12) : Color.clear, lineWidth: 1)
+            )
             .contentShape(Rectangle())
-            .toolrollHoverSurface(cornerRadius: 8, isSelected: isSelected)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 8)
         .contextMenu {
             Button("Ship as Toolroll Task") {
                 Task { await store.promoteChatToTask(threadId: thread.id) }
@@ -697,53 +626,6 @@ public struct InboxSidebarView: View {
                 store.deleteChatThread(id: thread.id)
             }
         }
-    }
-
-    private func cliThreadRow(_ thread: LocalCliThread) -> some View {
-        let isSelected = store.selectedCliThreadId == thread.id
-        return Button {
-            store.selectCliThread(thread)
-        } label: {
-            HStack(spacing: 8) {
-                Text(thread.provider.shortBadge)
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                    .frame(width: 20, height: 18)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(thread.title)
-                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(thread.projectName)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 4)
-
-                Text(thread.relativeAge)
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, WorkspaceThemeEngine.shared.config.isCompact ? 4 : 5)
-            .background(
-                isSelected ? Color.white.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .toolrollHoverSurface(cornerRadius: 7, isSelected: false)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .help("\(thread.provider.displayName) · \(thread.projectName)\n\(thread.title)")
-        .accessibilityLabel("\(thread.provider.displayName) thread: \(thread.title), \(thread.projectName)")
-        .contextMenu { CliThreadMenuItems(thread: thread) }
     }
 
     @ViewBuilder

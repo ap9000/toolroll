@@ -1,254 +1,161 @@
+import AppKit
 import SwiftUI
 import ToolrollCore
 
 struct WorkHomeView: View {
     @Bindable var store: WorkbenchStore
-    @State private var layout = WorkLayout.load()
-    @State private var isCustomizing = false
-    @State private var showsAllSettled = false
     @State private var quickPrompt = ""
     @State private var quickPlanFirst = true
+    @State private var attachments: [ComposerAttachment] = []
+    @State private var isComposerDropTargeted = false
     @FocusState private var quickPromptFocused: Bool
 
-    private static let settledPreview = 6
-    private static let automationsPreview = 3
-
-    private enum OrchestrationTab: String {
-        case chat
-        case task
-        case lead
-    }
-
-    private var activeTab: OrchestrationTab {
-        OrchestrationTab(rawValue: store.preferredOrchestrationMode) ?? .chat
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(layout.widgets.filter { !$0.isHidden }) { widget in
-                    switch widget.kind {
-                    case .header: header
-                    case .limits: telemetryStrip
-                    case .list: workSection
-                    case .automations: automations
-                    }
-                }
-            }
-            .padding(.horizontal, 36)
-            .padding(.vertical, 28)
-            .frame(maxWidth: 960, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-        }
-        .background(ToolrollPalette.ground)
-        .sheet(isPresented: $isCustomizing) {
-            WorkCustomizeSheet(layout: $layout) { isCustomizing = false }
-        }
-        .onChange(of: layout) { _, saved in saved.save() }
+    private var isTaskMode: Bool {
+        store.preferredOrchestrationMode == "task"
     }
 
     private var rows: [WorkRow] { store.filteredRows }
     private var waiting: [WorkRow] { rows.filter { $0.rank == 0 } }
     private var running: [WorkRow] { rows.filter { $0.rank == 1 } }
     private var queued: [WorkRow] { rows.filter { $0.rank == 2 } }
-    private var settled: [WorkRow] { rows.filter { $0.rank >= 3 } }
     private var asks: [NeedRow] { store.workRowsResponse.needs.flatMap(\.rows) }
-    private var isIdle: Bool { rows.isEmpty && asks.isEmpty }
+    private var hasActiveWork: Bool { !waiting.isEmpty || !asks.isEmpty || !running.isEmpty || !queued.isEmpty }
 
     private var activeProject: String? {
         store.activeProject ?? store.selectedProject ?? store.allProjects.first
     }
 
-    private var header: some View {
-        ScreenHeader(title: "Work", detail: summaryLine) {
-            Button { isCustomizing = true } label: {
-                Label("Customize", systemImage: "slider.horizontal.3")
-                    .font(.system(size: 12, weight: .medium))
+    var body: some View {
+        VStack(spacing: 0) {
+            if let notice = store.notice {
+                noticeBar(notice)
+                HairlineDivider()
             }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Reorder or hide what Work shows")
 
-            if !isIdle {
-                Button { store.openNewWorkCanvas() } label: {
-                    Label("New task", systemImage: "plus")
-                        .font(.system(size: 12, weight: .medium))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if !hasActiveWork {
+                        Spacer().frame(height: 56)
+                    }
+
+                    if !waiting.isEmpty || !asks.isEmpty {
+                        needsAttentionSection
+                    }
+
+                    heroHeading
+
+                    unifiedComposer
+
+                    compactQuotaBar
+
+                    if !running.isEmpty || !queued.isEmpty {
+                        activeRunsSection
+                    }
                 }
-                .buttonStyle(KitButtonStyle(.primary, compact: true))
-                .help("New task (⌘N)")
+                .padding(.horizontal, 36)
+                .padding(.vertical, 28)
+                .frame(maxWidth: 740, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+        }
+        .background(ToolrollPalette.ground)
+        .onAppear {
+            quickPromptFocused = true
+        }
+        .onChange(of: store.composerFocusTick) { _, _ in
+            quickPromptFocused = true
         }
     }
 
-    private var summaryLine: String {
-        if isIdle { return "All clear" }
-        var parts: [String] = []
-        let waitingCount = waiting.count + asks.count
-        if waitingCount > 0 { parts.append("\(waitingCount) waiting") }
-        if !running.isEmpty { parts.append("\(running.count) running") }
-        if !queued.isEmpty { parts.append("\(queued.count) queued") }
-        if !settled.isEmpty { parts.append("\(settled.count) settled") }
-        return parts.joined(separator: " · ")
-    }
-
-    @ViewBuilder private var telemetryStrip: some View {
-        let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
-        let spend = store.workRowsResponse.spend
-        let showSpend = (spend?.todayUsd ?? 0) > 0.004
-        let gemini = store.geminiSubscription
-        let hasAny = !perProvider.isEmpty || gemini != nil || showSpend
-
-        if hasAny {
-            HStack(spacing: 0) {
-                ForEach(Array(perProvider.enumerated()), id: \.element.provider) { idx, limit in
-                    if idx > 0 {
-                        HairlineDivider(vertical: true)
-                            .padding(.vertical, 10)
-                    }
-                    LimitTile(limit: limit)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if let gemini {
-                    if !perProvider.isEmpty {
-                        HairlineDivider(vertical: true)
-                            .padding(.vertical, 10)
-                    }
-                    GeminiSubscriptionTile(status: gemini)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if showSpend, let spend {
-                    if !perProvider.isEmpty || gemini != nil {
-                        HairlineDivider(vertical: true)
-                            .padding(.vertical, 10)
-                    }
-                    SpendTile(spend: spend)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                HairlineDivider(vertical: true)
-                    .padding(.vertical, 10)
-
-                Button {
-                    Task { await store.refreshSubscriptionUsage(silent: false) }
-                } label: {
-                    Group {
-                        if store.isRefreshingUsage {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(ToolrollPalette.muted)
-                        }
-                    }
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isRefreshingUsage)
-                .padding(.horizontal, 6)
-                .help(refreshTooltip)
-                .accessibilityLabel("Refresh subscription usage")
+    private func noticeBar(_ notice: WorkbenchNotice) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(notice.kind == .refusal ? ToolrollPalette.danger : ToolrollPalette.live)
+                .frame(width: 6, height: 6)
+            Text(notice.message)
+                .font(.system(size: 12))
+                .foregroundStyle(notice.kind == .refusal ? ToolrollPalette.danger : ToolrollPalette.ink)
+            NoticeActionButton(store: store, notice: notice)
+            Spacer()
+            Button {
+                store.notice = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
             }
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .buttonStyle(.plain)
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .background(ToolrollPalette.raised)
     }
 
-    private var refreshTooltip: String {
-        if store.isRefreshingUsage { return "Checking Claude, Codex, and Gemini…" }
-        if let at = store.lastUsageRefreshAt {
-            let mins = max(0, Int(Date().timeIntervalSince(at) / 60))
-            return mins == 0 ? "Refresh usage (updated just now)" : "Refresh usage (updated \(mins)m ago)"
-        }
-        return "Refresh Claude, Codex, and Gemini usage"
-    }
+    private var heroHeading: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(activeProject.map { "Build in \($0)" } ?? "What are we building?")
+                .font(.system(size: 24, weight: .semibold))
+                .tracking(-0.4)
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
-    @ViewBuilder private var workSection: some View {
-        if isIdle {
-            idleWorkspace
-        } else {
-            VStack(alignment: .leading, spacing: 18) {
-                compactQuickInput
-                if !waiting.isEmpty || !asks.isEmpty {
-                    group("Waiting on you", count: waiting.count + asks.count, dot: ToolrollPalette.ink) {
-                        ForEach(waiting) { taskRow($0) }
-                        ForEach(asks, id: \.id) { askRow($0) }
-                    }
-                }
-                if !running.isEmpty {
-                    group("Running", count: running.count, dot: ToolrollPalette.live) {
-                        ForEach(running) { taskRow($0) }
-                    }
-                }
-                if !queued.isEmpty {
-                    group("Queued", count: queued.count, dot: ToolrollPalette.muted) {
-                        ForEach(queued) { taskRow($0) }
-                    }
-                }
-                if !settled.isEmpty {
-                    let shown = showsAllSettled ? settled : Array(settled.prefix(Self.settledPreview))
-                    group("Settled", count: settled.count, dot: nil) {
-                        ForEach(shown) { taskRow($0, quiet: true) }
-                        if settled.count > Self.settledPreview {
-                            Button(showsAllSettled ? "Show fewer" : "Show all \(settled.count)") {
-                                showsAllSettled.toggle()
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 12))
-                            .foregroundStyle(ToolrollPalette.muted)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                        }
-                    }
+            Spacer(minLength: 8)
+
+            if !running.isEmpty || !store.runningChatThreadIds.isEmpty {
+                let totalLive = running.count + store.runningChatThreadIds.count
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(ToolrollPalette.live)
+                        .frame(width: 6, height: 6)
+                    Text(totalLive == 1 ? "1 running" : "\(totalLive) running")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.muted)
                 }
             }
         }
+        .padding(.horizontal, 2)
     }
 
-    private var idleWorkspace: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            heroQuickComposer
-
-            let recentChats = Array(store.filteredChatThreads.prefix(4))
-            if !recentChats.isEmpty {
-                recentChatsSection(recentChats)
+    private var unifiedComposer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !attachments.isEmpty {
+                ComposerAttachmentStrip(attachments: attachments) { removedId in
+                    attachments.removeAll { $0.id == removedId }
+                }
             }
 
-            if !store.allProjects.isEmpty {
-                projectsGridSection
-            }
-        }
-    }
-
-    private var heroQuickComposer: some View {
-        VStack(alignment: .leading, spacing: 12) {
             TextField(
                 composerPlaceholder,
                 text: $quickPrompt,
                 axis: .vertical
             )
             .textFieldStyle(.plain)
-            .font(.system(size: 14))
+            .font(.system(size: 14.5))
             .foregroundStyle(ToolrollPalette.ink)
-            .lineLimit(2...6)
+            .lineLimit(2...7)
             .focused($quickPromptFocused)
             .onSubmit { submitQuickPrompt() }
             .padding(.horizontal, 2)
             .padding(.top, 2)
 
             HStack(spacing: 8) {
-                if !store.allProjects.isEmpty {
-                    projectSelectorMenu
+                ComposerAttachMenuButton(compact: true) { incoming in
+                    appendUniqueAttachments(incoming, to: &attachments)
                 }
-                modeTogglePills
-                if activeTab == .chat {
-                    chatModelSelectorMenu
-                } else if activeTab == .task {
+
+                projectSelectorMenu
+
+                gearSwitch
+
+                if isTaskMode {
                     planFirstChip
+                } else {
+                    chatTargetMenu
                 }
+
                 Spacer(minLength: 8)
+
                 Button {
                     submitQuickPrompt()
                 } label: {
@@ -260,90 +167,78 @@ struct WorkHomeView: View {
                     .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
-                .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
             }
         }
         .padding(16)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(quickPromptFocused ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    isComposerDropTargeted ? ToolrollPalette.live : (quickPromptFocused ? ToolrollPalette.inputLine : ToolrollPalette.line),
+                    lineWidth: 1
+                )
         )
+        .onComposerPaste(isActive: quickPromptFocused) { incoming in
+            appendUniqueAttachments(incoming, to: &attachments)
+        }
+        .onDrop(of: ComposerDropHelper.acceptedTypes, isTargeted: $isComposerDropTargeted) { providers in
+            ComposerDropHelper.handleDrop(providers: providers) { incoming in
+                appendUniqueAttachments(incoming, to: &attachments)
+            }
+        }
     }
 
     private var composerPlaceholder: String {
-        switch activeTab {
-        case .chat:
-            return "Chat with \(store.defaultChatProvider.displayName) in \(activeProject ?? "your workspace")…"
-        case .task:
-            return "Describe a task to plan & build in \(activeProject ?? "your workspace")…"
-        case .lead:
+        if isTaskMode {
+            return quickPlanFirst
+                ? "Describe a task to plan & verify in \(activeProject ?? "your workspace")…"
+                : "Describe a task to build in an isolated worktree…"
+        }
+        if store.useLeadForNextChat {
             return "Ask Lead across your workspace…"
         }
+        return "Message \(store.defaultChatProvider.displayName) in \(activeProject ?? "your workspace")…"
     }
 
     private var submitLabel: String {
-        switch activeTab {
-        case .chat: return "Start chat"
-        case .task: return quickPlanFirst ? "Plan task" : "Start build"
-        case .lead: return "Ask Lead"
+        if isTaskMode {
+            return quickPlanFirst ? "Plan" : "Build"
         }
+        if store.useLeadForNextChat {
+            return "Ask Lead"
+        }
+        return "Chat"
     }
 
-    private var compactQuickInput: some View {
-        HStack(spacing: 10) {
-            Image(systemName: activeTab == .chat ? "bubble.left" : "plus")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ToolrollPalette.muted)
-            TextField(
-                composerPlaceholder,
-                text: $quickPrompt
-            )
-            .textFieldStyle(.plain)
-            .font(.system(size: 13))
-            .foregroundStyle(ToolrollPalette.ink)
-            .focused($quickPromptFocused)
-            .onSubmit { submitQuickPrompt() }
-
-            if !store.allProjects.isEmpty {
-                projectSelectorMenu
+    private var gearSwitch: some View {
+        HStack(spacing: 2) {
+            gearPill(title: "Chat", active: !isTaskMode) {
+                store.preferredOrchestrationMode = "chat"
             }
-
-            modeTogglePills
-
-            Button(activeTab == .chat ? "Chat" : (activeTab == .lead ? "Ask" : (quickPlanFirst ? "Plan" : "Build"))) {
-                submitQuickPrompt()
-            }
-            .buttonStyle(KitButtonStyle(.primary, compact: true))
-            .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(quickPromptFocused ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
-        )
-    }
-
-    private var modeTogglePills: some View {
-        HStack(spacing: 3) {
-            modeChip(title: "Chat", active: activeTab == .chat) {
-                store.preferredOrchestrationMode = OrchestrationTab.chat.rawValue
-            }
-            modeChip(title: "Task", active: activeTab == .task) {
-                store.preferredOrchestrationMode = OrchestrationTab.task.rawValue
-            }
-            modeChip(title: "Lead", active: activeTab == .lead) {
-                store.preferredOrchestrationMode = OrchestrationTab.lead.rawValue
+            gearPill(title: "Task", active: isTaskMode) {
+                store.preferredOrchestrationMode = "task"
             }
         }
-        .padding(3)
+        .padding(2.5)
         .background(ToolrollPalette.ground, in: Capsule())
         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        .help("Chat: direct streaming loop · Task: sandboxed worktree + checks (⌘.)")
     }
 
-    private var chatModelSelectorMenu: some View {
+    private func gearPill(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: active ? .semibold : .medium))
+                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 3.5)
+                .background(active ? ToolrollPalette.raised : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var chatTargetMenu: some View {
         Menu {
             ForEach(AgentChatProvider.allCases) { provider in
                 Section(provider.displayName) {
@@ -353,7 +248,7 @@ struct WorkHomeView: View {
                         } label: {
                             HStack {
                                 Text(preset.label)
-                                if store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
+                                if !store.useLeadForNextChat && store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
                                     Image(systemName: "checkmark")
                                 }
                             }
@@ -361,12 +256,23 @@ struct WorkHomeView: View {
                     }
                 }
             }
+            Divider()
+            Button {
+                store.useLeadForNextChat = true
+            } label: {
+                HStack {
+                    Text("Workspace Lead")
+                    if store.useLeadForNextChat {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
         } label: {
             HStack(spacing: 5) {
-                Text(store.defaultChatProvider.shortBadge)
+                Text(store.useLeadForNextChat ? "LD" : store.defaultChatProvider.shortBadge)
                     .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
-                Text(store.defaultChatProvider.label(for: store.defaultChatModelId))
+                Text(store.useLeadForNextChat ? "Lead" : store.defaultChatProvider.label(for: store.defaultChatModelId))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
                 Image(systemName: "chevron.up.chevron.down")
@@ -400,18 +306,7 @@ struct WorkHomeView: View {
             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
         .buttonStyle(.plain)
-    }
-
-    private func modeChip(title: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11, weight: active ? .semibold : .medium))
-                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(active ? ToolrollPalette.raised : Color.clear, in: Capsule())
-        }
-        .buttonStyle(.plain)
+        .help("Approve plan and checks before the agent edits files")
     }
 
     private var projectSelectorMenu: some View {
@@ -428,6 +323,12 @@ struct WorkHomeView: View {
                     }
                 }
             }
+            if !store.allProjects.isEmpty {
+                Divider()
+            }
+            Button("Add Local Project…") {
+                store.isAddProjectSheetOpen = true
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "folder")
@@ -436,6 +337,7 @@ struct WorkHomeView: View {
                 Text(activeProject ?? "Workspace")
                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.muted)
@@ -450,224 +352,179 @@ struct WorkHomeView: View {
         .fixedSize()
     }
 
-    private var projectsGridSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("Projects")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Text("\(store.allProjects.count)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Spacer()
-                Button("Add project") { store.isAddProjectSheetOpen = true }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-            .padding(.horizontal, 4)
+    @ViewBuilder
+    private var compactQuotaBar: some View {
+        let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
+        let spend = store.workRowsResponse.spend
+        let showSpend = (spend?.todayUsd ?? 0) > 0.004
+        let gemini = store.geminiSubscription
+        let hasAny = !perProvider.isEmpty || gemini != nil || showSpend
 
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 260, maximum: 480), spacing: 10)],
-                spacing: 10
-            ) {
-                ForEach(store.allProjects, id: \.self) { project in
-                    projectCard(project)
+        if hasAny {
+            HStack(spacing: 14) {
+                ForEach(perProvider, id: \.provider) { limit in
+                    compactLimitItem(limit)
                 }
-            }
-        }
-    }
 
-    private func projectCard(_ project: String) -> some View {
-        let isSelected = project == activeProject
-        return HStack(spacing: 10) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .frame(width: 28, height: 28)
-                .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(project)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .lineLimit(1)
-                if let path = store.localFolderPath(for: project) {
-                    Text(abbreviateHome(path))
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 4) {
-                Button {
-                    store.activeProject = project
-                    store.workspaceMode = .canvas
-                } label: {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
-                .help("Open \(project) in Canvas")
-
-                Button {
-                    store.activeProject = project
-                    Task { await store.startProjectTerminal(project: project, program: "shell") }
-                } label: {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 11))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
-                .help("Open Shell in \(project)")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(isSelected ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            store.activeProject = project
-            quickPromptFocused = true
-        }
-    }
-
-    private func recentChatsSection(_ threads: [AgentChatThread]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("Recent chats")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Text("\(store.filteredChatThreads.count)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Spacer()
-            }
-            .padding(.horizontal, 4)
-
-            VStack(spacing: 0) {
-                ForEach(Array(threads.enumerated()), id: \.element.id) { idx, thread in
-                    if idx > 0 {
-                        HairlineDivider()
-                            .padding(.leading, 44)
+                if let gemini {
+                    HStack(spacing: 5) {
+                        Text("Gemini")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Circle()
+                            .fill(gemini.connected ? ToolrollPalette.success : ToolrollPalette.muted)
+                            .frame(width: 5.5, height: 5.5)
+                        Text(gemini.connected ? (gemini.topModel ?? "Ready") : "Off")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(gemini.connected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                            .lineLimit(1)
                     }
-                    Button {
-                        store.selectChatThread(thread.id)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text(thread.provider.shortBadge)
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .frame(width: 24, height: 20)
-                                .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(thread.title)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(ToolrollPalette.ink)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Text("\(thread.provider.label(for: thread.modelId)) · \(thread.projectName)")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 10)
-                            Text(thread.relativeAge)
-                                .font(.system(size: 11.5))
+                if showSpend, let spend {
+                    HStack(spacing: 4) {
+                        Text("Today")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text(spend.todayUsd, format: .currency(code: "USD"))
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(ToolrollPalette.ink)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                Button {
+                    Task { await store.refreshSubscriptionUsage(silent: false) }
+                } label: {
+                    Group {
+                        if store.isRefreshingUsage {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 10.5, weight: .medium))
                                 .foregroundStyle(ToolrollPalette.muted)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .contentShape(Rectangle())
-                        .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
                     }
-                    .buttonStyle(.plain)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(store.isRefreshingUsage)
+                .help(refreshTooltip)
+                .accessibilityLabel("Refresh subscription usage")
             }
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(ToolrollPalette.raised.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
-    @ViewBuilder private var automations: some View {
-        if let response = store.automations, !response.automations.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text("Runs on its own")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                    Text("\(response.automations.count)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
-                    Spacer()
-                    Button("All automations") { store.workspaceMode = .automations }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-                .padding(.horizontal, 4)
+    private func compactLimitItem(_ limit: ProviderLimit) -> some View {
+        let now = Date()
+        let percent = Int(limit.usedPercent.rounded())
+        let reachedNow = limit.isReachedNow(now: now)
+        let state = limit.resetState(now: now)
+        let stale: Bool = { if case .passed = state { return true }; return false }()
 
-                VStack(spacing: 0) {
-                    ForEach(Array(response.automations.prefix(Self.automationsPreview).enumerated()), id: \.element.id) { idx, item in
-                        if idx > 0 { HairlineDivider() }
-                        AutomationRow(store: store, automation: item, canAct: response.canAct)
-                    }
+        return HStack(spacing: 6) {
+            Text(limit.providerLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ToolrollPalette.muted)
+            Text(stale ? "—" : "\(percent)%")
+                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
+            if !stale {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10))
+                    Capsule()
+                        .fill(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
+                        .frame(width: 28 * CGFloat(max(0, min(100, percent))) / 100)
                 }
-                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .frame(width: 28, height: 3.5)
             }
         }
+        .help("\(limit.providerLabel): \(stale ? "Checking…" : "\(percent)% used")")
     }
 
-    private func group<Content: View>(_ title: String, count: Int, dot: Color?, @ViewBuilder content: () -> Content) -> some View {
+    private var refreshTooltip: String {
+        if store.isRefreshingUsage { return "Checking Claude, Codex, and Gemini…" }
+        if let at = store.lastUsageRefreshAt {
+            let mins = max(0, Int(Date().timeIntervalSince(at) / 60))
+            return mins == 0 ? "Refresh usage (updated just now)" : "Refresh usage (updated \(mins)m ago)"
+        }
+        return "Refresh Claude, Codex, and Gemini usage"
+    }
+
+    private var needsAttentionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if let dot {
-                    Circle().fill(dot).frame(width: 7, height: 7)
-                } else {
-                    Circle().strokeBorder(ToolrollPalette.muted, lineWidth: 1).frame(width: 7, height: 7)
-                }
-                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
-                Text("\(count)").font(.system(size: 12)).foregroundStyle(ToolrollPalette.muted)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(ToolrollPalette.ink)
+                    .frame(width: 6, height: 6)
+                Text("Needs you")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("\(waiting.count + asks.count)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
             }
             .padding(.horizontal, 4)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
 
             VStack(alignment: .leading, spacing: 0) {
-                content()
+                ForEach(Array(waiting.enumerated()), id: \.element.id) { idx, row in
+                    if idx > 0 { HairlineDivider() }
+                    taskRow(row)
+                }
+                ForEach(Array(asks.enumerated()), id: \.element.id) { idx, need in
+                    if idx > 0 || !waiting.isEmpty { HairlineDivider() }
+                    askRow(need)
+                }
+            }
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+        }
+    }
+
+    private var activeRunsSection: some View {
+        let active = running + queued
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(running.isEmpty ? ToolrollPalette.muted : ToolrollPalette.live)
+                    .frame(width: 6, height: 6)
+                Text("In flight")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("\(active.count)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 4)
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(active.enumerated()), id: \.element.id) { idx, row in
+                    if idx > 0 { HairlineDivider() }
+                    taskRow(row)
+                }
             }
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
-    private func taskRow(_ row: WorkRow, quiet: Bool = false) -> some View {
+    private func taskRow(_ row: WorkRow) -> some View {
         Button {
             Task { await store.selectTask(row.id) }
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 statusDot(row.status)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.title)
-                        .font(.system(size: 13.5, weight: quiet ? .regular : .medium))
-                        .foregroundStyle(quiet ? ToolrollPalette.muted : ToolrollPalette.ink)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Text(subtitle(row))
@@ -675,43 +532,40 @@ struct WorkHomeView: View {
                         .foregroundStyle(ToolrollPalette.muted)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 12)
+                Spacer(minLength: 10)
                 if let chip = row.chip, !chip.isEmpty {
                     Text(chip)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10.5))
                         .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 8)
-                        .frame(height: 21)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
                         .background(ToolrollPalette.ground, in: Capsule())
                         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
                 Text(row.age)
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
-                    .frame(minWidth: 34, alignment: .trailing)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 50)
+            .padding(.horizontal, 12)
+            .frame(height: 46)
             .contentShape(Rectangle())
             .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
         }
         .buttonStyle(.plain)
         .contextMenu { TaskRowMenuItems(store: store, row: row) }
-        .accessibilityLabel("\(row.title), \(row.word)\(row.project.map { ", \($0)" } ?? ""), \(row.age)")
     }
 
     private func askRow(_ need: NeedRow) -> some View {
-        HStack(spacing: 12) {
-            Circle().fill(ToolrollPalette.ink).frame(width: 7, height: 7)
+        HStack(spacing: 10) {
+            Circle().fill(ToolrollPalette.ink).frame(width: 6, height: 6)
             Text(need.line ?? need.ask ?? need.reason ?? "Waiting on you")
-                .font(.system(size: 13.5))
+                .font(.system(size: 13))
                 .foregroundStyle(ToolrollPalette.ink)
                 .lineLimit(1)
             Spacer()
         }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
-        .accessibilityElement(children: .combine)
+        .padding(.horizontal, 12)
+        .frame(height: 42)
     }
 
     private func subtitle(_ row: WorkRow) -> String {
@@ -730,217 +584,39 @@ struct WorkHomeView: View {
             case .finished, .unknown: Circle().strokeBorder(ToolrollPalette.muted, lineWidth: 1)
             }
         }
-        .frame(width: 7, height: 7)
-    }
-
-    private func abbreviateHome(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path.hasPrefix(home) {
-            return "~" + path.dropFirst(home.count)
-        }
-        return path
+        .frame(width: 6.5, height: 6.5)
     }
 
     private func submitQuickPrompt() {
-        let trimmed = quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let raw = quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty || !attachments.isEmpty else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: raw, attachments: attachments)
         quickPrompt = ""
+        attachments = []
         let targetProject = activeProject
-        switch activeTab {
-        case .chat:
-            Task {
-                await store.startChatThread(prompt: trimmed, project: targetProject)
-            }
-        case .lead:
-            store.isInspectorVisible = true
-            store.inspectorTab = .lead
-            Task { await store.sendLeadMessage(trimmed) }
-        case .task:
+
+        if isTaskMode {
             let planFirst = quickPlanFirst
             Task {
                 await store.createTask(
-                    title: trimmed,
+                    title: composed.title,
                     project: targetProject,
-                    body: "",
+                    body: composed.goal,
                     planFirst: planFirst
                 )
             }
+            return
         }
-    }
-}
 
-struct WorkCustomizeSheet: View {
-    @Binding var layout: WorkLayout
-    let onDone: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Customize Work")
-                .font(.system(size: 15, weight: .semibold))
-            VStack(spacing: 6) {
-                ForEach(Array(layout.widgets.enumerated()), id: \.element.id) { index, widget in
-                    HStack(spacing: 12) {
-                        Toggle(isOn: Binding(get: { !widget.isHidden }, set: { _ in layout = layout.togglingHidden(widget.id) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(widget.kind.title).font(.system(size: 13, weight: .medium))
-                                Text(widget.kind.detail).font(.system(size: 11.5)).foregroundStyle(ToolrollPalette.muted)
-                            }
-                        }
-                        .toggleStyle(.checkbox)
-                        Spacer()
-                        Button { layout = layout.moving(widget.id, by: -1) } label: { Image(systemName: "chevron.up") }
-                            .disabled(index == 0)
-                            .accessibilityLabel("Move \(widget.kind.title) up")
-                        Button { layout = layout.moving(widget.id, by: 1) } label: { Image(systemName: "chevron.down") }
-                            .disabled(index == layout.widgets.count - 1)
-                            .accessibilityLabel("Move \(widget.kind.title) down")
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(10)
-                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-            }
-            HStack {
-                Button("Reset to Default") { layout = .standard }
-                Spacer()
-                Button("Done", action: onDone).keyboardShortcut(.defaultAction)
-            }
+        if store.useLeadForNextChat {
+            store.isInspectorVisible = true
+            store.inspectorTab = .lead
+            Task { await store.sendLeadMessage(composed.combinedMessage) }
+            return
         }
-        .padding(20)
-        .frame(width: 440)
-    }
-}
 
-struct LimitTile: View {
-    let limit: ProviderLimit
-    private var now: Date { Date() }
-
-    var body: some View {
-        let percent = Int(limit.usedPercent.rounded())
-        let reachedNow = limit.isReachedNow(now: now)
-        let state = limit.resetState(now: now)
-        let stale: Bool = { if case .passed = state { return true }; return false }()
-
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text(limit.providerLabel)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Spacer(minLength: 6)
-                Text(resetText(state))
-                    .font(.system(size: 11))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-            }
-
-            HStack(spacing: 8) {
-                Text(stale ? "—" : "\(percent)%")
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
-
-                if stale {
-                    Text("Checking…")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .lineLimit(1)
-                } else {
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.white.opacity(0.08))
-                            Capsule()
-                                .fill(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
-                                .frame(width: proxy.size.width * CGFloat(max(0, min(100, percent))) / 100)
-                        }
-                    }
-                    .frame(height: 4)
-                }
-            }
+        Task {
+            await store.startChatThread(prompt: composed.combinedMessage, project: targetProject)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibility(percent: percent, reachedNow: reachedNow, state: state))
-    }
-
-    private func resetText(_ state: ProviderLimit.ResetState) -> String {
-        switch state {
-        case .upcoming(let date): return "Resets \(Self.when(date))"
-        case .passed(let date): return "Reset \(Self.day.string(from: date))"
-        case .unknown: return limit.windowLabel
-        }
-    }
-
-    private func accessibility(percent: Int, reachedNow: Bool, state: ProviderLimit.ResetState) -> String {
-        let used = reachedNow ? "limit reached" : "\(percent) percent used"
-        return "\(limit.providerLabel): \(used). \(resetText(state))"
-    }
-
-    static func when(_ date: Date, now: Date = Date()) -> String {
-        let seconds = date.timeIntervalSince(now)
-        if seconds < 3600 { return "in \(max(1, Int(seconds / 60)))m" }
-        if seconds < 86_400 { return "in \(Int(seconds / 3600))h" }
-        if seconds < 7 * 86_400 { return weekday.string(from: date) }
-        return day.string(from: date)
-    }
-
-    private static let weekday: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("EEE j:mm"); return f }()
-    private static let day: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
-}
-
-struct GeminiSubscriptionTile: View {
-    let status: GeminiSubscriptionStatus
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text("Gemini")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Spacer(minLength: 6)
-                Text("Antigravity")
-                    .font(.system(size: 11))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .lineLimit(1)
-            }
-
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(status.connected ? ToolrollPalette.success : ToolrollPalette.muted)
-                    .frame(width: 6, height: 6)
-                Text(status.connected ? (status.topModel ?? "Ready") : (status.note ?? "Not connected"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(status.connected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct SpendTile: View {
-    let spend: SpendSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text("Spend")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Spacer(minLength: 6)
-                Text("Today")
-                    .font(.system(size: 11))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-
-            Text(spend.todayUsd, format: .currency(code: "USD"))
-                .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ToolrollPalette.ink)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .accessibilityElement(children: .combine)
     }
 }

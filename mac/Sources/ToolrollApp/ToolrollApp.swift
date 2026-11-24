@@ -98,12 +98,17 @@ struct ToolrollMacApp: App {
                 }
                 .keyboardShortcut("0", modifiers: [.command])
 
-                Button("New Task") {
+                Button("New Thread") {
                     ToolrollWindowCoordinator.shared.showMainWindow()
                     store.isSetupOpen = false
                     store.openNewWorkCanvas()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+
+                Button("Switch Chat / Task Mode") {
+                    store.toggleOrchestrationMode()
+                }
+                .keyboardShortcut(".", modifiers: [.command])
 
                 Button("Add Project…") {
                     store.isAddProjectSheetOpen = true

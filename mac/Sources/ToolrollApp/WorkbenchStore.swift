@@ -197,7 +197,9 @@ public final class WorkbenchStore {
     public var selectedChatThreadId: String? = nil
     public private(set) var runningChatThreadIds: Set<String> = []
     public private(set) var chatThreadDiffs: [String: AgentChatGitDiff] = [:]
+    public var isChatDiffDrawerOpen: Bool = false
     public var isChatThreadsExpanded: Bool = true
+    public var composerFocusTick: Int = 0
     public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "chat" {
         didSet { UserDefaults.standard.set(preferredOrchestrationMode, forKey: "toolroll.orchestrationMode") }
     }
@@ -207,6 +209,7 @@ public final class WorkbenchStore {
     public var defaultChatModelId: String = UserDefaults.standard.string(forKey: "toolroll.chatModelId") ?? AgentChatProvider.claude.defaultModelId {
         didSet { UserDefaults.standard.set(defaultChatModelId, forKey: "toolroll.chatModelId") }
     }
+    public var useLeadForNextChat: Bool = false
     private var chatProcessHandles: [String: AgentChatProcessHandle] = [:]
     private var knownAgentRequestIds: Set<String> = []
     private var agentRequestPollTask: Task<Void, Never>?
@@ -927,25 +930,26 @@ public final class WorkbenchStore {
         selectedChatThreadId = nil
         selectedTaskId = nil
         stepCards = nil
+        isChatDiffDrawerOpen = false
+        composerFocusTick &+= 1
     }
 
     public func openNewWorkCanvas() {
-        if !isComposingNewWork, let current = selectedTaskId {
-            backStack.append(current)
-            forwardStack.removeAll()
-        }
-        workspaceMode = .workbench
-        selectedCliThreadId = nil
-        selectedChatThreadId = nil
-        isComposingNewWork = true
+        openWorkHome()
+    }
+
+    public func toggleOrchestrationMode() {
+        preferredOrchestrationMode = (preferredOrchestrationMode == "task") ? "chat" : "task"
     }
 
     public func selectChatThread(_ id: String) {
         workspaceMode = .workbench
         isComposingNewWork = false
         selectedCliThreadId = nil
-        selectedChatThreadId = nil
         selectedTaskId = nil
+        if selectedChatThreadId != id {
+            isChatDiffDrawerOpen = false
+        }
         selectedChatThreadId = id
         if let thread = chatThreads.first(where: { $0.id == id }) {
             activeProject = thread.projectName
@@ -953,6 +957,7 @@ public final class WorkbenchStore {
     }
 
     public func setDefaultChatModel(provider: AgentChatProvider, modelId: String) {
+        useLeadForNextChat = false
         defaultChatProvider = provider
         defaultChatModelId = modelId
     }

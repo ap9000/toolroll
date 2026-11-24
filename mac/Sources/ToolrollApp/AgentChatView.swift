@@ -8,7 +8,6 @@ public struct AgentChatView: View {
 
     @State private var replyText: String = ""
     @State private var attachments: [ComposerAttachment] = []
-    @State private var showDiffDrawer: Bool = false
     @State private var isComposerDropTargeted: Bool = false
     @FocusState private var replyFocused: Bool
 
@@ -27,10 +26,7 @@ public struct AgentChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            chatHeaderBar
-            HairlineDivider()
-
-            if showDiffDrawer && !gitDiff.isEmpty {
+            if store.isChatDiffDrawerOpen && !gitDiff.isEmpty {
                 diffPreviewDrawer
                 HairlineDivider()
             }
@@ -71,140 +67,6 @@ public struct AgentChatView: View {
         }
     }
 
-    private var chatHeaderBar: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 6) {
-                if isRunning {
-                    ProgressView()
-                        .controlSize(.mini)
-                } else {
-                    Circle()
-                        .fill(ToolrollPalette.success)
-                        .frame(width: 6, height: 6)
-                }
-                Text(thread.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
-            Text(thread.projectName)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(ToolrollPalette.muted)
-                .padding(.horizontal, 7)
-                .frame(height: 22)
-                .background(ToolrollPalette.raised, in: Capsule())
-                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
-
-            providerModelMenu
-
-            Spacer(minLength: 8)
-
-            if !gitDiff.isEmpty {
-                Button {
-                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                        showDiffDrawer.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.system(size: 10.5))
-                        Text("\(gitDiff.changedFiles.count) changed")
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                    }
-                    .foregroundStyle(showDiffDrawer ? ToolrollPalette.ink : ToolrollPalette.muted)
-                    .padding(.horizontal, 9)
-                    .frame(height: 24)
-                    .background(showDiffDrawer ? ToolrollPalette.raised : Color.clear, in: Capsule())
-                    .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .help("Inspect working tree diff in \(thread.projectName)")
-            }
-
-            Button {
-                Task { await store.promoteChatToTask(threadId: thread.id) }
-            } label: {
-                Label("Ship as Task", systemImage: "arrow.up.right.square")
-                    .font(.system(size: 11.5, weight: .medium))
-            }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
-            .help("Create a structured Toolroll task from this chat for formal checks & merge")
-
-            Menu {
-                Button("Open Shell in \(thread.projectName)") {
-                    Task { await store.startProjectTerminal(project: thread.projectName, program: "shell") }
-                }
-                Button("Open Canvas for \(thread.projectName)") {
-                    store.activeProject = thread.projectName
-                    store.workspaceMode = .canvas
-                }
-                Button("Refresh Diff") {
-                    Task { await store.refreshChatDiff(threadId: thread.id) }
-                }
-                Divider()
-                Button("Delete Chat", role: .destructive) {
-                    store.deleteChatThread(id: thread.id)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .frame(width: 26, height: 24)
-                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(ToolrollPalette.ground)
-    }
-
-    private var providerModelMenu: some View {
-        Menu {
-            ForEach(AgentChatProvider.allCases) { provider in
-                Section(provider.displayName) {
-                    ForEach(provider.presets, id: \.id) { preset in
-                        Button {
-                            store.updateChatThreadModel(threadId: thread.id, provider: provider, modelId: preset.id)
-                        } label: {
-                            HStack {
-                                Text(preset.label)
-                                if thread.provider == provider && thread.modelId == preset.id {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Text(thread.provider.shortBadge)
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(ToolrollPalette.muted)
-                Text(thread.provider.label(for: thread.modelId))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(ToolrollPalette.ink)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 22)
-            .background(ToolrollPalette.raised, in: Capsule())
-            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(isRunning)
-    }
-
     private var diffPreviewDrawer: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -218,7 +80,7 @@ public struct AgentChatView: View {
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
                 .foregroundStyle(ToolrollPalette.muted)
-                Button("Hide") { showDiffDrawer = false }
+                Button("Hide") { store.isChatDiffDrawerOpen = false }
                     .buttonStyle(.plain)
                     .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.muted)
