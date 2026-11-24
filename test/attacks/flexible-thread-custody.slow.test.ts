@@ -349,5 +349,37 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       }
       expect(unsettledLaunch(world.store, id)).toBeNull();
     }, 120_000);
+
+    test("native: threads turned off while a reply holds the lock, then on again: the off cleanup stops only the launch it saw, never the reply's replacement", async ctx => {
+      needs(ctx, osFence());
+      const { id, sessions, launchOf, live, startFirst, reply } = await replyWorld();
+      try {
+        const first = await startFirst();
+        const a = launchOf(first);
+        // The reply takes the thread's lock as it is called. Threads go off: the upkeep sees A, records that A must stop,
+        // and waits for the lock. Threads are on again before the reply goes on, so it replaces A with B under the lock.
+        const replying = reply("Now add a short install section");
+        switched.on = false;
+        const upkeep = settleFlexibleStops(world.store, sessions);
+        switched.on = true;
+        const [sent, settled] = await Promise.all([replying, upkeep]);
+        expect(sent, JSON.stringify(sent)).toMatchObject({ ok: true, seq: 2, fresh: true });
+        if (!sent.ok) return;
+        const b = launchOf(sent.turn);
+        expect(settled).toMatchObject({ ok: true, pending: 0 });
+        expect(flexibleLaunch(world.store, a)).toMatchObject({ state: "exited", stopReason: "its agent was replaced" });
+        // A's requirement settled with its exit; B runs on, its session's agent link and the thread's relay kept.
+        expect(flexibleStopPending(world.store, id)).toBe(false);
+        expect(live(b)).toBe(true);
+        expect(sessions.threads.get(id)?.agent?.launch).toBe(b);
+        expect(sessions.threads.get(id)?.relay).not.toBeNull();
+        await until(() => flexibleTurn(world.store, sent.turn)?.status === "finished", () => JSON.stringify(flexibleTurn(world.store, sent.turn)));
+        expect(live(b)).toBe(true);
+        expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible agent stopped' AND detail LIKE ?").get(`%launch ${b}%`)?.["n"]).toBe(0);
+      } finally {
+        await closeFlexibleSessions(world.store, sessions);
+      }
+      expect(unsettledLaunch(world.store, id)).toBeNull();
+    }, 120_000);
   });
 });

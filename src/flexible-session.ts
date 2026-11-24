@@ -188,10 +188,28 @@ export async function settleFlexibleStops(store: Store, sessions: FlexibleSessio
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   let stopped = 0, pending = 0;
   if (!flexibleAvailable(store)) {
-    const durable = store.handle.prepare("SELECT DISTINCT thread FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").all(sessions.holder).map(row => String(row["thread"]));
-    for (const thread of new Set([...sessions.threads.keys(), ...durable])) {
+    const reason = "interactive agent threads were turned off";
+    // Every launch of this holder not yet exited, by identity, made a durable stop requirement now (the same record the
+    // upkeep settles whatever happens next: threads turned on again, this console restarted), and stopped as exactly
+    // that launch. A reply already holding a thread's lock that replaces the launch meanwhile leaves its replacement
+    // untouched: the stop finds another launch there and does nothing to it.
+    const launches = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited' ORDER BY started_at, id").all(sessions.holder)
+      .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));
+    try {
+      store.transact(() => { const at = (input.clock ?? systemClock)().toISOString(); for (const one of launches) requireFlexibleStop(store, { launch: one.launch, thread: one.thread, reason, at }); });
+    } catch { /* stopped below all the same; the next tick records them again */ }
+    for (const one of launches) {
       try {
-        const done = await stopFlexibleThreadSession(store, sessions, { thread, reason: "interactive agent threads were turned off", ...clocked });
+        const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason, ...clocked, expect: { launch: one.launch, holder: sessions.holder } });
+        if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
+      } catch { pending++; }
+    }
+    // A session with no launch of its own (its relay, no agent): closed while threads are still off, read again under
+    // the thread's lock, so one turned on again meanwhile (and whatever a reply started there) is left alone.
+    const held = new Set(launches.map(one => one.thread));
+    for (const thread of [...sessions.threads.keys()].filter(one => !held.has(one))) {
+      try {
+        const done = await stopFlexibleThreadSession(store, sessions, { thread, reason, ...clocked, whileOff: true });
         if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
       } catch { pending++; }
     }
@@ -374,7 +392,10 @@ type SessionStopInput = { thread: string; reason: string; clock?: FlexibleClock;
   /** Only this launch of this holder (a stop requirement names one): rechecked under the thread's lock before anything
    * is touched; when the thread's launch is another one now (a replacement), nothing of it is revoked, closed or
    * stopped, and its session and relay stay. */
-  expect?: { launch: string; holder: string } };
+  expect?: { launch: string; holder: string };
+  /** Only while interactive agent threads are still off, read under the thread's lock (threads turned off: a session
+   * with no launch of its own); on again by then, nothing is touched. */
+  whileOff?: boolean };
 type SessionStopped = { ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string };
 
 /**
@@ -1397,6 +1418,7 @@ export function flexibleShipNeedsFor(store: Store, asked: string): { reason: str
 async function stopSessionLocked(store: Store, sessions: FlexibleSessions, input: SessionStopInput): Promise<SessionStopped> {
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const expect = input.expect;
+  if (input.whileOff === true && flexibleAvailable(store)) return { ok: true, stopped: true, why: null };
   if (expect !== undefined) {
     const now = unsettledLaunch(store, input.thread);
     if (now === null || now.id !== expect.launch || now.holder !== expect.holder) {
