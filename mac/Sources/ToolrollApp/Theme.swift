@@ -129,28 +129,28 @@ public enum ToolrollPalette {
     }
 
     public static var ground: Color {
-        fromHex(custom?.ground) ?? dynamic(light: 0xEFEFEF, dark: isHighContrast ? 0x000000 : 0x0B0B0B)
+        fromHex(custom?.ground) ?? dynamic(light: 0xEFEFEF, dark: isHighContrast ? 0x000000 : 0x0A0A0B)
     }
     public static var paper: Color {
-        fromHex(custom?.paper) ?? dynamic(light: 0xFFFFFF, dark: isHighContrast ? 0x080808 : 0x161616)
+        fromHex(custom?.paper) ?? dynamic(light: 0xFFFFFF, dark: isHighContrast ? 0x080808 : 0x121214)
     }
     public static var raised: Color {
-        fromHex(custom?.raised ?? custom?.fill) ?? dynamic(light: 0xF5F5F5, dark: isHighContrast ? 0x141414 : 0x1C1C1C)
+        fromHex(custom?.raised ?? custom?.fill) ?? dynamic(light: 0xF5F5F5, dark: isHighContrast ? 0x141414 : 0x18181B)
     }
     public static var ink: Color {
-        fromHex(custom?.ink) ?? dynamic(light: 0x171717, dark: isHighContrast ? 0xFFFFFF : 0xEDEDED)
+        fromHex(custom?.ink) ?? dynamic(light: 0x171717, dark: isHighContrast ? 0xFFFFFF : 0xEFEFF1)
     }
     public static var inverseInk: Color {
-        fromHex(custom?.selectionInk ?? custom?.ground) ?? dynamic(light: 0xFFFFFF, dark: 0x0B0B0B)
+        fromHex(custom?.selectionInk ?? custom?.ground) ?? dynamic(light: 0xFFFFFF, dark: 0x0A0A0B)
     }
     public static var muted: Color {
-        fromHex(custom?.muted) ?? dynamic(light: 0x666666, dark: isHighContrast ? 0xCCCCCC : 0xA1A1A1)
+        fromHex(custom?.muted) ?? dynamic(light: 0x666666, dark: isHighContrast ? 0xCCCCCC : 0x8E8E96)
     }
     public static var line: Color {
-        fromHex(custom?.line).map { $0.opacity(0.45) } ?? dynamic(light: 0xE6E6E6, dark: isHighContrast ? 0x525252 : 0x262626)
+        fromHex(custom?.line).map { $0.opacity(0.42) } ?? dynamic(light: 0xE6E6E6, dark: isHighContrast ? 0x525252 : 0x232327)
     }
     public static var inputLine: Color {
-        fromHex(custom?.line).map { $0.opacity(0.75) } ?? dynamic(light: 0xD4D4D4, dark: isHighContrast ? 0x7A7A7A : 0x363636)
+        fromHex(custom?.line).map { $0.opacity(0.68) } ?? dynamic(light: 0xD4D4D4, dark: isHighContrast ? 0x7A7A7A : 0x323238)
     }
     public static var live: Color {
         fromHex(custom?.live ?? custom?.selection) ?? dynamic(light: 0x0D74CE, dark: 0x70B8FF)
@@ -532,7 +532,7 @@ public extension View {
         } else {
             self
                 .background(ToolrollPalette.paper, in: Capsule())
-                .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 

@@ -57,9 +57,9 @@ public struct MainWorkbenchView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
                         )
-                        .shadow(color: Color.black.opacity(0.22), radius: 10, y: 2)
+                        .shadow(color: Color.black.opacity(0.18), radius: 8, y: 2)
                         .padding(.top, 2)
                         .padding(.bottom, 8)
                         .padding(.leading, store.isSidebarVisible && !WorkspaceThemeEngine.shared.config.isSidebarOnRight ? 4 : 8)
