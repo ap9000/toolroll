@@ -714,9 +714,10 @@ fn threads_with(turn: &str, live: bool) -> Value {
 #[test]
 fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
     let mut app = thread_app(window());
-    // While its turn is still working, s says so and opens nothing.
+    // While its turn is still working, s says so, and its box opens all the same (what is typed goes there, never to
+    // the workbench's keys: tests/stranger11.rs); Esc closes it.
     assert_eq!(app.key(key('s')), vec![]);
-    assert!(matches!(app.mode, Mode::Normal));
+    assert!(matches!(&app.mode, Mode::ThreadReply(t, _) if t == fake::THREAD));
     assert!(
         app.status
             .as_ref()
@@ -724,6 +725,8 @@ fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
         "{:?}",
         app.status
     );
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
     app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
     assert_eq!(app.key(key('s')), vec![]);
     assert!(

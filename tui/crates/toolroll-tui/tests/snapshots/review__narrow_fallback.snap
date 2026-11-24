@@ -35,4 +35,4 @@ expression: narrow
 " │                                          │ │ ╰───────────────────────────────────────────────╯ │ "
 " ╰──────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯ "
 "                                                                                                    "
-"  j/k line  c note  a accept  r send back  {/} file  : all actions                                  "
+"  j/k line  c note  a accept  r send back  {/} file  Esc list  : all actions                        "

@@ -971,6 +971,8 @@ pub struct App {
     pub batch_shown: bool,
     /// Accept carries the notes shown (t in the Accept dialog).
     pub accept_attach: bool,
+    /// A plain Accept is on its way: once the console says it's done, the Diff tab gives way (leave_diff).
+    pub accept_sent: bool,
     /// Every batch submitted for a draft and not yet done, by (task, build, exact text): its request identity, reused
     /// whenever the same text is submitted again, and whether its notes are saved. Kept for the life of the draft.
     pub pending: HashMap<(String, i64, String), Pending>,
@@ -1125,6 +1127,7 @@ impl App {
             syntax_on: true,
             batch_shown: false,
             accept_attach: false,
+            accept_sent: false,
             pending: HashMap::new(),
             diff_wanted: None,
             file_wanted: None,
@@ -1770,6 +1773,9 @@ impl App {
                 result,
             } => self.sent(task, run, text, kept, result),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
+                if std::mem::take(&mut self.accept_sent) {
+                    self.leave_diff();
+                }
                 self.say(Tone::Said, words);
                 // An act's answer about this task: followed closely until it moves on (fast_read).
                 self.following = self.said_for.as_ref().map(|(t, _)| t.clone());
@@ -1818,6 +1824,7 @@ impl App {
             }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
+                crate::thread::keep_refused_reply(self);
                 self.sent_thread();
                 self.refresh()
             }
@@ -1857,8 +1864,10 @@ impl App {
                 vec![]
             }
             Msg::Acted(Err(e)) => {
+                let fx = self.failed(e);
+                crate::thread::keep_refused_reply(self);
                 self.sent_thread();
-                self.failed(e)
+                fx
             }
             Msg::Signal(signal) => self.signal(signal),
             Msg::Said(words) => {
@@ -2207,6 +2216,9 @@ impl App {
         if let Some(view) = self.threads.view.as_mut() {
             view.sending = None;
         }
+        // An act answered: a reply or an Accept on its way is no longer (a refused reply was put back in its box first).
+        self.threads.reply_sent = None;
+        self.accept_sent = false;
     }
 
     /// Enter on a thread's answer dialog: posted only while the pinned question still stands and was drawn whole.
@@ -3343,6 +3355,13 @@ impl App {
         }
         match key.code {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
+            // A result's Diff tab: Esc leaves it (stranger test round 11: only Tab did, so typing went on running the
+            // Diff's own keys).
+            KeyCode::Esc if self.tab == Tab::Diff && self.thread_selected().is_none() => {
+                self.leave_diff();
+                self.status = None;
+                vec![]
+            }
             // Narrow, a task's panel showing: Esc goes back to the list.
             KeyCode::Esc if self.narrow && !self.narrow_list => {
                 self.narrow_list = true;
@@ -5021,11 +5040,24 @@ impl App {
             self.say(Tone::Refused, why);
             return vec![];
         }
+        self.accept_sent = true;
         self.act(
             self.complete_path(&pin),
             vec![("receipt", pin.receipt), ("run", pin.run.to_string())],
             "Accepted. The task is complete.".into(),
         )
+    }
+
+    /// Leave a result's Diff tab for Live (narrow: back to the list): Esc there, and once an Accept or a Send back is
+    /// done, so what the person types next is never taken as the Diff's own keys (`n` next note, `c` a note…). A
+    /// refused one stays on the Diff, its notes there to change. Tab shows the Diff again.
+    fn leave_diff(&mut self) {
+        if self.tab == Tab::Diff {
+            self.tab = Tab::Live;
+        }
+        if self.narrow {
+            self.narrow_list = true;
+        }
     }
 
     /// The request identity for a batch of exactly `text` on this result: the one already used for it (a retry, after
@@ -5202,6 +5234,7 @@ impl App {
                 self.drafts.remove(&(task.clone(), run));
                 self.pending
                     .retain(|(t, r, _), _| !(*t == task && *r == run));
+                self.leave_diff();
                 self.rerow();
                 self.say(Tone::Said, words);
                 self.refresh()
@@ -5714,16 +5747,20 @@ impl App {
                 self.diff_step(i as i64 - self.diff_index as i64)
             }
             None => {
-                self.say(
-                    Tone::Said,
-                    if self.drafts.get(&(task, run)).is_none_or(Vec::is_empty) {
-                        "No notes yet. Press c on a line to leave one."
-                    } else if forward {
-                        "No more notes after this one."
-                    } else {
-                        "No notes before this one."
-                    },
-                );
+                let words = if self.drafts.get(&(task, run)).is_none_or(Vec::is_empty) {
+                    // `n` here is the next note, not New task: say how to get to that too.
+                    let keymap = &self.prefs.settings.keymap;
+                    let (note, new) = (
+                        keymap.key_words(Action::Note),
+                        keymap.key_words(Action::NewTask),
+                    );
+                    format!("No notes yet: {note} leaves one on a line. Esc leaves the diff; then {new} is a new task.")
+                } else if forward {
+                    "No more notes after this one.".to_string()
+                } else {
+                    "No notes before this one.".to_string()
+                };
+                self.say(Tone::Said, words);
                 vec![]
             }
         }

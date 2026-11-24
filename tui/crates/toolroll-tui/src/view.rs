@@ -2945,6 +2945,10 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         .map(|(a, what)| (keys_name(app, a), what))
         .filter(|(k, _)| !k.is_empty())
         .collect();
+    // A result's Diff: its own keys (n the next note among them) shadow the list's while it shows; Esc leaves it.
+    if app.tab == Tab::Diff && app.thread_selected().is_none() && !app.items.is_empty() {
+        out.push(("Esc".into(), "list"));
+    }
     let palette = key_name(app, Palette);
     if !palette.is_empty() {
         out.push((palette, "all actions"));
