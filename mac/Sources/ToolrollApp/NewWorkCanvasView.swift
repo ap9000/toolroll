@@ -2,9 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Toolroll's Unified Launchpad (Home & ⌘N):
-/// Liquid Glass composer with interactive project folder switcher, dynamic `Needs you` resume strip,
-/// and direct Toolroll entry points (Visual Canvas, Live Terminal, Ask Lead).
 public struct NewWorkCanvasView: View {
     @Bindable var store: WorkbenchStore
 
@@ -28,8 +25,6 @@ public struct NewWorkCanvasView: View {
         self.store = store
     }
 
-    /// Active project for Launchpad composer, Visual Canvas, and Live Terminal
-    /// (synced via `store.activeProject` without filtering other repos out of the left sidebar).
     private var resolvedProject: String? {
         if isWorkspaceWide { return nil }
         return store.activeProject ?? store.selectedProject ?? store.allProjects.first
@@ -108,7 +103,6 @@ public struct NewWorkCanvasView: View {
                     Spacer(minLength: 48)
 
                     VStack(spacing: 16) {
-                        // 1. Live workspace status pulse + Toolroll-native headline
                         VStack(spacing: 10) {
                             let pulse = workspacePulse
                             Button {
@@ -145,7 +139,6 @@ public struct NewWorkCanvasView: View {
                                 .minimumScaleFactor(0.8)
                         }
 
-                        // 2. Floating Liquid Glass Composer
                         VStack(alignment: .leading, spacing: 10) {
                             if !attachments.isEmpty {
                                 ComposerAttachmentStrip(attachments: attachments) { removedId in
@@ -170,7 +163,6 @@ public struct NewWorkCanvasView: View {
                             .padding(.top, attachments.isEmpty ? 4 : 0)
 
                             ViewThatFits(in: .horizontal) {
-                                // Wide toolbar row
                                 HStack(spacing: 8) {
                                     attachButton
                                     modeGlassPicker
@@ -179,7 +171,6 @@ public struct NewWorkCanvasView: View {
                                     sendButton
                                 }
 
-                                // Condensed 2-row fallback (zero wrapping)
                                 VStack(spacing: 8) {
                                     HStack(spacing: 8) {
                                         attachButton
@@ -213,7 +204,6 @@ public struct NewWorkCanvasView: View {
                             }
                         }
 
-                        // 3. Interactive Bottom-Left Project Folder Switcher + Mode Hint
                         HStack(spacing: 10) {
                             projectFolderMenu
                             Spacer(minLength: 8)
@@ -225,13 +215,11 @@ public struct NewWorkCanvasView: View {
                         }
                         .padding(.horizontal, 4)
 
-                        // 4. Dynamic `Needs You` Resume Card (only shown when something is waiting)
                         if let waiting = store.needsRows.first {
                             needsYouResumeCard(waiting)
                                 .padding(.top, 4)
                         }
 
-                        // 5. Toolroll-Native Entry Points (Visual Canvas, Live Terminal, Ask Lead)
                         launchEntryPointsStrip
                             .padding(.top, 6)
                     }
@@ -244,7 +232,7 @@ public struct NewWorkCanvasView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ToolrollPalette.paper)
+        .background(ToolrollPalette.ground)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -296,8 +284,6 @@ public struct NewWorkCanvasView: View {
             }
         }
     }
-
-    // MARK: - Composer Controls
 
     private var promptPlaceholder: String {
         switch mode {
@@ -404,8 +390,6 @@ public struct NewWorkCanvasView: View {
         .disabled(!canSubmit)
     }
 
-    // MARK: - Interactive Bottom-Left Project Folder Switcher
-
     private var projectFolderMenu: some View {
         Menu {
             Section("Switch Project") {
@@ -484,8 +468,6 @@ public struct NewWorkCanvasView: View {
         .fixedSize()
         .help("Switch active project or add a local folder (⌘⇧O)")
     }
-
-    // MARK: - Dynamic Needs-You Resume Banner & Toolroll Entry Points
 
     private func needsYouResumeCard(_ row: WorkRow) -> some View {
         Button {

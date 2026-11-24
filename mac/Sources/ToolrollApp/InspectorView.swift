@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Right collapsible Inspector (Terminal | Diff | Lead).
 public struct InspectorView: View {
     @Bindable var store: WorkbenchStore
 
@@ -12,7 +11,6 @@ public struct InspectorView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Tabs with their names; in a narrow drawer, icons only (the name is in each tab's tooltip).
             ViewThatFits(in: .horizontal) {
                 tabBar(showsNames: true)
                 tabBar(showsNames: false)
@@ -87,8 +85,6 @@ public struct InspectorView: View {
     }
 }
 
-// MARK: - Live Terminal Pane (WebSocket PTY + Lease Controls + AppKit Key Capture)
-
 struct LiveTerminalPaneView: View {
     @Bindable var store: WorkbenchStore
     @Bindable var session: LiveTerminalSession
@@ -151,7 +147,6 @@ struct LiveTerminalPaneView: View {
 
     private var leaseControlBar: some View {
         HStack(spacing: 8) {
-            // Lease status pill
             HStack(spacing: 5) {
                 Circle()
                     .fill(leaseDotColor)
@@ -199,7 +194,6 @@ struct LiveTerminalPaneView: View {
                 }
             }
 
-            // Program launcher menu
             if let taskId = store.selectedTaskId {
                 Menu {
                     ForEach(availablePrograms, id: \.self) { prog in
@@ -322,7 +316,6 @@ struct LiveTerminalPaneView: View {
                 }
             }
 
-            // Invisible AppKit key-event responder auto-focuses and captures terminal typing cleanly
             TerminalKeyCaptureView(
                 onInput: { input in
                     session.sendInput(input)
@@ -386,8 +379,6 @@ struct LiveTerminalPaneView: View {
     }
 }
 
-// MARK: - AppKit Native Key Capture Surface (TerminalSurfaceProtocol input bridge)
-
 private struct TerminalKeyCaptureView: NSViewRepresentable {
     let onInput: (String) -> Void
     let onResize: (Int, Int) -> Void
@@ -447,7 +438,6 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
 
         override func keyDown(with event: NSEvent) {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            // Let Command shortcuts (⌘K, ⌘J, ⌘R, ⌘C) bubble up except ⌘V paste
             if flags.contains(.command) {
                 if event.charactersIgnoringModifiers?.lowercased() == "v",
                    let str = NSPasteboard.general.string(forType: .string) {
@@ -460,7 +450,7 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
 
             if flags.contains(.control), let ch = event.charactersIgnoringModifiers?.lowercased().unicodeScalars.first {
                 let code = ch.value
-                if code >= 97 && code <= 122 { // Ctrl+A..Z
+                if code >= 97 && code <= 122 {
                     let ctrl = UnicodeScalar(code - 96)!
                     onInput?(String(ctrl))
                     return
@@ -468,14 +458,14 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
             }
 
             switch event.keyCode {
-            case 36, 76: onInput?("\r")      // Return / Enter
-            case 51:     onInput?("\u{7F}")  // Backspace
-            case 48:     onInput?("\t")      // Tab
-            case 53:     onInput?("\u{1B}")  // Escape
-            case 126:    onInput?("\u{1B}[A") // Up
-            case 125:    onInput?("\u{1B}[B") // Down
-            case 124:    onInput?("\u{1B}[C") // Right
-            case 123:    onInput?("\u{1B}[D") // Left
+            case 36, 76: onInput?("\r")
+            case 51:     onInput?("\u{7F}")
+            case 48:     onInput?("\t")
+            case 53:     onInput?("\u{1B}")
+            case 126:    onInput?("\u{1B}[A")
+            case 125:    onInput?("\u{1B}[B")
+            case 124:    onInput?("\u{1B}[C")
+            case 123:    onInput?("\u{1B}[D")
             default:
                 if let chars = event.characters, !chars.isEmpty {
                     onInput?(chars)
@@ -485,8 +475,6 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
     }
 }
 
-// MARK: - Diff Inspector
-
 private struct DiffInspectorView: View {
     @Bindable var store: WorkbenchStore
     @State private var commentingLine: Int? = nil
@@ -495,7 +483,6 @@ private struct DiffInspectorView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let diff = store.diffResponse, !diff.files.isEmpty {
-                // Summary bar
                 HStack(spacing: 8) {
                     if let totals = diff.totals {
                         Text("\(totals.files) files")
@@ -521,7 +508,6 @@ private struct DiffInspectorView: View {
 
                 HairlineDivider()
 
-                // File picker chips
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(diff.files) { file in
@@ -559,7 +545,6 @@ private struct DiffInspectorView: View {
 
                 HairlineDivider()
 
-                // Hunks
                 GeometryReader { geo in
                     ScrollView([.vertical, .horizontal]) {
                         VStack(alignment: .leading, spacing: 12) {
@@ -672,12 +657,10 @@ private struct DiffLineRowView: View {
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                // Crisp 2.5pt left status bar
                 Rectangle()
                     .fill(stripeColor)
                     .frame(width: 2.5)
 
-                // Hover-revealed inline comment trigger in the left gutter (never clips on wide lines)
                 Group {
                     if let ln = targetLine, isHovered || isCommenting || !existingComments.isEmpty {
                         Button(action: onToggleComment) {
@@ -769,8 +752,6 @@ private struct DiffLineRowView: View {
     }
 }
 
-// MARK: - Lead Thread Inspector
-
 private struct LeadThreadView: View {
     @Bindable var store: WorkbenchStore
     @State private var draft: String = ""
@@ -796,7 +777,6 @@ private struct LeadThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The tab already says Lead: no title bar. Your messages are bubbles on the right; the Lead's are plain text.
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
@@ -885,7 +865,6 @@ private struct LeadThreadView: View {
         draft = ""
         attachments = []
         Task {
-            // A refused send gives the person their words back (the refusal shows as the notice).
             if await store.sendLeadMessage(composed.combinedMessage) != nil, draft.isEmpty {
                 draft = keptDraft
                 attachments = keptAttachments
@@ -893,7 +872,6 @@ private struct LeadThreadView: View {
         }
     }
 
-    /// Takes the seed a "New automation" (or similar) left for the composer, once.
     private func takeLeadDraftSeed() {
         guard let seed = store.leadDraftSeed else { return }
         draft = seed

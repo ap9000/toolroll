@@ -25,16 +25,10 @@ public struct DetectedDevCommand: Sendable, Equatable {
         self.arguments = arguments
         self.displayCommand = displayCommand
         self.expectedPort = expectedPort
-        // "localhost", not 127.0.0.1: Vite and others often listen only on IPv6 ([::1]); localhost reaches either, so a
-        // dev server that's already running is found and reused instead of a second copy failing on the same port.
         self.expectedURL = "http://localhost:\(expectedPort)"
     }
 }
 
-/// Manages at most ONE local dev/preview server at a time for Toolroll Canvas:
-/// - Auto-detects package manager (`pnpm`, `bun`, `yarn`, `npm`) and dev port from `package.json`.
-/// - Reuses an already-running external dev server on that port (and never kills external servers).
-/// - Lazy-wakes on demand and auto-sleeps after 5 minutes of Canvas inactivity (0 MB idle RAM).
 @MainActor
 @Observable
 public final class PreviewServerManager {
@@ -44,7 +38,7 @@ public final class PreviewServerManager {
 
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
-    private let idleTimeoutSeconds: UInt64 = 300 // 5 minutes
+    private let idleTimeoutSeconds: UInt64 = 300
 
     public init() {}
 
@@ -55,7 +49,6 @@ public final class PreviewServerManager {
         }
     }
 
-    /// Detects the project's dev script, package manager, and expected port from `package.json`.
     nonisolated public static func detectDevCommand(projectRoot: String) -> DetectedDevCommand? {
         let pkgURL = URL(fileURLWithPath: projectRoot).appendingPathComponent("package.json")
         guard let data = try? Data(contentsOf: pkgURL),
@@ -75,7 +68,6 @@ public final class PreviewServerManager {
             return nil
         }
 
-        // Parse explicit `--port NNNN` or `-p NNNN` from script body, else framework default
         let port = parsePort(from: scriptBody) ?? defaultPort(for: scriptBody)
         let fm = FileManager.default
         let pm: String
@@ -105,15 +97,12 @@ public final class PreviewServerManager {
         scheduleIdleSleep()
     }
 
-    /// Ensures a preview server is reachable for `projectRoot`, respecting the 1-server cap.
     public func ensureRunning(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
-        // Already running for this exact project
         if activeProjectRoot == projectRoot, let url = activeURL {
             touchActivity()
             return url
         }
 
-        // If an explicit live server (e.g. Toolroll's own local console) is already serving this project
         if let preferred = preferredOrigin, await isReachable(urlString: preferred) {
             stopManagedServer()
             activeProjectRoot = projectRoot
@@ -122,7 +111,6 @@ public final class PreviewServerManager {
             return preferred
         }
 
-        // package.json (possibly cloud-only) is read off the main thread, so the app never freezes on it.
         let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
         guard let detected = detectedCommand else {
             stopManagedServer()
@@ -131,9 +119,6 @@ public final class PreviewServerManager {
             return nil
         }
 
-        // Reuse an already-running dev server on the expected port, but only this project's: a port is shared
-        // between projects (alekseypelletier.com and toolroll both default to :3000), and another project's pages
-        // would fill this canvas with its 404s.
         if await isReachable(urlString: detected.expectedURL) {
             let port = detected.expectedPort
             let listener = await Task.detached(priority: .userInitiated) { Self.listenerDirectory(port: port) }.value
@@ -150,11 +135,9 @@ public final class PreviewServerManager {
             return detected.expectedURL
         }
 
-        // Hard cap: stop any previously managed server before spawning a new one
         stopManagedServer()
         activeProjectRoot = projectRoot
 
-        // Detect missing node_modules cleanly before spawning so users get a 1-click Install & Preview CTA!
         let nodeModulesPath = "\(projectRoot)/node_modules"
         if !FileManager.default.fileExists(atPath: nodeModulesPath) {
             status = .needsInstall(packageManager: detected.packageManager, command: "\(detected.packageManager) install")
@@ -176,7 +159,6 @@ public final class PreviewServerManager {
             self.process = proc
             self.managedByToolroll = true
 
-            // Poll up to 18s for dev server to listen
             for _ in 0..<36 {
                 if !proc.isRunning {
                     let errData = errPipe.fileHandleForReading.availableData
@@ -202,9 +184,7 @@ public final class PreviewServerManager {
         }
     }
 
-    /// Runs `<pm> install` (e.g. `pnpm install`) inside `projectRoot` and immediately boots the dev server!
     public func installDependenciesAndRun(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
-        // package.json (possibly cloud-only) is read off the main thread, so the app never freezes on it.
         let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
         guard let detected = detectedCommand else {
             return await ensureRunning(projectRoot: projectRoot, preferredOrigin: preferredOrigin)
@@ -294,7 +274,6 @@ public final class PreviewServerManager {
         }
     }
 
-    /// The working directory of whatever listens on `port` (nil when nothing does or it can't be read).
     nonisolated static func listenerDirectory(port: Int) -> String? {
         guard let pid = run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"])?
             .split(separator: "\n").first.map(String.init) else { return nil }
@@ -330,7 +309,6 @@ public final class PreviewServerManager {
             let (_, resp) = try await URLSession.shared.data(for: req)
             return (resp as? HTTPURLResponse) != nil
         } catch {
-            // Fallback GET in case dev server doesn't answer HEAD
             var getReq = URLRequest(url: url, timeoutInterval: 1.5)
             getReq.httpMethod = "GET"
             return (try? await URLSession.shared.data(for: getReq)) != nil

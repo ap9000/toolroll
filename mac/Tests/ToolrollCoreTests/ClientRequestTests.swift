@@ -2,11 +2,8 @@ import Foundation
 import Testing
 @testable import ToolrollCore
 
-/// Request shape of the task acts (mac-app-qa.md level S): the exact path, form fields and headers `ToolrollClient` sends,
-/// against canned answers. Nothing here reaches a real server.
 @Suite("ToolrollClient task acts")
 struct ClientRequestTests {
-    /// A local-session client whose requests all go to `server`.
     private func client(_ server: StubServer) -> (ToolrollClient, Int) {
         let port = StubRegistry.register(server)
         return (ToolrollClient(localSession: .stub(port: port), session: StubURLProtocol.session()), port)
@@ -68,7 +65,6 @@ struct ClientRequestTests {
         }
         let acts = server.requests.filter { $0.method == "POST" }
         #expect(acts.count == 2)
-        // The current version's id from the steps read, not the row's root.
         expectFormAct(acts[0], path: "/t/t-7.2/cancel", fields: [("state", "queued"), ("run", "5")])
         expectFormAct(acts[1], path: "/t/t-8/cancel", fields: [("state", "queued"), ("run", "none")])
     }
@@ -127,7 +123,6 @@ struct ClientRequestTests {
         _ = try await client.routeTask(taskId: "t-7.2", phase: "build", agent: "codex|gpt-6-sol", sawDigest: "d1", when: "next-run")
         expectFormAct(server.requests[0], path: "/t/t-7.2/route",
                       fields: [("phase", "build"), ("agent", "codex|gpt-6-sol"), ("sawDigest", "d1"), ("when", "next-run")])
-        // The pipe is percent-encoded on the wire, never sent raw.
         #expect(server.requests[0].body.contains("agent=codex%7Cgpt-6-sol"))
     }
 
@@ -143,8 +138,6 @@ struct ClientRequestTests {
         #expect(server.requests.allSatisfy { $0.method == "GET" })
     }
 
-    // MARK: CA4 (client side): an already-cancelled task
-
     @Test("An already-cancelled task's steps read decodes as ended: state cancelled, no road (cards null)")
     func cancelledStepsRead() throws {
         let json = """
@@ -155,8 +148,6 @@ struct ClientRequestTests {
         #expect(steps.task.state == "cancelled")
         #expect(steps.cards.isEmpty)
         #expect(steps.liveRun == nil)
-        // The app's cancellable states (WorkbenchStore.cancellableStates: queued, failed, running) exclude it, so the app
-        // says it has ended without sending a cancel.
         #expect(!["queued", "failed", "running"].contains(steps.task.state ?? ""))
     }
 

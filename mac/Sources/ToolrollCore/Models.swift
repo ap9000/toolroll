@@ -1,7 +1,5 @@
 import Foundation
 
-// MARK: - Connection Profiles (~/.config/toolroll/remote/profiles.json)
-
 public struct ConnectionProfile: Codable, Sendable, Equatable, Identifiable {
     public var id: String { name }
     public var name: String
@@ -39,8 +37,6 @@ public struct ConnectionProfile: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-// MARK: - Work Rows (GET /work/rows)
-
 public enum TaskStatusTone: String, Codable, Sendable, Equatable {
     case needs
     case running
@@ -49,11 +45,8 @@ public enum TaskStatusTone: String, Codable, Sendable, Equatable {
     case failed
     case unknown
 
-    /// A Work row's status (contracts/engine-api.ts WORK_STATUS_TONES). The token says what happened and wins where
-    /// the tone is shared: a Cancelled row is "muted" like a Queued one, but it has ended and belongs in Settled.
     public init(workTone tone: String, token: String) {
         switch token {
-        // The server's tokens are `assignment-<state>` (work-index.ts); the bare words are older fixtures' spelling.
         case "cancelled", "assignment-cancelled", "complete", "assignment-complete": self = .finished
         case "failed", "assignment-failed": self = .failed
         default:
@@ -62,10 +55,8 @@ public enum TaskStatusTone: String, Codable, Sendable, Equatable {
             case "live": self = .running
             case "problem": self = .failed
             case "done": self = .finished
-            // A finished result waiting for the person to check it is theirs to act on (work-index.ts ranks it with
-            // Needs you); any other "ready" row is waiting its turn.
             case "ready": self = token == "assignment-ready-to-check" ? .needs : .queued
-            case "muted", "neutral": self = .queued   // waiting its turn, retrying later, or on hold
+            case "muted", "neutral": self = .queued
             default: self = TaskStatusTone(fromWire: token)
             }
         }
@@ -261,7 +252,6 @@ public struct SpendSummary: Codable, Sendable, Equatable {
     }
 }
 
-/// A provider's subscription window as last reported (owner audience).
 public struct ProviderLimit: Codable, Sendable, Equatable {
     public let provider: String
     public let plan: String?
@@ -281,7 +271,6 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         self.observedAt = observedAt
     }
 
-    /// The provider as people call it ("claude" → "Claude").
     public var providerLabel: String {
         switch provider.lowercased() {
         case "claude": return "Claude"
@@ -291,7 +280,6 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         }
     }
 
-    /// "seven_day" → "Weekly", "five_hour" → "5-hour"; anything else in plain words.
     public var windowLabel: String {
         switch window.lowercased() {
         case "seven_day", "weekly", "week": return "Weekly"
@@ -304,16 +292,13 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         }
     }
 
-    /// The plan as a name ("pro" → "Pro"); nil when the provider didn't say.
     public var planLabel: String? {
         guard let plan, !plan.isEmpty else { return nil }
         return plan.prefix(1).uppercased() + plan.dropFirst()
     }
 
     public enum ResetState: Equatable, Sendable {
-        /// Resets at this time, still ahead.
         case upcoming(Date)
-        /// The reported reset already passed: this reading is from before it (Toolroll hasn't heard since).
         case passed(Date)
         case unknown
     }
@@ -323,7 +308,6 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         return date > now ? .upcoming(date) : .passed(date)
     }
 
-    /// Reached, and still true: a limit whose reset has passed since it was read is probably clear again.
     public func isReachedNow(now: Date = Date()) -> Bool {
         guard reached else { return false }
         if case .passed = resetState(now: now) { return false }
@@ -340,7 +324,6 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
         return fractional.date(from: iso)
     }
 
-    /// Each provider once, by its tightest window (the one closest to its limit).
     public static func tightestPerProvider(_ all: [ProviderLimit]) -> [ProviderLimit] {
         var best: [String: ProviderLimit] = [:]
         for one in all {
@@ -351,7 +334,6 @@ public struct ProviderLimit: Codable, Sendable, Equatable {
     }
 }
 
-/// One trigger of an automation: what starts it, its state, and what it last did (GET /engine/automations).
 public struct AutomationTrigger: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
     public let kind: String
@@ -363,21 +345,17 @@ public struct AutomationTrigger: Codable, Sendable, Equatable, Identifiable {
     public let failures: Int
     public let canPress: Bool
     public let canCheck: Bool
-    /// A button trigger's label and the questions it asks before it starts (null for other kinds).
     public let label: String?
     public let questions: [String]?
-    /// Resuming this paused trigger may run it once right away (it fell due while paused, under a signed grant).
     public let resumeRunsNow: Bool?
 
     public var isPaused: Bool { state == "paused" }
 }
 
-/// A flow as the Automations screen shows it: the web /flows list's facts, as data.
 public struct Automation: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
     public let name: String
     public let project: String?
-    /// "needs" | "running" | "on" | "paused"
     public let group: String
     public let starts: String
     public let nextAt: String?
@@ -386,13 +364,10 @@ public struct Automation: Codable, Sendable, Equatable, Identifiable {
     public let trouble: String?
     public let triggers: [AutomationTrigger]
 
-    /// The trigger "Run now" checks now: a polled one or a schedule that runs a script (the server says which with
-    /// `canCheck`). A plain schedule only fires when due; a button asks its questions first (a later "Start…").
     public var runNowTrigger: AutomationTrigger? {
         triggers.first { $0.canCheck && !$0.isPaused }
     }
 
-    /// Resuming would run it once right away (a confirm says so first).
     public var resumeRunsNow: Bool { triggers.contains { $0.isPaused && ($0.resumeRunsNow ?? false) } }
     public var isPaused: Bool { !triggers.isEmpty && triggers.allSatisfy(\.isPaused) }
 }
@@ -409,14 +384,12 @@ public struct AutomationsResponse: Codable, Sendable, Equatable {
     }
 }
 
-/// One of the Work list's own groups, in the server's order and words.
 public struct WorkGroupSummary: Codable, Sendable, Equatable {
     public let key: String
     public let label: String
     public let count: Int
 }
 
-/// Waiting asks that are no task row (a held release, a flow card, a setup step), by Work's three groups.
 public struct WorkNeedGroup: Codable, Sendable, Equatable {
     public let key: String
     public let label: String
@@ -432,13 +405,9 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
     public let rows: [WorkRow]
     public let room: String
     public let spend: SpendSummary?
-    /// The list's own groups (null: one plain list).
     public var groups: [WorkGroupSummary]? = nil
-    /// Waiting asks that are no task row.
     public var needs: [WorkNeedGroup] = []
-    /// The next page's cursor (null: this is all of it).
     public var next: String? = nil
-    /// Each provider's subscription windows (owner audience; null for others).
     public var limits: [ProviderLimit]? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -496,8 +465,6 @@ public struct WorkRowsResponse: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Step Cards (GET /t/<task>/steps)
-
 public struct StepAgent: Codable, Sendable, Equatable {
     public let provider: String
     public let model: String?
@@ -510,7 +477,6 @@ public struct StepAgent: Codable, Sendable, Equatable {
     }
 }
 
-/// The agent one step of a task runs, from the task's own route (`chosen` "override": set for this task by a person).
 public struct TaskStepModel: Codable, Sendable, Equatable {
     public let phase: String
     public let provider: String
@@ -527,14 +493,12 @@ public struct TaskStepModel: Codable, Sendable, Equatable {
     public var displayLabel: String { "\(provider) · \(model)" }
 }
 
-/// One agent a task's step may run (the server's configured choices for that step; what the route accepts).
 public struct TaskAgentChoice: Codable, Sendable, Equatable, Hashable {
     public let provider: String
     public let model: String
     public var formValue: String { "\(provider)|\(model)" }
 }
 
-/// The agents this task's own steps may switch to; review is never per-task.
 public struct TaskAgentChoices: Codable, Sendable, Equatable {
     public let plan: [TaskAgentChoice]
     public let build: [TaskAgentChoice]
@@ -543,12 +507,11 @@ public struct TaskAgentChoices: Codable, Sendable, Equatable {
         switch role {
         case "plan": return plan
         case "build": return build
-        default: return plan.filter { build.contains($0) }   // "all": what both steps accept
+        default: return plan.filter { build.contains($0) }
         }
     }
 }
 
-/// A model change waiting for the task's live run to end (kept by the server; `problem` when it couldn't apply).
 public struct PendingAgentChange: Codable, Sendable, Equatable {
     public let phase: String
     public let provider: String
@@ -675,7 +638,6 @@ public struct StepCard: Codable, Sendable, Equatable, Identifiable {
 
 public struct StepTaskSummary: Codable, Sendable, Equatable {
     public let id: String
-    /// The family's first version (a sidebar row's id); `id` is the current version.
     public var root: String? = nil
     public let title: String
     public let project: String?
@@ -721,8 +683,6 @@ public struct ApprovalCard: Codable, Sendable, Equatable {
     }
 }
 
-/// Structured, scannable digest parsed from raw `ApprovalTerm` rows so the approval UI
-/// shows a clear Goal, smart `+ Added / - Removed` file deltas, check tags, and collapsible fine print.
 public struct ApprovalPlanDigest: Sendable, Equatable {
     public struct CheckItem: Sendable, Equatable, Identifiable {
         public var id: String { text }
@@ -956,11 +916,8 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     public let task: StepTaskSummary
     public let headline: String?
     public let liveRun: Int?
-    /// The task's newest run, live or finished: the build a cancel names as the one it showed.
     public let latestRun: Int?
-    /// This task's own agent per step; nil from an older server or for a task without an exact route.
     public let models: [TaskStepModel]?
-    /// The scope digest this read shows: a model change sends it back so it applies only to what the person saw.
     public let scopeDigest: String?
     public let agentChoices: TaskAgentChoices?
     public let pendingAgentChange: PendingAgentChange?
@@ -1041,9 +998,6 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         held = try? c.decodeIfPresent(TaskHold.self, forKey: .held)
     }
 
-    /// The run a cancel must name as shown: the server's newest run. An older server without `latestRun` falls back
-    /// to the newest run the cards mention, which is the same id whenever every run sits on a card.
-    /// This task's model for a step ("plan", "build", "review"), as a label; nil when the server didn't say.
     public func modelLabel(forPhase phase: String) -> String? {
         models?.first { $0.phase == phase }?.displayLabel
     }
@@ -1052,8 +1006,6 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
         latestRun ?? (cards.flatMap(\.runs) + [liveRun].compactMap { $0 }).max()
     }
 }
-
-// MARK: - Presence (GET /api/presence)
 
 public struct TaskPresence: Codable, Sendable, Equatable {
     public let viewers: [String]
@@ -1110,8 +1062,6 @@ public struct PresenceSnapshot: Codable, Sendable, Equatable {
         accounts.filter { $0 != me }
     }
 }
-
-// MARK: - Candidates & Promotion (GET/POST /api/handoff/task/<task>/candidates)
 
 public struct CandidatePublication: Codable, Sendable, Equatable {
     public let id: Int
@@ -1235,8 +1185,6 @@ public struct AssignPersonResponse: Codable, Sendable, Equatable {
     public let person: String
     public let warning: String?
 }
-
-// MARK: - Diffs (GET /t/<task>/diff)
 
 public struct DiffTotals: Codable, Sendable, Equatable {
     public let files: Int
@@ -1415,8 +1363,6 @@ public struct ResultDiffFileResponse: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Live Terminals
-
 public struct TerminalSummary: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let repo: String
@@ -1467,9 +1413,7 @@ public struct StartRemoteTerminalResponse: Codable, Sendable, Equatable {
     public let branch: String
     public let program: String
     public let reused: Bool
-    /// A scratch shell at the project's own branch (not a copy of this task's build). Nil: the server didn't say.
     public let scratch: Bool?
-    /// Why the task's build couldn't be taken over, in the server's own words, when a scratch shell opened instead.
     public let note: String?
 
     public init(ok: Bool, id: String, branch: String, program: String, reused: Bool, scratch: Bool? = nil, note: String? = nil) {
@@ -1482,8 +1426,6 @@ public struct StartRemoteTerminalResponse: Codable, Sendable, Equatable {
         self.note = note
     }
 }
-
-// MARK: - Lead Chat (GET /engine/chat)
 
 public struct LeadMessage: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
@@ -1507,7 +1449,6 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
     public let problem: String?
     public let busy: Bool
     public let messages: [LeadMessage]
-    /// The Lead conversation this read showed (nil when none has started); a send says which one it answers.
     public let session: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -1547,8 +1488,6 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Device Pairing (POST /api/connect/pair/start|poll)
-
 public struct DevicePairStartResponse: Codable, Sendable, Equatable {
     public let ok: Bool
     public let pairId: String
@@ -1567,8 +1506,6 @@ public struct DevicePairPollResponse: Codable, Sendable, Equatable {
     public let recoveryGeneration: String?
     public let label: String?
 }
-
-// MARK: - Agents & Models (GET /engine/agents, GET /engine/models)
 
 public struct AgentSetup: Codable, Sendable, Equatable {
     public let install: String?
@@ -1608,7 +1545,7 @@ public struct AgentSetup: Codable, Sendable, Equatable {
 public struct AgentRow: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
-    public let state: String // signed-in | signed-out | unknown | not-installed
+    public let state: String
     public let how: String?
     public let signIn: String?
     public let ready: Bool
@@ -1689,7 +1626,6 @@ public struct ModelOption: Codable, Sendable, Equatable, Identifiable {
         self.label = label
     }
 
-    /// Canonical `"provider|model"` value expected by `POST /settings/models/agent` and `ModelRoleSummary.current`.
     public func formValue(forProvider provider: String) -> String {
         value.contains("|") ? value : "\(provider)|\(value)"
     }
@@ -1788,11 +1724,9 @@ public struct ModelsReadResponse: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Live Agent Run Records (GET /agents/live/run/<run>?file=main)
-
 public struct LiveAgentRecord: Codable, Sendable, Equatable, Identifiable {
     public let id = UUID()
-    public let k: String // open | start | say | step | done | cut | cap | child | end | over
+    public let k: String
     public let at: String?
     public let detail: String?
     public let textLines: [String]
@@ -1893,8 +1827,6 @@ public struct InlineDiffComment: Sendable, Equatable, Identifiable {
     }
 }
 
-// MARK: - SSE Signal
-
 public enum LiveSignal: Sendable, Equatable {
     case change(room: String)
     case turn(room: String)
@@ -1902,17 +1834,12 @@ public enum LiveSignal: Sendable, Equatable {
     case ended
 }
 
-// MARK: - Projects (GET /engine/projects)
-
-/// A project the console runs, or a Git repository it found on its own disk that isn't a project yet.
 public struct ProjectRef: Codable, Hashable, Sendable, Identifiable {
     public let name: String
     public let path: String
     public var id: String { path }
 }
 
-/// The console's projects (what this person can see) and, for someone who may add projects, the repositories it found
-/// on its disk. The server scans, not this Mac, so it works for a remote workspace and isn't blocked by macOS privacy.
 public struct ProjectsResponse: Codable, Sendable {
     public let version: Int
     public let canAdd: Bool

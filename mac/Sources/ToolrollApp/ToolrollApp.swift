@@ -18,8 +18,6 @@ struct ToolrollMacApp: App {
     }
 
     var body: some Scene {
-        // One main window. Cmd-W closes it and Toolroll keeps running (menu bar); the Dock icon, the menu bar's
-        // "Open Toolroll" and Window ▸ Toolroll bring it back.
         Window("Toolroll", id: ToolrollMacApp.mainWindowId) {
             MainWorkbenchView(store: store)
                 .frame(minWidth: 740, minHeight: 580)
@@ -187,7 +185,6 @@ struct ToolrollMacApp: App {
     }
 }
 
-/// The menu bar's menu. "Open Toolroll" reopens the main window when it was closed (Cmd-W), not just the app.
 private struct ToolrollMenuBarContent: View {
     let store: WorkbenchStore
     @Environment(\.openWindow) private var openWindow

@@ -1,12 +1,9 @@
 import Foundation
 
-// MARK: - Terminal Surface Protocol (Clean libghostty / GhosttyKit v2 Seam)
-
-/// ANSI color palette indices for terminal cells.
 public enum TerminalColor: Sendable, Equatable, Hashable {
     case `default`
-    case ansi(UInt8)      // 0...15 standard & bright ANSI
-    case palette(UInt8)   // 0...255 xterm-256
+    case ansi(UInt8)
+    case palette(UInt8)
     case rgb(UInt8, UInt8, UInt8)
 }
 
@@ -68,8 +65,6 @@ public struct TerminalRenderLine: Sendable, Equatable, Identifiable {
     }
 }
 
-/// Abstract terminal surface backing Toolroll's Live Terminal pane.
-/// v1 ships `VT100Emulator`; v2 can swap in `GhosttyKitSurface` (`libghostty`) without touching views or WebSocket leases.
 public protocol TerminalSurfaceProtocol: Sendable {
     var cols: Int { get }
     var rows: Int { get }
@@ -82,8 +77,6 @@ public protocol TerminalSurfaceProtocol: Sendable {
     func snapshotLines(includeScrollback: Bool) -> [TerminalRenderLine]
     func plainText() -> String
 }
-
-// MARK: - VT100 / ANSI Emulator
 
 public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
     private struct Cell: Sendable, Equatable {
@@ -176,7 +169,6 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
         }
         allRows.append(contentsOf: grid)
 
-        // Trim completely blank trailing rows below cursor so output stays crisp and compact.
         var lastNonEmpty = scrollback.count + cursorRow
         for idx in stride(from: allRows.count - 1, through: 0, by: -1) {
             if allRows[idx].contains(where: { $0.char != " " || $0.style != .plain }) {
@@ -201,14 +193,11 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
             .joined(separator: "\n")
     }
 
-    // MARK: - Internals
-
     private func decodeValidUTF8Prefix(_ buffer: inout Data) -> String {
         if let str = String(data: buffer, encoding: .utf8) {
             buffer.removeAll(keepingCapacity: true)
             return str
         }
-        // Check up to 3 trailing bytes in case a multi-byte UTF-8 sequence split across WebSocket frames.
         for trim in 1...min(3, buffer.count) {
             let prefix = buffer.prefix(buffer.count - trim)
             if let str = String(data: prefix, encoding: .utf8) {
@@ -226,18 +215,18 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
         switch parseState {
         case .ground:
             switch value {
-            case 0x1B: // ESC
+            case 0x1B:
                 parseState = .escape
-            case 0x0D: // CR
+            case 0x0D:
                 cursorCol = 0
-            case 0x0A: // LF
+            case 0x0A:
                 lineFeed()
-            case 0x08: // BS
+            case 0x08:
                 cursorCol = max(0, cursorCol - 1)
-            case 0x09: // TAB
+            case 0x09:
                 let nextTab = ((cursorCol / 8) + 1) * 8
                 cursorCol = min(cols - 1, nextTab)
-            case 0x07: // BEL
+            case 0x07:
                 break
             default:
                 if value >= 0x20 {
@@ -251,9 +240,9 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
                 parseState = .csi("")
             case "]":
                 parseState = .osc
-            case "c": // Full reset (RIS)
+            case "c":
                 clear()
-            case "M": // Reverse index
+            case "M":
                 if cursorRow > 0 { cursorRow -= 1 }
                 parseState = .ground
             default:
@@ -270,7 +259,7 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
             }
 
         case .osc:
-            if value == 0x07 { // BEL ends OSC
+            if value == 0x07 {
                 parseState = .ground
             } else if value == 0x1B {
                 parseState = .oscEsc
@@ -304,7 +293,6 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
     }
 
     private mutating func executeCSI(params raw: String, final: UnicodeScalar) {
-        // Ignore private mode prefixes like `?25h`, `?1049h` safely
         if raw.hasPrefix("?") || raw.hasPrefix(">") {
             return
         }
@@ -318,22 +306,22 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
         }
 
         switch final {
-        case "A": // Cursor Up
+        case "A":
             cursorRow = max(0, cursorRow - param(0, default: 1))
-        case "B": // Cursor Down
+        case "B":
             cursorRow = min(rows - 1, cursorRow + param(0, default: 1))
-        case "C": // Cursor Forward
+        case "C":
             cursorCol = min(cols - 1, cursorCol + param(0, default: 1))
-        case "D": // Cursor Back
+        case "D":
             cursorCol = max(0, cursorCol - param(0, default: 1))
-        case "G": // Cursor Horizontal Absolute
+        case "G":
             cursorCol = max(0, min(cols - 1, param(0, default: 1) - 1))
-        case "H", "f": // Cursor Position
+        case "H", "f":
             let r = max(1, param(0, default: 1)) - 1
             let c = max(1, param(1, default: 1)) - 1
             cursorRow = min(rows - 1, r)
             cursorCol = min(cols - 1, c)
-        case "J": // Erase in Display
+        case "J":
             let mode = nums.first ?? 0
             switch mode {
             case 2, 3:
@@ -358,7 +346,7 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
                     }
                 }
             }
-        case "K": // Erase in Line
+        case "K":
             let mode = nums.first ?? 0
             switch mode {
             case 2:
@@ -372,7 +360,7 @@ public struct VT100Emulator: TerminalSurfaceProtocol, Sendable {
                     grid[cursorRow][c] = .blank
                 }
             }
-        case "m": // SGR (Select Graphic Rendition)
+        case "m":
             applySGR(nums.isEmpty ? [0] : nums)
         default:
             break

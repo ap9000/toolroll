@@ -3,10 +3,6 @@ import Darwin
 import Foundation
 import SQLite3
 
-/// In-memory local-owner session redeemed from Toolroll's live console via `POST /login/once`.
-/// Never persisted to disk; holds the exact cookie, CSRF token, and mutation key the Rust TUI uses
-/// so `Toolroll.app` can approve plans, review/accept/send-back results, answer questions, retry,
-/// plan, and create tasks 100% natively in-app.
 public struct LocalSessionCredentials: Sendable, Equatable {
     public let origin: String
     public let account: String
@@ -15,7 +11,6 @@ public struct LocalSessionCredentials: Sendable, Equatable {
     public let key: String
     public let epoch: String
     public let databasePath: String
-    /// Whether the account has a password yet (the console says so on connect; nil from an older console).
     public let passwordSet: Bool?
 
     public init(
@@ -62,7 +57,6 @@ public enum LocalConsoleConnector {
         let passwordSet: Bool?
     }
 
-    /// Discovers a live local Toolroll console on this Mac and redeems a one-time session link in memory.
     public static func discoverAndConnect(session: URLSession = .shared) async -> LocalSessionCredentials? {
         for dbPath in candidateDatabasePaths() {
             guard FileManager.default.fileExists(atPath: dbPath),
@@ -134,7 +128,6 @@ public enum LocalConsoleConnector {
         return InstanceRow(secret: secret, pid: pid, port: port, socket: socket, databasePath: databasePath)
     }
 
-    /// Performs Toolroll's Unix socket `link` -> `challenge` -> `link-proof` HMAC-SHA256 handshake.
     private static func requestOneTimeLink(socketPath: String, secret: String) -> String? {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }

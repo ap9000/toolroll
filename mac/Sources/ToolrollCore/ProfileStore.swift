@@ -1,7 +1,5 @@
 import Foundation
 
-/// Reads and writes Toolroll's shared remote profile store (`~/.config/toolroll/remote/profiles.json`)
-/// using private `0600` file permissions so the CLI, Rust TUI, and native Mac app share profiles seamlessly.
 public struct ProfileStore: Sendable {
     public let fileURL: URL
 

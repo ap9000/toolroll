@@ -80,8 +80,6 @@ public struct AgentRequest: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Reads and resolves pending agent requests stored in `<stateDir>/.toolroll-run/agent-requests.json`
-/// (the exact folder already fenced from sandboxed builds in `src/agent-fence.ts`).
 public enum AgentRequestStore {
     private struct FileEnvelope: Codable {
         var version: Int = 1

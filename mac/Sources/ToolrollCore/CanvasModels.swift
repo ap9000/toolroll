@@ -2,8 +2,6 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 
-// MARK: - youiyoux Native Canvas Contracts (.youi/screens, .youi/requests, ~/.cache/toolroll/canvas)
-
 public enum CanvasTool: String, CaseIterable, Identifiable, Sendable {
     case select = "Select"
     case hand = "Hand"
@@ -25,7 +23,6 @@ public enum CanvasViewportPreset: String, CaseIterable, Identifiable, Sendable {
     case mobile = "Mobile"
     public var id: String { rawValue }
 
-    /// Logical CSS viewport size rendered inside the WebView before GPU scaling into the artboard card.
     public var logicalWidth: Double {
         switch self {
         case .desktop: return 1440
@@ -40,7 +37,6 @@ public enum CanvasViewportPreset: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Artboard box dimensions on the spatial canvas (preserving exact aspect ratio).
     public var width: Double {
         switch self {
         case .desktop: return 540
@@ -167,7 +163,7 @@ public struct CanvasArtboard: Sendable, Equatable, Identifiable {
 }
 
 public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
-    public let id: String          // r-<10hex> matching youi.request/v1
+    public let id: String
     public let artboardRoute: String
     public let artboardPath: String
     public let xFrac: Double
@@ -225,8 +221,6 @@ public struct CanvasPin: Codable, Sendable, Equatable, Identifiable {
         return "r-\(hex)"
     }
 }
-
-// MARK: - Live DOM Element Inspection & WYSIWYG Preview Diff Models
 
 public enum ElementCategory: String, Sendable, Equatable {
     case text
@@ -290,7 +284,6 @@ public enum ElementCategory: String, Sendable, Equatable {
 }
 
 public struct ElementAncestorRef: Sendable, Equatable, Identifiable {
-    /// Steps upward from the currently selected element (`0` = selected element, `1` = parent, `2` = grandparent, ...).
     public let depthFromSelected: Int
     public let label: String
     public let tag: String
@@ -343,14 +336,12 @@ public struct ElementStyleMetrics: Sendable, Equatable {
         self.backgroundColor = backgroundColor
     }
 
-    /// Sanitizes CSS computed metrics (handles NaN, Infinity, and Tailwind v4 `rounded-full` `calc(infinity * 1px)` -> `3.4e38`).
     public static func sanitize(_ value: Double, min lower: Double, max upper: Double, fallback: Double) -> Double {
         guard !value.isNaN else { return fallback }
         if value.isInfinite { return value > 0 ? upper : lower }
         return Swift.min(upper, Swift.max(lower, value))
     }
 
-    /// Safe Double-to-Int conversion that can never trap on NaN, Infinity, or values > Int.max.
     public static func safeInt(_ value: Double, min lower: Int = 0, max upper: Int = 9999) -> Int {
         let clamped = sanitize(value, min: Double(lower), max: Double(upper), fallback: Double(lower))
         return Int(clamped.rounded())
@@ -420,7 +411,7 @@ public struct SelectedElementContext: Sendable, Equatable {
 }
 
 public struct ElementLiveEdit: Sendable, Equatable, Identifiable {
-    public let id: String // elId
+    public let id: String
     public let elementLabel: String
     public let selector: String
     public let file: String?
@@ -498,15 +489,8 @@ public struct ElementLiveEdit: Sendable, Equatable, Identifiable {
     }
 }
 
-/// Content-addressed disk tile cache + framework route discovery + `.youi/requests` persistence.
 public enum YouiCanvasStorage {
 
-    // MARK: - Priority Route Discovery (Q10)
-
-    /// Discovers routes in priority order:
-    /// 1. `.youi/screens/screens.json` if present
-    /// 2. Framework filesystem scan (`src/routes/`, `app/**/page.*`, `src/app/**/page.*`, `src/pages/`, `pages/`)
-    /// 3. Fallback `/` root route
     public static func discoverRoutes(projectRoot: String) -> [YouiScreenEntry] {
         if let manifest = loadManifest(projectRoot: projectRoot), !manifest.screens.isEmpty {
             return manifest.screens
@@ -515,13 +499,11 @@ public enum YouiCanvasStorage {
         var found: [YouiScreenEntry] = []
         let fm = FileManager.default
 
-        // 1. TanStack Router (`src/routes/`)
         let tanstackDir = "\(projectRoot)/src/routes"
         if fm.fileExists(atPath: tanstackDir) {
             found.append(contentsOf: scanFileRoutes(baseDir: tanstackDir, repoRoot: projectRoot, mode: .tanstack))
         }
 
-        // 2. Next.js App Router (`app/` or `src/app/`)
         if found.isEmpty {
             for rel in ["app", "src/app"] {
                 let dir = "\(projectRoot)/\(rel)"
@@ -531,7 +513,6 @@ public enum YouiCanvasStorage {
             }
         }
 
-        // 3. Astro / Vite / Next Pages (`src/pages/` or `pages/`)
         if found.isEmpty {
             for rel in ["src/pages", "pages"] {
                 let dir = "\(projectRoot)/\(rel)"
@@ -541,7 +522,6 @@ public enum YouiCanvasStorage {
             }
         }
 
-        // Deduplicate & sort (`/` always first)
         var seen = Set<String>()
         let unique = found.filter { seen.insert($0.path).inserted }
             .sorted { a, b in
@@ -630,10 +610,6 @@ public enum YouiCanvasStorage {
         return try? JSONDecoder().decode(YouiScreensManifest.self, from: data)
     }
 
-    // MARK: - Content-Addressed Disk Tile Cache (~/.cache/toolroll/canvas)
-
-    /// Computes a short fingerprint of `projectRoot`'s git HEAD + working-tree status so cached
-    /// tiles automatically invalidate the moment code changes, and stay valid at 0% CPU when unchanged.
     public static func gitStateKey(projectRoot: String) -> String {
         let head = runGit(["rev-parse", "--short=10", "HEAD"], in: projectRoot) ?? "nogit"
         let status = runGit(["status", "--porcelain"], in: projectRoot) ?? ""
@@ -735,8 +711,6 @@ public enum YouiCanvasStorage {
         }
     }
 
-    // MARK: - Run-Scoped Baseline Checkpoints & Pin Cropped Screenshots
-
     public static func baselineCheckpointPath(
         projectRoot: String,
         slug: String,
@@ -765,8 +739,6 @@ public enum YouiCanvasStorage {
         }
     }
 
-    /// Saves a cropped PNG screenshot of the targeted element under `.youi/requests/<pinId>.png`
-    /// and returns the repo-relative path (`.youi/requests/<pinId>.png`).
     @discardableResult
     public static func savePinScreenshot(
         _ pngData: Data,
@@ -783,8 +755,6 @@ public enum YouiCanvasStorage {
             return nil
         }
     }
-
-    // MARK: - .youi/requests Persistence (youi.request/v1)
 
     @discardableResult
     public static func writeYouiRequest(projectRoot: String, projectName: String, pin: CanvasPin) -> URL? {
@@ -879,15 +849,12 @@ public enum YouiCanvasStorage {
         return pins.sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// Fast, bounded local repo lookup to pinpoint the likely source file & line number for a selected DOM element
-    /// when React `_debugSource` is stripped in a production/bundled build.
     public static func findSourceFile(
         projectRoot: String,
         testId: String? = nil,
         textExcerpt: String? = nil,
         selector: String? = nil
     ) -> (file: String, line: Int)? {
-        // Build ranked needle candidates (most specific first)
         var needles: [String] = []
         if let tid = testId?.trimmingCharacters(in: .whitespacesAndNewlines), tid.count >= 3 {
             needles.append(tid)
@@ -921,7 +888,6 @@ public enum YouiCanvasStorage {
         let dirs = searchRoots.isEmpty ? [canonRepo] : searchRoots
         let exts: Set<String> = ["tsx", "ts", "jsx", "js", "svelte", "vue", "astro", "html"]
 
-        // Collect candidate source files (capped so lookup always finishes in < 20ms)
         var files: [URL] = []
         for dir in dirs {
             guard let en = fm.enumerator(
@@ -947,7 +913,6 @@ public enum YouiCanvasStorage {
             if files.count >= 350 { break }
         }
 
-        // Prioritize needles in order
         for needle in needles {
             for url in files {
                 guard let content = try? String(contentsOf: url, encoding: .utf8),
@@ -965,8 +930,6 @@ public enum YouiCanvasStorage {
         return nil
     }
 
-    /// Longest a git call may take. A repository whose files are cloud-only (iCloud "Optimize Mac Storage") can make git
-    /// wait forever on a download; past this the answer is "unknown" (screens re-capture) instead of a frozen app.
     static let gitTimeout: TimeInterval = 3
 
     private static func runGit(_ args: [String], in cwd: String) -> String? {
@@ -999,7 +962,6 @@ public enum YouiCanvasStorage {
     }
 }
 
-/// Collects a child process's output from the pipe's reader thread.
 private final class GitOutputBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var collected = Data()
@@ -1014,8 +976,6 @@ private final class GitOutputBuffer: @unchecked Sendable {
         return collected
     }
 }
-
-// MARK: - Native CoreGraphics Visual Diff Analyzer (Pixel Delta % + Heatmap Overlay)
 
 public struct VisualDiffResult: Sendable {
     public let changedPercent: Double
@@ -1034,7 +994,6 @@ public struct VisualDiffResult: Sendable {
 }
 
 public enum CanvasVisualDiff {
-    /// Compares two screenshots into a crisp pixel-diff percentage + transparent heatmap overlay in ~8–12ms.
     public static func compare(
         before: CGImage,
         after: CGImage,
@@ -1081,11 +1040,10 @@ public enum CanvasVisualDiff {
             let da = abs(Int(beforeBuf[o + 3]) - Int(afterBuf[o + 3]))
             if max(max(dr, dg), max(db, da)) > tolerance {
                 changed += 1
-                // Crisp crimson/rose premultiplied highlight (alpha ~175)
-                heatBuf[o] = 168     // R premultiplied
-                heatBuf[o + 1] = 36  // G premultiplied
-                heatBuf[o + 2] = 68  // B premultiplied
-                heatBuf[o + 3] = 180 // A
+                heatBuf[o] = 168
+                heatBuf[o + 1] = 36
+                heatBuf[o + 2] = 68
+                heatBuf[o + 3] = 180
             }
         }
 

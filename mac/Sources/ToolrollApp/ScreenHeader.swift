@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// A screen's title row: the title, a quiet detail line, and its actions. Wide, all on one line; narrow, the detail
-/// moves under the title (wrapping by words), and nothing is ever squeezed letter by letter.
 struct ScreenHeader<Actions: View>: View {
     let title: String
     let detail: String?

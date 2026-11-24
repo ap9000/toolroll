@@ -1,17 +1,14 @@
 import SwiftUI
 import ToolrollCore
 
-/// Sleek 3-zone searchable Model & Role Picker popover triggered directly from the Composer.
-/// Left: Provider rail | Center: Instant searchable model list | Right: Toolroll Role scope (All / Planner / Builder / Reviewer).
 public struct ModelPickerPopover: View {
     @Bindable var store: WorkbenchStore
     let initialRoleKey: String
     let onDismiss: () -> Void
-    /// Set: the picker changes this task's models only, not the workspace defaults.
     let taskId: String?
 
-    @State private var selectedProvider: String? = nil // nil = All
-    @State private var targetRoleKey: String = "all"   // "all" | "plan" | "build" | "review"
+    @State private var selectedProvider: String? = nil
+    @State private var targetRoleKey: String = "all"
     @State private var query: String = ""
     @State private var showAllModels: Bool = true
     @State private var passwordInput: String = ""
@@ -26,7 +23,6 @@ public struct ModelPickerPopover: View {
     }
 
     private struct FlatModelEntry: Identifiable, Equatable {
-        /// Canonical `"provider|model"` value expected by `POST /settings/models/agent` and `role.current`.
         var formValue: String {
             option.value.contains("|") ? option.value : "\(provider)|\(option.value)"
         }
@@ -43,7 +39,6 @@ public struct ModelPickerPopover: View {
         return store.modelsRead.roles.first(where: { $0.key == targetRoleKey }) ?? store.modelsRead.roles.first
     }
 
-    /// In task mode: the agents this task's steps accept (the server's configured choices), never the full catalog.
     private var taskChoices: TaskAgentChoices? {
         taskId.flatMap { store.taskStepsForPicker($0)?.agentChoices }
     }
@@ -62,8 +57,6 @@ public struct ModelPickerPopover: View {
         var list = activeRole?.choices ?? []
         let installedIds = Set(store.agentsRead.agents.filter(\.ready).map { $0.id.lowercased() })
 
-        // Ensure Google Gemini is selectable for Planner & Builder whenever installed (or in local mode)
-        // even before `POST /settings/models/check` has populated `runtime_check` / `model_seen`.
         if targetRoleKey != "review", !list.contains(where: { $0.provider == "gemini" }) {
             let geminiInstalled = installedIds.contains("gemini")
                 || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/gemini")
@@ -83,7 +76,6 @@ public struct ModelPickerPopover: View {
             }
         }
 
-        // Ensure Codex is selectable using live ~/.codex/models_cache.json when available
         if !list.contains(where: { $0.provider == "codex" }) {
             let codexInstalled = installedIds.contains("codex")
                 || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("codex|") })
@@ -136,7 +128,6 @@ public struct ModelPickerPopover: View {
     }
 
     private var displayedEntries: [FlatModelEntry] {
-        // Put the currently active model's provider first when showing All so your active model is immediately visible!
         let cur = currentValueForScope
         if selectedProvider == nil && query.isEmpty && !cur.isEmpty {
             let currentProvider = cur.split(separator: "|").first.map(String.init) ?? ""
@@ -163,7 +154,6 @@ public struct ModelPickerPopover: View {
                 HairlineDivider()
             }
             HStack(spacing: 0) {
-                // LEFT RAIL: Provider icons
                 VStack(spacing: 6) {
                     providerButton(id: nil, label: "All", symbol: "star.fill")
                     HairlineDivider().padding(.horizontal, 8)
@@ -178,7 +168,6 @@ public struct ModelPickerPopover: View {
 
                 HairlineDivider(vertical: true)
 
-                // CENTER: Search + Model list
                 VStack(spacing: 0) {
                     HStack(spacing: 7) {
                         Image(systemName: "magnifyingglass")
@@ -278,7 +267,6 @@ public struct ModelPickerPopover: View {
 
                 HairlineDivider(vertical: true)
 
-                // RIGHT COLUMN: Toolroll Role Scope (All / Planner / Builder / Reviewer)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Text("Apply to")
@@ -342,7 +330,6 @@ public struct ModelPickerPopover: View {
                 .background(ToolrollPalette.paper)
             }
 
-            // Inline error feedback if the server refused a model change (never fail silently!)
             if let err = store.modelChangeError {
                 HairlineDivider()
                 HStack(spacing: 8) {
@@ -358,7 +345,6 @@ public struct ModelPickerPopover: View {
                 .background(ToolrollPalette.danger.opacity(0.08))
             }
 
-            // Optional inline password confirmation if the Engine requires step-up
             if let prompt = store.modelPasswordPrompt {
                 HairlineDivider()
                 HStack(spacing: 8) {
@@ -386,7 +372,6 @@ public struct ModelPickerPopover: View {
         .frame(width: 516)
         .background(ToolrollPalette.paper)
         .task {
-            // Task mode: the allowed models come from the picker's own read (`?choices=1`).
             if let taskId { await store.loadPickerChoices(taskId: taskId) }
         }
         .onAppear {

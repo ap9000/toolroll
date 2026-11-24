@@ -2,12 +2,10 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Right-click actions on a sidebar task row. Shows only what applies to the row's state.
 struct TaskRowMenuItems: View {
     let store: WorkbenchStore
     let row: WorkRow
 
-    /// A running task's claim refuses a cancel (store.cancelTask "claimed"): it gets Stop & Archive instead.
     private var isCancellable: Bool { row.status == .needs || row.status == .queued || row.status == .failed }
 
     var body: some View {
@@ -18,7 +16,6 @@ struct TaskRowMenuItems: View {
         }
     }
 
-    /// Right-click inside a ⌘/⇧-click selection acts on all of it.
     @ViewBuilder private var bulkItems: some View {
         let rows = store.bulkSelectedRows
         Button("Archive \(rows.count) Tasks") { Task { await store.archiveTasks(rows) } }
@@ -35,11 +32,9 @@ struct TaskRowMenuItems: View {
                 Task { await store.archiveTask(row) }
             }
         } else {
-            // A remote workspace's archive takes the web view's signed-in session.
             Button("Archive in Web View…") { store.openTaskInBrowser(taskId: row.id) }
         }
         if isCancellable && !store.canArchiveTasks {
-            // A remote workspace's cancel takes the web view's signed-in session.
             Button("Cancel in Web View…") { store.openTaskInBrowser(taskId: row.id) }
         } else if isCancellable {
             Button("Cancel Task…", role: .destructive) {
@@ -52,7 +47,6 @@ struct TaskRowMenuItems: View {
         }
         if isCancellable {
             Divider()
-            // A run holds the task's route while it works, so a running task keeps its models until it stops.
             Button("Change Models…") {
                 Task { await store.openTaskModelPicker(taskId: row.id) }
             }
@@ -62,7 +56,6 @@ struct TaskRowMenuItems: View {
     }
 }
 
-/// Right-click actions on an archived row: bring it back, or look at it.
 struct ArchivedRowMenuItems: View {
     let store: WorkbenchStore
     let row: WorkRow
@@ -77,7 +70,6 @@ struct ArchivedRowMenuItems: View {
     }
 }
 
-/// Right-click actions on a discovered Claude/Codex/Gemini CLI thread.
 struct CliThreadMenuItems: View {
     let thread: LocalCliThread
 
@@ -90,7 +82,6 @@ struct CliThreadMenuItems: View {
     }
 }
 
-/// The "Undo" a notice offers (Archive → restore).
 struct NoticeActionButton: View {
     let store: WorkbenchStore
     let notice: WorkbenchNotice
@@ -108,7 +99,6 @@ struct NoticeActionButton: View {
     }
 }
 
-/// Confirms a cancel with exactly what will be sent: the task's state and newest run, read just now.
 struct CancelConfirmation: ViewModifier {
     @Bindable var store: WorkbenchStore
 
@@ -140,7 +130,6 @@ struct CancelConfirmation: ViewModifier {
     }
 }
 
-/// A model picked for a task whose agent is working now: switch on the next turn, or restart on it now.
 struct ModelPickConfirmation: ViewModifier {
     @Bindable var store: WorkbenchStore
 

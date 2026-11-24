@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+if command -v node >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/../scripts/lint-comments.mjs" ]]; then
+  echo "==> Checking comment lint rule..."
+  (cd "$SCRIPT_DIR/.." && node scripts/lint-comments.mjs mac/Sources mac/Tests)
+fi
+
 echo "==> Building ToolrollApp (release)..."
 swift build -c release
 

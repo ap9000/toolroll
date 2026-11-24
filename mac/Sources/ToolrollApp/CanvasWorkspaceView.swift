@@ -3,24 +3,14 @@ import SwiftUI
 import ToolrollCore
 import WebKit
 
-/// Native SwiftUI + WKWebView Spatial UI Canvas (v1.5):
-/// - Project-aware route auto-discovery (`.youi/screens`, TanStack, Next, Astro/Vite)
-/// - Disk-backed content-addressed tile cache (`~/.cache/toolroll/canvas`) -> 0% idle CPU & 0 MB dev-server RAM
-/// - Single managed preview server with lazy wake + 5-min idle sleep
-/// - True 1440×900 (Desktop) / 390×844 (Mobile) logical viewport scaled cleanly into each artboard card
-/// - Auto-injected local Toolroll session cookie (zero login screens)
-/// - Read-only DOM element hover highlighter (`WKUserScript`) in Pin/Options mode
-/// - Draft-batch pin review (`Per screen` | `Single task` | `Per pin`) + instant `⌘↵` filing
 public struct CanvasWorkspaceView: View {
     @Bindable var store: WorkbenchStore
 
-    // Camera state
     @State private var panOffset: CGSize = .zero
     @State private var dragStartPan: CGSize = .zero
     @State private var zoom: CGFloat = 0.85
     @State private var gestureBaseZoom: CGFloat = 0.85
 
-    // Tools & UI popovers
     @State private var tool: CanvasTool = .select
     @State private var isAddingRoute: Bool = false
     @State private var newRouteDraft: String = "/"
@@ -28,7 +18,6 @@ public struct CanvasWorkspaceView: View {
     @State private var isCompareGuideOpen: Bool = false
     @State private var batchGrouping: PinBatchGrouping = .perScreen
 
-    // Pin drafting & inspection
     @State private var draftPin: PendingPinDraft? = nil
     @State private var draftPinText: String = ""
     @State private var selectedPinId: String? = nil
@@ -58,7 +47,6 @@ public struct CanvasWorkspaceView: View {
 
             GeometryReader { geo in
                 ZStack {
-                    // Infinite Signal 1.0.0 dot grid
                     dotGridBackground(size: geo.size)
                         .gesture(
                             DragGesture()
@@ -73,7 +61,6 @@ public struct CanvasWorkspaceView: View {
                                 }
                         )
 
-                    // Artboards (under the Hand layer below, which takes every drag while Hand is on)
                     ZStack(alignment: .topLeading) {
                         ForEach(store.canvasArtboards) { board in
                             artboardView(board)
@@ -85,8 +72,6 @@ public struct CanvasWorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                    // Hand: one layer over the screens (so a drag anywhere pans and never selects or moves a screen),
-                    // under the dock (so every tool stays clickable). Open hand on hover, closed while dragging.
                     if tool == .hand {
                         Color.clear
                             .contentShape(Rectangle())
@@ -111,7 +96,6 @@ public struct CanvasWorkspaceView: View {
                             .accessibilityHidden(true)
                     }
 
-                    // Floating Bottom Dock + Contextual Compare Guide Bar
                     VStack(spacing: 8) {
                         Spacer()
                         if tool == .compare {
@@ -121,7 +105,6 @@ public struct CanvasWorkspaceView: View {
                             .padding(.bottom, 18)
                     }
 
-                    // Studio Screen Focus Lightbox (zoomable high-res view + edit/task creation side rail)
                     if let focusId = focusedArtboardId,
                        let focusBoard = store.canvasArtboards.first(where: { $0.id == focusId }) {
                         ScreenFocusLightboxView(
@@ -178,11 +161,8 @@ public struct CanvasWorkspaceView: View {
         return .handled
     }
 
-    // MARK: - Top Control Strip
-
     private var canvasControlStrip: some View {
         HStack(spacing: 10) {
-            // Project switcher directly on Canvas
             Menu {
                 ForEach(store.allProjects, id: \.self) { proj in
                     Button {
@@ -215,10 +195,8 @@ public struct CanvasWorkspaceView: View {
             .menuIndicator(.hidden)
             .fixedSize()
 
-            // Preview server status pill (Cached 0 MB | Starting | Live with 1-click Sleep)
             previewServerPill
 
-            // Desktop (1440×900) / Mobile (390×844) switcher
             HStack(spacing: 2) {
                 ForEach(CanvasViewportPreset.allCases) { preset in
                     let active = store.canvasViewport == preset
@@ -241,7 +219,6 @@ public struct CanvasWorkspaceView: View {
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-            // + Screen popover (shows remaining auto-discovered routes + custom path input)
             Button {
                 isAddingRoute.toggle()
             } label: {
@@ -427,8 +404,6 @@ public struct CanvasWorkspaceView: View {
         isAddingRoute = false
     }
 
-    // MARK: - Infinite Dot Grid
-
     private func dotGridBackground(size: CGSize) -> some View {
         Canvas { context, canvasSize in
             let step = max(14.0, 24.0 * zoom)
@@ -452,8 +427,6 @@ public struct CanvasWorkspaceView: View {
         .background(ToolrollPalette.ground)
     }
 
-    // MARK: - Artboard Card (True 1440×900 / 390×844 Scaled Rendering + Hybrid Tile Cache)
-
     private func artboardView(_ board: CanvasArtboard) -> some View {
         let pinsForBoard = store.canvasPins.filter { $0.artboardPath == board.path || $0.artboardRoute == board.route }
         let scaledW = board.width * zoom
@@ -462,7 +435,6 @@ public struct CanvasWorkspaceView: View {
         let inspectorOn = board.isLiveInteractive && (tool == .pin || tool == .options)
 
         return VStack(alignment: .leading, spacing: 6) {
-            // Draggable artboard title bar
             HStack(spacing: 6) {
                 Text(board.route)
                     .font(.system(size: max(10, 11.5 * zoom), weight: .semibold, design: .monospaced))
@@ -510,7 +482,6 @@ public struct CanvasWorkspaceView: View {
                     }
             )
 
-            // Visual surface
             ZStack(alignment: .topLeading) {
                 if tool == .compare,
                    let basePath = board.baselineImagePath,
@@ -519,7 +490,6 @@ public struct CanvasWorkspaceView: View {
                    let latestImg = CanvasImageCache.shared.image(atPath: latestPath, maxPixelDimension: 1080) {
                     beforeAfterScrubView(board: board, before: baseImg, after: latestImg, width: scaledW, height: scaledH)
                 } else if needsWebView && !store.canvasBaseURL.isEmpty {
-                    // Render at TRUE logical viewport (1440×900 or 390×844), GPU-scaled smoothly into box!
                     let logW = store.canvasViewport.logicalWidth
                     let logH = store.canvasViewport.logicalHeight
                     let scale = scaledW / logW
@@ -563,7 +533,6 @@ public struct CanvasWorkspaceView: View {
                         .frame(width: scaledW, height: scaledH)
                         .clipped()
                 } else {
-                    // Clean minimal placeholder while queued for pooled hydration or missing deps
                     VStack(spacing: 8) {
                         Text(board.route)
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
@@ -590,7 +559,6 @@ public struct CanvasWorkspaceView: View {
                     .background(ToolrollPalette.codeBg)
                 }
 
-                // Contextual Compare helper overlay when Compare mode is on but this screen has no Before baseline yet
                 if tool == .compare && board.baselineImagePath == nil {
                     VStack {
                         Spacer()
@@ -620,7 +588,6 @@ public struct CanvasWorkspaceView: View {
                     .frame(width: scaledW, height: scaledH)
                 }
 
-                // Static-tile pin-drop overlay when Pin or Options is active on a cached tile
                 if (tool == .pin || tool == .options) && !inspectorOn {
                     Color.clear
                         .contentShape(Rectangle())
@@ -644,13 +611,11 @@ public struct CanvasWorkspaceView: View {
                         }
                 }
 
-                // Existing spatial pins with live SSE status halos
                 ForEach(Array(pinsForBoard.enumerated()), id: \.element.id) { idx, pin in
                     pinMarker(pin: pin, index: idx + 1)
                         .position(x: pin.xFrac * scaledW, y: pin.yFrac * scaledH)
                 }
 
-                // Active draft pin popover
                 if let draft = draftPin, draft.artboardId == board.id {
                     Circle()
                         .fill(draft.kind == .options ? ToolrollPalette.live : ToolrollPalette.ink)
@@ -892,8 +857,6 @@ public struct CanvasWorkspaceView: View {
         }
     }
 
-    // MARK: - Floating Bottom Dock + Batch Create Tasks (N)
-
     private func floatingDock() -> some View {
         HStack(spacing: 4) {
             dockToolButton(.select, icon: "cursorarrow", key: "V")
@@ -933,7 +896,6 @@ public struct CanvasWorkspaceView: View {
                 gestureBaseZoom = zoom
             }
 
-            // Batch review CTA (Q4 + Q8)
             if !store.draftCanvasPins.isEmpty {
                 HairlineDivider(vertical: true).frame(height: 18).padding(.horizontal, 4)
 
@@ -1091,7 +1053,6 @@ public struct CanvasWorkspaceView: View {
             .padding(.horizontal, 4)
     }
 
-    /// One tool: an icon in a 36pt square; the active one is softly tinted (name and key in its tooltip).
     private func dockToolButton(_ t: CanvasTool, icon: String, key: String) -> some View {
         let active = tool == t
         return Button {
@@ -1134,8 +1095,6 @@ public struct CanvasWorkspaceView: View {
         return "\(cleanBase)\(cleanPath)"
     }
 }
-
-// MARK: - Scaled Live WKWebView with Session Cookie Injection + Read-Only DOM Inspector
 
 private struct DOMInspectHit {
     let elementName: String?
@@ -1270,7 +1229,6 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard autoCaptureOnLoad else { return }
-            // Wait 550ms for fonts/CSS/hydration to settle, then silently cache Retina tile to disk
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self, weak webView] in
                 guard let self, let webView else { return }
                 let config = WKSnapshotConfiguration()

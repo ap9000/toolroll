@@ -1,9 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Calm monochrome banner strip showing pending operator-approval requests filed by external agents
-/// via `toolroll ... --request "<why>"`. Approving goes through Toolroll's real password-checked
-/// endpoints (either 1-tap Touch ID or typed password) and immediately unblocks any waiting agent.
 public struct AgentRequestsBannerView: View {
     @Bindable var store: WorkbenchStore
 

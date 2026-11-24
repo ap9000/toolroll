@@ -30,7 +30,6 @@ describe("agent-requests", () => {
     expect(r1.status).toBe("pending");
     expect(r1.projectName).toBe("demo-site");
 
-    // Filing an identical pending request deduplicates in place
     const r2 = fileAgentRequest(db, {
       kind: "network",
       repo: "/tmp/demo-site",
@@ -79,18 +78,15 @@ describe("agent-requests", () => {
     expect(live.code).toBe(0);
     expect((live.body["request"] as Record<string, unknown>)["kind"]).toBe("live-view");
 
-    // Verify none of the actual settings were mutated without operator approval
     const verifyStore = openStore(db);
     expect(verifyStore.projectNetwork(repo).loopback).toBe("proxy-only");
     expect(verifyStore.liveWorktreeSetup(repo)).toBeNull();
     verifyStore.close();
 
-    // `toolroll request list` returns all 3 pending requests
     const listed = await run("request", ["list"]);
     expect(listed.code).toBe(0);
     expect((listed.body["requests"] as unknown[]).length).toBe(3);
 
-    // `toolroll request decline <id>` declines one
     const firstId = ((listed.body["requests"] as Array<{ id: string }>)[0]!).id;
     const declined = await run("request", ["decline", firstId, "--note", "Not needed"]);
     expect(declined.code).toBe(0);

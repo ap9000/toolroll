@@ -4,11 +4,6 @@ import ToolrollCore
 import UniformTypeIdentifiers
 import WebKit
 
-/// Studio Screen Focus Lightbox:
-/// Opens when clicking any artboard on the Canvas. Provides high-res zoom & pan (`50%`–`300%`),
-/// Cached / Live Interactive / Before-After Compare switching, floating Figma-style Element Context Bar
-/// + Right-Click Context Menu, live 0ms Copy/Style/Hide preview tweaks, ancestor breadcrumb stepping,
-/// local repo source lookup, and a right-side Edit & Task Creation rail.
 struct ScreenFocusLightboxView: View {
     @Bindable var store: WorkbenchStore
     let board: CanvasArtboard
@@ -45,16 +40,14 @@ struct ScreenFocusLightboxView: View {
     @State private var clickToPin: Bool = true
     @State private var compareSplit: Double = 0.5
 
-    // Selected element + floating HUD + live edits
     @State private var selectedElement: SelectedElementContext? = nil
-    @State private var pinnedPoint: CGPoint? = nil // normalized 0...1 (also used in Preview mode)
+    @State private var pinnedPoint: CGPoint? = nil
     @State private var isEditingCopy: Bool = false
     @State private var isStylePopoverOpen: Bool = false
     @State private var isContextMenuOpen: Bool = false
     @State private var contextMenuAnchorFrac: CGPoint? = nil
     @State private var pendingEdits: [String: ElementLiveEdit] = [:]
 
-    // Inline Edit / Task Creation state
     @State private var selectedKind: CanvasPinKind = .change
     @State private var planFirst: Bool = true
     @State private var taskPrompt: String = ""
@@ -81,7 +74,6 @@ struct ScreenFocusLightboxView: View {
         pendingEdits.values.filter(\.hasChanges).sorted { $0.id < $1.id }
     }
 
-    /// Sends the question with the selection's context to the Lead and clears the box (the answer shows in the drawer).
     private func askLead() {
         let element = selectedElement
         let message = LeadAskContext.message(
@@ -98,7 +90,7 @@ struct ScreenFocusLightboxView: View {
             let problem = await store.askLeadAboutCanvas(message)
             isAsking = false
             if let problem {
-                askProblem = problem // the question stays in the box to try again
+                askProblem = problem
             } else {
                 taskPrompt = ""
             }
@@ -120,13 +112,11 @@ struct ScreenFocusLightboxView: View {
                 HairlineDivider()
 
                 HStack(spacing: 0) {
-                    // LEFT: Large Zoomable Screen Inspection Stage + Floating Element Context HUD
                     stageArea
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     HairlineDivider(vertical: true)
 
-                    // RIGHT: Rich Element Inspector + Edit & Task Creation Panel
                     inspectorRail
                         .frame(width: 356)
                 }
@@ -174,11 +164,8 @@ struct ScreenFocusLightboxView: View {
         dragStartPan = .zero
     }
 
-    // MARK: - Top Bar
-
     private var topBar: some View {
         HStack(spacing: 10) {
-            // Prev / Next screen arrows
             HStack(spacing: 4) {
                 Button {
                     if let idx = boardIndex, idx > 0 {
@@ -248,7 +235,6 @@ struct ScreenFocusLightboxView: View {
 
             Spacer()
 
-            // Native macOS segmented Preview | Live | Compare switcher
             Picker("", selection: Binding(
                 get: { viewMode },
                 set: { next in
@@ -277,7 +263,6 @@ struct ScreenFocusLightboxView: View {
             .frame(width: 210)
             .help("Preview: cached screenshot · Live: click elements to edit & pin · Compare: Wipe, Side-by-Side, or Pixel Diff against a Baseline or Reference mockup")
 
-            // Zoom controls
             HStack(spacing: 4) {
                 Button {
                     detailZoom = max(0.5, detailZoom - 0.25)
@@ -320,7 +305,6 @@ struct ScreenFocusLightboxView: View {
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-            // Remove screen from canvas
             Button {
                 let id = board.id
                 onClose()
@@ -359,8 +343,6 @@ struct ScreenFocusLightboxView: View {
         store.updateCanvasArtboardPath(id: board.id, newPath: clean)
     }
 
-    // MARK: - Zoomable Stage Area + Floating Element Context HUD
-
     private var stageArea: some View {
         GeometryReader { geo in
             let pad: CGFloat = 28
@@ -372,7 +354,6 @@ struct ScreenFocusLightboxView: View {
             let renderW = fitW * detailZoom
             let renderH = fitH * detailZoom
 
-            // Origin of the rendered screen inside the stage coordinate space
             let stageOriginX = (geo.size.width - renderW) / 2 + pan.width
             let stageOriginY = (geo.size.height - renderH) / 2 + pan.height
 
@@ -436,7 +417,6 @@ struct ScreenFocusLightboxView: View {
                         .background(ToolrollPalette.codeBg)
                     }
 
-                    // Click-to-pin tap overlay on Preview image
                     if viewMode == .cached && clickToPin {
                         Color.clear
                             .contentShape(Rectangle())
@@ -451,7 +431,6 @@ struct ScreenFocusLightboxView: View {
                             }
                     }
 
-                    // Existing pins on this screen
                     ForEach(Array(pinsOnScreen.enumerated()), id: \.element.id) { idx, pin in
                         let tone = store.statusTone(forPin: pin)
                         Circle()
@@ -466,7 +445,6 @@ struct ScreenFocusLightboxView: View {
                             .position(x: pin.xFrac * renderW, y: pin.yFrac * renderH)
                     }
 
-                    // Active target pin crosshair (in Preview mode or when no element rect)
                     if let pt = pinnedPoint, selectedElement == nil {
                         ZStack {
                             Circle()
@@ -493,7 +471,6 @@ struct ScreenFocusLightboxView: View {
                         .onEnded { _ in dragStartPan = pan }
                 )
 
-                // FLOATING ELEMENT CONTEXT BAR (Anchored right above/below selected element!)
                 if viewMode == .live, let el = selectedElement {
                     let elTopY = stageOriginY + CGFloat(el.rectYFrac) * renderH
                     let elBottomY = stageOriginY + CGFloat(el.rectYFrac + el.rectHFrac) * renderH
@@ -508,7 +485,6 @@ struct ScreenFocusLightboxView: View {
                         .position(x: barX, y: barY)
                         .transition(.opacity)
 
-                    // Compact Style Tweaks Popover (toggled from floating bar or right-click menu)
                     if isStylePopoverOpen {
                         let popX = min(max(150, barX), max(150, geo.size.width - 150))
                         let popY: CGFloat = (barY < geo.size.height * 0.5)
@@ -518,7 +494,6 @@ struct ScreenFocusLightboxView: View {
                             .position(x: popX, y: popY)
                     }
 
-                    // Rich Right-Click / Overflow Context Menu
                     if isContextMenuOpen {
                         let anchorPt = contextMenuAnchorFrac.map {
                             CGPoint(
@@ -533,7 +508,6 @@ struct ScreenFocusLightboxView: View {
                     }
                 }
 
-                // Floating bottom micro-hint bar inside stage
                 VStack(spacing: 8) {
                     Spacer()
                     if viewMode == .compare,
@@ -617,15 +591,12 @@ struct ScreenFocusLightboxView: View {
         }
     }
 
-    // MARK: - Floating Element Context Bar (Figma / v0 Design Mode Style)
-
     private func floatingElementToolbar(for el: SelectedElementContext) -> some View {
         let edit = pendingEdits[el.elId]
         let isHidden = edit?.isHidden ?? false
         let hasEdits = edit?.hasChanges ?? false
 
         return HStack(spacing: 2) {
-            // Step up to parent element
             Button {
                 selectParentElement(of: el)
             } label: {
@@ -646,7 +617,6 @@ struct ScreenFocusLightboxView: View {
 
             toolbarHairline
 
-            // Edit Copy Inline
             Button {
                 isStylePopoverOpen = false
                 isContextMenuOpen = false
@@ -672,7 +642,6 @@ struct ScreenFocusLightboxView: View {
             .buttonStyle(.plain)
             .help("Edit text directly on the live page")
 
-            // Style Tweaks Popover
             Button {
                 isContextMenuOpen = false
                 isEditingCopy = false
@@ -694,7 +663,6 @@ struct ScreenFocusLightboxView: View {
             .buttonStyle(.plain)
             .help("Live padding, spacing, type & radius tweaks")
 
-            // Explore Options (A/B/C/D)
             Button {
                 selectedKind = .options
                 if taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -717,7 +685,6 @@ struct ScreenFocusLightboxView: View {
             .buttonStyle(.plain)
             .help("Generate A/B/C/D design options for this element")
 
-            // Hide / Restore Element
             Button {
                 toggleHideElement(el)
             } label: {
@@ -747,7 +714,6 @@ struct ScreenFocusLightboxView: View {
 
             toolbarHairline
 
-            // Overflow / Context Menu
             Button {
                 isStylePopoverOpen = false
                 contextMenuAnchorFrac = nil
@@ -773,8 +739,6 @@ struct ScreenFocusLightboxView: View {
             .frame(width: 1, height: 14)
             .padding(.horizontal, 2)
     }
-
-    // MARK: - Compact 80/20 Style Tweaks Popover (0ms Live DOM Preview)
 
     private func styleTweaksPopover(for el: SelectedElementContext) -> some View {
         let edit = pendingEdits[el.elId]
@@ -832,7 +796,6 @@ struct ScreenFocusLightboxView: View {
                 }
             ), range: 10...48, step: 1)
 
-            // Font weight segmented bar
             HStack(spacing: 8) {
                 Text("Weight")
                     .font(.system(size: 11))
@@ -898,15 +861,12 @@ struct ScreenFocusLightboxView: View {
         }
     }
 
-    // MARK: - Right-Click / Overflow Element Context Menu
-
     private func elementContextMenuPopover(for el: SelectedElementContext) -> some View {
         let edit = pendingEdits[el.elId]
         let isHidden = edit?.isHidden ?? false
         let parentLabel = el.ancestors.first(where: { $0.depthFromSelected == 1 })?.label
 
         return VStack(alignment: .leading, spacing: 2) {
-            // Breadcrumb & size header
             HStack(spacing: 6) {
                 Text(el.displayName)
                     .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
@@ -1003,10 +963,7 @@ struct ScreenFocusLightboxView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 3-Mode Compare View (Wipe | Side-by-Side | Pixel Diff) + Original vs Live Tweaks + Reference Mockup
-
     private func resolveCompareImages() -> (before: NSImage, after: NSImage, beforeLabel: String, afterLabel: String)? {
-        // Priority 1: Imported / Pasted Reference Mockup vs Current Screen
         if let refImg = referenceCompareImage {
             if let tweaked = liveTweakSnapshot {
                 return (refImg, tweaked, referenceCompareLabel, "LIVE TWEAKS")
@@ -1016,13 +973,11 @@ struct ScreenFocusLightboxView: View {
                 return (refImg, currentImg, referenceCompareLabel, "CURRENT")
             }
         }
-        // Priority 2: Original vs Your Live Preview Tweaks!
         if let tweaked = liveTweakSnapshot,
            let basePath = board.latestImagePath ?? board.baselineImagePath,
            let orig = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160) {
             return (orig, tweaked, "ORIGINAL", "LIVE TWEAKS")
         }
-        // Priority 3: Locked Baseline / Main Branch vs Latest Build
         if let basePath = board.baselineImagePath,
            let latestPath = board.latestImagePath,
            let baseImg = CanvasImageCache.shared.image(atPath: basePath, maxPixelDimension: 2160),
@@ -1402,7 +1357,6 @@ struct ScreenFocusLightboxView: View {
                     .frame(width: 2, height: height)
                     .offset(x: splitX)
 
-                // Center drag pill handle
                 Capsule()
                     .fill(ToolrollPalette.ink)
                     .frame(width: 22, height: 34)
@@ -1494,8 +1448,6 @@ struct ScreenFocusLightboxView: View {
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    // MARK: - Right Edit & Task Creation Rail
-
     private var inspectorRail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -1511,15 +1463,12 @@ struct ScreenFocusLightboxView: View {
                             .foregroundStyle(ToolrollPalette.muted)
                     }
 
-                    // Rich Element Context Card (or whole-screen prompt)
                     elementContextCard
 
-                    // Element-aware quick intent chips (when an element is selected)
                     if let el = selectedElement {
                         quickIntentChipsSection(for: el)
                     }
 
-                    // Native macOS segmented kind switcher: UI Change vs Options (A/B/C/D)
                     Picker("", selection: $selectedKind) {
                         Text("UI Change").tag(CanvasPinKind.change)
                         Text("Options (A/B/C/D)").tag(CanvasPinKind.options)
@@ -1527,7 +1476,6 @@ struct ScreenFocusLightboxView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
 
-                    // Multiline prompt input
                     TextField(
                         selectedKind == .options
                             ? "Ask Toolroll to propose 2–4 visual options for this area…"
@@ -1545,7 +1493,6 @@ struct ScreenFocusLightboxView: View {
                     .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
 
-                    // Native macOS segmented cadence switcher: Plan first vs Just code
                     Picker("", selection: $planFirst) {
                         Text("Plan first").tag(true)
                         Text("Just code").tag(false)
@@ -1588,7 +1535,6 @@ struct ScreenFocusLightboxView: View {
                 }
                 .padding(15)
 
-                // Pending Live Visual Edits diff stack (when user made live copy/style/hide tweaks)
                 if !activeLiveEdits.isEmpty {
                     HairlineDivider()
                     pendingLiveEditsSection
@@ -1596,7 +1542,6 @@ struct ScreenFocusLightboxView: View {
 
                 HairlineDivider()
 
-                // Pins & tasks linked to this screen
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("ON THIS SCREEN (\(pinsOnScreen.count))")
@@ -1633,7 +1578,6 @@ struct ScreenFocusLightboxView: View {
     private var elementContextCard: some View {
         if let el = selectedElement {
             VStack(alignment: .leading, spacing: 7) {
-                // Clickable DOM Ancestor Breadcrumb
                 if el.ancestors.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 3) {
@@ -1664,7 +1608,6 @@ struct ScreenFocusLightboxView: View {
                     }
                 }
 
-                // Identity + size + Clear
                 HStack(spacing: 6) {
                     Image(systemName: categoryIcon(for: el.category))
                         .font(.system(size: 11))
@@ -1697,7 +1640,6 @@ struct ScreenFocusLightboxView: View {
                         .lineLimit(1)
                 }
 
-                // Measured computed style spec chips (clamped safely for Tailwind `rounded-full` calc(infinity * 1px))
                 HStack(spacing: 5) {
                     specChip("\(ElementStyleMetrics.safeInt(el.metrics.fontSize))px/\(el.metrics.fontWeight)")
                     specChip("pad \(ElementStyleMetrics.safeInt(el.metrics.padding))")
@@ -1711,7 +1653,6 @@ struct ScreenFocusLightboxView: View {
                     Spacer()
                 }
 
-                // Matched local repo source file (clickable!)
                 if let file = el.file {
                     Button {
                         openSourceFile(file)
@@ -1858,8 +1799,6 @@ struct ScreenFocusLightboxView: View {
         .padding(.horizontal, 15)
         .padding(.vertical, 12)
     }
-
-    // MARK: - Actions & Helpers
 
     private func handleElementSelected(_ ctx: SelectedElementContext, openContextMenu: Bool) {
         var enriched = ctx
@@ -2080,8 +2019,6 @@ struct ScreenFocusLightboxView: View {
     }
 }
 
-// MARK: - Bidirectional Swift ↔ WKWebView Bridge
-
 @MainActor
 final class FocusWebBridge {
     weak var webView: WKWebView?
@@ -2127,8 +2064,6 @@ final class FocusWebBridge {
         webView?.evaluateJavaScript("window.__trFocus && window.__trFocus.clearSelection();", completionHandler: nil)
     }
 
-    /// Captures a clean PNG snapshot (hiding inspector highlight boxes temporarily).
-    /// Pass `cropRectFrac` (`0...1` normalized bounds) to capture a cropped element thumbnail with breathing margin.
     func captureSnapshot(cropRectFrac: CGRect?) async -> (image: NSImage, pngData: Data)? {
         guard let webView else { return nil }
         _ = try? await webView.evaluateJavaScript("window.__trFocus && window.__trFocus.setBoxesHidden(true);")
@@ -2164,8 +2099,6 @@ final class FocusWebBridge {
         }
     }
 }
-
-// MARK: - Live WebView inside Focus Lightbox (DOM Inspector + Right-Click + Live Mutations)
 
 private struct FocusLiveWebView: NSViewRepresentable {
     let bridge: FocusWebBridge

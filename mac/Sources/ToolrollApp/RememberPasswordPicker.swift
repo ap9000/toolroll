@@ -1,7 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Settings row: how long a typed or Touch ID password is remembered.
 struct RememberPasswordPicker: View {
     let memory: PasswordMemory
     @State private var window: PasswordMemory.Window = PasswordMemory.defaultWindow

@@ -57,7 +57,6 @@ public enum CommandPaletteEngine {
         var items: [PaletteItem] = []
 
         if let taskId = selectedTaskId {
-            // Contextual multiplayer actions for the selected task
             for cand in candidates {
                 if cand.promotedAt == nil && !cand.stale {
                     items.append(PaletteItem(
@@ -140,7 +139,6 @@ public enum CommandPaletteEngine {
             ))
         }
 
-        // Workspace & view actions
         items.append(PaletteItem(
             id: "inspector-terminal",
             title: "Focus Live Terminal Inspector",
@@ -207,7 +205,6 @@ public enum CommandPaletteEngine {
             ))
         }
 
-        // Task jump items
         for row in rows {
             let statusLabel = row.word.isEmpty ? row.status.rawValue : row.word
             let proj = row.project ?? "workspace"
@@ -224,7 +221,6 @@ public enum CommandPaletteEngine {
         return items
     }
 
-    /// Fuzzy subsequence + word-boundary matcher with deterministic ranking.
     public static func filter(items: [PaletteItem], query rawQuery: String) -> [PaletteItem] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if query.isEmpty {

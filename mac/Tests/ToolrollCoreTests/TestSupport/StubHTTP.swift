@@ -1,7 +1,6 @@
 import Foundation
 @testable import ToolrollCore
 
-/// One request a stub answered: what the client actually sent.
 struct RecordedRequest: Sendable {
     let method: String
     let path: String
@@ -9,7 +8,6 @@ struct RecordedRequest: Sendable {
     let headers: [String: String]
     let body: String
 
-    /// The form body as ordered pairs (`application/x-www-form-urlencoded`, `+` never means a space here).
     var formPairs: [(String, String)] {
         body.split(separator: "&", omittingEmptySubsequences: true).map { pair in
             let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
@@ -47,7 +45,6 @@ struct StubReply: Sendable {
     }
 }
 
-/// A canned server: records every request and answers each from `handler`, which sees the request and how many came before.
 final class StubServer: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [RecordedRequest] = []
@@ -71,13 +68,11 @@ final class StubServer: @unchecked Sendable {
     }
 }
 
-/// Which stub answers which loopback port. Ports here are only names: nothing listens on them.
 enum StubRegistry {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var servers: [Int: StubServer] = [:]
     nonisolated(unsafe) private static var nextPort = 47_100
 
-    /// A fresh port no other test uses, bound to `server`.
     static func register(_ server: StubServer) -> Int {
         lock.lock(); defer { lock.unlock() }
         nextPort += 1
@@ -96,7 +91,6 @@ enum StubRegistry {
     }
 }
 
-/// Answers every request of a test's own session from the registry; an unknown port fails, so nothing reaches the network.
 class StubURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -140,7 +134,6 @@ class StubURLProtocol: URLProtocol {
         return data
     }
 
-    /// A session whose every request is answered by the registry.
     static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
@@ -148,8 +141,6 @@ class StubURLProtocol: URLProtocol {
     }
 }
 
-/// Registered process-wide so `URLSession.shared` (which `LocalConsoleConnector.discoverAndConnect()` uses to redeem its
-/// one-time code) is answered too, but only for the fake console's own port: every other request is left alone.
 final class FakeConsoleRedeemProtocol: StubURLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         guard let url = request.url, url.host == "127.0.0.1", let port = url.port else { return false }

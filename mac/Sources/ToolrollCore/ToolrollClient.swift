@@ -5,9 +5,7 @@ public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
     case unauthenticated
     case refused(String)
     case passwordRequired(String)
-    /// The account has no password yet ("Set a password to do this."): the app offers to set one, never a password box.
     case passwordNotSet(String)
-    /// A password is set, but this needs a full sign-in the app's local session can't make ("Sign in with your password to do this.").
     case fullSignInNeeded(String)
     case httpStatus(Int, String)
     case unreachable(String)
@@ -61,11 +59,6 @@ public enum ClientTransport: Sendable, Equatable {
     }
 }
 
-/// Async HTTP + SSE + WebSocket client over Toolroll's central Engine API.
-/// Supports both:
-/// - **Local Owner Session** (`POST /login/once` cookie + CSRF + mutation key): full native in-app approvals,
-///   reviews, answers, retries, plans, and task creation with zero browser handoff.
-/// - **Remote Bearer Profile** (`x-toolroll-client: terminal-remote` + workspace/recovery pinning).
 public actor ToolrollClient {
     public private(set) var transport: ClientTransport
     public var profile: ConnectionProfile {
@@ -187,10 +180,6 @@ public actor ToolrollClient {
         }
     }
 
-    /// Sends a form POST action (`application/x-www-form-urlencoded`) in local-session mode and parses
-    /// Toolroll's standard JSON (`{ outcome, words }`) or redirect (`?said=` / `?problem=`) response.
-    /// `application/x-www-form-urlencoded`, strictly: everything but letters, digits and `-._*` is percent-encoded, so a
-    /// password's `+`, `&`, `=` or `%` reaches the server exactly as typed (URLComponents leaves `+`, which a form reads as a space).
     public static func formEncoded(_ fields: [(String, String)]) -> String {
         var allowed = CharacterSet.alphanumerics.intersection(CharacterSet(charactersIn: Unicode.Scalar(0)...Unicode.Scalar(127)))
         allowed.insert(charactersIn: "-._*")
@@ -198,8 +187,6 @@ public actor ToolrollClient {
         return fields.map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&")
     }
 
-    /// The server's exact local-owner sentences (local-owner.ts localOwnerRefusal) first, so neither shows a password box
-    /// that can't work; then any other password refusal asks for the password again.
     public static func refusal(_ words: String) -> ToolrollClientError {
         let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
         if said == "Set a password to do this." { return .passwordNotSet(said) }
@@ -209,9 +196,6 @@ public actor ToolrollClient {
         return .refused(said)
     }
 
-    /// Set the account's first password (`POST /password/set`, the console's own form: csrf in the body, the key header).
-    /// Its answer is a page, and it ends every session of the account, this one included: the caller reconnects and reads
-    /// `passwordSet` again, which alone says whether it worked. Throws only when the request couldn't be made.
     public func setFirstPassword(_ password: String) async throws {
         guard case .localSession(let s) = transport else {
             throw ToolrollClientError.refused("Set a password from Toolroll on this Mac.")
@@ -222,8 +206,6 @@ public actor ToolrollClient {
         do { _ = try await session.data(for: req) } catch { throw ToolrollClientError.unreachable(error.localizedDescription) }
     }
 
-    /// The server's words when this app's key is from before a Toolroll restart (server/mutation-key.ts). The key
-    /// check refuses before the action runs, so reconnecting and sending again once can't do anything twice.
     static let staleSessionWords = ["Toolroll restarted", "isn't connected to Toolroll"]
 
     static func isStaleSession(_ error: Error) -> Bool {
@@ -231,7 +213,6 @@ public actor ToolrollClient {
         return staleSessionWords.contains { words.contains($0) }
     }
 
-    /// Mints a fresh local session the way the app does at launch, so a restart never asks the person to run a command.
     private func reconnectLocalSession() async -> Bool {
         guard case .localSession = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
         transport = .localSession(fresh)
@@ -239,14 +220,12 @@ public actor ToolrollClient {
         return true
     }
 
-    /// Told when the session was renewed after a restart, so the app's other users of it (the web preview's cookie) follow.
     private var sessionRenewed: (@Sendable (LocalSessionCredentials) -> Void)?
 
     public func onSessionRenewed(_ handler: @escaping @Sendable (LocalSessionCredentials) -> Void) {
         sessionRenewed = handler
     }
 
-    /// Runs `op`; when it was refused for a key from before a restart, reconnects and runs it once more.
     private func renewingStaleSession<T>(_ op: () async throws -> T) async throws -> T {
         do {
             return try await op()
@@ -300,8 +279,6 @@ public actor ToolrollClient {
             return words.isEmpty ? defaultDone : words
         }
 
-        // Parse Toolroll's 303 redirect query feedback (`?problem=...` or `?said=...`)
-        // from either the followed final URL (`http.url`) or an unfollowed `Location` header!
         let redirectOutcome = Self.parseRedirectFeedback(
             finalURL: http.url,
             locationHeader: http.value(forHTTPHeaderField: "Location")
@@ -337,14 +314,10 @@ public actor ToolrollClient {
         return (nil, nil)
     }
 
-    // MARK: - Core Engine Reads
-
-    /// Work's rows; `view: "archived"` reads the tasks put away (the default list leaves them out).
     public func fetchWorkRows(view: String? = nil) async throws -> WorkRowsResponse {
         try await send(try makeRequest(path: view.map { "/work/rows?view=\($0)" } ?? "/work/rows"), as: WorkRowsResponse.self)
     }
 
-    /// `withChoices`: also read the agents this task's steps may switch to (the model picker's read; costly, so only it asks).
     public func fetchSteps(taskId: String, withChoices: Bool = false) async throws -> StepCardsResponse {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
         return try await send(try makeRequest(path: "/t/\(enc)/steps\(withChoices ? "?choices=1" : "")"), as: StepCardsResponse.self)
@@ -423,7 +396,6 @@ public actor ToolrollClient {
         return try await send(req, as: AgentsReadResponse.self)
     }
 
-    /// Starts Toolroll's built-in trusted agent sign-in or install terminal (`POST /term/agent/sign-in` or `/install`).
     public func startAgentTerminal(kind: String, agentId: String, confirmCommand: String? = nil) async throws -> String {
         try await renewingStaleSession { try await startAgentTerminalOnce(kind: kind, agentId: agentId, confirmCommand: confirmCommand) }
     }
@@ -482,7 +454,6 @@ public actor ToolrollClient {
         )
     }
 
-    /// Probes installed local CLIs (claude, codex, gemini) and refreshes the live model catalog from OpenRouter/providers.
     public func checkModelCatalog() async throws -> String {
         return try await sendFormAct(
             path: "/settings/models/check",
@@ -525,8 +496,6 @@ public actor ToolrollClient {
         )
     }
 
-    /// Official 2-step worktree setup approval (`POST /control/setup-preview` -> `POST /control/setup-approve`)
-    /// so users can approve a per-repo setup command (e.g. `pnpm install --frozen-lockfile`) directly inside Toolroll.app.
     public func approveProjectWorktreeSetup(
         repo: String,
         provider: String,

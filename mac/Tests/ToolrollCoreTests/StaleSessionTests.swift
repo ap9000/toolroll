@@ -2,11 +2,8 @@ import Foundation
 import Testing
 @testable import ToolrollCore
 
-/// RS2: after a console restart the client reconnects (the fake console's handshake and one-time code) and resends once;
-/// a second stale refusal is shown, never looped. Serialized: every case shares the one fake console and its port.
 @Suite("ToolrollClient stale session", .serialized)
 struct StaleSessionTests {
-    /// The server's words for a key from before a restart (server/mutation-key.ts RESTARTED_LOCAL, NOT_CONNECTED_LOCAL).
     static let restarted = "Toolroll restarted — run `toolroll --web` to reconnect."
     static let notConnected = "This tab isn't connected to Toolroll — run `toolroll --web` to reconnect."
 
@@ -21,7 +18,6 @@ struct StaleSessionTests {
         var all: [LocalSessionCredentials] { lock.lock(); defer { lock.unlock() }; return seen }
     }
 
-    /// `old` answers the first send; `fresh` (bound to the fake console's port) answers the redeem and any resend.
     private func setUp(refuseReconnect: Bool, old: @escaping @Sendable (RecordedRequest, Int) -> StubReply,
                        resend: @escaping @Sendable (RecordedRequest) -> StubReply) async -> (ToolrollClient, StubServer, StubServer, Renewals) {
         FakeConsole.shared.reset(refuse: refuseReconnect)
@@ -51,7 +47,6 @@ struct StaleSessionTests {
         #expect(redeem.first?.body.contains("code-1") == true)
         let resent = fresh.requests.filter { $0.path == "/t/t-7/archive" }
         #expect(resent.count == 1)
-        // The resend carries the fresh session's key, csrf and cookie, never the stale ones.
         #expect(resent.first?.header("x-toolroll-key") == "key-2")
         #expect(resent.first?.header("Cookie") == "tr_s=fresh")
         #expect(resent.first?.form["csrf"] == "csrf-2")

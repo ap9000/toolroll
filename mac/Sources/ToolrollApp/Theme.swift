@@ -4,9 +4,6 @@ import Observation
 import SwiftUI
 import ToolrollCore
 
-/// Live `@Observable` theme engine synced with `~/.config/toolroll/tui.toml`.
-/// Whenever the Lead agent calls `toolroll_view_set` (or the user switches themes in Appearance `⌘⇧T`),
-/// the directory watcher reloads `tui.toml` in < 5ms and every view reading `ToolrollPalette` updates live.
 @MainActor
 @Observable
 public final class WorkspaceThemeEngine {
@@ -77,7 +74,7 @@ public final class WorkspaceThemeEngine {
         switch config.activeTheme.lowercased() {
         case "light": return .light
         case "dark", "high-contrast": return .dark
-        default: return nil // "signal" / "terminal" / "system" follows macOS appearance
+        default: return nil
         }
     }
 
@@ -105,7 +102,6 @@ public final class WorkspaceThemeEngine {
     }
 }
 
-/// Exact Toolroll Kit Signal 1.0.0 light & dark design tokens — now live-overridable by the Lead agent (`tui.toml`).
 @MainActor
 public enum ToolrollPalette {
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
@@ -194,8 +190,6 @@ public struct HairlineDivider: View {
     }
 }
 
-/// Canonical 5-tone Toolroll status chip.
-/// Solid ink fill is reserved exclusively for `Needs you`; `Running` uses a static blue dot (never a spinner).
 public struct StatusChip: View {
     public let tone: TaskStatusTone
     public let label: String
@@ -301,7 +295,7 @@ private struct KitButtonBody: View {
     var body: some View {
         configuration.label
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false) // a narrow panel never breaks a button's label mid-word
+            .fixedSize(horizontal: true, vertical: false)
             .font(.system(size: compact ? 11.5 : 12.5, weight: variant == .primary ? .semibold : .medium))
             .padding(.horizontal, compact ? 9 : 12)
             .padding(.vertical, compact ? 4.5 : 6)
@@ -350,8 +344,6 @@ private struct KitButtonBody: View {
     }
 }
 
-/// Shared downsampling image cache for Canvas artboard tiles and Lightbox previews.
-/// Prevents inline `NSImage(contentsOfFile:)` inside SwiftUI `body` from re-decoding 21MB Retina bitmaps per frame.
 @MainActor
 public final class CanvasImageCache {
     public static let shared = CanvasImageCache()
@@ -359,7 +351,7 @@ public final class CanvasImageCache {
 
     private init() {
         cache.countLimit = 48
-        cache.totalCostLimit = 96 * 1024 * 1024 // 96 MB hard ceiling
+        cache.totalCostLimit = 96 * 1024 * 1024
     }
 
     public func image(atPath path: String, maxPixelDimension: Int? = nil) -> NSImage? {
@@ -394,9 +386,6 @@ public final class CanvasImageCache {
     }
 }
 
-// MARK: - Native macOS Sidebar Vibrancy & Liquid Glass (macOS 26+ with graceful Material fallback)
-
-/// Configures the hosting NSWindow for authentic macOS 26 Liquid Glass & behind-window desktop vibrancy.
 public struct WindowGlassConfigurator: NSViewRepresentable {
     public init() {}
 
@@ -423,7 +412,6 @@ public struct WindowGlassConfigurator: NSViewRepresentable {
     }
 }
 
-/// Authentic AppKit translucent vibrancy (`.behindWindow`) for Mac-native Liquid Glass depth.
 public struct SidebarVibrancyBackground: NSViewRepresentable {
     public let material: NSVisualEffectView.Material
     public let blendingMode: NSVisualEffectView.BlendingMode
@@ -450,8 +438,6 @@ public struct SidebarVibrancyBackground: NSViewRepresentable {
     }
 }
 
-/// Wraps grouped macOS 26 Liquid Glass controls in `GlassEffectContainer` so adjacent glass pills
-/// share optical refraction and specular edge blending (falling back to a clean HStack on macOS 14–15).
 public struct ToolrollGlassGroup<Content: View>: View {
     public let spacing: CGFloat
     @ViewBuilder public let content: () -> Content
@@ -476,7 +462,6 @@ public struct ToolrollGlassGroup<Content: View>: View {
     }
 }
 
-/// Reusable tactile hover surface for rows, quick chips, and compact controls.
 public struct ToolrollHoverSurfaceModifier: ViewModifier {
     let cornerRadius: CGFloat
     let isSelected: Bool
@@ -495,7 +480,6 @@ public struct ToolrollHoverSurfaceModifier: ViewModifier {
     }
 }
 
-/// Standardized Fitts's Law (`26×26pt`) icon button with crisp hover feedback and disabled dimming.
 public struct ToolrollIconButtonStyle: ButtonStyle {
     public let size: CGFloat
     public let isActive: Bool
@@ -537,13 +521,10 @@ private struct ToolrollIconButtonBody: View {
 }
 
 public extension View {
-    /// Tactile hover fill + full-bounds hit target (matching T3 Code / Linear responsiveness).
     func toolrollHoverSurface(cornerRadius: CGFloat = 5, isSelected: Bool = false) -> some View {
         modifier(ToolrollHoverSurfaceModifier(cornerRadius: cornerRadius, isSelected: isSelected))
     }
 
-    /// Applies real macOS Liquid Glass (`glassEffect`) to floating capsule controls (Canvas Dock, Element HUD, Compare Bar),
-    /// falling back cleanly to `.ultraThinMaterial` + hairline on macOS 14–15.
     @ViewBuilder
     @MainActor
     func toolrollGlassCapsule(interactive: Bool = true) -> some View {
@@ -562,8 +543,6 @@ public extension View {
         }
     }
 
-    /// Applies real macOS Liquid Glass (`glassEffect`) to floating panels & popovers (Command Palette, Style Tweaks, Context Menu),
-    /// falling back cleanly to `.regularMaterial` + hairline on macOS 14–15.
     @ViewBuilder
     @MainActor
     func toolrollGlassPanel(cornerRadius: CGFloat = 10, interactive: Bool = false) -> some View {

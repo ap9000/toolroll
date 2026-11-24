@@ -1,15 +1,18 @@
 import SwiftUI
 import ToolrollCore
 
-/// The Work screen (version A, "Quiet list"), built from widgets: a summary, limits, and the grouped list.
-/// Rows group by the server's own `rank`, never by tone, so a row can't land in the wrong section.
 struct WorkHomeView: View {
     @Bindable var store: WorkbenchStore
     @State private var layout = WorkLayout.load()
     @State private var isCustomizing = false
     @State private var showsAllSettled = false
+    @State private var quickPrompt = ""
+    @State private var quickPlanFirst = true
+    @State private var quickAskLead = false
+    @FocusState private var quickPromptFocused: Bool
 
     private static let settledPreview = 6
+    private static let automationsPreview = 3
 
     var body: some View {
         ScrollView {
@@ -17,15 +20,15 @@ struct WorkHomeView: View {
                 ForEach(layout.widgets.filter { !$0.isHidden }) { widget in
                     switch widget.kind {
                     case .header: header
-                    case .limits: limits
-                    case .list: list
+                    case .limits: telemetryStrip
+                    case .list: workSection
                     case .automations: automations
                     }
                 }
             }
-            .padding(.horizontal, 44)
-            .padding(.vertical, 32)
-            .frame(maxWidth: 1040, alignment: .leading)
+            .padding(.horizontal, 36)
+            .padding(.vertical, 28)
+            .frame(maxWidth: 980, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(ToolrollPalette.ground)
@@ -35,8 +38,6 @@ struct WorkHomeView: View {
         .onChange(of: layout) { _, saved in saved.save() }
     }
 
-    // MARK: Groups by rank (0 waits on a person, 1 runs, 2 queued/waiting, 3 finished, 4 stopped or put away)
-
     private var rows: [WorkRow] { store.filteredRows }
     private var waiting: [WorkRow] { rows.filter { $0.rank == 0 } }
     private var running: [WorkRow] { rows.filter { $0.rank == 1 } }
@@ -44,21 +45,24 @@ struct WorkHomeView: View {
     private var settled: [WorkRow] { rows.filter { $0.rank >= 3 } }
     private var asks: [NeedRow] { store.workRowsResponse.needs.flatMap(\.rows) }
 
-    // MARK: Summary
+    private var activeProject: String? {
+        store.activeProject ?? store.selectedProject ?? store.allProjects.first
+    }
 
     private var header: some View {
         ScreenHeader(title: "Work", detail: summaryLine) {
             Button { isCustomizing = true } label: {
                 Label("Customize", systemImage: "slider.horizontal.3")
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
             }
             .buttonStyle(KitButtonStyle(.ghost, compact: true))
             .help("Reorder or hide what Work shows")
+
             Button { store.openNewWorkCanvas() } label: {
                 Label("New task", systemImage: "plus")
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
             }
-            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
             .help("New task (⌘N)")
         }
     }
@@ -68,51 +72,39 @@ struct WorkHomeView: View {
         return "\(waitingCount) waiting on you · \(running.count) running · \(settled.count) settled"
     }
 
-    // MARK: Limits — one tile per provider (its tightest window), then today's spend. Owner audience only.
-
-    @ViewBuilder private var limits: some View {
+    @ViewBuilder private var telemetryStrip: some View {
         let perProvider = ProviderLimit.tightestPerProvider(store.workRowsResponse.limits ?? [])
         let spend = store.workRowsResponse.spend
         if !perProvider.isEmpty || spend != nil {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
-                ForEach(perProvider, id: \.provider) { LimitTile(limit: $0) }
-                if let spend { SpendTile(spend: spend) }
+            HStack(spacing: 0) {
+                ForEach(Array(perProvider.enumerated()), id: \.element.provider) { idx, limit in
+                    if idx > 0 {
+                        HairlineDivider(vertical: true)
+                            .padding(.vertical, 10)
+                    }
+                    LimitTile(limit: limit)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let spend {
+                    if !perProvider.isEmpty {
+                        HairlineDivider(vertical: true)
+                            .padding(.vertical, 10)
+                    }
+                    SpendTile(spend: spend)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
-    // MARK: Automations — the next few that run on their own (hidden when there are none)
-
-    private static let automationsPreview = 3
-
-    @ViewBuilder private var automations: some View {
-        if let response = store.automations, !response.automations.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text("Runs on its own").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
-                    Text("\(response.automations.count)").font(.system(size: 12.5)).foregroundStyle(ToolrollPalette.muted)
-                    Spacer()
-                    Button("All automations") { store.workspaceMode = .automations }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
-                ForEach(Array(response.automations.prefix(Self.automationsPreview))) {
-                    AutomationRow(store: store, automation: $0, canAct: response.canAct)
-                }
-            }
-        }
-    }
-
-    // MARK: Work list
-
-    @ViewBuilder private var list: some View {
+    @ViewBuilder private var workSection: some View {
         if rows.isEmpty && asks.isEmpty {
-            allClear
+            idleWorkspace
         } else {
             VStack(alignment: .leading, spacing: 18) {
+                compactQuickInput
                 if !waiting.isEmpty || !asks.isEmpty {
                     group("Waiting on you", count: waiting.count + asks.count, dot: ToolrollPalette.ink) {
                         ForEach(waiting) { taskRow($0) }
@@ -120,22 +112,28 @@ struct WorkHomeView: View {
                     }
                 }
                 if !running.isEmpty {
-                    group("Running", count: running.count, dot: ToolrollPalette.live) { ForEach(running) { taskRow($0) } }
+                    group("Running", count: running.count, dot: ToolrollPalette.live) {
+                        ForEach(running) { taskRow($0) }
+                    }
                 }
                 if !queued.isEmpty {
-                    group("Queued", count: queued.count, dot: ToolrollPalette.muted) { ForEach(queued) { taskRow($0) } }
+                    group("Queued", count: queued.count, dot: ToolrollPalette.muted) {
+                        ForEach(queued) { taskRow($0) }
+                    }
                 }
                 if !settled.isEmpty {
                     let shown = showsAllSettled ? settled : Array(settled.prefix(Self.settledPreview))
                     group("Settled", count: settled.count, dot: nil) {
                         ForEach(shown) { taskRow($0, quiet: true) }
                         if settled.count > Self.settledPreview {
-                            Button(showsAllSettled ? "Show fewer" : "Show all \(settled.count)") { showsAllSettled.toggle() }
-                                .buttonStyle(.plain)
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(ToolrollPalette.muted)
-                                .padding(.leading, 16)
-                                .padding(.top, 4)
+                            Button(showsAllSettled ? "Show fewer" : "Show all \(settled.count)") {
+                                showsAllSettled.toggle()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
                         }
                     }
                 }
@@ -143,36 +141,400 @@ struct WorkHomeView: View {
         }
     }
 
-    private var allClear: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("All clear")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(ToolrollPalette.ink)
-            Text("Nothing is waiting on you or running.")
-                .font(.system(size: 13))
-                .foregroundStyle(ToolrollPalette.muted)
-            Button("New task") { store.openNewWorkCanvas() }
-                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+    private var idleWorkspace: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            heroQuickComposer
+
+            if !store.allProjects.isEmpty {
+                projectsGridSection
+            }
+
+            let recentThreads = Array(store.localCliThreads.prefix(4))
+            if !recentThreads.isEmpty {
+                recentCliThreadsSection(recentThreads)
+            }
         }
-        .padding(.top, 24)
+    }
+
+    private var heroQuickComposer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(ToolrollPalette.success)
+                    .frame(width: 6, height: 6)
+                Text("All clear — ready for your next task")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Spacer()
+                if !store.allProjects.isEmpty {
+                    projectSelectorMenu
+                }
+            }
+
+            TextField(
+                quickAskLead
+                    ? "Ask Lead across your workspace…"
+                    : "Describe what you want built in \(activeProject ?? "your workspace")…",
+                text: $quickPrompt,
+                axis: .vertical
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 14))
+            .foregroundStyle(ToolrollPalette.ink)
+            .lineLimit(2...6)
+            .focused($quickPromptFocused)
+            .onSubmit { submitQuickPrompt() }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 4)
+
+            HStack(spacing: 8) {
+                modeTogglePills
+                Spacer(minLength: 8)
+                Button {
+                    if let proj = activeProject { store.activeProject = proj }
+                    store.workspaceMode = .canvas
+                } label: {
+                    Label("Canvas", systemImage: "macwindow.on.rectangle")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                Button {
+                    Task { await store.startProjectTerminal(project: activeProject, program: "shell") }
+                } label: {
+                    Label("Shell", systemImage: "terminal")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                Button {
+                    submitQuickPrompt()
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(quickAskLead ? "Ask Lead" : (quickPlanFirst ? "Plan task" : "Start build"))
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 10.5, weight: .bold))
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(16)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(quickPromptFocused ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
+        )
+    }
+
+    private var compactQuickInput: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.muted)
+            TextField(
+                "Quick task for \(activeProject ?? "workspace")…",
+                text: $quickPrompt
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .foregroundStyle(ToolrollPalette.ink)
+            .focused($quickPromptFocused)
+            .onSubmit { submitQuickPrompt() }
+
+            if !store.allProjects.isEmpty {
+                projectSelectorMenu
+            }
+
+            Button(quickPlanFirst ? "Plan" : "Build") {
+                submitQuickPrompt()
+            }
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
+            .disabled(quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(quickPromptFocused ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
+        )
+    }
+
+    private var modeTogglePills: some View {
+        HStack(spacing: 4) {
+            modeChip(title: "Plan first", active: !quickAskLead && quickPlanFirst) {
+                quickAskLead = false
+                quickPlanFirst = true
+            }
+            modeChip(title: "Just code", active: !quickAskLead && !quickPlanFirst) {
+                quickAskLead = false
+                quickPlanFirst = false
+            }
+            modeChip(title: "Ask Lead", active: quickAskLead) {
+                quickAskLead = true
+            }
+        }
+        .padding(3)
+        .background(ToolrollPalette.ground, in: Capsule())
+        .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private func modeChip(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: active ? .semibold : .medium))
+                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(active ? ToolrollPalette.raised : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var projectSelectorMenu: some View {
+        Menu {
+            ForEach(store.allProjects, id: \.self) { project in
+                Button {
+                    store.activeProject = project
+                } label: {
+                    HStack {
+                        Text(project)
+                        if project == activeProject {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Text(activeProject ?? "Workspace")
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(ToolrollPalette.ground, in: Capsule())
+            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var projectsGridSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Projects")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("\(store.allProjects.count)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Spacer()
+                Button("Add project") { store.isAddProjectSheetOpen = true }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 4)
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 260, maximum: 480), spacing: 10)],
+                spacing: 10
+            ) {
+                ForEach(store.allProjects, id: \.self) { project in
+                    projectCard(project)
+                }
+            }
+        }
+    }
+
+    private func projectCard(_ project: String) -> some View {
+        let isSelected = project == activeProject
+        return HStack(spacing: 10) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                .frame(width: 28, height: 28)
+                .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                if let path = store.localFolderPath(for: project) {
+                    Text(abbreviateHome(path))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 4) {
+                Button {
+                    store.activeProject = project
+                    store.workspaceMode = .canvas
+                } label: {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
+                .help("Open \(project) in Canvas")
+
+                Button {
+                    store.activeProject = project
+                    Task { await store.startProjectTerminal(project: project, program: "shell") }
+                } label: {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
+                .help("Open Shell in \(project)")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(isSelected ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.activeProject = project
+            quickPromptFocused = true
+        }
+    }
+
+    private func recentCliThreadsSection(_ threads: [LocalCliThread]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Recent CLI sessions")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("\(store.localCliThreads.count)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.muted)
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+
+            VStack(spacing: 0) {
+                ForEach(Array(threads.enumerated()), id: \.element.id) { idx, thread in
+                    if idx > 0 {
+                        HairlineDivider()
+                            .padding(.leading, 44)
+                    }
+                    Button {
+                        store.selectCliThread(thread)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(thread.provider.shortBadge)
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .frame(width: 24, height: 20)
+                                .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(thread.title)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Text("\(thread.provider.displayName) · \(thread.projectName)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 10)
+                            Text(thread.relativeAge)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                        .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder private var automations: some View {
+        if let response = store.automations, !response.automations.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("Runs on its own")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Text("\(response.automations.count)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Spacer()
+                    Button("All automations") { store.workspaceMode = .automations }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .padding(.horizontal, 4)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(response.automations.prefix(Self.automationsPreview).enumerated()), id: \.element.id) { idx, item in
+                        if idx > 0 { HairlineDivider() }
+                        AutomationRow(store: store, automation: item, canAct: response.canAct)
+                    }
+                }
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+        }
     }
 
     private func group<Content: View>(_ title: String, count: Int, dot: Color?, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if let dot {
                     Circle().fill(dot).frame(width: 7, height: 7)
                 } else {
                     Circle().strokeBorder(ToolrollPalette.muted, lineWidth: 1).frame(width: 7, height: 7)
                 }
-                Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
-                Text("\(count)").font(.system(size: 12.5)).foregroundStyle(ToolrollPalette.muted)
+                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
+                Text("\(count)").font(.system(size: 12)).foregroundStyle(ToolrollPalette.muted)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 4)
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            content()
+
+            VStack(alignment: .leading, spacing: 0) {
+                content()
+            }
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
@@ -182,35 +544,36 @@ struct WorkHomeView: View {
         } label: {
             HStack(spacing: 12) {
                 statusDot(row.status)
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(row.title)
-                        .font(.system(size: 14))
+                        .font(.system(size: 13.5, weight: quiet ? .regular : .medium))
                         .foregroundStyle(quiet ? ToolrollPalette.muted : ToolrollPalette.ink)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Text(subtitle(row))
-                        .font(.system(size: 11.5, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(ToolrollPalette.muted)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 12)
                 if let chip = row.chip, !chip.isEmpty {
                     Text(chip)
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11))
                         .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 9)
-                        .frame(height: 22)
+                        .padding(.horizontal, 8)
+                        .frame(height: 21)
+                        .background(ToolrollPalette.ground, in: Capsule())
                         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
                 Text(row.age)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(ToolrollPalette.muted)
                     .frame(minWidth: 34, alignment: .trailing)
             }
-            .padding(.horizontal, 16)
-            .frame(height: 52)
+            .padding(.horizontal, 14)
+            .frame(height: 50)
             .contentShape(Rectangle())
-            .toolrollHoverSurface(cornerRadius: 10, isSelected: false)
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
         }
         .buttonStyle(.plain)
         .contextMenu { TaskRowMenuItems(store: store, row: row) }
@@ -221,12 +584,12 @@ struct WorkHomeView: View {
         HStack(spacing: 12) {
             Circle().fill(ToolrollPalette.ink).frame(width: 7, height: 7)
             Text(need.line ?? need.ask ?? need.reason ?? "Waiting on you")
-                .font(.system(size: 14))
+                .font(.system(size: 13.5))
                 .foregroundStyle(ToolrollPalette.ink)
                 .lineLimit(1)
             Spacer()
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .frame(height: 44)
         .accessibilityElement(children: .combine)
     }
@@ -249,9 +612,38 @@ struct WorkHomeView: View {
         }
         .frame(width: 7, height: 7)
     }
+
+    private func abbreviateHome(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
+
+    private func submitQuickPrompt() {
+        let trimmed = quickPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        quickPrompt = ""
+        if quickAskLead {
+            store.isInspectorVisible = true
+            store.inspectorTab = .lead
+            Task { await store.sendLeadMessage(trimmed) }
+            return
+        }
+        let targetProject = activeProject
+        let planFirst = quickPlanFirst
+        Task {
+            await store.createTask(
+                title: trimmed,
+                project: targetProject,
+                body: "",
+                planFirst: planFirst
+            )
+        }
+    }
 }
 
-/// Customize Work: reorder and hide widgets. Saved on this Mac; "Reset" returns to the standard layout.
 struct WorkCustomizeSheet: View {
     @Binding var layout: WorkLayout
     let onDone: () -> Void
@@ -294,8 +686,6 @@ struct WorkCustomizeSheet: View {
     }
 }
 
-/// A provider's usage: name and plan, window, a slim meter, the percentage, and when it resets — honest about stale
-/// readings (a reset that already passed means "probably reset", never a red "limit reached").
 struct LimitTile: View {
     let limit: ProviderLimit
     private var now: Date { Date() }
@@ -305,49 +695,56 @@ struct LimitTile: View {
         let reachedNow = limit.isReachedNow(now: now)
         let state = limit.resetState(now: now)
         let stale: Bool = { if case .passed = state { return true }; return false }()
-        VStack(alignment: .leading, spacing: 10) {
+
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(limit.providerLabel)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                 if let plan = limit.planLabel {
                     Text(plan)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
                         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
                 Spacer(minLength: 6)
                 Text(limit.windowLabel)
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 11))
                     .foregroundStyle(ToolrollPalette.muted)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+
+            HStack(spacing: 8) {
                 Text(stale ? "—" : "\(percent)%")
-                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
                     .foregroundStyle(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
-                Text(stale ? "not checked since its reset" : (reachedNow ? "limit reached" : "used"))
-                    .font(.system(size: 12))
-                    .foregroundStyle(ToolrollPalette.muted)
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.08))
-                    Capsule()
-                        .fill(reachedNow ? ToolrollPalette.danger : (stale ? ToolrollPalette.muted.opacity(0.5) : ToolrollPalette.ink))
-                        .frame(width: stale ? 0 : proxy.size.width * CGFloat(max(0, min(100, percent))) / 100)
+
+                if stale {
+                    Text("Not checked since reset")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                } else {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.08))
+                            Capsule()
+                                .fill(reachedNow ? ToolrollPalette.danger : ToolrollPalette.ink)
+                                .frame(width: proxy.size.width * CGFloat(max(0, min(100, percent))) / 100)
+                        }
+                    }
+                    .frame(height: 4)
                 }
             }
-            .frame(height: 5)
+
             Text(footer(state))
-                .font(.system(size: 11.5))
+                .font(.system(size: 11))
                 .foregroundStyle(ToolrollPalette.muted)
                 .lineLimit(1)
         }
-        .padding(14)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility(percent: percent, reachedNow: reachedNow, state: state))
     }
@@ -355,9 +752,7 @@ struct LimitTile: View {
     private func footer(_ state: ProviderLimit.ResetState) -> String {
         switch state {
         case .upcoming(let date): return "Resets \(Self.when(date))"
-        case .passed(let date):
-            let checked = limit.observedDate.map { " · last checked \(Self.day.string(from: $0))" } ?? ""
-            return "Probably reset \(Self.day.string(from: date))\(checked)"
+        case .passed(let date): return "Reset \(Self.day.string(from: date))"
         case .unknown: return "Reset time not reported"
         }
     }
@@ -368,7 +763,6 @@ struct LimitTile: View {
         return "\(name): \(used). \(footer(state))"
     }
 
-    /// "in 5h" within a day, else "Tue 9:19 AM" within a week, else "Dec 3".
     static func when(_ date: Date, now: Date = Date()) -> String {
         let seconds = date.timeIntervalSince(now)
         if seconds < 3600 { return "in \(max(1, Int(seconds / 60)))m" }
@@ -381,26 +775,37 @@ struct LimitTile: View {
     private static let day: DateFormatter = { let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d"); return f }()
 }
 
-/// Today's spend, sized to sit beside the provider tiles.
 struct SpendTile: View {
     let spend: SpendSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Spend").font(.system(size: 13, weight: .semibold)).foregroundStyle(ToolrollPalette.ink)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(spend.todayUsd, format: .currency(code: "USD"))
-                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Spend")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
-                Text("today").font(.system(size: 12)).foregroundStyle(ToolrollPalette.muted)
+                Spacer(minLength: 6)
+                Text("UTC day")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.muted)
             }
-            Spacer(minLength: 0)
-            Text("Pay-as-you-go use, UTC day").font(.system(size: 11.5)).foregroundStyle(ToolrollPalette.muted)
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(spend.todayUsd, format: .currency(code: "USD"))
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("today")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+
+            Text("Pay-as-you-go use")
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+                .lineLimit(1)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
     }
 }

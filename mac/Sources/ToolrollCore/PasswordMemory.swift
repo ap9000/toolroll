@@ -1,8 +1,6 @@
 import AppKit
 import Foundation
 
-/// How long the app keeps your Toolroll password after you type it or unlock it with Touch ID, so a run of approvals
-/// asks once. In memory only: never written to disk, and forgotten when the Mac sleeps, the screen locks, or the app quits.
 @MainActor
 public final class PasswordMemory {
     public enum Window: Int, CaseIterable, Identifiable, Sendable {
@@ -30,12 +28,9 @@ public final class PasswordMemory {
 
     private var value: String?
     private var until: Date?
-    /// When it was typed or unlocked: a changed window counts from here, so a shorter one applies at once.
     private var rememberedAt: Date?
-    /// Whose password this is and for which Toolroll (account + origin): never recalled for any other.
     private var owner: String?
     private var observers: [NSObjectProtocol] = []
-    /// Where the chosen window is kept (the app's own defaults; a test passes its own suite).
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -60,8 +55,6 @@ public final class PasswordMemory {
         }
     }
 
-    /// The remembered password for `owner` (account + origin) while its window lasts. A different owner gets nil and
-    /// the memory is dropped, so a password typed for one Toolroll is never sent to another.
     public func recall(for owner: String, now: Date = Date()) -> String? {
         guard let value else { return nil }
         guard owner == self.owner else {

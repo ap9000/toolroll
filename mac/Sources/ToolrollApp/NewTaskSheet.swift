@@ -1,7 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Native `⌘N` New Task sheet — file tasks with Just Code or Plan First straight into Toolroll.
 public struct NewTaskSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss

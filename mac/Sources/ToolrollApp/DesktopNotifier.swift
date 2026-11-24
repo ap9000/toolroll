@@ -2,8 +2,6 @@ import AppKit
 import Foundation
 import UserNotifications
 
-/// Native macOS Desktop Notifications + Dock Badge manager.
-/// Safely no-ops `UNUserNotificationCenter` when not running inside a bundled `.app`.
 @MainActor
 public final class DesktopNotifier: NSObject, @preconcurrency UNUserNotificationCenterDelegate {
     public static let shared = DesktopNotifier()

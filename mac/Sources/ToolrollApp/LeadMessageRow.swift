@@ -1,8 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// One message in a Lead conversation: yours as a bubble on the right, the Lead's as plain text on the left.
-/// The server calls the person "operator" (older builds: "user").
 struct LeadMessageRow: View {
     static let thinkingId = -1
     let message: LeadMessage

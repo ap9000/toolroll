@@ -3,13 +3,7 @@ import Darwin
 import Foundation
 import SQLite3
 
-/// A stand-in for the local Toolroll console that `LocalConsoleConnector.discoverAndConnect()` finds: its database row and
-/// its Unix-socket `link` handshake, in a temp folder of this test process's own. Creating it points `TOOLROLL_DB` and
-/// `XDG_CONFIG_HOME` at that folder (process-wide, once, never unset), so no test that reconnects can reach the person's
-/// real console under `~/.config`. The one-time code it hands out is redeemed over `URLSession.shared` at `port`, which
-/// `FakeConsoleRedeemProtocol` answers from `StubRegistry`.
 final class FakeConsole: @unchecked Sendable {
-    /// The origin port the redeemed session names. Nothing listens on it: the stub protocols answer it.
     static let port = 47_099
     static let secret = "fake-console-secret"
 
@@ -32,19 +26,16 @@ final class FakeConsole: @unchecked Sendable {
         setenv("TOOLROLL_DB", dbPath, 1)
         setenv("XDG_CONFIG_HOME", "\(dir)/config", 1)
         URLProtocol.registerClass(FakeConsoleRedeemProtocol.self)
-        // The temp folder goes when the test process ends (atexit takes no context, so it reads the one shared path).
         atexit { try? FileManager.default.removeItem(atPath: FakeConsole.shared.dir) }
         let thread = Thread { [unowned self] in self.serve(listener) }
         thread.start()
     }
 
-    /// How many `link` handshakes completed since the last reset.
     var handshakeCount: Int {
         lock.lock(); defer { lock.unlock() }
         return handshakes
     }
 
-    /// `refuse`: the console answers the handshake without a link (as if it went away), so reconnecting fails.
     func reset(refuse: Bool) {
         lock.lock(); defer { lock.unlock() }
         handshakes = 0

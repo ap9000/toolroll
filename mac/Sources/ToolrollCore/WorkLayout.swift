@@ -1,7 +1,5 @@
 import Foundation
 
-/// The Work screen's built-in widgets (phase 1: bundled definitions; a manifest format and server sync come later,
-/// see docs/plans/work-screen-widgets.md).
 public enum WorkWidgetKind: String, Codable, CaseIterable, Sendable {
     case header
     case limits
@@ -39,7 +37,6 @@ public struct WorkWidgetInstance: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-/// The person's Work layout: order and visibility. Saved on this Mac until layouts sync through the server.
 public struct WorkLayout: Codable, Equatable, Sendable {
     public static let schemaV1 = "toolroll.work-layout/v1"
     public static let defaultsKey = "toolroll.workLayout"
@@ -52,11 +49,8 @@ public struct WorkLayout: Codable, Equatable, Sendable {
         self.widgets = widgets
     }
 
-    /// Version A, "Quiet list": summary, limits, then the list.
     public static let standard = WorkLayout(widgets: WorkWidgetKind.allCases.map { WorkWidgetInstance(id: $0.rawValue, kind: $0, isHidden: false) })
 
-    /// The saved layout, or the standard one when there is none, it can't be read, or it's from a newer schema.
-    /// Built-ins added since it was saved join at the end, so Work is never missing a widget or blank.
     public static func load(from defaults: UserDefaults = .standard) -> WorkLayout {
         guard let data = defaults.data(forKey: defaultsKey),
               let saved = try? JSONDecoder().decode(WorkLayout.self, from: data),

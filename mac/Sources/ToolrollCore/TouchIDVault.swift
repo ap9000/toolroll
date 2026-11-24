@@ -25,10 +25,6 @@ public enum TouchIDVaultError: LocalizedError, Sendable {
     }
 }
 
-/// Optional macOS Keychain + LocalAuthentication (`Touch ID`) vault for the user's Toolroll operator password.
-/// Never bypasses Toolroll's server-side password check: every approval prompts macOS biometric/device-owner
-/// authentication, retrieves the stored password for that single request, and submits it to Toolroll's real
-/// password-checked endpoint.
 public enum TouchIDVault {
     private static let service = "com.toolroll.operator-password"
 
@@ -124,8 +120,6 @@ public enum TouchIDVault {
         SecItemDelete(query as CFDictionary)
     }
 
-    /// Prompts macOS Touch ID (falling back to Apple Watch / macOS login password) and returns the stored
-    /// Toolroll password for one single authenticated server call.
     public static func unlockPassword(account: String, reason: String) async throws -> String {
         guard hasStoredPassword(account: account) else {
             throw TouchIDVaultError.notStored

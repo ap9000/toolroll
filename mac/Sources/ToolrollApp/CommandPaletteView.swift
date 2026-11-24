@@ -1,7 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Floating ⌘K Command Palette — instant fuzzy jump across tasks, handoffs, Candidate promotions, PRs, and terminals.
 public struct CommandPaletteView: View {
     @Bindable var store: WorkbenchStore
     @State private var query: String = ""

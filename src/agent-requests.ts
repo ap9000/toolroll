@@ -1,12 +1,3 @@
-/**
- * Pending operator-approval requests filed by host orchestrator agents (Claude Code, Codex, Antigravity).
- *
- * Stored inside `<stateDir>/.toolroll-run/agent-requests.json` (0700 dir, 0600 file), which is already fenced
- * from every sandboxed build agent in agent-fence.ts. Filing a request changes nothing on its own; only a
- * person approving it in Toolroll.app (via Touch ID or password) applies the change through the server's
- * password-checked endpoints and ledger.
- */
-
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -102,7 +93,6 @@ export function fileAgentRequest(
   const cleanWhy = input.why.trim().slice(0, 600);
   const cleanRequester = (input.requester ?? process.env["TOOLROLL_AGENT_NAME"] ?? "Agent").trim().slice(0, 80) || "Agent";
 
-  // Deduplicate an identical still-pending request for the same repo + kind + params
   const existing = data.requests.find(
     one =>
       one.status === "pending" &&

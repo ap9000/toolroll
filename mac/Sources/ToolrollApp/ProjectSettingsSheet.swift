@@ -2,9 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Native in-app Project Settings sheet — Live View (show/hide shell commands),
-/// Worktree Setup (dependencies for offline Codex), Network & Localhost (`listen EPERM`),
-/// and Parallel Builds — zero web browser redirects needed.
 public struct ProjectSettingsSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss
@@ -13,23 +10,18 @@ public struct ProjectSettingsSheet: View {
     @State private var isLoading: Bool = false
     @State private var feedback: (isError: Bool, text: String)? = nil
 
-    // Live view password
     @State private var liveViewPassword: String = ""
 
-    // Worktree setup
     @State private var setupCommand: String = ""
     @State private var setupPassword: String = ""
 
-    // Network & localhost
     @State private var networkLocalAny: Bool = false
     @State private var networkOpen: Bool = false
     @State private var networkHosts: String = ""
     @State private var networkPassword: String = ""
 
-    // Concurrency
     @State private var concurrency: Int = 1
 
-    // Touch ID setup
     @State private var touchIDPasswordDraft: String = ""
 
     public init(store: WorkbenchStore) {
@@ -46,7 +38,6 @@ public struct ProjectSettingsSheet: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
             HStack(spacing: 10) {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 13, weight: .semibold))
@@ -180,8 +171,6 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    // MARK: - Section 1: Live View (Show Shell Commands)
-
     private func liveViewSection(_ snap: ToolrollClient.ProjectSettingsSnapshot) -> some View {
         settingsCard(
             title: "Live View · Shell Commands",
@@ -235,8 +224,6 @@ public struct ProjectSettingsSheet: View {
             }
         }
     }
-
-    // MARK: - Section 2: Network & Local Services (Fixes `listen EPERM`)
 
     private func networkSection(_ snap: ToolrollClient.ProjectSettingsSnapshot) -> some View {
         settingsCard(
@@ -318,8 +305,6 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    // MARK: - Section 3: Worktree Setup Command
-
     private func worktreeSetupSection(_ snap: ToolrollClient.ProjectSettingsSnapshot) -> some View {
         settingsCard(
             title: "Worktree Setup",
@@ -373,8 +358,6 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    // MARK: - Section 4: Parallel Builds
-
     private func concurrencySection(_ snap: ToolrollClient.ProjectSettingsSnapshot) -> some View {
         settingsCard(
             title: "Parallel Builds",
@@ -396,8 +379,6 @@ public struct ProjectSettingsSheet: View {
             }
         }
     }
-
-    // MARK: - Section 5: Touch ID Approvals
 
     private var touchIDSection: some View {
         settingsCard(
@@ -449,8 +430,6 @@ public struct ProjectSettingsSheet: View {
         }
     }
 
-    // MARK: - Section 6: Background Service (Login Item)
-
     private var backgroundServiceSection: some View {
         let status = store.backgroundServiceStatus
         let isOn = status?.enabled ?? false
@@ -476,8 +455,6 @@ public struct ProjectSettingsSheet: View {
             }
         }
     }
-
-    // MARK: - Card Container
 
     private func settingsCard<Content: View>(
         title: String,
@@ -518,8 +495,6 @@ public struct ProjectSettingsSheet: View {
         .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
-
-    // MARK: - Actions
 
     private func loadSettings() async {
         guard let repoPath = activeRepoPath else { return }

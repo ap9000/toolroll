@@ -36,9 +36,6 @@ public enum ComposerAttachmentStore {
         "png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tiff", "tif", "bmp", "svg"
     ]
 
-    /// Directory inside the user's home folder (~/Library/Caches/ToolrollAttachments)
-    /// so sandboxed agents (Claude Code, Codex, Gemini) can read attached images
-    /// without touching Toolroll's denied config directories or polluting git worktrees.
     public static func defaultDirectory() -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches", isDirectory: true)

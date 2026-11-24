@@ -3,17 +3,12 @@ import SwiftUI
 import ToolrollCore
 import UniformTypeIdentifiers
 
-// MARK: - Clipboard, Picker & Drop Helpers
-
 @MainActor
 public enum ComposerClipboardHelper {
-    /// Extracts images or Finder file/folder URLs from the pasteboard when appropriate.
-    /// Returns an empty array when the pasteboard holds ordinary text so standard ⌘V text paste works untouched.
     public static func extractAttachmentsFromPasteboard(
         _ pasteboard: NSPasteboard = .general,
         forceImageCheck: Bool = false
     ) -> [ComposerAttachment] {
-        // 1. Check copied Finder file/folder URLs first
         let urlOptions: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true,
         ]
@@ -24,7 +19,6 @@ public enum ComposerClipboardHelper {
             }
         }
 
-        // 2. Check for raw image data (macOS screenshots ⌘⌃⇧4, Copy Image from browser/Figma/Preview)
         let types = Set(pasteboard.types ?? [])
         let hasRawImage = types.contains(.png)
             || types.contains(.tiff)
@@ -33,8 +27,6 @@ public enum ComposerClipboardHelper {
 
         guard hasRawImage else { return [] }
 
-        // If user copied rich text (e.g., from Notes/Keynote/Web) that also attaches a TIFF preview,
-        // let normal text paste run unless explicitly invoked via "Paste Image from Clipboard".
         if !forceImageCheck {
             let plainText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let hasRichText = types.contains(.rtf) || types.contains(.html)
@@ -69,13 +61,11 @@ public enum ComposerClipboardHelper {
     }
 
     private static func savePasteboardImage(_ pasteboard: NSPasteboard) -> ComposerAttachment? {
-        // Prefer direct PNG data if present to avoid re-encoding loss
         if let rawPng = pasteboard.data(forType: .png), !rawPng.isEmpty {
             let px = NSImage(data: rawPng).flatMap { imagePixelSizeString($0) }
             return try? ComposerAttachmentStore.saveImageData(rawPng, pixelSize: px)
         }
 
-        // Convert TIFF / NSImage to PNG
         guard let image = NSImage(pasteboard: pasteboard),
               let pngData = pngData(from: image) else {
             return nil
@@ -176,8 +166,6 @@ public enum ComposerDropHelper {
     }
 }
 
-// MARK: - ⌘V Image / Folder Paste Monitor
-
 private final class ComposerPasteMonitorBox: @unchecked Sendable {
     var monitor: Any?
     var isActive: Bool = false
@@ -245,8 +233,6 @@ extension View {
         modifier(ComposerPasteModifier(isActive: isActive, onAttachments: onAttachments))
     }
 }
-
-// MARK: - Thumbnail & Context Preview Strip Above Composer
 
 public struct ComposerAttachmentStrip: View {
     let attachments: [ComposerAttachment]
@@ -452,8 +438,6 @@ public struct ComposerAttachmentStrip: View {
     }
 }
 
-// MARK: - Attach (+) Menu Button for Composers
-
 public struct ComposerAttachMenuButton: View {
     let compact: Bool
     let onAddAttachments: ([ComposerAttachment]) -> Void
@@ -513,7 +497,6 @@ public struct ComposerAttachMenuButton: View {
     }
 }
 
-/// Deduplicates attachments by canonical path while preserving order.
 public func appendUniqueAttachments(
     _ incoming: [ComposerAttachment],
     to existing: inout [ComposerAttachment]

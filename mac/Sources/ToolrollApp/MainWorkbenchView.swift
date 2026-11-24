@@ -1,8 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Top-level native macOS Workbench — ultra-clean multiplexer chrome:
-/// Left: sidebar toggle + ←/→ history. Middle: where you are. Right: ⌘K + the drawer toggle.
 public struct MainWorkbenchView: View {
     @Bindable var store: WorkbenchStore
 
@@ -12,7 +10,6 @@ public struct MainWorkbenchView: View {
 
     public var body: some View {
         ZStack {
-            // Authentic macOS 26 behind-window vibrancy + subtle theme glass veil
             if WorkspaceThemeEngine.shared.config.sidebarVibrancy {
                 SidebarVibrancyBackground(material: .underWindowBackground)
                     .ignoresSafeArea()
@@ -133,7 +130,6 @@ public struct MainWorkbenchView: View {
         }
     }
 
-    /// The project segment, only where it names something real (a task's or a new task's project).
     private var breadcrumbProject: String? {
         if let cliThread = store.selectedCliThread {
             return "\(cliThread.provider.displayName) · \(cliThread.projectName)"
@@ -143,7 +139,6 @@ public struct MainWorkbenchView: View {
         return store.selectedRow?.project
     }
 
-    /// Where you are: the screen's name, or the task's title.
     private var breadcrumbTitle: String {
         if let cliThread = store.selectedCliThread { return cliThread.title }
         switch store.workspaceMode {
@@ -155,14 +150,9 @@ public struct MainWorkbenchView: View {
         return store.selectedRow?.title ?? "Work"
     }
 
-    /// Every control in the top bar shares one height, so the left and right sides line up.
     static let chromeControlHeight: CGFloat = 28
-    /// The drawer can widen only until the main panel reaches this, so its text never gets crushed.
     static let mainPanelMinWidth: CGFloat = 440
 
-    /// Left: sidebar toggle and back/forward (past the traffic lights). Middle: where you are. Right: ⌘K and the drawer
-    /// toggle, mirroring the sidebar toggle. The workspace menu lives on the sidebar's Toolroll row; the drawer's own tabs
-    /// pick Artifact / Diff / Terminal / Lead.
     private var topChromeBar: some View {
         HStack(spacing: 8) {
             Spacer().frame(width: 70)
@@ -221,7 +211,6 @@ public struct MainWorkbenchView: View {
         .frame(height: 44)
     }
 
-    /// "+12" beside the drawer toggle while the drawer is closed and the task has changes to look at.
     private var diffBadge: String? {
         guard !store.isInspectorVisible, let added = store.diffResponse?.totals?.added, added > 0 else { return nil }
         return "+\(added)"
@@ -243,7 +232,6 @@ public struct MainWorkbenchView: View {
     }
 }
 
-/// A top-bar toggle: one icon in a glass capsule, lit while its panel is showing.
 struct ChromeIconButton: View {
     let systemName: String
     let isOn: Bool

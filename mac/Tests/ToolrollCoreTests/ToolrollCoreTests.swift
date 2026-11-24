@@ -134,7 +134,6 @@ struct ToolrollCoreTests {
         #expect(!text.contains("progress 10%"))
         #expect(emu.scrollbackCount >= 1)
 
-        // Split multi-byte UTF-8 checkmark across two chunks
         let checkBytes = Array("✓".utf8)
         var utf8Emu = VT100Emulator(cols: 40, rows: 4)
         utf8Emu.feed(Data(checkBytes.prefix(2)))
@@ -152,31 +151,26 @@ struct ToolrollCoreTests {
         #expect(session.requiresTakeoverConfirm == true)
         #expect(session.takeoverArmed == false)
 
-        // First click arms confirmation instead of abruptly kicking sam
         let firstResult = session.requestTakeControl()
         #expect(firstResult == false)
         #expect(session.takeoverArmed == true)
         #expect(session.role == .observer)
 
-        // Second click confirms takeover
         let secondResult = session.requestTakeControl()
         #expect(secondResult == true)
         #expect(session.takeoverArmed == false)
         #expect(session.role == .controller)
         #expect(session.controller == "alex")
 
-        // Release returns to idle observer
         session.releaseControl()
         #expect(session.role == .observer)
         #expect(session.controller == nil)
         #expect(session.requiresTakeoverConfirm == false)
 
-        // When idle, requestTakeControl succeeds immediately without extra confirm
         let idleTake = session.requestTakeControl()
         #expect(idleTake == true)
         #expect(session.role == .controller)
 
-        // Remote preemption frame updates role cleanly
         session.applyControlFrame(text: #"{"t":"control","role":"observer","controller":"maya","viewers":["alex","maya"],"epoch":4}"#)
         #expect(session.role == .observer)
         #expect(session.controller == "maya")
@@ -263,7 +257,6 @@ struct ToolrollCoreTests {
             branch: started.branch
         )
 
-        // Wait briefly for hello + control frames, then take control and echo a sentinel
         for _ in 0..<40 {
             try await Task.sleep(nanoseconds: 50_000_000)
             if session.isControlling || !session.requiresTakeoverConfirm {
@@ -441,7 +434,6 @@ struct ToolrollCoreTests {
         #expect(sameDiff.isIdentical == true)
         #expect(sameDiff.changedPercent == 0.0)
 
-        // Change exactly 25% of pixels (100x50 inside 200x100)
         let after = makeSolidCGImage(w: 200, h: 100, fillBox: CGRect(x: 0, y: 0, width: 100, height: 50))
         let changedDiff = CanvasVisualDiff.compare(before: before, after: after, maxWidth: 200)
         #expect(changedDiff.isIdentical == false)
@@ -479,7 +471,6 @@ struct ToolrollCoreTests {
         #expect(parsed.effectiveCustomPalette?.paper == "#101027")
         #expect(parsed.effectiveCustomPalette?.selection == "#5fffe1")
 
-        // Switch theme back to signal while preserving [themes.neon-night]
         WorkspaceThemeStore.savePreferences(theme: "signal", density: "comfortable", listSide: "left", glassChrome: false, to: tmpFile)
         let reloaded = WorkspaceThemeStore.load(from: tmpFile)
         #expect(reloaded.activeTheme == "signal")
@@ -590,7 +581,7 @@ struct ToolrollCoreTests {
             gap: .infinity,
             fontSize: 14,
             fontWeight: 600,
-            borderRadius: Double(Float.greatestFiniteMagnitude), // WebKit computed value for calc(infinity * 1px)
+            borderRadius: Double(Float.greatestFiniteMagnitude),
             opacity: .nan
         )
         #expect(metrics.padding == 0)
@@ -623,7 +614,6 @@ struct ToolrollCoreTests {
         let origBuild = buildRole.current
         let origReview = reviewRole.current
 
-        // Verify mixing Google Gemini 4 Argon Planner + Claude Opus Builder + Codex Astra 6.2 Reviewer in one save!
         let gemTarget = "gemini|gemini-4-argon"
         let opusTarget = "claude|claude-opus-5-5"
         let astraTarget = "codex|gpt-6.2-astra"
@@ -636,7 +626,6 @@ struct ToolrollCoreTests {
         #expect(mid.roles.first(where: { $0.key == "plan" })?.current == gemTarget)
         #expect(mid.roles.first(where: { $0.key == "build" })?.current == opusTarget)
         #expect(mid.roles.first(where: { $0.key == "review" })?.current == astraTarget)
-        // Restore original selections cleanly
         var restore: [String: String] = [:]
         if !origPlan.isEmpty { restore["plan"] = origPlan }
         if !origBuild.isEmpty { restore["build"] = origBuild }
@@ -748,7 +737,6 @@ struct ToolrollCoreTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Fake Git repo with pnpm-lock.yaml
         let repo = root.appendingPathComponent("sample-web", isDirectory: true)
         try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git", isDirectory: true), withIntermediateDirectories: true)
         try "ref: refs/heads/feat/hero\n".write(to: repo.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
@@ -760,7 +748,6 @@ struct ToolrollCoreTests {
         #expect(repos[0].branch == "feat/hero")
         #expect(repos[0].suggestedSetupCommand == "pnpm install --frozen-lockfile")
 
-        // Fake Claude, Codex, and Gemini sessions in temp home
         let claudeDir = root.appendingPathComponent(".claude/projects/-tmp-sample-web", isDirectory: true)
         try FileManager.default.createDirectory(at: claudeDir, withIntermediateDirectories: true)
         let claudeSession = """
@@ -909,7 +896,6 @@ struct ToolrollCoreTests {
         #expect(steps.shownRunForCancel == 3)
         #expect(steps.modelLabel(forPhase: "build") == "codex · gpt-6-sol")
         #expect(steps.modelLabel(forPhase: "plan") == nil)
-        // An older server without latestRun: the newest run the cards mention.
         let old = try JSONDecoder().decode(StepCardsResponse.self, from: Data(json.replacingOccurrences(of: "\"latestRun\":3,", with: "").utf8))
         #expect(old.latestRun == nil)
         #expect(old.shownRunForCancel == 3)
@@ -939,7 +925,6 @@ struct ToolrollCoreTests {
         #expect(steps.task.root == "t1")
         #expect(steps.scopeDigest == "abc")
         #expect(steps.agentChoices?.forRole("plan").count == 2)
-        // "All roles" offers only what both steps accept.
         #expect(steps.agentChoices?.forRole("all").map(\.formValue) == ["codex|gpt-6-sol"])
         #expect(steps.pendingAgentChange?.when == "next-run")
         #expect(steps.pendingAgentChange?.problem == nil)
@@ -967,12 +952,10 @@ struct ToolrollCoreTests {
         #expect(WorkLayout.load(from: defaults) == .standard)
         WorkLayout(schema: "toolroll.work-layout/v9", widgets: []).save(to: defaults)
         #expect(WorkLayout.load(from: defaults) == .standard)
-        // A saved layout missing a built-in (and holding a duplicate) keeps its order and gains the missing one.
         WorkLayout(widgets: [WorkWidgetInstance(id: "list", kind: .list, isHidden: false),
                              WorkWidgetInstance(id: "list2", kind: .list, isHidden: true)]).save(to: defaults)
         let loaded = WorkLayout.load(from: defaults)
         #expect(loaded.widgets.map(\.kind) == [.list, .header, .limits, .automations])
-        // Reorder and hide round-trip.
         let edited = loaded.moving("header", by: -1).togglingHidden("limits")
         edited.save(to: defaults)
         #expect(WorkLayout.load(from: defaults).widgets.map(\.kind) == [.header, .list, .limits, .automations])
@@ -1000,7 +983,6 @@ struct ToolrollCoreTests {
         #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll", root: "/Users/a/Documents/toolroll"))
         #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll/web", root: "/Users/a/Documents/toolroll"))
         #expect(!PreviewServerManager.isInside("/Users/a/Documents/alekseypelletier.com", root: "/Users/a/Documents/toolroll"))
-        // A sibling whose name merely starts the same is not inside.
         #expect(!PreviewServerManager.isInside("/Users/a/Documents/toolroll-old", root: "/Users/a/Documents/toolroll"))
     }
 

@@ -1,9 +1,6 @@
 import Foundation
 
-/// A question to the Lead about something on a Canvas screen, with the context the person was looking at: the page,
-/// the source file and line, the component path and the element itself. The Lead answers, and can propose a change.
 public enum LeadAskContext {
-    /// Longest element text quoted, so a big block never floods the message.
     static let excerptLimit = 160
 
     public static func message(

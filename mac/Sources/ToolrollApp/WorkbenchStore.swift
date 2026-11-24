@@ -46,11 +46,9 @@ public struct WorkbenchNotice: Equatable, Sendable {
     }
     public let kind: Kind
     public let message: String
-    /// An undo the notice offers beside its message (Archive's "Undo" restores the task).
     public var action: NoticeAction? = nil
 }
 
-/// A model picked for a running task, waiting for the person's "next turn" or "restart now".
 public struct ModelPick: Equatable, Sendable, Identifiable {
     public var id: String { taskId }
     public let taskId: String
@@ -65,7 +63,6 @@ public enum NoticeAction: Equatable, Sendable {
     case restoreAll(taskIds: [String])
 }
 
-/// A cancel waiting for the person's confirm: exactly the state and newest run they were shown, which the server proves.
 public struct PendingCancel: Equatable, Sendable, Identifiable {
     public var id: String { taskId }
     public let taskId: String
@@ -75,18 +72,14 @@ public struct PendingCancel: Equatable, Sendable, Identifiable {
     public let alsoArchive: Bool
 }
 
-/// Central @Observable state coordinator for the native Toolroll Mac workbench.
 @MainActor
 @Observable
 public final class WorkbenchStore {
-    // Profiles & Connection
     public private(set) var profiles: [ConnectionProfile] = []
     public private(set) var activeProfile: ConnectionProfile {
-        // A remembered password belongs to the workspace it was typed for: a switch drops it.
         didSet {
             guard oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account else { return }
             passwordMemory.forget()
-            // Another workspace's projects and found folders never show under this one.
             projectsRead = nil
         }
     }
@@ -96,21 +89,15 @@ public final class WorkbenchStore {
     public internal(set) var busyLabel: String?
     public var notice: WorkbenchNotice?
     public var pendingCancel: PendingCancel?
-    /// The task whose models the picker is changing (right-click → Change Models…); nil when it isn't open.
     public var modelPickerTaskId: String?
-    /// The task read the picker offers that task's allowed models from (right-click on a row that isn't open).
     public var modelPickerSteps: StepCardsResponse?
-    /// A model picked for a task whose agent is working now: waits for "next turn" or "restart now".
     public var pendingModelPick: ModelPick?
-    /// Your password for a short while after you type it or use Touch ID (Settings → Remember password).
     public let passwordMemory = PasswordMemory()
 
-    // Filters & Layout (persisted cleanly across launches)
     public var workspaceMode: WorkspaceMode = .workbench {
         didSet { UserDefaults.standard.set(workspaceMode.rawValue, forKey: "toolroll.workspaceMode") }
     }
     public var selectedProject: String? = nil
-    /// Active workspace project context for Launchpad, Canvas, and quick Terminal without filtering out other repos in the sidebar.
     public var activeProject: String? = nil
     public var sidebarGrouping: SidebarGrouping = SidebarGrouping(
         rawValue: UserDefaults.standard.string(forKey: "toolroll.sidebarGrouping") ?? ""
@@ -137,23 +124,19 @@ public final class WorkbenchStore {
     public var projectSettingsTargetName: String? = nil
     public private(set) var projectSettingsSnapshot: ToolrollClient.ProjectSettingsSnapshot? = nil
     public var taskViewMode: TaskViewMode = .activity
-    /// The attached shell is a scratch shell at the project's own branch, not a copy of this task's build.
     public var terminalIsScratch: Bool = false
     private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
-    /// Archived tasks, shown in their own group inside Settled (right-click → Restore).
     public private(set) var archivedRows: [WorkRow] = []
     public var isArchivedExpanded: Bool = false
-    /// Rows picked with ⌘/⇧-click for a bulk action; empty when one task is simply open.
     public var bulkSelection: Set<String> = []
     var bulkAnchorId: String?
     public var settledDisplayLimit: Int = 10
     public var isCliThreadsExpanded: Bool = true
     public var cliThreadsDisplayLimit: Int = 10
     public private(set) var discoveredGitRepos: [DiscoveredGitRepo] = []
-    /// The console's own list of projects and found repositories (nil from an older Toolroll, or before the first read).
     public internal(set) var projectsRead: ProjectsResponse?
     public private(set) var localCliThreads: [LocalCliThread] = []
     public var selectedCliThreadId: String? = nil
@@ -162,7 +145,6 @@ public final class WorkbenchStore {
     private var preZenSidebar: Bool = true
     private var preZenInspector: Bool = false
 
-    // Native Toolroll Canvas (youiyoux port — disk tile cache + 1 managed preview server + 2-slot WebView pool)
     public let previewServer = PreviewServerManager()
     public private(set) var canvasArtboards: [CanvasArtboard] = []
     public private(set) var discoveredCanvasRoutes: [YouiScreenEntry] = []
@@ -177,13 +159,11 @@ public final class WorkbenchStore {
     public private(set) var activeAgentSetupTitle: String? = nil
     public private(set) var localSessionCookie: (name: String, value: String, origin: String)? = nil
 
-    // Navigation History (← / →)
     private var backStack: [String?] = []
     private var forwardStack: [String?] = []
     public var canGoBack: Bool { !backStack.isEmpty }
     public var canGoForward: Bool { !forwardStack.isEmpty }
 
-    // Engine State
     public private(set) var workRowsResponse: WorkRowsResponse = WorkRowsResponse()
     public private(set) var presence: PresenceSnapshot = PresenceSnapshot()
     public private(set) var agentsRead: AgentsReadResponse = AgentsReadResponse()
@@ -196,13 +176,10 @@ public final class WorkbenchStore {
     public private(set) var isLoadingLiveRun: Bool = false
     public private(set) var approvalCard: ApprovalCard?
     public var approvalPasswordPrompt: String?
-    // Password onboarding (docs/plans/password-onboarding.md): whether the account has a password yet (from the console's
-    // connect; nil when it didn't say), the set-password sheet, and the banner's remembered Not now.
     public private(set) var passwordSet: Bool? = nil
     public var isSetPasswordOpen: Bool = false
     public private(set) var setPasswordBusy: Bool = false
     public var setPasswordProblem: String? = nil
-    // Local DB path + Agent Requests + Touch ID + Background Service
     public private(set) var localDatabasePath: String? = nil
     public private(set) var pendingAgentRequests: [AgentRequest] = []
     public private(set) var resolvingAgentRequestId: String? = nil
@@ -229,11 +206,9 @@ public final class WorkbenchStore {
     public private(set) var terminalsResponse: TermStateResponse?
     public private(set) var leadChat: LeadChatResponse = LeadChatResponse()
 
-    // Right-hand Tabbed Artifact Window
     public private(set) var openArtifacts: [WorkbenchArtifact] = []
     public var activeArtifactId: String? = nil
 
-    // Live Terminal
     public let terminalSession = LiveTerminalSession()
 
     private let profileStore: ProfileStore
@@ -285,8 +260,6 @@ public final class WorkbenchStore {
         isInspectorVisible = inspector
     }
 
-    // MARK: - Native Local Engine & 1-Click Agent Setup (Zero CLI Copy-Paste)
-
     public func startLocalEngine() async {
         busyLabel = "Starting Local Toolroll Engine…"
         defer { busyLabel = nil }
@@ -309,7 +282,6 @@ public final class WorkbenchStore {
             proc.standardOutput = FileHandle.nullDevice
             proc.standardError = FileHandle.nullDevice
             try proc.run()
-            // Wait up to 6s for console socket to come online
             for _ in 0..<12 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if await connectToLocalConsoleIfAvailable(silent: true) {
@@ -342,7 +314,6 @@ public final class WorkbenchStore {
                 program: agent.id,
                 branch: "setup"
             )
-            // Automatically take control so the user can interact directly if OAuth/prompts ask
             _ = terminalSession.requestTakeControl()
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
@@ -365,8 +336,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Native Toolroll Canvas (youiyoux port — disk-cached, lazy-wake, 2-slot hydration pool)
-
     public var draftCanvasPins: [CanvasPin] {
         canvasPins.filter(\.isDraft)
     }
@@ -383,16 +352,13 @@ public final class WorkbenchStore {
         let projectChanged = (canvasProjectRoot != root) || (canvasProjectName != targetProject)
         canvasProjectName = targetProject
         canvasProjectRoot = root
-        // Another project's server address never carries over: this project's is found again on wake.
         if projectChanged { canvasBaseURL = "" }
 
-        // git and the project's files are read off the main thread: a slow or cloud-only repository never freezes the app.
         let facts = await Task.detached(priority: .userInitiated) { () -> (git: String, baseline: String, routes: [YouiScreenEntry]?, pins: [CanvasPin]) in
             guard let root else { return ("latest", "baseline", nil, []) }
             return (YouiCanvasStorage.gitStateKey(projectRoot: root), YouiCanvasStorage.mainBranchKey(projectRoot: root),
                     YouiCanvasStorage.discoverRoutes(projectRoot: root), YouiCanvasStorage.loadPins(projectRoot: root))
         }.value
-        // The person may have switched project while that ran; a stale answer never lands on the new one.
         guard canvasProjectRoot == root else { return }
         canvasGitKey = facts.git
         let stateKey = facts.git + canvasOriginTag(for: root)
@@ -405,7 +371,6 @@ public final class WorkbenchStore {
             let rawDiscovered = facts.routes ?? [YouiScreenEntry(route: "/", path: "/")]
             let discovered = resolveDynamicTaskRoutes(rawDiscovered)
             discoveredCanvasRoutes = discovered
-            // Cap initial canvas to 8 clean artboards (remaining routes live in `+ Screen`)
             let initial = Array(discovered.prefix(8))
             canvasArtboards = YouiCanvasStorage.layoutArtboards(
                 from: initial,
@@ -418,7 +383,6 @@ public final class WorkbenchStore {
             canvasPins = facts.pins
         }
 
-        // Lazy-wake preview server ONLY if any tile is missing/stale for the current git state!
         let needsHydration = forceRefresh || canvasArtboards.contains(where: { $0.latestImagePath == nil || $0.cachedStateKey != stateKey })
         if needsHydration {
             await wakePreviewServerAndHydrate(forceAll: forceRefresh)
@@ -426,11 +390,8 @@ public final class WorkbenchStore {
     }
 
     private static let canvasOriginKeyPrefix = "toolroll.canvasOrigin|"
-    /// The project's git fingerprint as last read (off the main thread); the origin tag is appended to it.
     var canvasGitKey: String = "latest"
 
-    /// Screens are cached per git state AND per server they were captured from: a capture from the wrong server
-    /// (another project on the same port) never stands in for this project's.
     func canvasOriginTag(for root: String?) -> String {
         guard let root, let origin = UserDefaults.standard.string(forKey: Self.canvasOriginKeyPrefix + root) else { return "-o0" }
         var hash: UInt32 = 2_166_136_261
@@ -438,7 +399,6 @@ public final class WorkbenchStore {
         return "-o" + String(hash, radix: 16)
     }
 
-    /// Records the server this project's screens now come from; a different one re-keys and re-captures them.
     func adoptCanvasOrigin(_ url: String) {
         guard let root = canvasProjectRoot else { return }
         let key = Self.canvasOriginKeyPrefix + root
@@ -491,7 +451,6 @@ public final class WorkbenchStore {
         previewServer.stopManagedServer()
     }
 
-    /// Maintains at most 2 concurrent WebView hydrations so 8–20 screens never spike memory.
     public func pumpHydrationPool() {
         guard !canvasBaseURL.isEmpty else { return }
         let maxPool = 2
@@ -585,7 +544,6 @@ public final class WorkbenchStore {
     public func toggleArtboardLive(id: String) {
         guard let idx = canvasArtboards.firstIndex(where: { $0.id == id }) else { return }
         let turningOn = !canvasArtboards[idx].isLiveInteractive
-        // Keep only 1 artboard live interactive at a time for razor-low memory
         for i in canvasArtboards.indices {
             canvasArtboards[i].isLiveInteractive = false
         }
@@ -625,7 +583,6 @@ public final class WorkbenchStore {
         pumpHydrationPool()
     }
 
-    /// Locks the artboard's current snapshot as its persistent `Before` baseline checkpoint for visual Compare.
     @discardableResult
     public func setArtboardBaselineCheckpoint(boardId: String) -> Bool {
         guard let idx = canvasArtboards.firstIndex(where: { $0.id == boardId }),
@@ -756,7 +713,6 @@ public final class WorkbenchStore {
                 title = String("[UI] \(label) (\(batch.count) changes)".prefix(118))
             }
 
-            // Automatically lock a pre-run `Before` baseline checkpoint for each screen in this batch
             let touchedPaths = Set(batch.map(\.artboardPath))
             for board in canvasArtboards where touchedPaths.contains(board.path) {
                 setArtboardBaselineCheckpoint(boardId: board.id)
@@ -809,7 +765,6 @@ public final class WorkbenchStore {
         for path in directCandidates where FileManager.default.fileExists(atPath: path) {
             return path
         }
-        // Fallback: scan ~/Documents for a folder matching projectName case-insensitively
         let docsURL = URL(fileURLWithPath: "\(home)/Documents")
         if let entries = try? FileManager.default.contentsOfDirectory(at: docsURL, includingPropertiesForKeys: [.isDirectoryKey]) {
             if let match = entries.first(where: { $0.lastPathComponent.lowercased() == projectName.lowercased() }) {
@@ -826,7 +781,6 @@ public final class WorkbenchStore {
 
     public func refreshSetupState() async {
         if activeProfile.isDemo {
-            // Try connecting to a newly started local Toolroll engine too!
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
             }
@@ -845,13 +799,10 @@ public final class WorkbenchStore {
         presence.accounts.count > 1
     }
 
-    // MARK: - Computed Views
-
     public var canApproveInApp: Bool {
         isLocalSession || activeProfile.isDemo
     }
 
-    /// Every project: the console's own list, plus any a task names (an older Toolroll sends no list).
     public var allProjects: [String] {
         let fromTasks = workRowsResponse.rows.compactMap(\.project).filter { !$0.isEmpty }
         let fromConsole = projectsRead?.projects.map(\.name) ?? []
@@ -889,7 +840,6 @@ public final class WorkbenchStore {
     public var failedRows: [WorkRow] { filteredRows.filter { $0.status == .failed } }
     public var finishedRows: [WorkRow] { filteredRows.filter { $0.status == .finished || $0.status == .unknown } }
 
-    /// Settled work (Finished + Failed) pinned cleanly to the bottom expandable section of the sidebar.
     public var settledRows: [WorkRow] {
         filteredRows.filter { $0.status == .finished || $0.status == .failed || $0.status == .unknown }
     }
@@ -915,8 +865,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Repositories that could become projects. The console's scan when it has one (its disk, so right for a remote
-    /// workspace too); this Mac's own scan only for an older local Toolroll that sends none.
     public var unconnectedGitRepos: [DiscoveredGitRepo] {
         if let read = projectsRead {
             guard read.canAdd else { return [] }
@@ -929,7 +877,6 @@ public final class WorkbenchStore {
         return discoveredGitRepos.filter { !connected.contains($0.name.lowercased()) }
     }
 
-    /// The Work screen: no task open, not composing (a "Work" row, launch, or after the open task is archived).
     public var isShowingWorkHome: Bool { !isComposingNewWork && selectedTaskId == nil && selectedCliThreadId == nil }
 
     public func openWorkHome() {
@@ -946,7 +893,6 @@ public final class WorkbenchStore {
             backStack.append(current)
             forwardStack.removeAll()
         }
-        // New task, Work, a task row or a CLI thread always lands on the task side, even from Canvas.
         workspaceMode = .workbench
         selectedCliThreadId = nil
         isComposingNewWork = true
@@ -1002,7 +948,6 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: "Saved worktree setup (demo).")
             return true
         }
-        // Resolve current builder provider & model so setup-preview validates cleanly
         let buildCurrent = modelsRead.roles.first(where: { $0.key == "build" })?.current ?? ""
         let parts = buildCurrent.split(separator: "|", maxSplits: 1).map(String.init)
         let provider = parts.count == 2 ? parts[0] : "claude"
@@ -1038,8 +983,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Right-Hand Tabbed Artifact Window
-
     public func syncTaskArtifacts() {
         var virtuals: [WorkbenchArtifact] = []
 
@@ -1066,7 +1009,6 @@ public final class WorkbenchStore {
                 }
             }
 
-            // Plan terms & scope details
             let termsCards = cards.cards.compactMap { c -> (String, StepTerms)? in
                 guard let t = c.terms, (!t.rows.isEmpty || !t.warnings.isEmpty || t.summary != nil) else { return nil }
                 return (c.label, t)
@@ -1126,7 +1068,6 @@ public final class WorkbenchStore {
             virtuals.append(doc)
         }
 
-        // Preserve user-opened local file tabs alongside live virtual task artifact
         let fileTabs = openArtifacts.filter { !$0.isPinnedVirtual }
         openArtifacts = virtuals + fileTabs
         if activeArtifactId == nil || !openArtifacts.contains(where: { $0.id == activeArtifactId }) {
@@ -1287,12 +1228,8 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Live Model Selection (POST /settings/models/agent)
-
     public func selectModel(value: String, label: String, forRoleKey roleKey: String) async {
         var fields: [String: String] = [:]
-        // Also clear tier-specific overrides (plan-strong, build-strong, build-light, review-strong)
-        // left behind by Quick Presets so the newly chosen model actually runs on ALL task sizes!
         if roleKey == "all" {
             for role in modelsRead.roles {
                 fields[role.key] = value
@@ -1322,7 +1259,6 @@ public final class WorkbenchStore {
         await submitModelFields(preset.fields, friendlyLabel: preset.name)
     }
 
-    /// Runs `POST /settings/models/check` to detect installed CLIs (including Google Gemini) and pull live model catalogs.
     public func refreshModelCatalog() async {
         guard let client, !activeProfile.isDemo, !isCheckingModelCatalog else { return }
         isCheckingModelCatalog = true
@@ -1367,7 +1303,6 @@ public final class WorkbenchStore {
 
         guard let client else { return }
         do {
-            // Always fetch a fresh digest right before posting so stale-digest refusals never happen!
             let latest = (try? await client.fetchModels()) ?? modelsRead
             modelsRead = latest
             let reply = try await client.updateModels(digest: latest.digest, fields: fields, password: password)
@@ -1379,7 +1314,6 @@ public final class WorkbenchStore {
                 modelsRead = refreshed
             }
         } catch let error as ToolrollClientError where handleSignInRefusal(error) {
-            // Opened the set-password sheet, or said a browser sign-in is needed.
         } catch ToolrollClientError.passwordRequired(let msg) {
             pendingModelFields = fields
             modelPasswordPrompt = msg
@@ -1427,8 +1361,6 @@ public final class WorkbenchStore {
         )
     }
 
-    // MARK: - Lifecycle
-
     public func start() async {
         DesktopNotifier.shared.configure()
         DesktopNotifier.shared.onSelectTask = { [weak self] taskId in
@@ -1436,7 +1368,6 @@ public final class WorkbenchStore {
             self.workspaceMode = .workbench
             Task { await self.selectTask(taskId) }
         }
-        // Prefer auto-connecting to a live local Toolroll console on this Mac if no explicit remote profile is active.
         if activeProfile.isDemo {
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
@@ -1449,7 +1380,6 @@ public final class WorkbenchStore {
         restartSSE()
     }
 
-    /// The banner asking for a first password: a local session whose account has none, unless Not now is still standing.
     public var showPasswordNudge: Bool {
         guard isLocalSession, passwordSet == false else { return false }
         if let until = passwordNudgeSnoozedUntil, until > Date() { return false }
@@ -1467,8 +1397,6 @@ public final class WorkbenchStore {
         isSetPasswordOpen = true
     }
 
-    /// "Set a password to do this." from the server opens the set-password sheet instead of a password box that can't work.
-    /// True when it handled the error.
     @discardableResult
     public func handleSignInRefusal(_ error: Error) -> Bool {
         switch error as? ToolrollClientError {
@@ -1484,8 +1412,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Set the account's first password, then reconnect (setting it ends every session, this one included) and read
-    /// `passwordSet` again: only that says it worked. Length and match are checked here first, so a slip spends no sign-in try.
     @discardableResult
     public func setFirstPassword(_ password: String, again: String, saveToTouchID: Bool = false) async -> Bool {
         setPasswordProblem = nil
@@ -1494,7 +1420,6 @@ public final class WorkbenchStore {
         guard let client else { setPasswordProblem = "Toolroll isn't connected. Run `toolroll up`, then try again."; return false }
         setPasswordBusy = true
         defer { setPasswordBusy = false }
-        // No refresh may answer "signed out" while the old session ends and the new one starts.
         sseTask?.cancel()
         sseTask = nil
         do {
@@ -1526,7 +1451,6 @@ public final class WorkbenchStore {
         return true
     }
 
-    /// After a Toolroll restart the client signs in again by itself; the web preview's cookie follows it here.
     func adoptRenewedSession(_ creds: LocalSessionCredentials) {
         guard let eq = creds.cookieHeader.firstIndex(of: "=") else { return }
         let name = String(creds.cookieHeader[..<eq])
@@ -1568,7 +1492,6 @@ public final class WorkbenchStore {
             self.selectedTaskId = nil
             self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
             await refreshAll()
-            // Work home is the first screen: nothing is opened on the person's behalf.
             restartSSE()
             return true
         }
@@ -1623,8 +1546,6 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .refusal, message: "Could not save profile: \(error.localizedDescription)")
         }
     }
-
-    // MARK: - Data Fetching
 
     public func refreshAll() async {
         isLoading = true
@@ -1698,7 +1619,6 @@ public final class WorkbenchStore {
         selectedCliThreadId = nil
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
-        // Return to Activity on task switch so selecting another task immediately shows its agent runs & plan instead of an unrelated worktree shell.
         taskViewMode = .activity
         selectedLiveRunId = nil
         liveRunRecords = []
@@ -1754,7 +1674,6 @@ public final class WorkbenchStore {
 
         if let steps = try? await stepsReq {
             stepCards = steps
-            // Load live streaming agent records for the user-selected run (if still on this task) or the active/latest run
             let allRunIds = Set(steps.cards.flatMap(\.runs) + [steps.liveRun, steps.review?.run].compactMap { $0 })
             let targetRun: Int?
             if let pinned = selectedLiveRunId, allRunIds.contains(pinned) {
@@ -1770,7 +1689,6 @@ public final class WorkbenchStore {
                 liveRunRecords = []
             }
 
-            // Fetch full digest-bound approval card natively in-app whenever approval is waiting
             let needsApproval = steps.cards.contains(where: { $0.needsYou && $0.terms != nil })
                 || (selectedRow?.status == .needs && steps.review == nil && selectedRow?.need?.question == nil)
             if needsApproval && isLocalSession {
@@ -1825,8 +1743,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Native In-App Approvals, Reviews, Questions & Lifecycle
-
     public func approveSelectedTask(password: String = "") async {
         let password = effectivePassword(password)
         guard let rootTaskId = selectedTaskId else { return }
@@ -1845,7 +1761,6 @@ public final class WorkbenchStore {
 
         guard let client else { return }
         do {
-            // Re-fetch fresh approval card if missing or mismatched; note on revisions `card.task` is `family.current.id`!
             var card: ApprovalCard
             if let existing = approvalCard,
                (existing.task == queryTaskId || existing.task == rootTaskId),
@@ -1868,8 +1783,6 @@ public final class WorkbenchStore {
                 notice = WorkbenchNotice(kind: .info, message: reply)
                 await refreshAll()
             } catch let err as ToolrollClientError where err.localizedDescription.localizedCaseInsensitiveContains("stale") {
-                // Nonce expired or was spent earlier: re-fetch fresh card. If the plan digest is identical to what
-                // the user just reviewed, submit seamlessly with the fresh nonce; if terms changed, surface the new card.
                 let fresh = try await client.fetchApprovalCard(taskId: queryTaskId)
                 approvalCard = fresh
                 if let freshDigest = fresh.digest, let freshNonce = fresh.nonce, freshDigest == shownDigest {
@@ -1883,7 +1796,6 @@ public final class WorkbenchStore {
                 }
             }
         } catch let error as ToolrollClientError where handleSignInRefusal(error) {
-            // Opened the set-password sheet, or said a browser sign-in is needed.
         } catch ToolrollClientError.passwordRequired(let msg) {
             approvalPasswordPrompt = msg
             if let fresh = try? await client.fetchApprovalCard(taskId: queryTaskId) {
@@ -2052,8 +1964,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Multiplayer & Candidate Actions
-
     public func handOffTask(taskId: String, to person: String) async {
         busyLabel = "Handing off to \(person)…"
         defer { busyLabel = nil }
@@ -2174,7 +2084,6 @@ public final class WorkbenchStore {
                 program: started.program,
                 branch: started.branch
             )
-            // Said by the client from how it opened the shell, never guessed from the branch name.
             let isRepoScratch = started.scratch ?? (started.branch == "main")
             terminalIsScratch = isRepoScratch
             if isRepoScratch {
@@ -2196,7 +2105,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Starts or attaches a live PTY directly on a project from the Launchpad (no task required).
     public func startProjectTerminal(project: String?, program: String = "shell") async {
         isInspectorVisible = true
         inspectorTab = .terminal
@@ -2232,8 +2140,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Worktree Visibility, Fluid Activity ↔ Terminal, Parallel Forking & MCP Gateway
-
     public func toggleTaskTerminalMode() {
         if taskViewMode == .terminal {
             taskViewMode = .activity
@@ -2247,7 +2153,6 @@ public final class WorkbenchStore {
 
     public func setTaskViewMode(_ mode: TaskViewMode) {
         taskViewMode = mode
-        // Again on a scratch shell too: once the build has saved its work, Shell opens a copy of it instead.
         if mode == .terminal, let taskId = selectedTaskId,
            terminalSession.taskId != taskId || terminalSession.connectionState != .connected || terminalIsScratch {
             Task { await attachOrStartTerminal(taskId: taskId, program: "shell", openDrawer: false) }
@@ -2392,9 +2297,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Asks the Lead about something on Canvas and shows the Lead drawer beside it. It goes to the conversation the drawer
-    /// shows, so the answer is in view; the message itself names the project, page and source.
-    /// Returns nil when it was sent, else the reason in words (shown beside the Ask button, where the person is looking).
     @discardableResult
     public func askLeadAboutCanvas(_ message: String) async -> String? {
         isInspectorVisible = true
@@ -2402,7 +2304,6 @@ public final class WorkbenchStore {
         return await sendLeadMessage(message)
     }
 
-    /// Sends to the Lead; nil when sent, else the refusal in words (also shown as the notice).
     @discardableResult
     public func sendLeadMessage(_ text: String) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2432,7 +2333,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Opens one of the web UI's pages in the browser (its own sign-in applies).
     public func openInBrowser(path: String) {
         if activeProfile.isDemo {
             notice = WorkbenchNotice(kind: .info, message: "Demo mode: connect a workspace to open that page.")
@@ -2442,15 +2342,11 @@ public final class WorkbenchStore {
         if let url = URL(string: base + (path.hasPrefix("/") ? path : "/" + path)) { NSWorkspace.shared.open(url) }
     }
 
-    /// A message to start in the Lead chat's composer (the Lead panel takes it once and clears it).
     public var leadDraftSeed: String?
 
-    /// Automations the person can see (nil until read, or when this Toolroll doesn't offer the read yet).
     public internal(set) var automations: AutomationsResponse?
-    /// An automation whose resume may run it right away: the confirm dialog's subject.
     public var automationToResume: Automation?
 
-    /// New automation: the Lead proposes the flow from a sentence and the person approves its card (existing road).
     public func startAutomationWithLead() {
         inspectorTab = .lead
         isInspectorVisible = true
@@ -2560,8 +2456,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Touch ID, Agent Requests & Background Service
-
     public var resolvedLocalDatabasePath: String? {
         if let localDatabasePath, !localDatabasePath.isEmpty { return localDatabasePath }
         return LocalConsoleConnector.candidateDatabasePaths().first {
@@ -2597,7 +2491,6 @@ public final class WorkbenchStore {
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
 
-    /// A typed password is remembered for the chosen window; an empty one uses the remembered password, if any.
     func effectivePassword(_ typed: String) -> String {
         guard typed.isEmpty else {
             passwordMemory.remember(typed, for: passwordOwner)
@@ -2606,7 +2499,6 @@ public final class WorkbenchStore {
         return passwordMemory.recall(for: passwordOwner) ?? ""
     }
 
-    /// The account and Toolroll a remembered password belongs to: switching workspace never carries it across.
     var passwordOwner: String { "\(activeProfile.account)|\(activeProfile.origin)" }
 
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
@@ -2802,8 +2694,6 @@ public final class WorkbenchStore {
         }
     }
 
-    // MARK: - Live SSE Loop
-
     private func restartSSE() {
         var rooms = ["home", "chat"]
         if let taskId = selectedTaskId {
@@ -2861,7 +2751,6 @@ public final class WorkbenchStore {
             if let client, let rows = try? await client.fetchWorkRows() {
                 workRowsResponse = rows
                 processTaskNotifications(rows.rows)
-                // If a Canvas-linked task reached review/finished, invalidate its screen so fresh `After` captures cleanly
                 if let row = rows.rows.first(where: { $0.id == taskId }),
                    (row.status == .finished || row.status == .needs) {
                     let linkedPaths = Set(canvasPins.filter { $0.linkedTaskId == taskId }.map(\.artboardPath))

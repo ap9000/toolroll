@@ -2,15 +2,6 @@ import Foundation
 import Testing
 @testable import ToolrollCore
 
-/// SB1 (client side): every status a Work row can carry lands in the right sidebar section.
-///
-/// What the server sends (src/work-index.ts itemOf, src/server/render-pages.ts rowOf, src/task-status.ts workToneOf):
-/// - token: `assignment-<state>` with state complete | ready-to-check | cancelled | needs-decision | working, or `archived`
-///   (only in `?view=archived`, which the app lists apart).
-/// - tone: workToneOf(headline): Needs you → attention, Failed → problem, Building/Planning → live, Ready → ready,
-///   Complete → done, Queued/Waiting/Stopped → muted. `neutral` is in WORK_STATUS_TONES but workToneOf never returns it.
-/// Sections (WorkbenchStore): .needs → Needs you, .running → Running, .queued → Queued, .finished/.unknown → Settled,
-/// .failed → Settled (failed).
 @Suite("Work row status → sidebar section")
 struct WorkRowStatusTests {
     static let tones = ["attention", "problem", "live", "ready", "done", "muted", "neutral"]
@@ -24,7 +15,6 @@ struct WorkRowStatusTests {
         var testDescription: String { "\(what): \(tone)/\(token) → \(expected)" }
     }
 
-    /// The rows the server actually produces, and the section the requirement puts each in.
     static let agreed: [Case] = [
         Case(what: "needs you", tone: "attention", token: "assignment-needs-decision", expected: .needs),
         Case(what: "result with an open ask", tone: "attention", token: "assignment-ready-to-check", expected: .needs),
@@ -44,8 +34,6 @@ struct WorkRowStatusTests {
         #expect(try Self.decodedStatus(tone: c.tone, token: c.token) == c.expected)
     }
 
-    /// FINDING: the server's cancelled row is `assignment-cancelled` (headline Stopped → tone muted), but the client only
-    /// special-cases the bare token "cancelled", so a cancelled task falls through to the tone and lands in Queued.
     @Test("A cancelled row (and a replaced one) lands in Settled")
     func cancelledIsSettled() throws {
         let decoded = try Self.decodedStatus(tone: "muted", token: "assignment-cancelled")
@@ -53,9 +41,6 @@ struct WorkRowStatusTests {
         #expect(decoded == .finished)
     }
 
-    /// FINDING: a Ready result (code ready-to-check, headline Ready, tone ready) is a person code on the server (rank 0,
-    /// listed under Needs you and Ready), but the client maps tone "ready" to Queued. The requirement table doesn't name
-    /// Ready; it is asserted here against the server's own view.
     @Test("A Ready result lands where the server lists it (Needs you), not Queued")
     func readyResultIsNotQueued() throws {
         #expect(TaskStatusTone(workTone: "ready", token: "assignment-ready-to-check") == .needs)
@@ -72,7 +57,6 @@ struct WorkRowStatusTests {
 
     @Test("The token wins over a shared tone only for an ended task")
     func tokenOverridesTone() {
-        // Complete with any tone is finished; a token that names nothing leaves the tone in charge.
         for tone in Self.tones {
             #expect(TaskStatusTone(workTone: tone, token: "assignment-complete") == .finished)
         }
@@ -97,8 +81,6 @@ struct WorkRowStatusTests {
         #expect(rows.rows[0].group == "decide")
         #expect(rows.rows[1].need == nil)
     }
-
-    // MARK: helpers
 
     static func rowJSON(id: String, tone: String, token: String, label: String, group: String, rank: Int) -> String {
         """

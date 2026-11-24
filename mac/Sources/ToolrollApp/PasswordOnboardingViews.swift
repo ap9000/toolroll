@@ -2,9 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Password onboarding (docs/plans/password-onboarding.md): set a first password here; reset a forgotten one in Terminal.
-
-/// Set your first password. Same words and rules as the browser's page (render-people.ts passwordSetPage).
 public struct SetPasswordSheet: View {
     @Bindable var store: WorkbenchStore
     @State private var password = ""
@@ -88,7 +85,6 @@ public struct SetPasswordSheet: View {
     }
 }
 
-/// The one-line nudge while the account has no password (Not now hides it for a week).
 public struct SetPasswordBanner: View {
     @Bindable var store: WorkbenchStore
 
@@ -115,9 +111,6 @@ public struct SetPasswordBanner: View {
     }
 }
 
-/// "Forgot password?" under a password box. A forgotten password is reset only in Terminal on this Mac (operate.ts
-/// `password reset`: the trust boundary is this computer's account), so this shows the command to copy and opens
-/// Terminal. It never writes or runs anything itself.
 public struct ForgotPasswordLink: View {
     @State private var isOpen = false
     @State private var copied = false

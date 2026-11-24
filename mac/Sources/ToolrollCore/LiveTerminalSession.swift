@@ -14,8 +14,6 @@ public enum TerminalConnectionState: Sendable, Equatable {
     case disconnected(String)
 }
 
-/// Manages a live remote Toolroll PTY session over WebSocket (`/term/<id>/socket`, subprotocol `toolroll`)
-/// with lease-aware Observer/Controller state and 1-step inline takeover confirmation.
 @MainActor
 @Observable
 public final class LiveTerminalSession {
@@ -62,7 +60,6 @@ public final class LiveTerminalSession {
         max(0, viewers.count - (controller == nil ? 0 : 1))
     }
 
-    /// True when another human currently holds the Controller lease (requiring 1-step confirmation).
     public var requiresTakeoverConfirm: Bool {
         role == .observer && controller != nil && !(controller?.isEmpty ?? true)
     }
@@ -103,7 +100,6 @@ public final class LiveTerminalSession {
         }
     }
 
-    /// Attaches an interactive local Demo terminal session so offline preview feels alive immediately.
     public func attachDemo(taskId: String, program: String, branch: String, controller: String? = "sam", me: String = "alex") {
         disconnect(clearOutput: true)
         self.isDemoMode = true
@@ -125,7 +121,7 @@ public final class LiveTerminalSession {
         \u{1B}[32m✓\u{1B}[0m npm run typecheck  \u{1B}[2m(1.8s)\u{1B}[0m\r\n\
         \u{1B}[32m✓\u{1B}[0m vitest src/multiplayer-handoff.test.ts  \u{1B}[2m(4/4 passed)\u{1B}[0m\r\n\
         \u{1B}[34m●\u{1B}[0m watching candidate checks · lease owned by \(controller ?? "idle")\r\n\
-        \u{1B}[1m$\u{1B}[0m 
+        \u{1B}[1m$\u{1B}[0m
         """
         feedBytes(Data(banner.utf8))
     }
@@ -152,9 +148,6 @@ public final class LiveTerminalSession {
         }
     }
 
-    /// Requests control. If another teammate is actively controlling, first call arms 1-step confirmation
-    /// (`takeoverArmed = true`) instead of preempting abruptly; second call confirms and sends `take-control`.
-    /// When the terminal is idle (`controller == nil`), takes control immediately.
     @discardableResult
     public func requestTakeControl() -> Bool {
         guard connectionState == .connected else { return false }
@@ -212,7 +205,6 @@ public final class LiveTerminalSession {
             handleDemoInput(text)
             return
         }
-        // Protocol key is `d` (`{"t":"in","d":"..."}`) per src/live-terminal.ts
         sendJSON(["t": "in", "d": text])
     }
 
@@ -228,8 +220,6 @@ public final class LiveTerminalSession {
             sendJSON(["t": "resize", "cols": clampedCols, "rows": clampedRows])
         }
     }
-
-    // MARK: - Protocol Handling (Public for Deterministic Unit Tests)
 
     public func applyControlFrame(text: String) {
         guard let data = text.data(using: .utf8),
@@ -284,8 +274,6 @@ public final class LiveTerminalSession {
         syncSurface()
     }
 
-    // MARK: - Private
-
     private func syncSurface() {
         renderLines = surface.snapshotLines(includeScrollback: true)
         cursorRow = surface.cursorRow
@@ -321,7 +309,6 @@ public final class LiveTerminalSession {
             } catch {
                 if !Task.isCancelled {
                     if case .exited = connectionState {
-                        // Already cleanly exited.
                     } else {
                         connectionState = .disconnected(error.localizedDescription)
                         statusNote = "Terminal disconnected: \(error.localizedDescription)"

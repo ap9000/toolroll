@@ -2,10 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Lead-Driven Workspace Appearance Studio (⌘⇧T):
-/// Live-synced with `~/.config/toolroll/tui.toml` so anything the Lead agent changes via
-/// `toolroll_view_set` updates `Toolroll.app` instantaneously — plus 1-click theme switching,
-/// density, sidebar side, Liquid Glass controls, and "Customize with Lead…" co-design flow.
 struct AppearanceSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss
@@ -51,7 +47,6 @@ struct AppearanceSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Header
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Workspace Appearance & Lead Themes")
@@ -70,7 +65,6 @@ struct AppearanceSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    // Built-in Signal Themes
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader("BUILT-IN THEMES")
                         LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
@@ -87,7 +81,6 @@ struct AppearanceSheet: View {
                         }
                     }
 
-                    // Lead-Created / Saved Custom Themes from tui.toml
                     if !savedCustomThemes.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             sectionHeader("LEAD & CUSTOM SAVED THEMES (\(savedCustomThemes.count))")
@@ -106,7 +99,6 @@ struct AppearanceSheet: View {
                         }
                     }
 
-                    // Co-Design with Lead Agent
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader("CUSTOMIZE WITH LEAD AGENT")
                         HStack(spacing: 8) {
@@ -130,7 +122,6 @@ struct AppearanceSheet: View {
 
                     HairlineDivider()
 
-                    // Layout, Density & Native Chrome Controls
                     VStack(alignment: .leading, spacing: 12) {
                         sectionHeader("LAYOUT & NATIVE CHROME")
 

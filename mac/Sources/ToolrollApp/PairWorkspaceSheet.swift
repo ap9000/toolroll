@@ -2,9 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Ultra-clean Remote Workspace Connection Sheet.
-/// One URL input -> one click -> browser code confirmation auto-saves the complete profile.
-/// Manual API token entry is tucked cleanly behind an Advanced disclosure.
 public struct PairWorkspaceSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss
@@ -16,7 +13,6 @@ public struct PairWorkspaceSheet: View {
     @State private var isWorking: Bool = false
     @State private var pollTask: Task<Void, Never>?
 
-    // Collapsed Advanced manual token fields
     @State private var showManualToken: Bool = false
     @State private var manualToken: String = ""
     @State private var manualAccount: String = ""
@@ -64,7 +60,6 @@ public struct PairWorkspaceSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
 
-            // Single clean URL input
             VStack(alignment: .leading, spacing: 5) {
                 Text("Workspace URL")
                     .font(.system(size: 11, weight: .medium))
@@ -102,7 +97,6 @@ public struct PairWorkspaceSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
 
-            // Quiet collapsed Advanced section for direct API token entry
             VStack(alignment: .leading, spacing: 10) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.14)) {

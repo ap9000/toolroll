@@ -3,8 +3,6 @@ import Foundation
 import Testing
 @testable import ToolrollCore
 
-/// PW1, PW2: the password is kept only for the chosen window and only for the account + Toolroll it was typed for.
-/// Each case uses its own defaults suite (removed afterwards), never the app's or the person's.
 @MainActor
 @Suite("PasswordMemory")
 struct PasswordMemoryTests {
@@ -38,7 +36,6 @@ struct PasswordMemoryTests {
             #expect(memory.recall(for: Self.alice, now: Self.t0) == "pw")
             #expect(memory.recall(for: Self.alice, now: Self.t0.addingTimeInterval(span - 1)) == "pw")
             #expect(memory.recall(for: Self.alice, now: Self.t0.addingTimeInterval(span)) == nil)
-            // Expiry dropped it: even an earlier clock gets nothing back.
             #expect(memory.recall(for: Self.alice, now: Self.t0) == nil)
         }
     }
@@ -105,15 +102,11 @@ struct PasswordMemoryTests {
         let memory = PasswordMemory(defaults: defaults)
         memory.window = .untilQuit
         memory.remember("pw", for: Self.alice, now: Self.t0)
-        // NSWorkspace's center is this process's own; the screen-lock notification is distributed and is never posted here.
         NSWorkspaceSleepPoster.post()
-        // The observer hops to the main actor in a Task: yield until it has run (bounded by the loop, not a clock).
         for _ in 0..<100 where memory.recall(for: Self.alice, now: Self.t0) != nil { await Task.yield() }
         #expect(memory.recall(for: Self.alice, now: Self.t0) == nil)
     }
 
-    /// FINDING (low): shortening the window doesn't shorten a password already remembered under the longer one; only
-    /// Every time forgets. "Remembered only for the chosen window" reads as the window now chosen.
     @Test("Shortening the window applies to a password already remembered")
     func shorteningApplies() {
         withMemory(.oneHour) { memory in

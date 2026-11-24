@@ -1,10 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Left rail — decluttered macOS 26 Liquid Glass sidebar:
-/// Top: Search pill (with integrated project/owner filter) + crisp New Task button.
-/// Middle: Needs you / Running / Queued + inline collapsible Settled section.
-/// Bottom: Single quiet Workspace menu capsule + Appearance trigger (zero multi-row icon clutter).
 public struct InboxSidebarView: View {
     @Bindable var store: WorkbenchStore
     @FocusState private var searchFocused: Bool
@@ -19,13 +15,11 @@ public struct InboxSidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // The brand, as the web shows it (the three-bar mark and "Toolroll"), and the workspace menu behind it.
             WorkspaceMenu(store: store)
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
                 .padding(.bottom, 8)
 
-            // Top bar: Search pill (with integrated filter)
             HStack(spacing: 6) {
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass")
@@ -49,7 +43,6 @@ public struct InboxSidebarView: View {
                         .buttonStyle(.plain)
                     }
 
-                    // Filter & Grouping menu tucked cleanly inside the search pill
                     Menu {
                         Section("Group by") {
                             ForEach(SidebarGrouping.allCases) { g in
@@ -133,7 +126,6 @@ public struct InboxSidebarView: View {
             .padding(.top, 4)
             .padding(.bottom, 8)
 
-            // Active project filter badge (only shown when filtered)
             if let proj = store.selectedProject {
                 HStack(spacing: 6) {
                     Image(systemName: "folder")
@@ -167,7 +159,6 @@ public struct InboxSidebarView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 6)
 
-            // Unified scrollable task list (Status-first default, or grouped by Project)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if store.sidebarGrouping == .project {
@@ -196,7 +187,6 @@ public struct InboxSidebarView: View {
                         }
                     }
 
-                    // Inline collapsible Settled section (clean like Linear's Completed/Archive)
                     if !store.settledRows.isEmpty || !store.archivedRows.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Button {
@@ -250,7 +240,6 @@ public struct InboxSidebarView: View {
                         .padding(.top, 4)
                     }
 
-                    // Existing local Claude Code, Codex & Gemini CLI threads
                     if !store.filteredCliThreads.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Button {
@@ -304,7 +293,6 @@ public struct InboxSidebarView: View {
             }
             .frame(maxHeight: .infinity)
 
-            // Balanced Liquid Glass footer (matched 28pt height controls, no stretched lozenge)
             HStack(spacing: 8) {
                 Menu {
                     if let spend = store.workRowsResponse.spend {
@@ -390,7 +378,6 @@ public struct InboxSidebarView: View {
         }
     }
 
-    /// Starting work is always one row away, in the same place and shape as every other row (Mail, Notes).
     private var newTaskRow: some View {
         Button {
             store.openNewWorkCanvas()
@@ -421,7 +408,6 @@ public struct InboxSidebarView: View {
         .help("New task (⌘N)")
     }
 
-    /// The Work screen: what's waiting, running and settled, with limits. Its badge counts what waits on you.
     private var workRow: some View {
         Button {
             store.openWorkHome()
@@ -456,7 +442,6 @@ public struct InboxSidebarView: View {
         .accessibilityLabel(store.needsRows.isEmpty ? "Work" : "Work, \(store.needsRows.count) waiting on you")
     }
 
-    /// Automations: what runs on its own. Its badge counts automations waiting on a decision.
     private var automationsRow: some View {
         let waiting = store.automations?.automations.filter { $0.group == "needs" }.count ?? 0
         return Button {
@@ -492,7 +477,6 @@ public struct InboxSidebarView: View {
         .accessibilityLabel(waiting > 0 ? "Automations, \(waiting) waiting on you" : "Automations")
     }
 
-    /// Canvas: every screen of the project, live. Leaving it is any other row (or New task).
     private var canvasRow: some View {
         Button {
             withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) { store.workspaceMode = .canvas }
@@ -606,7 +590,6 @@ public struct InboxSidebarView: View {
         .contextMenu { TaskRowMenuItems(store: store, row: row) }
     }
 
-    /// Archived tasks, folded inside Settled: the only place to find one again after its Undo is gone.
     private var archivedGroup: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
@@ -742,8 +725,6 @@ public struct InboxSidebarView: View {
     }
 }
 
-/// Toolroll's mark, drawn as the web draws it (workspace.css .so-brand-mark): three 3.5pt bars, the middle one
-/// taller, 3pt apart, slanted 10°, in ink.
 struct ToolrollBrandMark: View {
     var height: CGFloat = 20
 
@@ -762,8 +743,6 @@ struct ToolrollBrandMark: View {
     }
 }
 
-/// The sidebar's Toolroll row: the brand, a dot for the live connection, and the workspace menu (switch workspace,
-/// setup, add a project, connect, appearance).
 struct WorkspaceMenu: View {
     @Bindable var store: WorkbenchStore
 

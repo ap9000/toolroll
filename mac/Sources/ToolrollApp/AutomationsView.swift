@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Automations, natively: what runs on its own, what starts it, when it runs next, how it last went — with Pause/Resume
-/// and Run now. New automations are described to the Lead, which proposes one for the person to approve.
 struct AutomationsView: View {
     @Bindable var store: WorkbenchStore
 
@@ -102,7 +100,6 @@ struct AutomationsView: View {
     }
 }
 
-/// One automation: what starts it, when it next runs, how it last went; Pause/Resume and Run now on the right.
 struct AutomationRow: View {
     let store: WorkbenchStore
     let automation: Automation
@@ -159,7 +156,6 @@ struct AutomationRow: View {
         .accessibilityLabel("\(automation.name), \(subtitle)")
     }
 
-    /// Resume asks first when it may run once right away; pause and other resumes act at once.
     private func toggle() {
         if automation.isPaused && automation.resumeRunsNow {
             store.automationToResume = automation
@@ -168,7 +164,6 @@ struct AutomationRow: View {
         }
     }
 
-    /// "Every weekday at 09:00 · oddcircle · next in 3 h" — or the trouble, when there is one.
     private var subtitle: String {
         if let trouble = automation.trouble { return trouble }
         var parts = [automation.starts]
@@ -195,7 +190,6 @@ struct AutomationRow: View {
         }
     }
 
-    /// "in 12 min", "in 5 h", "in 3 days".
     static func relative(_ iso: String) -> String? {
         let parse = ISO8601DateFormatter()
         parse.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

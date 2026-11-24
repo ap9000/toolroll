@@ -14,8 +14,6 @@ public struct BackgroundServiceStatus: Equatable, Sendable {
     }
 }
 
-/// Bridges to Toolroll's own `toolroll background show|on|off --json` CLI (src/laptop-background.ts)
-/// so the user can toggle the macOS login-item background daemon directly in Toolroll.app.
 public enum BackgroundServiceBridge {
     private struct ShowPayload: Decodable {
         struct Running: Decodable {

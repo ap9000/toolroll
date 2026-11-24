@@ -1,7 +1,5 @@
 import Foundation
 
-/// Rich offline preview fixtures so `Toolroll.app` launches immediately into an interactive
-/// 3-pane workbench even before a remote workspace profile is paired.
 public enum DemoFixtures {
     public static let workRows = WorkRowsResponse(
         version: 1,

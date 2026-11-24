@@ -5,9 +5,6 @@ import Darwin
 import SwiftUI
 import ToolrollCore
 
-/// 1-Click Phone Pairing & Push Alerts Sheet (⌘⇧M):
-/// Generates a crisp native CoreImage QR code so you can open Toolroll's built-in Mobile PWA
-/// on iPhone/Android, enable E2EE Web Push alerts, and approve plans or answer agent questions in 2 seconds.
 struct PhonePairSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss
@@ -50,7 +47,6 @@ struct PhonePairSheet: View {
             HairlineDivider()
 
             HStack(alignment: .top, spacing: 20) {
-                // Crisp nearest-neighbor QR code
                 VStack(spacing: 8) {
                     if let qrImage = Self.makeQRCode(from: pairURLString) {
                         Image(nsImage: qrImage)
@@ -81,7 +77,6 @@ struct PhonePairSheet: View {
                 }
             }
 
-            // Copyable URL strip
             HStack(spacing: 8) {
                 Text(pairURLString)
                     .font(.system(size: 11.5, design: .monospaced))

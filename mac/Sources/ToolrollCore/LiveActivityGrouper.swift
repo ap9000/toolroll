@@ -100,7 +100,6 @@ public struct LiveActivityTimeline: Sendable, Equatable {
             switch rec.k {
             case "open":
                 if rec.detail?.lowercased() == "base" {
-                    // Only mark hasHiddenCommands when a command step actually lacks a target.
                     continue
                 }
             case "say":

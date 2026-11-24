@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Clean 3-option Add Project overlay (⌘⇧O):
-/// 1. Local folder (Finder) | 2. Create new Git project | 3. Clone Git repository URL.
 public struct AddProjectSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss

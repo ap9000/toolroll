@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Clean native reader & handoff view for existing local Claude Code, Codex, and Gemini CLI threads.
 public struct LocalCliThreadView: View {
     @Bindable var store: WorkbenchStore
     let thread: LocalCliThread
@@ -19,7 +18,6 @@ public struct LocalCliThreadView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Header bar
             HStack(spacing: 8) {
                 Text(thread.provider.displayName)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -104,7 +102,7 @@ public struct LocalCliThreadView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(ToolrollPalette.paper)
+            .background(ToolrollPalette.ground)
 
             HairlineDivider()
 
@@ -184,6 +182,6 @@ public struct LocalCliThreadView: View {
                 .padding(18)
             }
         }
-        .background(ToolrollPalette.paper)
+        .background(ToolrollPalette.ground)
     }
 }

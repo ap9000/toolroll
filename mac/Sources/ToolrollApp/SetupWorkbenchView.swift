@@ -2,9 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Distinctively Toolroll Setup & Agents Studio (Signal 1.0.0 monochrome hairlines).
-/// Calm, minimal, zero cryptic buttons: shows Ready agents up front, tucks unavailable CLIs cleanly
-/// with explicit commands, lets you pick models right inline via `ModelPickerPopover`, and keeps remote pairing subtle.
 public struct SetupWorkbenchView: View {
     @Bindable var store: WorkbenchStore
     @State private var showMoreAgents: Bool = false
@@ -34,7 +31,6 @@ public struct SetupWorkbenchView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Header
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(spacing: 8) {
                             RoundedRectangle(cornerRadius: 3)
@@ -58,7 +54,6 @@ public struct SetupWorkbenchView: View {
                     }
                     .padding(.top, 12)
 
-                    // Card 1: Agents & Interactive Model Routing
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
                             Text("AGENTS & MODELS")
@@ -137,7 +132,6 @@ public struct SetupWorkbenchView: View {
                             .padding(.vertical, 10)
                         }
 
-                        // Clickable live role routing bar (Planner · Builder · Reviewer)
                         if !store.modelsRead.roles.isEmpty {
                             HairlineDivider()
                             Button {
@@ -171,7 +165,6 @@ public struct SetupWorkbenchView: View {
                     .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                    // Card 2: Repositories (with 1-click native Finder Add Folder)
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
                             Text("PROJECTS")
@@ -220,7 +213,6 @@ public struct SetupWorkbenchView: View {
                     .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                    // Live in-app agent Sign-in / Install terminal drawer (zero CLI copy-paste!)
                     if let setupTitle = store.activeAgentSetupTitle {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -254,7 +246,6 @@ public struct SetupWorkbenchView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1))
                     }
 
-                    // MCP Workspace Coordination Card (25-tool gateway for sibling worktree awareness)
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
@@ -290,7 +281,6 @@ public struct SetupWorkbenchView: View {
                     .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                    // Bottom bar: Start Local Engine (if offline) + Remote Server + Start Building
                     HStack(spacing: 10) {
                         if !store.isLocalSession && store.activeProfile.isDemo {
                             Button("Start Local Engine") {

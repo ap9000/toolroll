@@ -1,7 +1,5 @@
 import Foundation
 
-// MARK: - Discovered Local Git Repositories
-
 public struct DiscoveredGitRepo: Identifiable, Sendable, Equatable, Hashable {
     public var id: String { path }
     public let name: String
@@ -24,8 +22,6 @@ public struct DiscoveredGitRepo: Identifiable, Sendable, Equatable, Hashable {
         self.lastModified = lastModified
     }
 }
-
-// MARK: - Local Claude Code / Codex / Gemini CLI Threads
 
 public enum LocalCliProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     case claude = "claude"
@@ -53,7 +49,7 @@ public enum LocalCliProvider: String, Codable, Sendable, CaseIterable, Identifia
 
 public struct LocalCliMessage: Identifiable, Sendable, Equatable {
     public let id: String
-    public let role: String // "user" | "assistant"
+    public let role: String
     public let text: String
     public let timestamp: String?
 
@@ -117,8 +113,6 @@ public struct LocalCliThread: Identifiable, Sendable, Equatable, Hashable {
         return "\(days / 30)mo"
     }
 }
-
-// MARK: - Fast Local Scanner (Git Repos + Claude / Codex / Gemini CLI Threads)
 
 public enum LocalWorkspaceDiscovery {
     private static let skipDirectoryNames: Set<String> = [
@@ -216,7 +210,6 @@ public enum LocalWorkspaceDiscovery {
                     suggestedSetupCommand: suggestSetupCommand(forRepoPath: stdPath),
                     lastModified: modDate
                 ))
-                // Don't recurse inside a repo unless depth == 0 (e.g., workspace parent repo like `firstmate`)
                 if depth >= 1 { return }
             }
 
@@ -245,8 +238,6 @@ public enum LocalWorkspaceDiscovery {
         return Array(found.sorted { $0.lastModified > $1.lastModified }.prefix(limit))
     }
 
-    // MARK: - CLI Thread Scanning (Claude Code, Codex, Gemini CLI)
-
     public static func scanCliThreads(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         limit: Int = 36
@@ -269,8 +260,6 @@ public enum LocalWorkspaceDiscovery {
         }
     }
 
-    // MARK: - Claude Code (~/.claude/projects/<encoded>/*.jsonl)
-
     private static func scanClaudeThreads(home: URL, limit: Int) -> [LocalCliThread] {
         let fm = FileManager.default
         let root = home.appendingPathComponent(".claude/projects", isDirectory: true)
@@ -283,7 +272,6 @@ public enum LocalWorkspaceDiscovery {
         var candidates: [(url: URL, dirName: String, mtime: Date)] = []
         for dir in projectDirs {
             let dirName = dir.lastPathComponent
-            // Skip ephemeral internal worktrees
             if dirName.contains("-worktrees-") || dirName.contains("--treehouse-") || dirName.contains("--no-mistakes-") {
                 continue
             }
@@ -390,8 +378,6 @@ public enum LocalWorkspaceDiscovery {
         return nil
     }
 
-    // MARK: - Codex (~/.codex/sessions/YYYY/MM/DD/*.jsonl)
-
     private static func scanCodexThreads(home: URL, limit: Int) -> [LocalCliThread] {
         let fm = FileManager.default
         let root = home.appendingPathComponent(".codex/sessions", isDirectory: true)
@@ -452,7 +438,6 @@ public enum LocalWorkspaceDiscovery {
             if title != nil && cwd != nil { break }
         }
 
-        // Skip internal Toolroll worktree paths if there's no user prompt
         if let cwd, cwd.contains("/.config/nightorders/worktrees/"), title == nil {
             return nil
         }
@@ -514,8 +499,6 @@ public enum LocalWorkspaceDiscovery {
         }
         return nil
     }
-
-    // MARK: - Gemini CLI (~/.gemini/tmp/*/chats/session-*.jsonl)
 
     private static func scanGeminiThreads(home: URL, limit: Int) -> [LocalCliThread] {
         let fm = FileManager.default
@@ -629,8 +612,6 @@ public enum LocalWorkspaceDiscovery {
         }
         return nil
     }
-
-    // MARK: - Shared Helpers
 
     private static func readHeadLines(atPath path: String, maxBytes: Int, maxLines: Int) -> [String] {
         guard let handle = FileHandle(forReadingAtPath: path) else { return [] }

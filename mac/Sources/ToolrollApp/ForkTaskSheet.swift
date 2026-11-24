@@ -1,9 +1,6 @@
 import SwiftUI
 import ToolrollCore
 
-/// Parallel Session Forking Sheet (⌘⇧F):
-/// Clones the selected task into an isolated sibling worktree so you can race two approaches
-/// or two agents (e.g. Claude vs Codex) side-by-side and compare both Code & Canvas Visual Diffs.
 struct ForkTaskSheet: View {
     @Bindable var store: WorkbenchStore
     @Environment(\.dismiss) private var dismiss

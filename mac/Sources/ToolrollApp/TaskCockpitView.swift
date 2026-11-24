@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// Center Task Cockpit (--so-paper) — 100% native in-app approvals, result reviews, agent questions,
-/// plan/retry recovery, Candidates strip, Steps timeline, and bottom composer.
 public struct TaskCockpitView: View {
     @Bindable var store: WorkbenchStore
     @State private var steerDraft: String = ""
@@ -48,7 +46,6 @@ public struct TaskCockpitView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollViewReader { proxy in
-                        // Top clickable Pipeline Stepper (Plan -> Approval -> Build -> Checks -> Ready)
                         if let cards = store.stepCards?.cards, !cards.isEmpty {
                             pipelineStepperBar(cards: cards, proxy: proxy)
                             HairlineDivider()
@@ -56,19 +53,16 @@ public struct TaskCockpitView: View {
 
                         ScrollView {
                             VStack(alignment: .leading, spacing: 18) {
-                                // 1. Agent Question (answer natively in-app)
                                 if let question = row.need?.question {
                                     questionCard(question)
                                         .id("question-card")
                                 }
 
-                                // 2. Result Review (Accept or Send Back natively in-app)
                                 if let review = store.stepCards?.review {
                                     resultReviewCard(review)
                                         .id("review-card")
                                 }
 
-                                // 3. Plan Approval (Review terms & Approve natively in-app!)
                                 if let card = store.approvalCard {
                                     inAppApprovalCard(taskId: row.id, card: card)
                                         .id("approval-card")
@@ -88,7 +82,6 @@ public struct TaskCockpitView: View {
                                         .id("approval-card")
                                 }
 
-                                // 4. Stopped Plan / Failure Recovery (Plan Again / Retry natively in-app)
                                 if let stopped = store.stepCards?.planStopped {
                                     planStoppedCard(stopped)
                                         .id("recovery-card")
@@ -97,16 +90,13 @@ public struct TaskCockpitView: View {
                                         .id("recovery-card")
                                 }
 
-                                // 5. Hold Banner (Resume natively in-app)
                                 if let held = store.stepCards?.held {
                                     heldBanner(held)
                                 }
 
-                                // 6. Explicit Multi-Agent Steps, Run Switcher & Live Activity Stream
                                 multiAgentActivitySection(row: row)
                                     .id("agent-activity")
 
-                                // 7. Candidates Strip (Promote / Rebase / Open PR)
                                 if let cands = store.candidatesResponse?.candidates, !cands.isEmpty {
                                     candidatesSection(taskId: row.id, candidates: cands)
                                         .id("candidates-card")
@@ -120,7 +110,7 @@ public struct TaskCockpitView: View {
                             composerBar(taskId: row.id)
                                 .background(
                                     LinearGradient(
-                                        colors: [ToolrollPalette.paper.opacity(0), ToolrollPalette.paper.opacity(0.88)],
+                                        colors: [ToolrollPalette.ground.opacity(0), ToolrollPalette.ground.opacity(0.92)],
                                         startPoint: .top,
                                         endPoint: .bottom
                                     )
@@ -133,7 +123,7 @@ public struct TaskCockpitView: View {
                 emptyState
             }
         }
-        .background(ToolrollPalette.paper)
+        .background(ToolrollPalette.ground)
         .onChange(of: store.selectedTaskId) { _, _ in
             approvalPassword = ""
             sendBackOpen = false
@@ -146,14 +136,11 @@ public struct TaskCockpitView: View {
         }
     }
 
-    // MARK: - Responsive Liquid Glass Task Bar (ViewThatFits: zero wrapping at any width)
-
     private func unifiedTaskBar(_ row: WorkRow) -> some View {
         let branch = store.activeWorktreeBranch(for: row)
         let siblings = store.siblingActiveTasks(for: row)
 
         return ViewThatFits(in: .horizontal) {
-            // Tier 1 (Wide): Activity|Terminal + Branch + Parallel + Team + Preview + Fork + …
             HStack(spacing: 8) {
                 taskModeGlassSwitch
                 branchCopyPill(branch: branch, maxWidth: 190)
@@ -170,7 +157,6 @@ public struct TaskCockpitView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
 
-            // Tier 2 (Medium): Activity|Terminal + Preview + … (branch & Fork cleanly inside …)
             HStack(spacing: 8) {
                 taskModeGlassSwitch
                 if let busy = store.busyLabel { busyPill(busy) }
@@ -183,7 +169,6 @@ public struct TaskCockpitView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
 
-            // Tier 3 (Condensed): Activity|Terminal + icon-only Preview + … (guaranteed single-line!)
             HStack(spacing: 6) {
                 taskModeGlassSwitch
                 Spacer(minLength: 6)
@@ -195,7 +180,7 @@ public struct TaskCockpitView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-        .background(ToolrollPalette.paper)
+        .background(ToolrollPalette.ground)
     }
 
     private var taskModeGlassSwitch: some View {
@@ -470,8 +455,6 @@ public struct TaskCockpitView: View {
         .background(notice.kind == .refusal ? ToolrollPalette.danger.opacity(0.06) : ToolrollPalette.raised)
     }
 
-    // MARK: - Scannable Native In-App Plan Approval Card (Miller's Law + Von Restorff)
-
     private var approvalStatusBadge: some View {
         HStack(spacing: 6) {
             Circle()
@@ -525,9 +508,7 @@ public struct TaskCockpitView: View {
         let hiddenCheckCount = max(0, digest.checks.count - 3)
 
         return VStack(alignment: .leading, spacing: 14) {
-            // 1. TOP ACTION HEADER: Responsive ViewThatFits — primary CTA & badge NEVER wrap!
             ViewThatFits(in: .horizontal) {
-                // Wide: single horizontal row
                 HStack(spacing: 10) {
                     approvalStatusBadge
                     if let rev = digest.revision {
@@ -544,7 +525,6 @@ public struct TaskCockpitView: View {
                     }
                 }
 
-                // Condensed: clean 2-row stack with zero text wrapping
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         approvalStatusBadge
@@ -567,7 +547,6 @@ public struct TaskCockpitView: View {
                 }
             }
 
-            // 2. HERO GOAL SUMMARY (Lead with what we're actually building)
             if let goal = digest.goal {
                 Text(goal)
                     .font(.system(size: 13.5, weight: .medium))
@@ -577,7 +556,6 @@ public struct TaskCockpitView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // 3. SMART DELTA PILLS FOR `Changed` (replaces unreadable "was only ... now only ..." prose!)
             if !digest.addedFiles.isEmpty || !digest.removedFiles.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("PLAN CHANGES")
@@ -624,7 +602,6 @@ public struct TaskCockpitView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // 4. COMPACT METADATA ROW: Agent + Expandable File Chips
             HStack(spacing: 10) {
                 if let agent = digest.agent {
                     HStack(spacing: 5) {
@@ -688,7 +665,6 @@ public struct TaskCockpitView: View {
                 }
             }
 
-            // 5. SCANNABLE 1-LINE VERIFICATION CHECKS + COLLAPSED SCOPE & SANDBOX DETAILS
             if !digest.checks.isEmpty || digest.wontTouch != nil || !digest.extraTerms.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     if !visibleChecks.isEmpty {
@@ -746,7 +722,6 @@ public struct TaskCockpitView: View {
                         }
                     }
 
-                    // Clean bottom disclosure row: show remaining checks + quiet scope & sandbox details toggle
                     HStack(spacing: 14) {
                         if hiddenCheckCount > 0 {
                             Button {
@@ -823,7 +798,6 @@ public struct TaskCockpitView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
 
-            // 6. PASSWORD STEP-UP OR SECONDARY ACTIONS
             if let prompt = store.approvalPasswordPrompt {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(prompt)
@@ -936,8 +910,6 @@ public struct TaskCockpitView: View {
         )
     }
 
-    // MARK: - Native In-App Result Review Card (Accept / Send Back)
-
     private func resultReviewCard(_ review: TaskReview) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -1009,8 +981,6 @@ public struct TaskCockpitView: View {
         Task { await store.sendBackSelectedResult(note: note) }
     }
 
-    // MARK: - Native In-App Agent Question Card
-
     private func questionCard(_ question: TaskQuestion) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -1071,8 +1041,6 @@ public struct TaskCockpitView: View {
                 .strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1)
         )
     }
-
-    // MARK: - Stopped Plan / Failure Recovery Cards
 
     private func planStoppedCard(_ stopped: PlanStopped) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1204,8 +1172,6 @@ public struct TaskCockpitView: View {
         .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
-
-    // MARK: - Candidates Strip
 
     private func candidatesSection(taskId: String, candidates: [HandoffCandidate]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1352,8 +1318,6 @@ public struct TaskCockpitView: View {
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    // MARK: - Top Horizontal Pipeline Stepper + Active Agent Banner + Live Stream
-
     private func pipelineStepperBar(cards: [StepCard], proxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
@@ -1461,8 +1425,6 @@ public struct TaskCockpitView: View {
         }
     }
 
-    /// Unified Multi-Agent Activity panel: shows every step's assigned/executed agent side-by-side,
-    /// lets you switch across Planner / Builder / Reviewer runs & attempts, and NEVER goes blank.
     private func multiAgentActivitySection(row: WorkRow) -> some View {
         let cards = store.stepCards?.cards ?? []
         let agentSteps = cards.filter { card in
@@ -1487,7 +1449,6 @@ public struct TaskCockpitView: View {
         return VStack(alignment: .leading, spacing: 10) {
             activeAgentStatusBanner(row: row)
 
-            // Multi-agent step & run switcher tabs
             if !agentSteps.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -1587,7 +1548,6 @@ public struct TaskCockpitView: View {
                 }
             }
 
-            // Agent Work Content Card (live stream if available, or clear per-step agent status — never blank!)
             if store.isLoadingLiveRun && !hasStreamForSelectedRun {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -1862,7 +1822,6 @@ public struct TaskCockpitView: View {
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
-    /// Shows explicitly WHICH agent & model is actively working (or ran last) + who is assigned next!
     private func activeAgentStatusBanner(row: WorkRow) -> some View {
         let cards = store.stepCards?.cards ?? []
         let activeOrLatestStep = cards.first(where: { $0.state.lowercased().contains("run") || $0.mark.lowercased().contains("run") })
@@ -1899,7 +1858,6 @@ public struct TaskCockpitView: View {
         }
     }
 
-    /// A model change the server is holding for this run's end (or restart), or why it couldn't apply.
     private func pendingAgentChangeLine(_ pending: PendingAgentChange) -> some View {
         let step = pending.phase == "plan" ? "Planner" : "Builder"
         let model = "\(pending.provider) · \(pending.model)"
@@ -2148,8 +2106,6 @@ public struct TaskCockpitView: View {
         }
     }
 
-    // MARK: - Steps Timeline
-
     private func stepsSection() -> some View {
         let cards = store.stepCards?.cards ?? []
         let hasAttentionStep = cards.contains(where: \.needsYou)
@@ -2337,13 +2293,10 @@ public struct TaskCockpitView: View {
         return fmt.string(from: date)
     }
 
-    // MARK: - Composer Bar
-
     private var activeBuilderModelLabel: String {
         taskOrDefaultModel(forRole: "build") ?? store.modelsRead.roles.first?.words ?? "Models"
     }
 
-    /// The open task's own model for a step, falling back to the workspace default when the task doesn't name one.
     private func taskOrDefaultModel(forRole role: String) -> String? {
         store.stepCards?.modelLabel(forPhase: role) ?? store.modelsRead.roles.first(where: { $0.key == role })?.words
     }

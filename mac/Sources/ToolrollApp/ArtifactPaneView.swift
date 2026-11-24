@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
-/// A document displayed inside Toolroll's right-hand Artifact window (Plan, Result Summary, or local Markdown file).
 public struct WorkbenchArtifact: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
@@ -28,8 +27,6 @@ public struct WorkbenchArtifact: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Right-hand tabbed Artifact & Markdown reader — displays Implementation Plans, Result Walkthroughs,
-/// and project Markdown docs (ADRs, GLOSSARY, README, custom files) with full GFM tables, callouts, and code blocks.
 struct ArtifactPaneView: View {
     @Bindable var store: WorkbenchStore
     @State private var copiedId: String? = nil
@@ -48,7 +45,6 @@ struct ArtifactPaneView: View {
             HairlineDivider()
 
             if let doc = activeArtifact {
-                // Subtle metadata & action strip
                 HStack(spacing: 8) {
                     Text(doc.subtitle)
                         .font(.system(size: 11, design: .monospaced))
@@ -173,7 +169,6 @@ struct ArtifactPaneView: View {
                 }
             }
 
-            // + Menu to open project Markdown docs or pick any .md file
             Menu {
                 let projectDocs = store.discoverProjectMarkdownFiles()
                 if !projectDocs.isEmpty {
@@ -229,8 +224,6 @@ struct ArtifactPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
-
-// MARK: - Pure Native SwiftUI GFM Markdown Renderer (Tables, Callouts, Code Blocks, Headings, Lists)
 
 private struct NativeMarkdownView: View {
     let markdown: String
@@ -382,7 +375,6 @@ private struct MarkdownTableView: View {
         let colCount = max(headers.count, rows.map(\.count).max() ?? 0)
         ScrollView(.horizontal, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 0) {
-                // Header row
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(0..<colCount, id: \.self) { c in
                         let cellText = c < headers.count ? headers[c] : ""
@@ -460,7 +452,6 @@ private enum MarkdownBlockParser {
                 continue
             }
 
-            // Fenced code block
             if trimmed.hasPrefix("```") {
                 let lang = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                 i += 1
@@ -474,14 +465,12 @@ private enum MarkdownBlockParser {
                 continue
             }
 
-            // Horizontal rule
             if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 blocks.append(.divider)
                 i += 1
                 continue
             }
 
-            // Heading
             if trimmed.hasPrefix("#") {
                 let hashes = trimmed.prefix { $0 == "#" }
                 if hashes.count <= 4, trimmed.dropFirst(hashes.count).first == " " {
@@ -492,7 +481,6 @@ private enum MarkdownBlockParser {
                 }
             }
 
-            // Blockquote / Callout
             if trimmed.hasPrefix(">") {
                 var quoteLines: [String] = []
                 while i < lines.count {
@@ -509,7 +497,6 @@ private enum MarkdownBlockParser {
                 continue
             }
 
-            // GFM Table (header + separator row containing ---)
             if trimmed.contains("|"), i + 1 < lines.count {
                 let nextTrim = lines[i + 1].trimmingCharacters(in: .whitespaces)
                 if nextTrim.contains("|") && nextTrim.contains("---") {
@@ -530,7 +517,6 @@ private enum MarkdownBlockParser {
                 }
             }
 
-            // Bullet list
             if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
                 var items: [String] = []
                 while i < lines.count {
@@ -546,7 +532,6 @@ private enum MarkdownBlockParser {
                 continue
             }
 
-            // Ordered list
             if let dotRange = trimmed.range(of: #"^\d+\.\s+"#, options: .regularExpression) {
                 var items: [String] = []
                 while i < lines.count {
@@ -563,7 +548,6 @@ private enum MarkdownBlockParser {
                 continue
             }
 
-            // Paragraph
             var paraLines: [String] = []
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)

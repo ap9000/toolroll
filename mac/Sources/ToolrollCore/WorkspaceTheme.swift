@@ -1,10 +1,9 @@
 import Foundation
 
-/// Role-based color palette compatible with Toolroll's `tui.toml` (`toolroll_view_set` / `src/view-tools.ts`).
 public struct CustomThemePalette: Sendable, Equatable, Identifiable {
     public var id: String { name }
     public var name: String
-    public var base: String // "system" | "light" | "dark" | "high-contrast" | "terminal"
+    public var base: String
     public var paper: String?
     public var ground: String?
     public var raised: String?
@@ -54,12 +53,10 @@ public struct CustomThemePalette: Sendable, Equatable, Identifiable {
     }
 }
 
-/// Live workspace appearance state synchronized with `~/.config/toolroll/tui.toml`
-/// so the Lead agent's `toolroll_view_set` updates the native macOS UI instantaneously.
 public struct WorkspaceAppearanceConfig: Sendable, Equatable {
     public var activeTheme: String
-    public var density: String      // "comfortable" | "compact"
-    public var listSide: String     // "left" | "right"
+    public var density: String
+    public var listSide: String
     public var showCosts: Bool
     public var reducedMotion: Bool
     public var notifyAsks: Bool
@@ -79,7 +76,6 @@ public struct WorkspaceAppearanceConfig: Sendable, Equatable {
         notifyAsks: Bool = true,
         notifyFinished: Bool = true,
         notifyFailed: Bool = true,
-        // Flat by default, like the web UI (solid neutral tokens); glass and vibrancy stay opt-in in Appearance.
         glassChrome: Bool = false,
         sidebarVibrancy: Bool = false,
         savedThemes: [String: CustomThemePalette] = [:],
@@ -102,7 +98,6 @@ public struct WorkspaceAppearanceConfig: Sendable, Equatable {
     public var isCompact: Bool { density == "compact" }
     public var isSidebarOnRight: Bool { listSide == "right" }
 
-    /// The currently active custom palette (if `activeTheme` matches a saved theme in `tui.toml`), merged with any `[colors]` overrides.
     public var effectiveCustomPalette: CustomThemePalette? {
         let basePalette = savedThemes[activeTheme]
         guard basePalette != nil || colorOverrides != nil else { return nil }
@@ -143,7 +138,6 @@ public enum WorkspaceThemeStore {
         return parse(toml: text)
     }
 
-    /// Parses Toolroll's `tui.toml` (`theme`, `density`, `list_side`, `show_costs`, `[colors]`, `[themes.<name>]`, `[notifications]`, `[mac]`).
     public static func parse(toml: String) -> WorkspaceAppearanceConfig {
         var cfg = WorkspaceAppearanceConfig()
         var section = ""
@@ -206,8 +200,6 @@ public enum WorkspaceThemeStore {
         return cfg
     }
 
-    /// Updates top-level keys (`theme`, `density`, `list_side`, `show_costs`) and `[mac]` keys in `tui.toml`
-    /// while preserving every saved `[themes.<name>]` section written by the Lead agent.
     public static func savePreferences(
         theme: String? = nil,
         density: String? = nil,
@@ -223,7 +215,6 @@ public enum WorkspaceThemeStore {
         var lines = existing.components(separatedBy: "\n")
 
         func upsertTopLevel(_ key: String, value: String) {
-            // Find first section header so top-level keys stay above sections
             let firstSectionIdx = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }) ?? lines.count
             if let existingIdx = lines[..<firstSectionIdx].firstIndex(where: {
                 $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key) =") || $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=")
@@ -268,11 +259,9 @@ public enum WorkspaceThemeStore {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try rendered.write(to: url, atomically: true, encoding: .utf8)
         } catch {
-            // Non-fatal
         }
     }
 
-    /// Parses `#RRGGBB` or `#RGB` hex strings into sRGB `(r, g, b)` channels in `0...1`.
     public static func parseHex(_ raw: String?) -> (r: Double, g: Double, b: Double)? {
         guard let raw else { return nil }
         var hex = raw.trimmingCharacters(in: .whitespacesAndNewlines)
