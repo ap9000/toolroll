@@ -2216,8 +2216,11 @@ impl App {
         if let Some(view) = self.threads.view.as_mut() {
             view.sending = None;
         }
-        // An act answered: a reply or an Accept on its way is no longer (a refused reply was put back in its box first).
-        self.threads.reply_sent = None;
+        // An act answered: a reply or an Accept on its way is no longer (a refused reply was put back in its box first,
+        // its key kept for an unchanged retry; any other answer to a reply ends its key too).
+        if self.threads.reply_sent.take().is_some() {
+            self.threads.reply_key = None;
+        }
         self.accept_sent = false;
     }
 

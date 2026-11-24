@@ -3,7 +3,8 @@
 //! a sign-in (`s`); and after "The agent is still working on your last message" the reply typed went to the workbench
 //! and opened New task. Now Esc leaves the Diff, a done Accept or Send back leaves it too (a refused one stays, its
 //! notes there to change), `n` there says how to start a task, and a reply box stays open with its text whenever the
-//! reply can't go: typing never falls through to the workbench's keys.
+//! reply can't go (an ended thread's included): typing never falls through to the workbench's keys. An unchanged
+//! retry of a reply posts its first request key again, so a reply whose answer was lost never starts two turns.
 #[path = "common/pairs.rs"]
 mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -262,5 +263,67 @@ fn a_reply_that_cant_go_stays_in_its_box_and_typing_never_reaches_the_workbench(
     app.update(Msg::Acted(Ok(ActOutcome::Done("Sent.".into()))));
     assert_eq!(app.mode, Mode::Normal);
     app.update(Msg::Acted(Ok(ActOutcome::Refused("Not now.".into()))));
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+/// The request key an Enter in the reply box posted.
+fn posted_key(fx: &[Effect]) -> String {
+    match fx {
+        [Effect::Act { path, fields, .. }] if path.ends_with("/turn") => fields
+            .iter()
+            .find(|(k, _)| k == "key")
+            .map(|(_, v)| v.clone())
+            .unwrap(),
+        _ => panic!("{fx:?}"),
+    }
+}
+
+#[test]
+fn an_unchanged_retry_posts_the_same_key_and_an_edited_reply_a_new_one() {
+    let mut app = thread_app();
+    app.update(Msg::Threads(Ok(parse(threads_with("finished")))));
+    app.key(key('s'));
+    type_words(&mut app, "Now add a test");
+    let first = posted_key(&app.key(code(KeyCode::Enter)));
+    // The answer never came (the turn may have started): the retry, unchanged, is the same request.
+    app.update(Msg::Acted(Err(ApiError::Unreachable("reset".into()))));
+    let again = posted_key(&app.key(code(KeyCode::Enter)));
+    assert_eq!(again, first);
+    // Refused, unchanged: still the same.
+    app.update(Msg::Acted(Ok(ActOutcome::Refused("Not now.".into()))));
+    assert_eq!(posted_key(&app.key(code(KeyCode::Enter))), first);
+    // Edited: a new request.
+    app.update(Msg::Acted(Ok(ActOutcome::Refused("Not now.".into()))));
+    type_words(&mut app, " please");
+    let edited = posted_key(&app.key(code(KeyCode::Enter)));
+    assert_ne!(edited, first);
+    // Done: the next reply, even with the same words, is a new request.
+    app.update(Msg::Acted(Ok(ActOutcome::Done("Sent.".into()))));
+    app.key(key('s'));
+    type_words(&mut app, "Now add a test please");
+    let next = posted_key(&app.key(code(KeyCode::Enter)));
+    assert_ne!(next, edited);
+}
+
+#[test]
+fn typing_after_s_on_an_ended_thread_never_reaches_the_workbench() {
+    let mut app = thread_app();
+    let mut list = threads_with("finished");
+    list["threads"][0]["ended"] = json!(true);
+    app.update(Msg::Threads(Ok(parse(list))));
+    app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    app.key(key('s'));
+    assert!(
+        status(&app).contains("This thread has ended"),
+        "{}",
+        status(&app)
+    );
+    // n, A and s would be New task, Agents and Steer: here they are only text.
+    type_words(&mut app, "nAs");
+    assert_eq!(reply_text(&app).as_deref(), Some("nAs"));
+    assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
+    assert_eq!(reply_text(&app).as_deref(), Some("nAs"));
+    assert!(app.agents_screen.is_none());
+    app.key(code(KeyCode::Esc));
     assert_eq!(app.mode, Mode::Normal);
 }

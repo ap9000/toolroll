@@ -97,6 +97,10 @@ pub struct Threads {
     /// The reply on its way (its thread and the text typed), until the console answers: a refusal puts it back in its
     /// box, so the text is never lost and never falls through to the workbench's keys.
     pub reply_sent: Option<(String, String)>,
+    /// The request key of the latest reply not known to be done, with its exact thread and message: an unchanged retry
+    /// (after a refusal, or an answer that never came) posts the same key, so the console takes it once even if the
+    /// first post did start a turn. A changed message gets a new key.
+    pub reply_key: Option<(String, String, String)>,
 }
 
 /// A thread's news: its latest turn (number and state) and its latest Ship (number and state). A new finished turn, a
@@ -271,20 +275,28 @@ pub fn open_reply(app: &mut App) -> Vec<crate::app::Effect> {
         app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
         return vec![];
     };
-    let row = app.threads.rows.iter().find(|t| t.id == id);
-    if row.is_some_and(|t| t.ended) {
-        app.status = Some((
-            Tone::Refused,
-            "This thread has ended. Press T to start a new one.".into(),
-        ));
-        return vec![];
-    }
-    app.status = turn_working(app, &id).then(|| (Tone::Refused, REPLY_WAITS_FOR_TURN.into()));
+    // An ended thread takes no reply, but its box opens all the same, saying so: what is typed next goes into it, never
+    // to the workbench's keys.
+    app.status = if thread_ended(app, &id) {
+        Some((Tone::Refused, REPLY_THREAD_ENDED.into()))
+    } else {
+        turn_working(app, &id).then(|| (Tone::Refused, REPLY_WAITS_FOR_TURN.into()))
+    };
     app.mode = Mode::ThreadReply(id, String::new());
     vec![]
 }
 
-/// Enter in the reply box: the message, posted with a fresh key of its own (the same post twice takes one turn).
+/// Said in the reply box of an ended thread: nothing is sent from it.
+pub const REPLY_THREAD_ENDED: &str =
+    "This thread has ended, so it takes no reply. Esc closes this; T starts a new thread.";
+
+/// Whether the thread ended (End is final), as the console last listed it.
+fn thread_ended(app: &App, thread: &str) -> bool {
+    app.threads.rows.iter().any(|t| t.id == thread && t.ended)
+}
+
+/// Enter in the reply box: the message, posted with a key of its own (the same post twice takes one turn), the same key
+/// again for an unchanged retry of a reply not known done.
 pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app::Effect> {
     let message = text.trim().to_string();
     if message.is_empty() {
@@ -297,13 +309,26 @@ pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app
         ));
         return vec![];
     }
+    if thread_ended(app, &thread) {
+        app.status = Some((Tone::Refused, REPLY_THREAD_ENDED.into()));
+        app.mode = Mode::ThreadReply(thread, text);
+        return vec![];
+    }
     if turn_working(app, &thread) {
         app.status = Some((Tone::Refused, REPLY_WAITS_FOR_TURN.into()));
         app.mode = Mode::ThreadReply(thread, text);
         return vec![];
     }
     app.threads.reply_sent = Some((thread.clone(), text));
-    let key = app.token(32);
+    // The same thread and message as the reply still not known done: its key again. Anything else: a new one.
+    let key = match &app.threads.reply_key {
+        Some((t, m, k)) if *t == thread && *m == message => k.clone(),
+        _ => {
+            let k = app.token(32);
+            app.threads.reply_key = Some((thread.clone(), message.clone(), k.clone()));
+            k
+        }
+    };
     vec![Effect::Act {
         path: format!(
             "/agents/live/thread/{}/turn",
