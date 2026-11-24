@@ -327,3 +327,36 @@ fn typing_after_s_on_an_ended_thread_never_reaches_the_workbench() {
     app.key(code(KeyCode::Esc));
     assert_eq!(app.mode, Mode::Normal);
 }
+
+#[test]
+fn a_reply_in_another_thread_in_between_never_loses_an_unresolved_key() {
+    const OTHER: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    let mut app = thread_app();
+    let mut list = threads_with("finished");
+    let mut other = list["threads"][0].clone();
+    other["id"] = json!(OTHER);
+    list["threads"].as_array_mut().unwrap().push(other);
+    app.update(Msg::Threads(Ok(parse(list))));
+    let pick = |app: &mut App, id: &str| {
+        app.selected = app.items.iter().position(|i| i.id == id).unwrap();
+    };
+    // A reply whose answer never came: its key is still unresolved.
+    pick(&mut app, fake::THREAD);
+    app.key(key('s'));
+    type_words(&mut app, "Now add a test");
+    let first = posted_key(&app.key(code(KeyCode::Enter)));
+    app.update(Msg::Acted(Err(ApiError::Unreachable("reset".into()))));
+    app.key(code(KeyCode::Esc));
+    // A reply in another thread goes through meanwhile.
+    pick(&mut app, OTHER);
+    app.key(key('s'));
+    type_words(&mut app, "Something else");
+    let between = posted_key(&app.key(code(KeyCode::Enter)));
+    assert_ne!(between, first);
+    app.update(Msg::Acted(Ok(ActOutcome::Done("Sent.".into()))));
+    // Back to the first: the unchanged retry is still the same request.
+    pick(&mut app, fake::THREAD);
+    app.key(key('s'));
+    type_words(&mut app, "Now add a test");
+    assert_eq!(posted_key(&app.key(code(KeyCode::Enter))), first);
+}

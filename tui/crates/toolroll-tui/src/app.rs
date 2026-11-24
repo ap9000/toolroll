@@ -2217,9 +2217,11 @@ impl App {
             view.sending = None;
         }
         // An act answered: a reply or an Accept on its way is no longer (a refused reply was put back in its box first,
-        // its key kept for an unchanged retry; any other answer to a reply ends its key too).
-        if self.threads.reply_sent.take().is_some() {
-            self.threads.reply_key = None;
+        // its key kept for an unchanged retry; any other answer to a reply ends that reply's key).
+        if let Some((thread, text)) = self.threads.reply_sent.take() {
+            self.threads
+                .reply_keys
+                .remove(&(thread, text.trim().to_string()));
         }
         self.accept_sent = false;
     }

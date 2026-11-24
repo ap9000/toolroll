@@ -97,10 +97,11 @@ pub struct Threads {
     /// The reply on its way (its thread and the text typed), until the console answers: a refusal puts it back in its
     /// box, so the text is never lost and never falls through to the workbench's keys.
     pub reply_sent: Option<(String, String)>,
-    /// The request key of the latest reply not known to be done, with its exact thread and message: an unchanged retry
-    /// (after a refusal, or an answer that never came) posts the same key, so the console takes it once even if the
-    /// first post did start a turn. A changed message gets a new key.
-    pub reply_key: Option<(String, String, String)>,
+    /// The request key of every reply not known to be done, by its exact thread and message: an unchanged retry (after a
+    /// refusal, or an answer that never came, whatever was sent elsewhere in between) posts the same key, so the console
+    /// takes it once even if the first post did start a turn (and sends it again only if that one provably ran nothing).
+    /// A changed message is another entry, with a new key; a done one leaves.
+    pub reply_keys: std::collections::BTreeMap<(String, String), String>,
 }
 
 /// A thread's news: its latest turn (number and state) and its latest Ship (number and state). A new finished turn, a
@@ -321,11 +322,17 @@ pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app
     }
     app.threads.reply_sent = Some((thread.clone(), text));
     // The same thread and message as the reply still not known done: its key again. Anything else: a new one.
-    let key = match &app.threads.reply_key {
-        Some((t, m, k)) if *t == thread && *m == message => k.clone(),
-        _ => {
+    let key = match app
+        .threads
+        .reply_keys
+        .get(&(thread.clone(), message.clone()))
+    {
+        Some(k) => k.clone(),
+        None => {
             let k = app.token(32);
-            app.threads.reply_key = Some((thread.clone(), message.clone(), k.clone()));
+            app.threads
+                .reply_keys
+                .insert((thread.clone(), message.clone()), k.clone());
             k
         }
     };
