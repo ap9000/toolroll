@@ -46,22 +46,73 @@ public struct ModelPickerPopover: View {
     private var providers: [ModelChoice] {
         if let taskChoices {
             let allowed = taskChoices.forRole(targetRoleKey)
-            return Dictionary(grouping: allowed, by: \.provider).keys.sorted().map { provider in
-                ModelChoice(
-                    provider: provider,
-                    label: provider.prefix(1).uppercased() + provider.dropFirst(),
-                    models: allowed.filter { $0.provider == provider }.map { ModelOption(value: $0.model, label: $0.model) }
-                )
+            if !allowed.isEmpty {
+                return Dictionary(grouping: allowed, by: \.provider).keys.sorted().map { provider in
+                    ModelChoice(
+                        provider: provider,
+                        label: Self.providerDisplayName(provider),
+                        models: allowed.filter { $0.provider == provider }.map { ModelOption(value: $0.model, label: $0.model) }
+                    )
+                }
             }
         }
         var list = activeRole?.choices ?? []
         let installedIds = Set(store.agentsRead.agents.filter(\.ready).map { $0.id.lowercased() })
 
+        if !list.contains(where: { $0.provider == "claude" }) {
+            let claudeInstalled = installedIds.contains("claude")
+                || Self.hasExecutable("claude")
+                || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("claude|") })
+            if claudeInstalled || store.isLocalSession {
+                list.insert(ModelChoice(
+                    provider: "claude",
+                    label: "Claude Code",
+                    models: [
+                        ModelOption(value: "claude-opus-5-5", label: "Claude Opus 5.5"),
+                        ModelOption(value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6"),
+                        ModelOption(value: "claude-haiku-4-5", label: "Claude Haiku 4.5"),
+                    ]
+                ), at: 0)
+            }
+        }
+
+        if !list.contains(where: { $0.provider == "codex" }) {
+            let liveCodex = Self.loadLocalCodexModels()
+            let codexInstalled = installedIds.contains("codex")
+                || !liveCodex.isEmpty
+                || Self.hasExecutable("codex")
+                || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("codex|") })
+            if codexInstalled || store.isLocalSession {
+                let insertIdx = min(1, list.count)
+                list.insert(ModelChoice(
+                    provider: "codex",
+                    label: "Codex",
+                    models: liveCodex.isEmpty ? [
+                        ModelOption(value: "gpt-6-astra", label: "GPT-6 Astra"),
+                        ModelOption(value: "gpt-6-sol", label: "GPT-6 Sol"),
+                        ModelOption(value: "gpt-6-luna", label: "GPT-6 Luna"),
+                    ] : liveCodex
+                ), at: insertIdx)
+            }
+        }
+
+        if targetRoleKey != "review", !list.contains(where: { $0.provider == "antigravity" }) {
+            if installedIds.contains("antigravity") || Self.hasExecutable("agy") {
+                list.append(ModelChoice(
+                    provider: "antigravity",
+                    label: "Gemini (Antigravity)",
+                    models: [
+                        ModelOption(value: "gemini-4-neon", label: "Gemini 4 Neon"),
+                        ModelOption(value: "gemini-4-carbon", label: "Gemini 4 Carbon"),
+                        ModelOption(value: "gemini-3.8-flash", label: "Gemini 3.8 Flash"),
+                    ]
+                ))
+            }
+        }
+
         if targetRoleKey != "review", !list.contains(where: { $0.provider == "gemini" }) {
-            let geminiInstalled = installedIds.contains("gemini")
-                || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/gemini")
-                || FileManager.default.fileExists(atPath: "/usr/local/bin/gemini")
-            if geminiInstalled || store.isLocalSession {
+            let geminiInstalled = installedIds.contains("gemini") || Self.hasExecutable("gemini")
+            if geminiInstalled {
                 list.append(ModelChoice(
                     provider: "gemini",
                     label: "Google Gemini",
@@ -76,25 +127,28 @@ public struct ModelPickerPopover: View {
             }
         }
 
-        if !list.contains(where: { $0.provider == "codex" }) {
-            let codexInstalled = installedIds.contains("codex")
-                || store.modelsRead.roles.contains(where: { $0.current.hasPrefix("codex|") })
-            if codexInstalled || store.isLocalSession {
-                let liveCodex = Self.loadLocalCodexModels()
-                list.append(ModelChoice(
-                    provider: "codex",
-                    label: "Codex",
-                    models: liveCodex.isEmpty ? [
-                        ModelOption(value: "gpt-6.2-astra", label: "GPT-6.2-Astra"),
-                        ModelOption(value: "gpt-6.2-sol", label: "GPT-6.2-Sol"),
-                        ModelOption(value: "gpt-6.1-terra", label: "GPT-6.1 Terra"),
-                        ModelOption(value: "gpt-6-astra", label: "GPT-6-Astra"),
-                        ModelOption(value: "gpt-6-sol", label: "GPT-6-Sol"),
-                    ] : liveCodex
-                ))
-            }
-        }
         return list
+    }
+
+    private static func providerDisplayName(_ provider: String) -> String {
+        switch provider.lowercased() {
+        case "claude": return "Claude Code"
+        case "codex": return "Codex"
+        case "antigravity": return "Gemini (Antigravity)"
+        case "gemini": return "Google Gemini"
+        default: return provider.prefix(1).uppercased() + provider.dropFirst()
+        }
+    }
+
+    private static func hasExecutable(_ binary: String) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/\(binary)",
+            "\(home)/.gemini/bin/\(binary)",
+            "/opt/homebrew/bin/\(binary)",
+            "/usr/local/bin/\(binary)",
+        ]
+        return candidates.contains { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     private static func loadLocalCodexModels() -> [ModelOption] {
@@ -372,7 +426,12 @@ public struct ModelPickerPopover: View {
         .frame(width: 516)
         .background(ToolrollPalette.paper)
         .task {
-            if let taskId { await store.loadPickerChoices(taskId: taskId) }
+            if store.modelsRead.roles.isEmpty {
+                await store.refreshModelCatalog()
+            }
+            if let taskId {
+                await store.loadPickerChoices(taskId: taskId)
+            }
         }
         .onAppear {
             targetRoleKey = taskId != nil && initialRoleKey == "review" ? "build" : initialRoleKey
