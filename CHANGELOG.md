@@ -4,6 +4,25 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.117 — 2026-11-24
+
+Interactive agent threads (beta) keep working reply after reply, and the workbench never runs your typing as keys.
+
+### Changed
+
+- **Ship says what it needs before you press anything.** When a project has no check command or can't open pull
+  requests, the thread terms say so, with the commands to fix it, and Ship refuses before asking for a password.
+- **Esc leaves the Diff tab,** and accepting or sending back a result takes you out of it.
+
+### Fixed
+
+- **Replying to a thread works every time.** A reply after a finished turn no longer stops its own new agent.
+- **Typed text no longer runs as workbench keys:** `s` during a working turn opens the reply box, a refused reply
+  keeps its text in the box, and an ended thread's box takes what you type.
+- **Retrying a reply is safe:** a reply sent twice runs once, and one that never reached the agent says so and can be
+  sent again.
+- **Turning threads off stops only the agents that were running,** never one started just after.
+
 ## 0.9.116 — 2026-11-19
 
 Clearer recovery for threads and AI teammates, with consistent light and dark colours.
