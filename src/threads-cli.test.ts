@@ -99,6 +99,30 @@ describe("credential acts: a password typed for this command, the install's name
   });
 });
 
+describe("Ship says what it needs before it asks for a password", () => {
+  test("a project with no check command or no pull requests is refused with what to do next, and no prompt; once it has both, the password is asked", async () => {
+    team();
+    const repo = join(dir, "shop");
+    mkdirSync(repo);
+    const id = "5".repeat(32);
+    store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
+      .run(id, repo, "0".repeat(40), `refs/toolroll/threads/${id}/base`, join(state, "threads", id), NOW.toISOString());
+    const ship = () => cli("thread", ["ship", id.slice(0, 8)], {});
+    const neither = await ship();
+    expect(neither).toMatchObject({ asked: [] });
+    expect(neither.code).not.toBe(0);
+    expect(neither.said).toContain("This project has no check command and can't open pull requests yet, and Ship needs both.");
+    store.setVerifyCommand({ repo, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    const noPullRequests = await ship();
+    expect(noPullRequests).toMatchObject({ asked: [] });
+    expect(noPullRequests.said).toContain("This project can't open pull requests yet, and Ship needs them");
+    store.savePublicationGrant({ repo, githubRepo: "alex/shop", remote: "origin", headPrefix: "toolroll/", base: "main", capabilities: ["push-branch", "open-pr"], selector: "ours", draft: false,
+      grantedBy: "alex", publishOn: "complete" }, NOW);
+    // Nothing missing: only now does Ship ask who you are, and the rest of its checks follow the password.
+    expect((await ship()).asked.length).toBeGreaterThan(0);
+  });
+});
+
 describe("thread commands", () => {
   test("list on a solo install: your threads, with no password; a stranger's id is no thread of yours", async () => {
     expect(JSON.parse((await cli("thread", ["list"])).said)).toMatchObject({ ok: true, threads: [] });

@@ -9,7 +9,8 @@
  * turn started through startFlexibleTurn runs its agent (a stand-in `claude` on PATH, never the real one) at Full
  * access, signed in only through its thread's sign-in relay, which it reaches from inside the fence (and which, holding
  * no Claude sign-in here, sends nothing); lowering the thread mid-turn stops it at once, closes its proxy and its relay
- * token, and interrupts its turn. No model is called.
+ * token, and interrupts its turn; replies after finished turns, twice in a row, each start a fresh agent on their own
+ * proxy, and the replaced agent's own exit never stops the newer launch (stranger test round 11). No model is called.
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +20,11 @@ import { flexibleLaunch, relayGrantLive, unsettledLaunch, watchLaunch } from "..
 import { lowerFlexibleThreadLevel, startFlexibleTurn } from "../../src/flexible-agents.js";
 import { relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "../../src/flexible-relay.js";
 import { admitFlexibleTurn, flexibleTurn } from "../../src/flexible-turns.js";
+import { beginFlexibleThreadTurn, closeFlexibleSessions, continueFlexibleThread, flexibleStopPending, openFlexibleSessions, settleFlexibleStops } from "../../src/flexible-session.js";
+import { requireFlexibleStop } from "../../src/flexible-authority-end.js";
+import type { FlexibleLauncher } from "../../src/flexible-launcher.js";
+import { standInSignIn } from "../flexible-sign-in-kit.js";
+import { randomBytes } from "node:crypto";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../src/flexible.js";
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { needs, osFence, q } from "./harness.js";
@@ -230,5 +236,150 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       expect(unsettledLaunch(world.store, id)).toBeNull();
       expect(readFileSync(join(world.project, "README.md"), "utf8")).toBe("shop\n");
     }, 90_000);
+
+    /** A thread whose agent is a stand-in `claude` that answers every message with a finished result and keeps running,
+     * as the stream-json agent does, with this host's sessions and a launcher that makes each launch its own proxy. */
+    async function replyWorld() {
+      world.store.saveApprover("alex", "hash-a", NOW);
+      const alex = () => ({ name: "alex", generation: world.store.accountOf("alex")!.generation });
+      const terms: FlexibleTerms = { version: 1, repo: world.project, signer: "alex", signerGeneration: alex().generation, starters: "approvers-with-access",
+        passwordFreeUpTo: "full", max: "full", default: "full", network: "confined", caps: { liveThreads: 3, turnsPerDayProject: 300, turnsPerDayPerson: 150, measuredMicrousdPerDay: null } };
+      const digest = flexibleDigestOf(terms);
+      world.store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
+        VALUES (?, ?, ?, ?, ?, 'alex', ?, 'password-now', 'alex', ?)`).run(world.project, flexibleTermsJson(terms), digest, flexibleTermsJson(terms), digest, NOW.toISOString(), NOW.toISOString());
+      standInSignIn(world.store, world.state, "alex");
+      // A stand-in `claude` (never the real one) that behaves as the stream-json agent does: it answers each message
+      // with a finished result and stays running, reading its input, until it is stopped.
+      const bin = join(world.dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "claude"), ["#!/bin/sh", 'while IFS= read -r line; do echo \'{"type":"result","subtype":"success","is_error":false}\'; done'].join("\n"));
+      chmodSync(join(bin, "claude"), 0o755);
+      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
+      const { id } = await thread();
+      const opened = openFlexibleSessions(world.store);
+      if (!opened.ok) throw new Error(opened.message);
+      const sessions = opened.sessions;
+      // Each launch gets its own proxy, as the console's launcher makes one per turn: another port, another credential.
+      let port = 41_100;
+      const proxies: { port: number; token: string; closed: number }[] = [];
+      const launcher: FlexibleLauncher = { open: () => proxies.filter(one => one.closed === 0).length, close: async () => {},
+        prepare: async () => {
+          const proxy = { port: ++port, token: randomBytes(16).toString("hex"), closed: 0 };
+          proxies.push(proxy);
+          return { ok: true, storage: STORAGE, network: { proxyPort: proxy.port, token: proxy.token, proxyEnv: {}, close: () => { proxy.closed++; } } };
+        } };
+      // Told when the stop a launch's own exit set off has answered: the fact the checks below wait on.
+      const exitSettled = new Map<string, unknown>();
+      const seams = { exitSettled: (launch: string, settled: unknown) => { exitSettled.set(launch, settled); } };
+      const launchOf = (turn: string) => String(world.store.handle.prepare("SELECT id FROM flexible_thread_launch WHERE turn = ?").get(turn)?.["id"]);
+      const live = (launch: string) => flexibleLaunch(world.store, launch)?.state === "live";
+      const startFirst = async () => {
+        const first = admitFlexibleTurn(world.store, { thread: id, starter: alex(), digest, level: "full", freshProof: false, provider: "claude", model: "claude-sonnet-4-5",
+          billing: "subscription", requestKey: "start:first", holder: sessions.holder });
+        if (!first.ok) throw new Error(first.message);
+        expect(await beginFlexibleThreadTurn(world.store, sessions, { turn: first.turn, message: "Make the README friendlier", launcher, seams })).toMatchObject({ ok: true, launched: "started" });
+        await until(() => flexibleTurn(world.store, first.turn)?.status === "finished", () => JSON.stringify(flexibleTurn(world.store, first.turn)));
+        return first.turn;
+      };
+      const reply = (message: string) => continueFlexibleThread(world.store, sessions, { thread: id, by: alex(), message, key: randomBytes(16).toString("hex"), freshProof: false, held: () => true, launcher, seams });
+      return { id, sessions, proxies, exitSettled, launchOf, live, startFirst, reply };
+    }
+
+    test("native: replies after finished turns, twice in a row, each start a fresh agent on its own proxy; the earlier agent's exit never stops the newer launch", async ctx => {
+      needs(ctx, osFence());
+      const { id, sessions, proxies, exitSettled, launchOf, live, startFirst, reply } = await replyWorld();
+      try {
+        const first = await startFirst();
+        let previous = { turn: first, launch: launchOf(first) };
+        for (const [n, message] of [[2, "Now add a short install section"], [3, "And a line about tests"]] as const) {
+          const sent = await reply(message);
+          expect(sent, JSON.stringify(sent)).toMatchObject({ ok: true, seq: n, fresh: true });
+          if (!sent.ok) return;
+          const launch = launchOf(sent.turn);
+          expect(launch).not.toBe(previous.launch);
+          // The earlier agent was replaced (that launch exactly), its proxy closed; its own exit's stop has answered and
+          // left the newer launch alone.
+          expect(flexibleLaunch(world.store, previous.launch)).toMatchObject({ state: "exited", stopReason: "its agent was replaced" });
+          await until(() => exitSettled.has(previous.launch));
+          expect(exitSettled.get(previous.launch)).toMatchObject({ ok: true, launch: null });
+          await until(() => flexibleTurn(world.store, sent.turn)?.status === "finished", () => JSON.stringify(flexibleTurn(world.store, sent.turn)));
+          expect(live(launch)).toBe(true);
+          expect(flexibleTurn(world.store, previous.turn)!.status).toBe("finished");
+          expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible agent stopped' AND detail LIKE ?").get(`%launch ${launch}%`)?.["n"]).toBe(0);
+          previous = { turn: sent.turn, launch };
+        }
+        // One proxy per launch, each launch's closed with it; the live one's still open.
+        expect(proxies.map(one => one.closed)).toEqual([1, 1, 0]);
+        expect(new Set(proxies.map(one => one.token)).size).toBe(3);
+      } finally {
+        await closeFlexibleSessions(world.store, sessions);
+      }
+      expect(unsettledLaunch(world.store, id)).toBeNull();
+    }, 120_000);
+
+    test("native: a stop required of the replaced agent never touches its replacement: the reply's new agent keeps running and the requirement settles", async ctx => {
+      needs(ctx, osFence());
+      const { id, sessions, launchOf, live, startFirst, reply } = await replyWorld();
+      try {
+        const first = await startFirst();
+        const a = launchOf(first);
+        // The first agent must stop (as an interrupted turn or a sign-in removed requires), and the upkeep hasn't acted yet.
+        world.store.transact(() => { requireFlexibleStop(world.store, { launch: a, thread: id, reason: "its turn was interrupted", at: new Date().toISOString() }); });
+        expect(flexibleStopPending(world.store, id)).toBe(true);
+        // The reply takes the thread's lock as it is called (synchronously) and replaces A with B under it; the upkeep's
+        // stop of A, started meanwhile, waits for that lock and then finds A already replaced.
+        const replying = reply("Now add a short install section");
+        const upkeep = settleFlexibleStops(world.store, sessions);
+        const [sent, settled] = await Promise.all([replying, upkeep]);
+        expect(sent, JSON.stringify(sent)).toMatchObject({ ok: true, seq: 2, fresh: true });
+        if (!sent.ok) return;
+        const b = launchOf(sent.turn);
+        expect(settled).toMatchObject({ ok: true, pending: 0 });
+        expect(flexibleLaunch(world.store, a)).toMatchObject({ state: "exited", stopReason: "its agent was replaced" });
+        expect(flexibleStopPending(world.store, id)).toBe(false);
+        // B runs on, with its session's agent link and the thread's relay kept, and its turn finishes.
+        expect(live(b)).toBe(true);
+        expect(sessions.threads.get(id)?.agent?.launch).toBe(b);
+        expect(sessions.threads.get(id)?.relay).not.toBeNull();
+        await until(() => flexibleTurn(world.store, sent.turn)?.status === "finished", () => JSON.stringify(flexibleTurn(world.store, sent.turn)));
+        expect(live(b)).toBe(true);
+        expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible agent stopped' AND detail LIKE ?").get(`%launch ${b}%`)?.["n"]).toBe(0);
+      } finally {
+        await closeFlexibleSessions(world.store, sessions);
+      }
+      expect(unsettledLaunch(world.store, id)).toBeNull();
+    }, 120_000);
+
+    test("native: threads turned off while a reply holds the lock, then on again: the off cleanup stops only the launch it saw, never the reply's replacement", async ctx => {
+      needs(ctx, osFence());
+      const { id, sessions, launchOf, live, startFirst, reply } = await replyWorld();
+      try {
+        const first = await startFirst();
+        const a = launchOf(first);
+        // The reply takes the thread's lock as it is called. Threads go off: the upkeep sees A, records that A must stop,
+        // and waits for the lock. Threads are on again before the reply goes on, so it replaces A with B under the lock.
+        const replying = reply("Now add a short install section");
+        switched.on = false;
+        const upkeep = settleFlexibleStops(world.store, sessions);
+        switched.on = true;
+        const [sent, settled] = await Promise.all([replying, upkeep]);
+        expect(sent, JSON.stringify(sent)).toMatchObject({ ok: true, seq: 2, fresh: true });
+        if (!sent.ok) return;
+        const b = launchOf(sent.turn);
+        expect(settled).toMatchObject({ ok: true, pending: 0 });
+        expect(flexibleLaunch(world.store, a)).toMatchObject({ state: "exited", stopReason: "its agent was replaced" });
+        // A's requirement settled with its exit; B runs on, its session's agent link and the thread's relay kept.
+        expect(flexibleStopPending(world.store, id)).toBe(false);
+        expect(live(b)).toBe(true);
+        expect(sessions.threads.get(id)?.agent?.launch).toBe(b);
+        expect(sessions.threads.get(id)?.relay).not.toBeNull();
+        await until(() => flexibleTurn(world.store, sent.turn)?.status === "finished", () => JSON.stringify(flexibleTurn(world.store, sent.turn)));
+        expect(live(b)).toBe(true);
+        expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible agent stopped' AND detail LIKE ?").get(`%launch ${b}%`)?.["n"]).toBe(0);
+      } finally {
+        await closeFlexibleSessions(world.store, sessions);
+      }
+      expect(unsettledLaunch(world.store, id)).toBeNull();
+    }, 120_000);
   });
 });

@@ -327,11 +327,12 @@ describe("Ship over HTTP: its terms first; the press only on the laptop road", (
     for (const persona of ["ines", "alex"]) expect(await post(persona), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
     const byToken = await fetch(`${base}/agents/live/thread/${T1}/ship`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${readToken}` } });
     expect(byToken.status).toBe(403);
-    // This project has no check command: Ship can't be offered, before and after naming terms.
+    // This project has no check command and no pull requests: Ship can't be offered, before and after naming terms, and
+    // both are named at once with what to do next.
     for (const fields of [{}, { terms: "3".repeat(32), digest: "4".repeat(32) }]) {
       const refused = await post("pat", fields);
       expect(refused.status).toBe(409);
-      expect((refused.body as { words: string }).words).toMatch(/no check command/);
+      expect((refused.body as { words: string }).words).toMatch(/^This project has no check command and can't open pull requests yet, and Ship needs both\. .*toolroll verify set .*toolroll publish setup /);
     }
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_ship").get()?.["n"]).toBe(0);
   });

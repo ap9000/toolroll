@@ -46,8 +46,8 @@ import {
   type FlexibleRequestCard, type FlexibleRequestKind,
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
-import { defaultCustodyIO, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
-import { cancelFlexibleShip, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
+import { defaultCustodyIO, flexibleLaunch, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
+import { cancelFlexibleShip, flexibleShipNeeds, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
 import type { ApprovalSummary } from "./approval-summary.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleSignInBilling } from "./flexible-sign-in.js";
@@ -188,10 +188,28 @@ export async function settleFlexibleStops(store: Store, sessions: FlexibleSessio
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   let stopped = 0, pending = 0;
   if (!flexibleAvailable(store)) {
-    const durable = store.handle.prepare("SELECT DISTINCT thread FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").all(sessions.holder).map(row => String(row["thread"]));
-    for (const thread of new Set([...sessions.threads.keys(), ...durable])) {
+    const reason = "interactive agent threads were turned off";
+    // Every launch of this holder not yet exited, by identity, made a durable stop requirement now (the same record the
+    // upkeep settles whatever happens next: threads turned on again, this console restarted), and stopped as exactly
+    // that launch. A reply already holding a thread's lock that replaces the launch meanwhile leaves its replacement
+    // untouched: the stop finds another launch there and does nothing to it.
+    const launches = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited' ORDER BY started_at, id").all(sessions.holder)
+      .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));
+    try {
+      store.transact(() => { const at = (input.clock ?? systemClock)().toISOString(); for (const one of launches) requireFlexibleStop(store, { launch: one.launch, thread: one.thread, reason, at }); });
+    } catch { /* stopped below all the same; the next tick records them again */ }
+    for (const one of launches) {
       try {
-        const done = await stopFlexibleThreadSession(store, sessions, { thread, reason: "interactive agent threads were turned off", ...clocked });
+        const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason, ...clocked, expect: { launch: one.launch, holder: sessions.holder } });
+        if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
+      } catch { pending++; }
+    }
+    // A session with no launch of its own (its relay, no agent): closed while threads are still off, read again under
+    // the thread's lock, so one turned on again meanwhile (and whatever a reply started there) is left alone.
+    const held = new Set(launches.map(one => one.thread));
+    for (const thread of [...sessions.threads.keys()].filter(one => !held.has(one))) {
+      try {
+        const done = await stopFlexibleThreadSession(store, sessions, { thread, reason, ...clocked, whileOff: true });
         if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
       } catch { pending++; }
     }
@@ -309,7 +327,8 @@ async function settleStopRequirements(store: Store, sessions: FlexibleSessions, 
     const launch = store.handle.prepare("SELECT holder, state FROM flexible_thread_launch WHERE id = ?").get(one.launch);
     if (launch === undefined || launch["state"] === "exited" || String(launch["holder"]) !== sessions.holder) continue;
     try {
-      const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason: one.reason, ...clocked });
+      // That launch only: a replacement started meanwhile (a reply holding the thread's lock) is never touched.
+      const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason: one.reason, ...clocked, expect: { launch: one.launch, holder: sessions.holder } });
       if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
     } catch { pending++; }
   }
@@ -369,31 +388,26 @@ export async function startFlexibleThreadSession(store: Store, sessions: Flexibl
   return { ok: true, relayPort: relay.port };
 }
 
+type SessionStopInput = { thread: string; reason: string; clock?: FlexibleClock;
+  /** Only this launch of this holder (a stop requirement names one): rechecked under the thread's lock before anything
+   * is touched; when the thread's launch is another one now (a replacement), nothing of it is revoked, closed or
+   * stopped, and its session and relay stay. */
+  expect?: { launch: string; holder: string };
+  /** Only while interactive agent threads are still off, read under the thread's lock (threads turned off: a session
+   * with no launch of its own); on again by then, nothing is touched. */
+  whileOff?: boolean };
+type SessionStopped = { ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string };
+
 /**
- * Stop a thread's session: its answers revoked first (nothing more is sent), its agent's stdin closed and the agent
- * stopped with its whole tree's exit verified (F2c stopFlexibleThreadAgent), then its relay closed.
+ * Stop a thread's session, wholly under the thread's lock (a reply replacing its agent is wholly before or after it):
+ * its answers revoked first (nothing more is sent), its agent's stdin closed and the agent stopped with its whole
+ * tree's exit verified (F2c stopFlexibleThreadAgent), then its relay closed. With `expect`, only that launch: the
+ * identity is checked under the lock before any of that, and the answers revoked are that launch's own.
  */
-export async function stopFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: { thread: string; reason: string; clock?: FlexibleClock }):
-  Promise<{ ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string }> {
+export async function stopFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: SessionStopInput): Promise<SessionStopped> {
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.reason !== "string" || input.reason.length < 1 || input.reason.length > 200) return refuse("invalid-request");
-  const clocked = input.clock === undefined ? {} : { clock: input.clock };
-  const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: input.reason, ...clocked });
-  if (!revoked.ok) return revoked;
-  const session = sessions.threads.get(input.thread);
-  if (session?.agent != null) { try { session.agent.stdin.end(); } catch { /* already closed */ } }
-  const stopped = await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, ...clocked, io: sessions.io });
-  // Its exit not verified (custody left the launch unresolved): the session stays here as the retry target, with no
-  // agent and no relay, until the upkeep proves it gone (settleFlexibleStops). Anything else ends it.
-  const unverified = !("reason" in stopped) && !stopped.ok;
-  if (session !== undefined) {
-    session.agent = null;
-    try { await session.relay?.close(); } catch { /* closed already */ }
-    session.relay = null;
-    if (!unverified) sessions.threads.delete(input.thread);
-  }
-  bump(sessions, input.thread);
-  if ("reason" in stopped) return stopped;
-  return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
+  if (input.expect !== undefined && (typeof input.expect.launch !== "string" || !ID.test(input.expect.launch) || typeof input.expect.holder !== "string" || input.expect.holder === "")) return refuse("invalid-request");
+  return withFlexibleThreadLock(input.thread, () => stopSessionLocked(store, sessions, input));
 }
 
 /** A card's text as kept: the live sanitizer's (controls, escapes, bidi out), cut, and hidden whole when it looks like a secret. */
@@ -665,7 +679,7 @@ export async function lowerFlexibleThreadSession(store: Store, sessions: Flexibl
  * stopped, or at once when the turn launches nothing.
  */
 export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, input: { turn: string; message: string; launcher: FlexibleLauncher | null; clock?: FlexibleClock;
-  expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started" | "reused"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.turn !== "string" || !ID.test(input.turn) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
@@ -698,15 +712,11 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
     throw error;
   }
   if (!started.ok) { bump(sessions, turn.thread); return started; }
-  if (started.launched === "started") {
-    const child = started.child;
-    if (child.stdout === null || child.stdin === null) return refuse("invalid-request");
-    const attached = attachFlexibleAgent(store, sessions, { thread: turn.thread, turn: input.turn, launch: started.launchId, stdout: child.stdout, stdin: child.stdin,
-      exited: listener => { child.once("exit", listener); }, ...clocked });
-    if (!attached.ok) return attached;
-  } else if (session.agent !== null && session.agent.launch === started.launchId) {
-    session.agent.turn = input.turn;
-  }
+  const child = started.child;
+  if (child.stdout === null || child.stdin === null) return refuse("invalid-request");
+  const attached = attachFlexibleAgent(store, sessions, { thread: turn.thread, turn: input.turn, launch: started.launchId, stdout: child.stdout, stdin: child.stdin,
+    exited: listener => { child.once("exit", listener); }, ...clocked });
+  if (!attached.ok) return attached;
   session.title ??= cardText(input.message.split("\n")[0], 80) || null;
   try { session.agent?.stdin.write(`${userFrame(input.message, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
   bump(sessions, turn.thread);
@@ -829,20 +839,22 @@ export function flexibleThreadEnded(store: Store, thread: string): boolean {
  *   ended thread, reads the billing of their own sign-in now, and admits the turn (F2e admitFlexibleTurn: the terms
  *   the thread's last turn ran under must still stand for this person, every limit has room) at the thread's level,
  *   with the thread's agent and model. The same `key` again never takes a second turn.
- * - Then the turn begins (beginFlexibleThreadTurn): the thread's running agent takes it when it is provably the same
- *   launch; otherwise a fresh agent starts, which doesn't remember earlier turns (`fresh`, said to the person).
+ * - The same `key` again after its turn ended before its agent ever started (nothing ran) sends it again as a new turn
+ *   (`resent`, said to the person); after its agent did start, it is refused with that turn's state.
+ * - Then the turn begins (beginFlexibleThreadTurn) with a fresh agent, which doesn't remember earlier turns (`fresh`,
+ *   said to the person): an earlier turn's agent is replaced, never reused (flexible-agents.ts startFlexibleTurn).
  * A person's surface only; the caller proves the person (their session re-read, and the proof a start takes).
  */
 export async function continueFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; message: string; key: string;
   freshProof: boolean; held: () => boolean; launcher: FlexibleLauncher | null; clock?: FlexibleClock; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }):
-  Promise<{ ok: true; turn: string; seq: number; fresh: boolean; replayed: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  Promise<{ ok: true; turn: string; seq: number; fresh: boolean; replayed: boolean; resent?: { seq: number; detail: string | null } } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000
     || typeof input.key !== "string" || !ID.test(input.key) || typeof input.held !== "function") return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
   const clock = input.clock ?? systemClock;
   const locked = await withFlexibleThreadLock(input.thread, async () => {
-    const admitted = store.transact((): { ok: true; turn: string; seq: number; replayed: boolean } | { ok: false; reason: string; message: string } => {
+    const admitted = store.transact((): { ok: true; turn: string; seq: number; replayed: boolean; resent?: { seq: number; detail: string | null } } | { ok: false; reason: string; message: string } => {
       if (!input.held()) return { ok: false, reason: "session", message: "Your session here changed. Sign in again, then reply. Nothing was sent." };
       if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
       if (flexibleThreadEnded(store, input.thread)) return { ok: false, reason: "thread-ended", message: FLEXIBLE_THREAD_ENDED };
@@ -862,7 +874,7 @@ export async function continueFlexibleThread(store: Store, sessions: FlexibleSes
     const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock,
       ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
     if (!begun.ok) return begun;
-    return { ok: true as const, turn: admitted.turn, seq: admitted.seq, fresh: begun.launched === "started", replayed: admitted.replayed };
+    return { ok: true as const, turn: admitted.turn, seq: admitted.seq, fresh: begun.launched === "started", replayed: admitted.replayed, ...(admitted.resent === undefined ? {} : { resent: admitted.resent }) };
   });
   return locked;
 }
@@ -964,11 +976,16 @@ export const FLEXIBLE_SHIP_WORKING = "The agent is still working on your last me
 /** Said when the thread's agent is still being stopped before a Ship. */
 export const FLEXIBLE_SHIP_STOPPING = "Toolroll is stopping the thread's agent first. Nothing was shipped yet: try again in a moment.";
 
-/** The exact terms a Ship of `thread` would sign now (flexible-ship.ts flexibleShipTerms), for its owner only. */
+/** The exact terms a Ship of `thread` would sign now (flexible-ship.ts flexibleShipTerms), for its owner only. A
+ * project that lacks what Ship needs (a check command, pull requests) is refused first, every missing piece named at
+ * once with what to do next (flexibleShipNeeds). */
 export async function flexibleThreadShipTerms(store: Store, input: { thread: string; by: { name: string; generation: number } }):
   Promise<{ ok: true; digest: string; summary: ApprovalSummary } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
-  if (ownThread(store, input.thread, input.by) === null) return refuse("thread-unknown");
+  const owned = ownThread(store, input.thread, input.by);
+  if (owned === null) return refuse("thread-unknown");
+  const needs = flexibleShipNeeds(store, owned.repo);
+  if (needs !== null) return { ok: false, reason: needs.reason, message: needs.message };
   const shown = await flexibleShipTerms(store, { thread: input.thread, by: input.by.name });
   if (!shown.ok) return shown;
   return { ok: true, digest: shown.digest, summary: shown.summary };
@@ -1381,4 +1398,52 @@ export async function removeFlexibleThreadCopy(store: Store, input: { thread: st
   if (ownThread(store, input.thread, { name: input.by }) === null) return refuse("thread-unknown");
   const removed = await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.now, ...(input.prove === undefined ? {} : { prove: input.prove }) });
   return removed.ok ? { ok: true } : { ok: false, reason: removed.reason, message: removed.message };
+}
+
+/**
+ * What a Ship of the thread named by `asked` (its id, or the first 8 or more characters of it) needs that its project
+ * hasn't got (flexible-ship.ts flexibleShipNeeds), or null: for the command line to say before it asks for a password.
+ * Only a thread that is ready and the only one matching counts; anything else is left to the owner's own checks after.
+ * It reads the project's setup only (a check command, pull requests), which the command line reads anyway.
+ */
+export function flexibleShipNeedsFor(store: Store, asked: string): { reason: string; message: string } | null {
+  if (typeof asked !== "string" || !/^[0-9a-f]{8,32}$/.test(asked)) return null;
+  const found = store.handle.prepare("SELECT repo FROM flexible_thread WHERE state = 'ready' AND substr(id, 1, ?) = ? LIMIT 2").all(asked.length, asked);
+  if (found.length !== 1) return null;
+  const needs = flexibleShipNeeds(store, String(found[0]!["repo"]));
+  return needs === null ? null : { reason: needs.reason, message: needs.message };
+}
+
+/** stopFlexibleThreadSession's work, under the thread's lock (appended here: functions are added at the end of this file). */
+async function stopSessionLocked(store: Store, sessions: FlexibleSessions, input: SessionStopInput): Promise<SessionStopped> {
+  const clocked = input.clock === undefined ? {} : { clock: input.clock };
+  const expect = input.expect;
+  if (input.whileOff === true && flexibleAvailable(store)) return { ok: true, stopped: true, why: null };
+  if (expect !== undefined) {
+    const now = unsettledLaunch(store, input.thread);
+    if (now === null || now.id !== expect.launch || now.holder !== expect.holder) {
+      // Not the thread's launch now: already settled, or replaced. Its current agent, session and relay are left alone.
+      const exited = flexibleLaunch(store, expect.launch)?.state === "exited";
+      return { ok: true, stopped: exited, why: exited ? null : "another launch of this thread holds it now" };
+    }
+  }
+  const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: input.reason, ...clocked, ...(expect === undefined ? {} : { connection: expect.launch }) });
+  if (!revoked.ok) return revoked;
+  const session = sessions.threads.get(input.thread);
+  // The session's agent is this stop's only when it is that launch (always so under the lock, checked all the same).
+  const ours = session !== undefined && (expect === undefined || session.agent === null || session.agent.launch === expect.launch);
+  if (ours && session?.agent != null) { try { session.agent.stdin.end(); } catch { /* already closed */ } }
+  const stopped = await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, ...clocked, io: sessions.io, ...(expect === undefined ? {} : { expect }) });
+  // Its exit not verified (custody left the launch unresolved): the session stays here as the retry target, with no
+  // agent and no relay, until the upkeep proves it gone (settleFlexibleStops). Anything else ends it.
+  const unverified = !("reason" in stopped) && !stopped.ok;
+  if (session !== undefined && ours) {
+    session.agent = null;
+    try { await session.relay?.close(); } catch { /* closed already */ }
+    session.relay = null;
+    if (!unverified) sessions.threads.delete(input.thread);
+  }
+  bump(sessions, input.thread);
+  if ("reason" in stopped) return stopped;
+  return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
 }
