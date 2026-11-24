@@ -46,7 +46,7 @@ import {
   type FlexibleRequestCard, type FlexibleRequestKind,
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
-import { defaultCustodyIO, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
+import { defaultCustodyIO, flexibleLaunch, flexibleTurnLaunched, unsettledLaunch } from "./flexible-launch.js";
 import { cancelFlexibleShip, flexibleShipNeeds, flexibleShipsOf, flexibleShipTerms, sendBackFlexible, shipFlexible, type ShipProof } from "./flexible-ship.js";
 import type { ApprovalSummary } from "./approval-summary.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
@@ -309,7 +309,8 @@ async function settleStopRequirements(store: Store, sessions: FlexibleSessions, 
     const launch = store.handle.prepare("SELECT holder, state FROM flexible_thread_launch WHERE id = ?").get(one.launch);
     if (launch === undefined || launch["state"] === "exited" || String(launch["holder"]) !== sessions.holder) continue;
     try {
-      const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason: one.reason, ...clocked });
+      // That launch only: a replacement started meanwhile (a reply holding the thread's lock) is never touched.
+      const done = await stopFlexibleThreadSession(store, sessions, { thread: one.thread, reason: one.reason, ...clocked, expect: { launch: one.launch, holder: sessions.holder } });
       if (done.ok && "stopped" in done && done.stopped) stopped++; else pending++;
     } catch { pending++; }
   }
@@ -369,31 +370,23 @@ export async function startFlexibleThreadSession(store: Store, sessions: Flexibl
   return { ok: true, relayPort: relay.port };
 }
 
+type SessionStopInput = { thread: string; reason: string; clock?: FlexibleClock;
+  /** Only this launch of this holder (a stop requirement names one): rechecked under the thread's lock before anything
+   * is touched; when the thread's launch is another one now (a replacement), nothing of it is revoked, closed or
+   * stopped, and its session and relay stay. */
+  expect?: { launch: string; holder: string } };
+type SessionStopped = { ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string };
+
 /**
- * Stop a thread's session: its answers revoked first (nothing more is sent), its agent's stdin closed and the agent
- * stopped with its whole tree's exit verified (F2c stopFlexibleThreadAgent), then its relay closed.
+ * Stop a thread's session, wholly under the thread's lock (a reply replacing its agent is wholly before or after it):
+ * its answers revoked first (nothing more is sent), its agent's stdin closed and the agent stopped with its whole
+ * tree's exit verified (F2c stopFlexibleThreadAgent), then its relay closed. With `expect`, only that launch: the
+ * identity is checked under the lock before any of that, and the answers revoked are that launch's own.
  */
-export async function stopFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: { thread: string; reason: string; clock?: FlexibleClock }):
-  Promise<{ ok: true; stopped: boolean; why: string | null } | FlexibleSessionRefusal | FlexibleAnswerRefusal | { ok: false; reason: string; message: string }> {
+export async function stopFlexibleThreadSession(store: Store, sessions: FlexibleSessions, input: SessionStopInput): Promise<SessionStopped> {
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.reason !== "string" || input.reason.length < 1 || input.reason.length > 200) return refuse("invalid-request");
-  const clocked = input.clock === undefined ? {} : { clock: input.clock };
-  const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: input.reason, ...clocked });
-  if (!revoked.ok) return revoked;
-  const session = sessions.threads.get(input.thread);
-  if (session?.agent != null) { try { session.agent.stdin.end(); } catch { /* already closed */ } }
-  const stopped = await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, ...clocked, io: sessions.io });
-  // Its exit not verified (custody left the launch unresolved): the session stays here as the retry target, with no
-  // agent and no relay, until the upkeep proves it gone (settleFlexibleStops). Anything else ends it.
-  const unverified = !("reason" in stopped) && !stopped.ok;
-  if (session !== undefined) {
-    session.agent = null;
-    try { await session.relay?.close(); } catch { /* closed already */ }
-    session.relay = null;
-    if (!unverified) sessions.threads.delete(input.thread);
-  }
-  bump(sessions, input.thread);
-  if ("reason" in stopped) return stopped;
-  return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
+  if (input.expect !== undefined && (typeof input.expect.launch !== "string" || !ID.test(input.expect.launch) || typeof input.expect.holder !== "string" || input.expect.holder === "")) return refuse("invalid-request");
+  return withFlexibleThreadLock(input.thread, () => stopSessionLocked(store, sessions, input));
 }
 
 /** A card's text as kept: the live sanitizer's (controls, escapes, bidi out), cut, and hidden whole when it looks like a secret. */
@@ -1396,4 +1389,37 @@ export function flexibleShipNeedsFor(store: Store, asked: string): { reason: str
   if (found.length !== 1) return null;
   const needs = flexibleShipNeeds(store, String(found[0]!["repo"]));
   return needs === null ? null : { reason: needs.reason, message: needs.message };
+}
+
+/** stopFlexibleThreadSession's work, under the thread's lock (appended here: functions are added at the end of this file). */
+async function stopSessionLocked(store: Store, sessions: FlexibleSessions, input: SessionStopInput): Promise<SessionStopped> {
+  const clocked = input.clock === undefined ? {} : { clock: input.clock };
+  const expect = input.expect;
+  if (expect !== undefined) {
+    const now = unsettledLaunch(store, input.thread);
+    if (now === null || now.id !== expect.launch || now.holder !== expect.holder) {
+      // Not the thread's launch now: already settled, or replaced. Its current agent, session and relay are left alone.
+      const exited = flexibleLaunch(store, expect.launch)?.state === "exited";
+      return { ok: true, stopped: exited, why: exited ? null : "another launch of this thread holds it now" };
+    }
+  }
+  const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: input.reason, ...clocked, ...(expect === undefined ? {} : { connection: expect.launch }) });
+  if (!revoked.ok) return revoked;
+  const session = sessions.threads.get(input.thread);
+  // The session's agent is this stop's only when it is that launch (always so under the lock, checked all the same).
+  const ours = session !== undefined && (expect === undefined || session.agent === null || session.agent.launch === expect.launch);
+  if (ours && session?.agent != null) { try { session.agent.stdin.end(); } catch { /* already closed */ } }
+  const stopped = await stopFlexibleThreadAgent(store, { id: input.thread, reason: input.reason, ...clocked, io: sessions.io, ...(expect === undefined ? {} : { expect }) });
+  // Its exit not verified (custody left the launch unresolved): the session stays here as the retry target, with no
+  // agent and no relay, until the upkeep proves it gone (settleFlexibleStops). Anything else ends it.
+  const unverified = !("reason" in stopped) && !stopped.ok;
+  if (session !== undefined && ours) {
+    session.agent = null;
+    try { await session.relay?.close(); } catch { /* closed already */ }
+    session.relay = null;
+    if (!unverified) sessions.threads.delete(input.thread);
+  }
+  bump(sessions, input.thread);
+  if ("reason" in stopped) return stopped;
+  return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
 }
