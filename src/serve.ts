@@ -722,8 +722,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     });
   });
 
-  server.once('listening', () => store.telemetry.start());
-  server.once('close', () => store.telemetry.stop());
+  if (options.rehearsal !== true) {
+    server.once('listening', () => store.telemetry.start());
+    server.once('close', () => store.telemetry.stop());
+  }
 
   // --public-url (arc 3): validated to EXACTLY an https origin. Its host
   // joins the allowed set, its origin authorizes POSTs, and cookies turn
@@ -2158,7 +2160,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let leadClosing = false;
   // Started in the console's folder scope (folder-gate.ts), so their own timers and the personal queue's kick (which
   // restores the context it was started in, never a request's) read folders as the console's work does.
-  server.once('listening', () => consoleFolders(options, identities, () => {
+  // A rehearsal (the deploy check, release-from-main.md) answers pages only: no queue, no team, no lead upkeep.
+  if (options.rehearsal !== true) server.once('listening', () => consoleFolders(options, identities, () => {
     team.start();
     personalQueue.start();
     leadMaintenance = startMaintenance({ intervalMs: 5_000, shouldStop: () => leadClosing,
@@ -2175,7 +2178,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // rule run from this pass (or a person's Check now), not from a GET.
   let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
   let agentsCheckedAt = 0;
-  if (options.backgroundChecks === true) server.once('listening', () => {
+  if (options.backgroundChecks === true && options.rehearsal !== true) server.once('listening', () => {
     // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
     try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
     backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,

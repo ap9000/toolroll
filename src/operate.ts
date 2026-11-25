@@ -1017,6 +1017,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-carry",
   // task scope --release ... --from-main [--full-check]: a release from main (release-from-main.md).
   "from-main", "full-check",
+  // serve --rehearsal: the deploy check's console on a copy of the database, nothing else started.
+  "rehearsal",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "single-process", "laptop", "web", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
@@ -4591,7 +4593,7 @@ async function decideCommand(
  * with its historical greeting and Ctrl-C wait; `up` supervises it beside
  * the watch loops.
  */
-async function startConsole(options: {
+export async function startConsole(options: {
   context: Context;
   host: string;
   port: number;
@@ -4611,10 +4613,14 @@ async function startConsole(options: {
   draining?: () => boolean;
   /** v147: this start's key epoch (absent: the server mints its own). */
   keyEpoch?: string;
+  /** The deploy check's rehearsal (docs/plans/release-from-main.md, part C): the console answers pages and nothing
+   * else starts — no loop beside it, no background check, no project folder looked at, no queue, no lead upkeep. */
+  rehearsal?: boolean;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
+  const rehearsal = options.rehearsal === true;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
-  noticeGitIncidents(context.store, context.clock);
+  if (!rehearsal) noticeGitIncidents(context.store, context.clock);
   // Every project folder this console starts with is resolved off its thread, under a deadline, after it is listening
   // (consoleIdentitiesInBackground): the console answers at once, and a project shows up once its folder answers. Until
   // then it is unresolved and kept restrictive; one that doesn't answer (a drive away, an iCloud folder macOS is
@@ -4624,7 +4630,8 @@ async function startConsole(options: {
     identities,
     store: context.store,
     // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
-    backgroundChecks: true,
+    backgroundChecks: !rehearsal,
+    ...(rehearsal ? { rehearsal: true } : {}),
     ...(context.desktopIdentity === undefined ? {} : { desktopIdentity: context.desktopIdentity }),
     ...(context.additionalProjectRepos === undefined || options.currentRepos === undefined ? {} : { additionalProjectRepos: options.currentRepos }),
     evidenceRoot: context.evidenceRoot,
@@ -4635,7 +4642,7 @@ async function startConsole(options: {
     poolRoot: options.poolRoot,
     ...(options.allowedHosts === undefined ? {} : { allowedHosts: options.allowedHosts }),
     // This computer's own tailnet names are admitted on the served port without an --allow-host (onboarding).
-    tailnetNames: context.tailnetNames ?? (() => readTailnetNames()),
+    tailnetNames: rehearsal ? (async () => []) : context.tailnetNames ?? (() => readTailnetNames()),
     // With no lead set up yet, the agent signed in on this computer runs it (onboarding).
     leadByDefault: true,
     ...(options.setupCode === undefined ? {} : { setupCode: options.setupCode }),
@@ -4659,6 +4666,12 @@ async function startConsole(options: {
   }).catch(error => {
     throw new Error(`could not listen on ${options.host}:${options.port} — ${describe(error)}`);
   });
+  const bound = server.address();
+  const port = typeof bound === "object" && bound !== null ? bound.port : options.port;
+  const shown = options.host === "0.0.0.0" || options.host === "::" ? "localhost" : options.host;
+  // A rehearsal starts nothing beside the console: it is a copy of someone's database, and every loop below acts on the
+  // world (sends, backs up, probes sign-ins, looks for updates, reads project folders).
+  if (rehearsal) return { server, port, url: `http://${shown}:${port}/` };
   consoleIdentitiesInBackground(identities, [...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
   // v104: monitoring runs beside the console (every setup has one): one loop sends the audit stream and traces where
   // Settings → Monitoring says, and stops when the console does. A lease keeps a second process from sending too.
@@ -4686,11 +4699,8 @@ async function startConsole(options: {
     startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
   ];
   server.on("close", () => { for (const stop of besideConsole) stop(); });
-  const bound = server.address();
-  const port = typeof bound === "object" && bound !== null ? bound.port : options.port;
   // A bind-everywhere address is not a place a browser can go: the URL
   // we print and open names localhost, which the console always admits.
-  const shown = options.host === "0.0.0.0" || options.host === "::" ? "localhost" : options.host;
   return { server, port, url: `http://${shown}:${port}/` };
 }
 
@@ -4701,10 +4711,16 @@ async function serveCommand(
   const { store, write, json } = context;
   const portGiven = text(flags, "port");
   const port = Number(portGiven ?? 4180);
+  // The deploy check's rehearsal (release-from-main.md, part C): this loopback address, an ephemeral port, and nothing
+  // but the console started (startConsole's `rehearsal`).
+  const rehearsal = flags.get("rehearsal") === true;
   // Validated like demo's --port — a NaN handed to listen() surfaced as a
   // baffling bind failure instead of a usage answer (round-4 finding 11).
-  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, "serve", "usage", "--port is a whole number under 65536", EXIT.usage);
+  if (portGiven !== undefined && (!Number.isInteger(port) || port < (rehearsal ? 0 : 1) || port >= 65536)) return fail(write, json, "serve", "usage", "--port is a whole number under 65536", EXIT.usage);
   const host = text(flags, "host") ?? "127.0.0.1";
+  if (rehearsal && (host !== "127.0.0.1" || ["allow-host", "public-url", "runner", "editor", "repo", "project-root"].some(one => flags.has(one)))) {
+    return fail(write, json, "serve", "usage", "--rehearsal serves 127.0.0.1 only, with no --allow-host, --public-url, --runner, --editor, --repo or --project-root", EXIT.usage);
+  }
   const allow = text(flags, "allow-host");
   // The authorization ceiling: --repo (comma-separable) names repos this
   // server may show; --project-root authorizes any git repo under a
@@ -4733,6 +4749,7 @@ async function serveCommand(
     context,
     host,
     port,
+    ...(rehearsal ? { rehearsal: true } : {}),
     ...(setupCode === undefined ? {} : { setupCode }),
     ...(localRunner === undefined ? {} : { localRunner }),
     ...(publicUrl === undefined ? {} : { publicUrl }),
