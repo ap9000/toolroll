@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { inRehearsal } from "../rehearsal.js";
 import { tmpdir } from "node:os";
 import {
   checkEngineResponse,
@@ -68,7 +69,10 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       deps.bus.publish({ revision: `dc:${note.threadId}:${Date.now()}` });
     },
   });
-  if (!deps.disableLegacyImport && !store.isDemo() && dbFile && dbFile !== ":memory:" && soloNow(store)) {
+  // A rehearsal (release-from-main.md, part C) serves a copy: no import and no polling, which would reconcile the copy's
+  // turns and stop their processes — the real computer's.
+  const rehearsing = inRehearsal();
+  if (!rehearsing && !deps.disableLegacyImport && !store.isDemo() && dbFile && dbFile !== ":memory:" && soloNow(store)) {
     try {
       const owners = store.handle
         .prepare("SELECT name, generation FROM approver WHERE revoked_at IS NULL")
@@ -80,7 +84,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       // Legacy Mac JSON import is best-effort and never blocks server startup.
     }
   }
-  host.startPolling();
+  if (!rehearsing) host.startPolling();
 
   const json = (ctx: HandlerContext, status: number, value: unknown): void =>
     respond(ctx.response, status, "application/json", JSON.stringify(value));

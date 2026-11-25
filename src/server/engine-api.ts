@@ -16,6 +16,7 @@
  * person's yes to its terms card (flexible-start.ts), named by the card's key and proved as an approval's yes is; its
  * agent's network and storage come from this console's launcher (flexible-launcher.ts).
  */
+import { inRehearsal } from "../rehearsal.js";
 import { homedir } from "node:os";
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -195,6 +196,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
    * close with their launches, and all of them when the console stops (`close`, below). */
   let launcher: FlexibleLauncher | null = null;
   const openHost = (): FlexibleSessions | null => {
+    // A rehearsal never opens the copy's threads: opening recovers their holders and stops their launches.
+    if (inRehearsal()) return null;
     if (flexible !== null) return flexible;
     const opened = openFlexibleSessions(store);
     if (!opened.ok) return null;

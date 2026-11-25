@@ -74,6 +74,7 @@ import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
 import { withWorkReads } from "./work-reads.js";
 import { createEngineHandlers } from "./server/engine-api.js";
+import { enterRehearsal } from "./rehearsal.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -234,6 +235,9 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
+  // A rehearsal (release-from-main.md, part C) is entered before anything is made: the handlers below read it, and no
+  // signal leaves this process until the server closes (rehearsal.ts).
+  const leaveRehearsal = options.rehearsal === true ? enterRehearsal() : null;
   // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
   // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
   const identities = options.identities ?? syncProjectIdentities();
@@ -726,6 +730,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     server.once('listening', () => store.telemetry.start());
     server.once('close', () => store.telemetry.stop());
   }
+  if (leaveRehearsal !== null) server.once('close', leaveRehearsal);
 
   // --public-url (arc 3): validated to EXACTLY an https origin. Its host
   // joins the allowed set, its origin authorizes POSTs, and cookies turn
@@ -761,7 +766,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   {
     // The engine API's upkeep rides this tick (engine-api.ts: a Flexible thread's answers past their deadlines; nothing
     // while Flexible is off). Its handlers exist before the first tick: they are made while this server is built.
-    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } engineHandlers.upkeep(); };
+    // No upkeep in a rehearsal: it would settle and stop the copy's threads, whose processes are the real computer's.
+    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } if (options.rehearsal !== true) engineHandlers.upkeep(); };
     const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
     timer.unref?.();
     server.on("close", () => { clearInterval(timer); flushBudget(); });

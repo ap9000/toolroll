@@ -34,8 +34,12 @@ vi.mock("./lead-queue-runtime.js", async real => {
   return { ...original, createPersonalQueueRuntime: (...args: Parameters<typeof original.createPersonalQueueRuntime>) => { const queue = original.createPersonalQueueRuntime(...args); return { ...queue, start: () => { started.push("personal queue"); } }; } };
 });
 
+import { spawn, type ChildProcess } from "node:child_process";
 import { startConsole } from "./operate.js";
-import { openStore } from "./store.js";
+import { openStore, type Store } from "./store.js";
+import { DirectChatHost } from "./direct-chat.js";
+import { defaultCustodyIO } from "./flexible-launch.js";
+import { inRehearsal } from "./rehearsal.js";
 
 const outbound: string[] = [];
 afterEach(() => { vi.unstubAllGlobals(); started.length = 0; outbound.length = 0; });
@@ -85,6 +89,62 @@ describe("serve --rehearsal: the deploy check's console", () => {
     } finally {
       await new Promise<void>(done => server.close(() => done()));
       store.close();
+    }
+  });
+});
+
+/** A real process of this test's own, standing in for an agent the real computer runs (a copy records its pid). */
+async function liveProcess(): Promise<{ child: ChildProcess; pid: number; start: string }> {
+  const child = spawn(process.execPath, ["-e", "process.stdout.write('up\\n'); setInterval(() => {}, 1 << 30);"], { stdio: ["ignore", "pipe", "ignore"] });
+  await new Promise<void>(done => child.stdout!.once("data", () => done()));
+  const start = defaultCustodyIO().table()?.find(row => row.pid === child.pid)?.start ?? null;
+  if (start === null || child.pid === undefined) throw new Error("no start identity for the stand-in process");
+  return { child, pid: child.pid, start };
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+/** A running Direct Chat turn of `pid` whose Stop was asked an hour ago: a reconciler's SIGKILL is due. */
+function runningTurn(store: Store, dir: string, pid: number, start: string): void {
+  const at = "2026-11-25T08:00:00.000Z";
+  store.handle.prepare(`INSERT INTO direct_chat_thread (id, owner, account_generation, title, repo, clone_path, branch, base_sha, provider, model_id, created_at, updated_at)
+    VALUES ('th-1', 'alex', 1, 'A chat', ?, ?, 'main', ?, 'claude', 'sonnet', ?, ?)`).run(dir, join(dir, "clone"), "a".repeat(40), at, at);
+  store.handle.prepare(`INSERT INTO direct_chat_turn (id, thread_id, seq, user_prompt, log_path, stderr_path, pid, start_identity, pgid, boot_id, status, stop_requested_at, created_at)
+    VALUES ('turn-1', 'th-1', 1, 'hi', ?, ?, ?, ?, ?, NULL, 'running', ?, ?)`).run(join(dir, "turn.log"), join(dir, "turn.err"), pid, start, pid, at, at);
+}
+
+describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("a rehearsal never signals a process its copy records", () => {
+  test("a running Direct Chat turn past its Stop and a thread's process stay alive through a rehearsal; outside one, the reconciler kills", async () => {
+    const turn = await liveProcess(), thread = await liveProcess(), control = await liveProcess();
+    try {
+      // Outside a rehearsal (the control): the reconciler SIGKILLs the turn's recorded process.
+      {
+        const { dir, store } = world();
+        runningTurn(store, dir, control.pid, control.start);
+        new DirectChatHost(store, { stateRoot: dir, now: () => new Date("2026-11-25T09:00:00.000Z") }).reconcileRunningTurns();
+        await new Promise<void>(done => control.child.exitCode !== null || control.child.signalCode !== null ? done() : control.child.once("exit", () => done()));
+        expect(control.child.signalCode).toBe("SIGKILL");
+        store.close();
+      }
+      const { dir, store, context } = world();
+      runningTurn(store, dir, turn.pid, turn.start);
+      const { server } = await startConsole({ context: context as never, host: "127.0.0.1", port: 0, poolRoot: join(dir, "worktrees"), rehearsal: true });
+      try {
+        expect(inRehearsal()).toBe(true);
+        // What a poller or a thread's stop would do, were one running: every road refuses.
+        new DirectChatHost(store, { stateRoot: dir, now: () => new Date("2026-11-25T09:00:00.000Z") }).reconcileRunningTurns();
+        expect([...defaultCustodyIO().signal([{ pid: thread.pid, start: thread.start }], "SIGKILL").values()]).toEqual(["denied"]);
+        expect(() => process.kill(thread.pid, "SIGKILL")).toThrow(/never signals a process/);
+        expect(() => process.kill(-turn.pid, "SIGTERM")).toThrow(/never signals a process/);
+        expect(alive(turn.pid)).toBe(true);
+        expect(alive(thread.pid)).toBe(true);
+      } finally {
+        await new Promise<void>(done => server.close(() => done()));
+        store.close();
+      }
+      expect(inRehearsal()).toBe(false);
+      expect(alive(turn.pid) && alive(thread.pid)).toBe(true);
+    } finally {
+      for (const one of [turn, thread, control]) one.child.kill("SIGKILL");
     }
   });
 });
