@@ -6,6 +6,8 @@ public struct SetupWorkbenchView: View {
     @Bindable var store: WorkbenchStore
     @State private var showMoreAgents: Bool = false
     @State private var showMoreOptions: Bool = false
+    @State private var showAllDiscoveredRepos: Bool = false
+    @State private var connectingRepoPath: String? = nil
     @State private var isModelPickerOpen: Bool = false
     @State private var confirmingInstallAgent: AgentRow? = nil
 
@@ -83,11 +85,17 @@ public struct SetupWorkbenchView: View {
                         HairlineDivider()
 
                         if readyAgents.isEmpty {
-                            HStack(spacing: 10) {
-                                Text("No signed-in coding agents detected yet. Expand below to see sign-in commands.")
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("No signed-in coding agents detected yet. Sign in to any agent below to start.")
                                     .font(.system(size: 12.5))
                                     .foregroundStyle(ToolrollPalette.muted)
-                                Spacer()
+                                if !otherAgents.isEmpty {
+                                    VStack(spacing: 8) {
+                                        ForEach(otherAgents) { agent in
+                                            setupAgentRow(agent)
+                                        }
+                                    }
+                                }
                             }
                             .padding(16)
                         } else {
@@ -99,7 +107,7 @@ public struct SetupWorkbenchView: View {
                             .padding(14)
                         }
 
-                        if !otherAgents.isEmpty {
+                        if !readyAgents.isEmpty && !otherAgents.isEmpty {
                             HairlineDivider()
                             VStack(alignment: .leading, spacing: 8) {
                                 Button {
@@ -190,23 +198,61 @@ public struct SetupWorkbenchView: View {
 
                         HairlineDivider()
 
-                        HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 12) {
                             if !store.allProjects.isEmpty {
-                                ForEach(store.allProjects, id: \.self) { project in
-                                    Text(project)
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.ink)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
+                                    ForEach(store.allProjects, id: \.self) { project in
+                                        HStack(spacing: 6) {
+                                            Circle()
+                                                .fill(ToolrollPalette.success)
+                                                .frame(width: 6, height: 6)
+                                            Text(project)
+                                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                                .foregroundStyle(ToolrollPalette.ink)
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+                                        }
                                         .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 5))
-                                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                        .padding(.vertical, 6)
+                                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+                                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                    }
                                 }
-                            } else {
+                            } else if store.unconnectedGitRepos.isEmpty {
                                 Text("Add a local Git repository folder to start building.")
                                     .font(.system(size: 12.5))
                                     .foregroundStyle(ToolrollPalette.muted)
                             }
-                            Spacer()
+
+                            if !store.unconnectedGitRepos.isEmpty {
+                                let discovered = store.unconnectedGitRepos
+                                let visible = showAllDiscoveredRepos ? discovered : Array(discovered.prefix(6))
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text(store.allProjects.isEmpty ? "FOUND ON THIS MAC — CLICK TO CONNECT" : "MORE REPOSITORIES ON THIS MAC")
+                                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                            .tracking(0.6)
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                        Spacer()
+                                        if discovered.count > 6 {
+                                            Button(showAllDiscoveredRepos ? "Show fewer" : "Show all \(discovered.count)") {
+                                                withAnimation(.easeInOut(duration: 0.14)) {
+                                                    showAllDiscoveredRepos.toggle()
+                                                }
+                                            }
+                                            .buttonStyle(.plain)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(ToolrollPalette.muted)
+                                        }
+                                    }
+
+                                    VStack(spacing: 6) {
+                                        ForEach(visible) { repo in
+                                            discoveredRepoRow(repo)
+                                        }
+                                    }
+                                }
+                            }
                         }
                         .padding(14)
                     }
@@ -272,11 +318,18 @@ public struct SetupWorkbenchView: View {
 
                             Spacer()
 
+                            if let firstProject = store.allProjects.first {
+                                Button("Start chat in \(firstProject)") {
+                                    store.startFirstChatFromSetup(in: firstProject)
+                                }
+                                .buttonStyle(KitButtonStyle(.ghost))
+                            }
+
                             Button {
                                 store.completeSetup()
                             } label: {
                                 HStack(spacing: 6) {
-                                    Text("Start")
+                                    Text("Start working")
                                     Image(systemName: "arrow.right")
                                         .font(.system(size: 11, weight: .semibold))
                                 }
@@ -348,7 +401,7 @@ public struct SetupWorkbenchView: View {
 
     private func readyAgentTile(_ agent: AgentRow) -> some View {
         HStack(spacing: 10) {
-            Circle().fill(ToolrollPalette.success).frame(width: 7, height: 7)
+            ProviderBrandGlyph(provider: agent.id, size: 18, tinted: false, inTile: true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.name)
                     .font(.system(size: 13, weight: .semibold))
@@ -361,12 +414,62 @@ public struct SetupWorkbenchView: View {
                 }
             }
             Spacer()
-            Text("Ready")
-                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(ToolrollPalette.success)
+            HStack(spacing: 4) {
+                Circle().fill(ToolrollPalette.success).frame(width: 6, height: 6)
+                Text("Ready")
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.success)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private func discoveredRepoRow(_ repo: DiscoveredGitRepo) -> some View {
+        let isBusy = connectingRepoPath == repo.path
+        let displayPath = repo.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
+        return HStack(spacing: 10) {
+            Image(systemName: "folder")
+                .font(.system(size: 12))
+                .foregroundStyle(ToolrollPalette.muted)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(repo.name)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                    if let branch = repo.branch, !branch.isEmpty {
+                        Text(branch)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+                }
+                Text(displayPath)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Button(isBusy ? "Connecting…" : "Connect") {
+                guard connectingRepoPath == nil else { return }
+                connectingRepoPath = repo.path
+                Task {
+                    await store.addLocalProject(path: repo.path)
+                    connectingRepoPath = nil
+                }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .disabled(connectingRepoPath != nil)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
         .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }

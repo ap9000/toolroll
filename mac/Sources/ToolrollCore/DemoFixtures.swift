@@ -94,7 +94,7 @@ public enum DemoFixtures {
         case "t-auth-refresh":
             return StepCardsResponse(
                 task: StepTaskSummary(id: taskId, title: "Rotate refresh token cookie with strict SameSite", project: "api-gateway", state: "needs_approval"),
-                headline: "Plan r3 is ready for digest-bound browser approval.",
+                headline: "Plan r3 is ready for approval.",
                 liveRun: nil,
                 cards: [
                     StepCard(
@@ -108,7 +108,7 @@ public enum DemoFixtures {
                         inChain: true,
                         agent: StepAgent(provider: "claude", model: "sonnet-4"),
                         costUsd: 0.42,
-                        terms: StepTerms(key: "plan", revision: "r3", summary: "Digest-bound approval required in Browser")
+                        terms: StepTerms(key: "plan", revision: "r3", summary: "Plan ready for approval")
                     ),
                     StepCard(
                         key: "checks",
@@ -332,7 +332,7 @@ public enum DemoFixtures {
             LeadMessage(
                 id: 2,
                 role: "assistant",
-                text: "1 task needs your browser approval (`t-auth-refresh` plan r3). `t-handoff-rebase` Run #14 passed all checks and is ready to Open PR.",
+                text: "1 task needs your approval (`t-auth-refresh` plan r3). `t-handoff-rebase` Run #14 passed all checks and is ready to Open PR.",
                 at: "18:05"
             ),
         ]

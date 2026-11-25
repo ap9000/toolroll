@@ -309,6 +309,10 @@ struct WorkHomeView: View {
 
                 heroHeading
 
+                if store.allProjects.isEmpty && !store.unconnectedGitRepos.isEmpty {
+                    discoveredReposHomeCard
+                }
+
                 unifiedComposer
 
                 if currentGear == .lead {
@@ -552,6 +556,63 @@ struct WorkHomeView: View {
         case .task:
             return activeProject.map { "Build in \($0)" } ?? "Kick off a task"
         }
+    }
+
+    private var discoveredReposHomeCard: some View {
+        let candidates = Array(store.unconnectedGitRepos.prefix(4))
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("Found repositories on this Mac")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Spacer(minLength: 8)
+                Button("Add folder…") {
+                    store.pickAndAddLocalFolder()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(ToolrollPalette.muted)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(candidates) { repo in
+                    Button {
+                        Task { await store.addLocalProject(path: repo.path) }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.live)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(repo.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .lineLimit(1)
+                                if let branch = repo.branch, !branch.isEmpty {
+                                    Text(branch)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 4)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
     }
 
     private var unifiedComposer: some View {

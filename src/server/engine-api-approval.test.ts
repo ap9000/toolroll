@@ -11,7 +11,9 @@ import { LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-wo
 import { RESULT_T0 } from "../../test/local-owner-results.js";
 import { openApprovalWorld, type ApprovalWorld } from "../../test/approval-card-world.js";
 import { stepCardsSchema } from "../contracts/engine-api.js";
-import { approvalOf, approve } from "../scope.js";
+import { approvalOf, approve, hashPassword } from "../scope.js";
+import { approvalCardSchema } from "../contracts/engine-api.js";
+import { enrollOwnerPassword } from "../store.js";
 import { acquire } from "../claim.js";
 import { mintApiToken } from "../api-tokens.js";
 import { asLocalOwner, type LocalPrincipal } from "../local-owner.js";
@@ -118,5 +120,88 @@ test("the card is a terminal's keyed read: a cookie without the key (or with ano
   for (let read = 0; read < 3; read += 1) expect((await card(session, revision)).nonce).toBe(first.nonce);
   // Spent by its yes, the next read holds a new one.
   expect((await session.act(`/t/${revision}/approve`, { digest: first.digest!, nonce: first.nonce!, token: "" })).body).toMatchObject({ outcome: "approved" });
+});
+
+test("GET /t/<task>/approval?stepup=1 returns digest, nonce, and terms for native password approval, and POST /login JSON upgrades a local client to a full session", async () => {
+  const session = await terminal();
+  const revision = await sentBack(session);
+  // Mark the repo protected so passwordless local-owner approval is refused.
+  world.store.setApprovalRules(world.repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", RESULT_T0);
+
+  // Without ?stepup=1, the TUI contract stays unchanged (no digest/nonce, browser hint).
+  const tuiRead = await card(session, revision);
+  expect(tuiRead).toMatchObject({ digest: null, nonce: null, terms: [] });
+  expect(tuiRead.problem).toContain(APPROVE_IN_BROWSER);
+
+  // With ?stepup=1 before a password exists, the Mac app receives terms + digest + nonce + "Set a password to approve this."
+  const noPwRes = await session.get(`/t/${revision}/approval?stepup=1`, { cookie: session.cookie, "x-toolroll-key": session.key });
+  expect(noPwRes.status).toBe(200);
+  const noPwCard = approvalCardSchema.parse(JSON.parse(noPwRes.body));
+  expect(noPwCard.digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(noPwCard.nonce).toMatch(/^[0-9a-f]{32}$/);
+  expect(noPwCard.problem).toBe("Set a password to approve this.");
+
+  // Set a real password on alex (which signs out old local-owner sessions).
+  const password = "correct-horse-battery-99";
+  expect(enrollOwnerPassword(world.store, "alex", hashPassword(password), 1, new Date()).ok).toBe(true);
+
+  // Native local JSON login upgrades the client to a full password-authenticated session.
+  const badLogin = await world.send(
+    "/login",
+    "POST",
+    { "content-type": "application/x-www-form-urlencoded", accept: "application/json", "x-toolroll-client": "terminal" },
+    new URLSearchParams({ name: "alex", token: "wrong-password" }).toString(),
+  );
+  expect(badLogin.status).toBe(403);
+  expect(JSON.parse(badLogin.body)).toMatchObject({ error: "wrong username or password" });
+
+  // Browser-shaped headers never receive the JSON session payload.
+  const browserShaped = await world.send(
+    "/login",
+    "POST",
+    { "content-type": "application/x-www-form-urlencoded", accept: "application/json", "x-toolroll-client": "terminal", origin: "http://evil.example" },
+    new URLSearchParams({ name: "alex", token: password }).toString(),
+  );
+  expect(browserShaped.headers["content-type"] ?? "").not.toContain("application/json");
+
+  const goodLogin = await world.send(
+    "/login",
+    "POST",
+    { "content-type": "application/x-www-form-urlencoded", accept: "application/json", "x-toolroll-client": "terminal" },
+    new URLSearchParams({ name: "alex", token: password }).toString(),
+  );
+  expect(goodLogin.status).toBe(200);
+  const upgraded = JSON.parse(goodLogin.body) as { account: string; cookie: { name: string; value: string }; csrf: string; key: string; passwordSet: boolean };
+  expect(upgraded).toMatchObject({ account: "alex", passwordSet: true });
+  const fullCookie = `${upgraded.cookie.name}=${upgraded.cookie.value}`;
+
+  // With ?stepup=1, the Mac app receives the full card (digest, nonce, terms) while POST /approve still enforces password step-up.
+  const stepupRes = await world.send(`/t/${revision}/approval?stepup=1`, "GET", { cookie: fullCookie, "x-toolroll-key": upgraded.key, accept: "application/json" });
+  expect(stepupRes.status).toBe(200);
+  const stepupCard = approvalCardSchema.parse(JSON.parse(stepupRes.body));
+  expect(stepupCard.digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(stepupCard.nonce).toMatch(/^[0-9a-f]{32}$/);
+  expect(stepupCard.terms.length).toBeGreaterThan(0);
+
+  // Empty password on protected work is refused (step-up still enforced); real password seals or votes cleanly.
+  const emptyTry = await world.send(
+    `/t/${revision}/approve`,
+    "POST",
+    { cookie: fullCookie, origin: world.origin, "x-toolroll-key": upgraded.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal", "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    new URLSearchParams({ csrf: upgraded.csrf, digest: stepupCard.digest!, nonce: stepupCard.nonce!, token: "" }).toString(),
+  );
+  expect(emptyTry.status).toBe(403);
+  expect(approved(revision)).toBe(false);
+
+  // Re-read fresh nonce and submit with real password.
+  const stepupCard2 = approvalCardSchema.parse(JSON.parse((await world.send(`/t/${revision}/approval?stepup=1`, "GET", { cookie: fullCookie, "x-toolroll-key": upgraded.key, accept: "application/json" })).body));
+  const okTry = await world.send(
+    `/t/${revision}/approve`,
+    "POST",
+    { cookie: fullCookie, origin: world.origin, "x-toolroll-key": upgraded.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal", "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    new URLSearchParams({ csrf: upgraded.csrf, digest: stepupCard2.digest!, nonce: stepupCard2.nonce!, token: password }).toString(),
+  );
+  expect(okTry.status).toBe(200);
+  expect(["approved", "vote"]).toContain((JSON.parse(okTry.body) as { outcome: string }).outcome);
 });
 

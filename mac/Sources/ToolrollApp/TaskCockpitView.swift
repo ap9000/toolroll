@@ -605,7 +605,13 @@ public struct TaskCockpitView: View {
 
                 fullPlanButton
 
-                if store.approvalPasswordPrompt == nil {
+                if card.problem == "Set a password to approve this." {
+                    Button("Set Password…") {
+                        store.openSetPassword()
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .fixedSize()
+                } else if store.approvalPasswordPrompt == nil {
                     approveAndBuildButton
                 }
             }
@@ -842,7 +848,7 @@ public struct TaskCockpitView: View {
                 .lineLimit(2)
             Spacer(minLength: 8)
             if store.canApproveInApp {
-                Button("Approve") {
+                Button("Approve & Build") {
                     Task { await store.approveSelectedTask() }
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
@@ -856,7 +862,7 @@ public struct TaskCockpitView: View {
                     store.openTaskInBrowser(taskId: taskId)
                 } label: {
                     HStack(spacing: 4) {
-                        Text("Approve")
+                        Text("Open in Browser")
                         Image(systemName: "arrow.up.right")
                             .font(.system(size: 9.5, weight: .semibold))
                     }
