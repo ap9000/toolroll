@@ -1,8 +1,5 @@
 import Foundation
 
-/// The exact terms of an agent's network request, as the server derived them from the project's setting now
-/// (src/agent-network-request.ts). The request file's own summary, why and params are proposals anyone who can write that
-/// file may edit: the app shows and approves only these terms, bound to their digest.
 public struct AgentNetworkRequestTerms: Decodable, Equatable, Sendable {
     public struct Change: Decodable, Equatable, Sendable {
         public let add: [String]
@@ -23,16 +20,11 @@ public struct AgentNetworkRequestTerms: Decodable, Equatable, Sendable {
     public let before: Setting
     public let after: Setting
     public let digest: String
-    /// What changes, in the server's own words.
     public let words: [String]
 
-    /// The server refuses an approval whose request or setting moved since the page was read.
     public static let changedRefusal = "This request or the project's network changed since you looked. Nothing changed; review it again."
-    /// The server refuses a request filed in the older format (no explicit change).
     public static let oldRefusal = "This request was made by an older version of Toolroll. Ask the agent to request it again."
 
-    /// Every pending request the project settings page lists with server terms. A block whose attributes disagree with
-    /// its terms, or whose digest is not 32 lowercase hex characters, is dropped (never shown, never approvable).
     public static func parse(projectSettingsHTML html: String) -> [AgentNetworkRequestTerms] {
         guard let tagRe = try? NSRegularExpression(pattern: #"<div\s+data-agent-request="[^"]*"[^>]*>"#) else { return [] }
         let ns = html as NSString
@@ -52,7 +44,6 @@ public struct AgentNetworkRequestTerms: Decodable, Equatable, Sendable {
         }
     }
 
-    /// A setting in plain words: "Any host" or the hosts it lists, and whether this Mac's local services are reachable.
     public static func describe(_ setting: Setting) -> String {
         let hosts = setting.mode == "open" ? "any host" : (setting.hosts.isEmpty ? "no extra hosts" : setting.hosts.joined(separator: ", "))
         let local = setting.loopback == "any" ? "local services allowed" : "no local services"
@@ -70,7 +61,6 @@ public struct AgentNetworkRequestTerms: Decodable, Equatable, Sendable {
         return ns.substring(with: m.range(at: 1))
     }
 
-    /// Undoes the server's attribute escaping (src/html.ts: & < > " '). `&amp;` last so an escaped entity stays literal.
     static func unescapeHTML(_ value: String) -> String {
         value
             .replacingOccurrences(of: "&quot;", with: "\"")

@@ -110,8 +110,6 @@ public struct ProfileStore: Sendable {
         _ = existing
     }
 
-    /// Writes a new file that is 0600 from the moment it exists: created exclusively (never through an existing file or a
-    /// symlink), so the tokens in it are never readable by anyone else, even briefly.
     static func writePrivate(_ bytes: Data, to path: String) throws {
         let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: path]) }

@@ -28,8 +28,6 @@ public enum TouchIDVaultError: LocalizedError, Sendable {
 public enum TouchIDVault {
     private static let service = "com.toolroll.operator-password"
 
-    /// The Keychain item belongs to one account on one Toolroll (account and origin): a password saved for one
-    /// workspace is never offered to another.
     static func itemAccount(account: String, origin: String) -> String {
         let trimmed = account.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = trimmed.isEmpty ? "local-owner" : trimmed
@@ -126,7 +124,6 @@ public enum TouchIDVault {
         deleteLegacyItem(account: account)
     }
 
-    /// Earlier builds keyed the item by account alone, for any Toolroll: never read again, removed when touched.
     private static func deleteLegacyItem(account: String) {
         let trimmed = account.trimmingCharacters(in: .whitespacesAndNewlines)
         let query: [String: Any] = [

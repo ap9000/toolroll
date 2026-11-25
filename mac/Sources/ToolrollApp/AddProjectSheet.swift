@@ -320,8 +320,6 @@ public struct AddProjectSheet: View {
         }
     }
 
-    /// Through the one hardened git helper (no system or global config, no hooks, no prompts, a minimal environment),
-    /// off the main thread. A clone may use the person's ssh agent: it's an address they typed.
     private func runGit(_ args: [String], in cwd: String, timeout: TimeInterval = 30, forwardSSHAgent: Bool = false) async throws {
         let out = await Task.detached(priority: .userInitiated) {
             HardenedGit.run(args, in: cwd, timeout: timeout, forwardSSHAgent: forwardSSHAgent)

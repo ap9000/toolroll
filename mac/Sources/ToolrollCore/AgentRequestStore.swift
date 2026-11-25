@@ -157,9 +157,6 @@ public enum AgentRequestStore {
 }
 
 extension AgentRequest {
-    /// What approving this request applies, in the app's own words from the exact values it would send. Never the file's
-    /// summary or why (free text anyone who can write the file may set). Network requests have none here: only the
-    /// server's terms (AgentNetworkRequestTerms) describe and approve them.
     public var appliedWords: String? {
         switch kind {
         case .network:

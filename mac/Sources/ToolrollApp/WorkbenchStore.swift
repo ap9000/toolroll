@@ -477,7 +477,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// The person clicked Start dev server: start exactly the command and folder the button named, for this run only.
     public func startPreviewServerAndHydrate() async {
         guard previewServer.consentToPendingStart() else { return }
         await wakePreviewServerAndHydrate(forceAll: false)
@@ -3629,13 +3628,6 @@ public final class WorkbenchStore {
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
 
-    /// The app never remembers a password. An empty password is sent as empty: the server alone decides whether a
-    /// password verified moments ago on this session stands in (docs/guide/security.md: standard plan approval and
-    /// chat messages, 15 minutes, direct local requests only). Every other step-up needs a password typed now or a
-    /// Touch ID unlock that actually runs.
-    ///
-    /// The password unlocked belongs to the Toolroll this act started on: if the app reconnected elsewhere while the
-    /// person confirmed, nothing is returned (and so nothing is sent).
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
         let bound = connectionBinding
         do {
@@ -3653,7 +3645,6 @@ public final class WorkbenchStore {
         }
     }
 
-    /// Which Toolroll and account an act is talking to. A password is only ever sent where it was asked for.
     struct ConnectionBinding: Equatable {
         let origin: String
         let account: String
@@ -3711,17 +3702,12 @@ public final class WorkbenchStore {
         }
     }
 
-    /// The server's terms for one pending network request, read from the project settings page now; nil when the server
-    /// shows none for it (an older Toolroll, or a request filed in the older format).
     public func networkRequestTerms(for request: AgentRequest) async -> AgentNetworkRequestTerms? {
         guard request.kind == .network, let client, !activeProfile.isDemo else { return nil }
         guard let snap = try? await client.fetchProjectSettings(repo: request.repo) else { return nil }
         return snap.networkRequests.first { $0.id == request.id && $0.repo == request.repo }
     }
 
-    /// Approves an agent request. A network request is approved only through the server's terms the person was shown
-    /// (`terms`): its id and digest are sent, never the file's params. The other kinds apply exactly the values their
-    /// card names (AgentRequest.appliedWords).
     public func approveAgentRequest(_ request: AgentRequest, terms: AgentNetworkRequestTerms?, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
         guard let dbPath = resolvedLocalDatabasePath else {
             return (false, "No local Toolroll database connected.")
@@ -3733,7 +3719,6 @@ public final class WorkbenchStore {
         } else if request.appliedWords == nil {
             return (false, "This request names nothing to approve.")
         }
-        // Bound before any wait: the password goes only to the Toolroll and client this approval started on.
         let bound = connectionBinding
         guard let boundClient = client else { return (false, "Not connected.") }
         resolvingAgentRequestId = request.id
@@ -3784,7 +3769,6 @@ public final class WorkbenchStore {
             return outcome
         }
 
-        // The server marks a network request approved itself, in its own words.
         if request.kind != .network {
             AgentRequestStore.resolve(
                 databasePath: dbPath,

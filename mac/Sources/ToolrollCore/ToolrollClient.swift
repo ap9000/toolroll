@@ -213,9 +213,6 @@ public actor ToolrollClient {
         return staleSessionWords.contains { words.contains($0) }
     }
 
-    /// Renews a stale session with the SAME Toolroll install and account (a restart may move its port). A console found
-    /// for another database or another account is never used: what was about to be sent (a password included) was
-    /// meant for this one.
     private func reconnectLocalSession() async -> Bool {
         guard case .localSession(let current) = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
         guard Self.sameInstall(current, fresh) else { return false }

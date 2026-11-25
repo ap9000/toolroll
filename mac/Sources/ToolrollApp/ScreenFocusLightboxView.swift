@@ -395,7 +395,6 @@ struct ScreenFocusLightboxView: View {
                                 handleInlineTextChanged(elId: elId, newText: newText, finished: finished)
                             }
                         )
-                        // A preview and a view of the console never share a web view (or its data store).
                         .id(SessionWebViews.consoleOrigin(for: liveURL, cookie: store.localSessionCookie) ?? "preview")
                         .frame(width: logW, height: logH)
                         .scaleEffect(scale, anchor: .topLeading)
@@ -2451,7 +2450,6 @@ private struct FocusLiveWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        // A private, non-persistent store per web view; only a view of the console itself carries the session cookie.
         let config = SessionWebViews.configuration()
         context.coordinator.consoleOrigin = SessionWebViews.consoleOrigin(for: urlString, cookie: sessionCookie)
         config.userContentController.add(context.coordinator, name: "trFocusInspect")
@@ -2478,7 +2476,6 @@ private struct FocusLiveWebView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var loadedURL: String = ""
-        /// Set once when the web view is made: the console origin it may carry the cookie for, or nil for a preview.
         var consoleOrigin: String?
         var onElementSelected: (SelectedElementContext, Bool) -> Void
         var onInlineTextChanged: (String, String, Bool) -> Void

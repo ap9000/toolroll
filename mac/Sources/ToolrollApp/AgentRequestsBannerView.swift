@@ -30,7 +30,6 @@ private struct AgentRequestRowCard: View {
     @State private var passwordDraft: String = ""
     @State private var rememberWithTouchID: Bool = true
     @State private var errorMessage: String? = nil
-    /// The server's terms for a network request (never the file's words); nil until read, or when it shows none.
     @State private var terms: AgentNetworkRequestTerms? = nil
     @State private var termsRead: Bool = false
 
@@ -239,7 +238,6 @@ private struct AgentRequestRowCard: View {
         let shown = terms
         let res = await store.approveAgentRequest(request, terms: shown, typedPassword: typed)
         if res.message == AgentNetworkRequestTerms.changedRefusal {
-            // Nothing changed on the server: read the terms again and show them before another Approve.
             terms = nil
             termsRead = false
             await readTerms()

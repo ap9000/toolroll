@@ -363,7 +363,6 @@ public struct DirectChatShipSheet: View {
     }
 
     private func submitShip() {
-        // A password is used for one try: never kept in the form after it was sent, whatever the answer.
         let password = passwordDraft
         passwordDraft = ""
         Task {

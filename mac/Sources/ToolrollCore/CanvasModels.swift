@@ -610,10 +610,6 @@ public enum YouiCanvasStorage {
         return try? JSONDecoder().decode(YouiScreensManifest.self, from: data)
     }
 
-    /// The cache key of the project's working tree: HEAD plus a fingerprint of its files. Never `git status` (it can run
-    /// the repository's own filters and fsmonitor): the file list comes from `git ls-files` (index and directory listing
-    /// only) and the fingerprint from the app's own lstat of each file. A repository whose git settings name a program
-    /// is not read with git at all.
     public static func gitStateKey(projectRoot: String) -> String {
         guard HardenedGit.refusal(in: projectRoot) == nil else { return "unread" }
         let head = HardenedGit.text(["rev-parse", "--short=10", "HEAD"], in: projectRoot) ?? "nogit"
@@ -623,7 +619,6 @@ public enum YouiCanvasStorage {
         return "\(head)-\(digest)"
     }
 
-    /// Size and modification time of each listed file (lstat, never followed), hashed; nil when nothing is listed.
     static func fileFingerprint(projectRoot: String, tracked: Data, untracked: Data, limit: Int = 50_000) -> String? {
         var hasher = SHA256()
         var count = 0

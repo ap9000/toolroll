@@ -1,13 +1,5 @@
 import Foundation
 
-/// The one way the Mac app runs git. A repository is untrusted: its `.git/config` (and anything it includes) can name
-/// commands git runs by itself (core.fsmonitor, filter drivers, hooks), and the app's own environment holds tokens.
-///
-/// - The environment is built from nothing: PATH, HOME, LANG, no system or global config, no prompts, no optional locks.
-/// - Every call disables fsmonitor, hooks, the untracked cache and the `ext::` transport on the command line.
-/// - Only commands that never run filters or drivers are used on an existing repository (rev-parse, ls-files, config).
-///   `git status`, `diff` and checkout-style commands are never run on a repository the app didn't just create.
-/// - A repository whose config sets core.fsmonitor or any filter.* is refused (`refusal(in:)`), as a second line.
 public enum HardenedGit {
     public static let executable = "/usr/bin/git"
 
@@ -17,7 +9,6 @@ public enum HardenedGit {
         public let stderr: String
     }
 
-    /// Settings forced on every call, ahead of the command.
     public static let forcedConfig: [String] = [
         "-c", "core.fsmonitor=false",
         "-c", "core.hooksPath=/dev/null",
@@ -29,8 +20,6 @@ public enum HardenedGit {
         forcedConfig + command
     }
 
-    /// The environment git runs with, made from nothing. `forwardSSHAgent` passes the person's ssh agent socket, only
-    /// for a clone of a URL they typed themselves.
     public static func environment(inherited: [String: String], home: String, forwardSSHAgent: Bool = false) -> [String: String] {
         var env: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -45,7 +34,6 @@ public enum HardenedGit {
         return env
     }
 
-    /// Runs git in `cwd` with the hardened environment and arguments; nil when it couldn't start or ran past `timeout`.
     public static func run(_ command: [String], in cwd: String, timeout: TimeInterval = 3, forwardSSHAgent: Bool = false) -> Output? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executable)
@@ -80,20 +68,16 @@ public enum HardenedGit {
                       stderr: String(decoding: err.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Trimmed stdout of a successful run, else nil.
     public static func text(_ command: [String], in cwd: String, timeout: TimeInterval = 3) -> String? {
         guard let out = run(command, in: cwd, timeout: timeout), out.status == 0 else { return nil }
         return String(decoding: out.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Why the app won't read this repository with git, in plain words; nil when its config names no command git would
-    /// run by itself. Listing config runs nothing.
     public static func refusal(in cwd: String) -> String? {
         guard let out = run(["config", "--list", "--includes", "-z"], in: cwd), out.status == 0 else { return nil }
         return refusal(configList: out.stdout)
     }
 
-    /// `git config --list -z` entries are `key\nvalue\0`.
     static func refusal(configList: Data) -> String? {
         for entry in configList.split(separator: 0) {
             let text = String(decoding: entry, as: UTF8.self)
@@ -110,11 +94,9 @@ public enum HardenedGit {
         return nil
     }
 
-    /// A clone URL the person typed: https or ssh only (never ext::, file:: or a local path).
     public static func isCloneURL(_ raw: String) -> Bool {
         let lower = raw.lowercased()
         if lower.hasPrefix("https://") || lower.hasPrefix("ssh://") { return URL(string: raw)?.host?.isEmpty == false }
-        // scp-like ssh: user@host:path
         if let at = raw.firstIndex(of: "@"), let colon = raw.firstIndex(of: ":"), at < colon,
            !raw.contains("://"), !raw.hasPrefix("-"), !raw.contains(" ") {
             return raw[raw.index(after: at)..<colon].isEmpty == false

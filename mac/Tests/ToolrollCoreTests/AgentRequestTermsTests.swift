@@ -6,7 +6,6 @@ import Testing
 struct AgentRequestTermsTests {
     static let digest = "0123456789abcdef0123456789abcdef"
 
-    /// The server's attribute escaping (src/html.ts).
     static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")

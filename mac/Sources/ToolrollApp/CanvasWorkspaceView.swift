@@ -526,7 +526,6 @@ public struct CanvasWorkspaceView: View {
                             selectedPinId = nil
                         }
                     )
-                    // A preview and a view of the console never share a web view (or its data store).
                     .id(SessionWebViews.consoleOrigin(for: liveURL, cookie: store.localSessionCookie) ?? "preview")
                     .frame(width: logW, height: logH)
                     .scaleEffect(scale, anchor: .topLeading)
@@ -1114,7 +1113,6 @@ private struct DOMInspectHit {
     let yFrac: Double
 }
 
-/// Starts the project's dev server only when the person clicks, naming the exact command and the folder it runs in.
 struct StartDevServerButton: View {
     let store: WorkbenchStore
     let command: String
@@ -1204,7 +1202,6 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        // A private, non-persistent store per web view; only a view of the console itself carries the session cookie.
         let config = SessionWebViews.configuration()
         context.coordinator.consoleOrigin = SessionWebViews.consoleOrigin(for: urlString, cookie: sessionCookie)
         config.userContentController.add(context.coordinator, name: "toolrollInspect")
@@ -1244,7 +1241,6 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
             self.onInspectClick = onInspectClick
         }
 
-        /// Set once when the web view is made: the console origin it may carry the cookie for, or nil for a preview.
         var consoleOrigin: String?
 
         func load(webView: WKWebView, urlString: String, sessionCookie: SessionWebViews.Cookie?) {

@@ -5,8 +5,6 @@ import Testing
 @MainActor
 @Suite("Preview server start")
 struct PreviewServerStartTests {
-    /// A project whose dev script names a port nothing listens on, with node_modules present: the only thing left
-    /// between it and a started process is the person's click.
     func project(script: String) throws -> String {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("tr-preview-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: "\(root)/node_modules", withIntermediateDirectories: true)

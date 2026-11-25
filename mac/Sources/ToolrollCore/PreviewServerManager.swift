@@ -5,8 +5,6 @@ public enum PreviewServerStatus: Sendable, Equatable {
     case asleep
     case needsInstall(packageManager: String, command: String)
     case installing(command: String)
-    /// The project's dev server is not running, and Toolroll never starts it on its own: the person clicks Start, which
-    /// names this exact command and folder.
     case needsStart(command: String, folder: String)
     case external(url: String)
     case starting(command: String)
@@ -19,7 +17,6 @@ public struct DetectedDevCommand: Sendable, Hashable {
     public let executable: String
     public let arguments: [String]
     public let displayCommand: String
-    /// The package.json script the command runs, exactly as written there.
     public let scriptBody: String
     public let expectedPort: Int
     public let expectedURL: String
@@ -34,7 +31,6 @@ public struct DetectedDevCommand: Sendable, Hashable {
         self.expectedURL = "http://localhost:\(expectedPort)"
     }
 
-    /// What the Start button says it runs: the command and the script it runs.
     public var startWords: String {
         scriptBody.isEmpty ? displayCommand : "\(displayCommand) (\(scriptBody))"
     }
@@ -49,11 +45,7 @@ public final class PreviewServerManager {
 
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
-    /// What the person just clicked Start for: this folder and exactly this command and script, for ONE start. Taken by
-    /// the next attempt whatever comes of it, and dropped when the server stops; never saved. A later restart (after an
-    /// idle sleep, a stop or a project switch) needs the click again.
     private var startConsent: StartConsent?
-    /// The command the Start button currently names, so the click consents to exactly what was shown.
     public private(set) var pendingStart: (projectRoot: String, command: DetectedDevCommand)?
 
     private struct StartConsent: Hashable {
@@ -121,7 +113,6 @@ public final class PreviewServerManager {
     }
 
     public func ensureRunning(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
-        // A click's consent is for the very next attempt only, whatever comes of it.
         let consent = startConsent
         startConsent = nil
         if activeProjectRoot == projectRoot, let url = activeURL {
@@ -170,7 +161,6 @@ public final class PreviewServerManager {
             return nil
         }
 
-        // Never on its own: only after the person clicked Start for exactly this command in this folder, this run.
         guard consent == StartConsent(projectRoot: projectRoot, command: detected) else {
             pendingStart = (projectRoot, detected)
             status = .needsStart(command: detected.startWords, folder: projectRoot)
@@ -217,8 +207,6 @@ public final class PreviewServerManager {
         }
     }
 
-    /// The person clicked Start for the command the button named: allow exactly that command in that folder, once.
-    /// Returns false when nothing is waiting to start.
     @discardableResult
     public func consentToPendingStart() -> Bool {
         guard let pending = pendingStart else { return false }
@@ -271,8 +259,6 @@ public final class PreviewServerManager {
         minimalEnvironment(inherited: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser.path)
     }
 
-    /// The repo's own scripts run with only PATH, HOME, LANG and TERM (and BROWSER=none so they open nothing): never the
-    /// app's environment, which may hold tokens and keys.
     nonisolated static func minimalEnvironment(inherited: [String: String], home: String) -> [String: String] {
         let extraPaths = [
             "/opt/homebrew/bin",
@@ -301,7 +287,6 @@ public final class PreviewServerManager {
     }
 
     public func stopManagedServer() {
-        // A stopped server needs the click again: no consent outlives a stop or a project switch.
         startConsent = nil
         idleSleepTask?.cancel()
         idleSleepTask = nil
