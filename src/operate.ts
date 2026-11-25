@@ -159,7 +159,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { land, landingWords, readLanding, settleUnfinished, type LandAuthority } from "./local-landing.js";
+import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, settleUnfinished, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -6039,10 +6039,19 @@ async function verifyCommand(
   const { store, write, json } = context;
   const clock = context.clock ?? (() => new Date());
   const action = positional[0] ?? "show";
-  const repo = text(flags, "repo");
+  const raw = text(flags, "repo");
+  // The project the path names, before any read, preview or password (everyday-8 #3): `.` or a symlinked spelling is
+  // the registered project's own path, never the literal text.
+  if (raw !== undefined && activeRemote() !== null && !isAbsolute(raw)) return fail(write, json, `verify ${action}`, "usage", "name the project's full path: --repo <path>", EXIT.usage);
+  const repo = raw === undefined ? undefined : verifyRepoOf(store, raw);
+  // An older version saved a command under the literal text it was given (`.`): it applies to no project, so it never
+  // moves to today's folder; it is only said, and cleared with this project's.
+  const legacy = raw !== undefined && raw !== repo && !isAbsolute(raw) && store.liveVerifyCommand(raw) !== null ? raw : null;
+  const legacyNote = legacy === null ? [] : [`An older check command saved under the name "${legacy}" applies to no project. Set the command for ${repo} again; \`toolroll verify clear --repo ${legacy}\` removes the old one.`];
 
   if (action === "show") {
     if (repo === undefined) return fail(write, json, "verify show", "usage", "which repo? --repo <path>", EXIT.usage);
+    for (const line of json ? [] : legacyNote) write(line);
     const live = store.liveVerifyCommand(repo);
     const quick = liveQuickCommand(store, repo);
     const level = projectCheckLevel(store, repo);
@@ -6092,7 +6101,9 @@ async function verifyCommand(
   if (acting === null || !verified?.ok) return refuseApprover(context, `verify ${action}`, verified, "an approved verification command runs unattended after every future build — changing it takes `--as <you> --token <t>`", repo);
 
   if (action === "clear") {
-    const cleared = store.clearVerifyCommand(grantKey!, acting.name, clock());
+    // Clearing only narrows: the old literal-named command goes with this project's.
+    if (legacy !== null && !quickClear) store.clearVerifyCommand(legacy, acting.name, clock());
+    const cleared = store.clearVerifyCommand(grantKey!, acting.name, clock()) || (legacy !== null && !quickClear);
     if (quickClear) return succeed(write, json, "verify clear", { repo, cleared, level: "quick" }, () => [
       cleared ? `Cleared the quick command — Quick builds of ${repo} run the full check now.` : `No quick command was set for ${repo}.`,
     ]);
@@ -11563,6 +11574,9 @@ async function askCredentials(
   // Easy-start C3: the local owner is never asked for a password (the prover decides its act, refusing all others).
   const local = currentLocalOwner();
   if (local !== null) return { name: local.account, token: "" };
+  // A password given without --as, on a solo install: the install's one operator is the only one it can be (everyday-8
+  // #3). It names; the password still has to be theirs.
+  if (name === undefined && token !== undefined && activeRemote() === null) name = soloOperatorOf(context.store) ?? undefined;
   if ((name === undefined || token === undefined) && interactive() && !context.json) {
     // The name this install would mean (its one operator on a solo install), offered: Enter takes it.
     const usual = name === undefined ? soloOperatorOf(context.store) : null;
@@ -15912,6 +15926,8 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const into = text(flags, "into"), undo = flags.get("undo") === true, yes = flags.get("yes") === true, key = text(flags, "key");
   if (flags.has("into") && into === undefined) return fail(write, json, command, "usage", "--into needs a branch name.", EXIT.usage);
   if (undo && into !== undefined) return fail(write, json, command, "usage", "--undo lands on the branch the work landed on; it takes no --into.", EXIT.usage);
+  const landRepo = store.lookupRef(id)?.repo ?? null;
+  if (landRepo !== null && publishesThroughPullRequests(store, landRepo)) return fail(write, json, command, "pull-requests", PULL_REQUESTS_INSTEAD, EXIT.refused);
   const local = currentLocalOwner();
   const localRepos = local === null ? null : store.knownRepos().filter(repo => store.accountCanAccess(local.account, repo));
   const options = { root: context.evidenceRoot, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) };
@@ -15948,4 +15964,17 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
 function resolveTaskId(store: Store, typed: string): string {
   if (store.getTask(typed) !== null || typed.startsWith("task-")) return typed;
   return store.getTask(`task-${typed}`) !== null ? `task-${typed}` : typed;
+}
+
+/** The project a `verify` command's --repo names (everyday-8 #3): resolved from the current folder, and when it is a
+ * registered project's folder by its real path, that project's own recorded path. An unregistered folder keeps its
+ * resolved absolute path, as it did; nothing is ever stored under relative text. */
+function verifyRepoOf(store: Store, raw: string): string {
+  const absolute = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+  let real: string;
+  try { real = realpathSync(absolute); } catch { return absolute; }
+  for (const known of new Set([...store.listProjects().map(one => one.path), ...store.knownRepos()])) {
+    try { if (known === absolute || realpathSync(known) === real) return known; } catch { /* a project folder that's gone matches nothing */ }
+  }
+  return absolute;
 }
