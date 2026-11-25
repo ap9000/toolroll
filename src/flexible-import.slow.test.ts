@@ -432,6 +432,12 @@ describe("what a thread changed, for its owner to read (never an import)", () =>
     // An ordinary function context stays.
     const plain = threadDiffFileOf(thread.id, 1, { ok: true, patch: patch.replace(`@@ ${key}`, "@@ export function total() {"), truncated: false }, 0)!;
     expect(plain.file.hunks[0]!.header).toBe("@@ -7,3 +7,4 @@ export function total() {");
-    expect(threadDiffOf(thread.id, 1, { ok: true, patch: patch.replaceAll("src/b.ts", `src/${key.slice(13, 33)}.ts`), truncated: false }).files[0]!.path).toBe(HIDDEN_LINE);
+    // A file name that looks like a key is hidden everywhere it is read: the list, the file's path and its header lines.
+    const named = { ok: true as const, patch: patch.replaceAll("src/b.ts", `src/${key.slice(13, 33)}.ts`), truncated: false };
+    expect(threadDiffOf(thread.id, 1, named).files[0]!.path).toBe("[a name was hidden]");
+    const namedFile = threadDiffFileOf(thread.id, 1, named, 0)!;
+    expect(JSON.stringify(namedFile)).not.toContain(key.slice(13, 33));
+    expect(namedFile.file.path).toBe("[a name was hidden]");
+    expect(namedFile.file.meta).toEqual(["diff --git a/[a name was hidden] b/[a name was hidden]", "index 1111111..2222222 100644", "--- a/[a name was hidden]", "+++ b/[a name was hidden]"]);
   });
 });

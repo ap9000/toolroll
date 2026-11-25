@@ -718,7 +718,13 @@ export type ThreadChanges = { ok: true; patch: string; truncated: boolean } | { 
 function shownPatch(text: string): string {
   let inKey = false, inHunk = false;
   return text.replace(/\r\n/g, "\n").split("\n").map(line => {
-    if (line.startsWith("diff --git ")) { inHunk = false; inKey = false; return cleanLiveText(line); }
+    // A file's own header names its paths: one that looks like a key is replaced by a marker, the line kept whole.
+    if (line.startsWith("diff --git ")) {
+      inHunk = false; inKey = false;
+      return liveSecretHit(line) ? `diff --git a/${HIDDEN_NAME} b/${HIDDEN_NAME}` : cleanLiveText(line);
+    }
+    const named = inHunk ? null : /^(---|\+\+\+) (.*)$/.exec(line);
+    if (named !== null) return liveSecretHit(named[2]!) ? `${named[1]} ${named[1] === "---" ? "a" : "b"}/${HIDDEN_NAME}` : cleanLiveText(line);
     const hunk = /^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)(.*)$/.exec(line);
     if (hunk !== null) {
       inHunk = true;
@@ -734,6 +740,9 @@ function shownPatch(text: string): string {
   }).join("\n");
 }
 
+/** Said in place of a file name that looks like a key. */
+const HIDDEN_NAME = "[a name was hidden]";
+
 /** A thread's changed files with their counts (`task` is the thread's id; `run` the number of its latest turn, which
  * the file reads name back), from its committed work against the commit it started from. */
 export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges): ResultDiff {
@@ -748,7 +757,7 @@ export function threadDiffOf(thread: string, turn: number, changes: ThreadChange
       else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
     }
     const binary = /^(?:Binary files .* differ|GIT binary patch)$/m.test(text);
-    const shownPath = (path: string): string => liveSecretHit(path) ? HIDDEN_LINE : cleanLiveText(path);
+    const shownPath = (path: string): string => liveSecretHit(path) ? HIDDEN_NAME : cleanLiveText(path);
     return { file: index, path: shownPath(parsed?.path ?? "changed file"), oldPath: parsed?.oldPath == null ? null : shownPath(parsed.oldPath), additions, deletions, binary,
       hunks: parsed?.hunks.length ?? 0 };
   });
@@ -765,7 +774,7 @@ export function threadDiffFileOf(thread: string, turn: number, changes: ThreadCh
   const one = parsed.files[0];
   if (one === undefined) return null;
   return { version: ENGINE_API_VERSION, task: thread, run: turn,
-    file: { file, path: liveSecretHit(one.path) ? HIDDEN_LINE : cleanLiveText(one.path), oldPath: one.oldPath === null ? null : liveSecretHit(one.oldPath) ? HIDDEN_LINE : cleanLiveText(one.oldPath),
+    file: { file, path: liveSecretHit(one.path) ? HIDDEN_NAME : cleanLiveText(one.path), oldPath: one.oldPath === null ? null : liveSecretHit(one.oldPath) ? HIDDEN_NAME : cleanLiveText(one.oldPath),
       meta: one.meta.map(cleanLiveText), hunks: one.hunks.map(hunk => ({ ...hunk, header: cleanLiveText(hunk.header) })),
       lineCount: patchLineCount(one.hunks) },
     linesTruncated: parsed.linesTruncated };
