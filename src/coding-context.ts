@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { KNOWLEDGE_GUIDANCE, selectProjectKnowledge } from './project-knowledge.js';
-import { materializeProjectSkills, PROJECT_SKILLS_GUIDANCE, selectProjectSkills } from './project-skills.js';
+import { materializeProjectSkills, PROJECT_SKILLS_GUIDANCE, PROJECT_SKILLS_READ, selectProjectSkills, type SkillsManifest } from './project-skills.js';
 import { identityMatches, learningIdentity, learningSha } from './project-learning.js';
 import type { Store } from './store.js';
 import { CODING_CONTEXT_VERSION, type CodingContext, type CodingContextMetadata } from './contracts/coding-context.js';
@@ -54,7 +54,7 @@ export function prepareCodingContext(store: Store, args: {
   const directory = supplied.directory === null ? null : realpathSync(supplied.directory);
   const parts: string[] = [];
   if (captured.knowledge.revision > 0) parts.push(KNOWLEDGE_GUIDANCE, JSON.stringify(captured.knowledge));
-  if (supplied.catalog.length) parts.push('Project skills supplied for this coding session. ' + PROJECT_SKILLS_GUIDANCE, JSON.stringify(supplied.catalog));
+  if (supplied.catalog.length) parts.push('Project skills supplied for this coding session. ' + PROJECT_SKILLS_GUIDANCE + PROJECT_SKILLS_READ, JSON.stringify(supplied.catalog));
   const text = parts.length ? '\nToolroll project context, frozen when this coding session started. Native repository and home instructions, tools, and MCP configuration still apply.\n' + parts.join('\n') + '\n' : '';
   const metadata: CodingContextMetadata = {
     version: 1,
@@ -75,6 +75,24 @@ export function prepareCodingContext(store: Store, args: {
     files: captured.skills.packages.flatMap(skill => skill.files.map(file => ({ path: `${skill.name}/${file.path}`, sha256: fileDigest(Buffer.from(file.base64, 'base64')) }))),
   };
   return freeze({ version: CODING_CONTEXT_VERSION, text, metadata, sha256: digest(text, metadata) });
+}
+
+/**
+ * The skill files a saved capture names, as the manifest its session's launch grants them by (project-skills.ts
+ * checkSkillsManifest): each file by its path under the capture's own folder and the SHA-256 it was written with, and
+ * the folders on the way. The capture is the plane's own digest-bound record, never anything the session wrote.
+ */
+export function codingSkillsManifest(context: CodingContext | null | undefined): SkillsManifest | null {
+  const metadata = context?.metadata;
+  if (metadata === undefined || metadata.directory === null || metadata.files.length === 0) return null;
+  const directory = metadata.directory;
+  const folders = new Set<string>([directory]);
+  const files = metadata.files.map(file => {
+    const path = join(directory, ...file.path.split('/'));
+    for (let folder = dirname(path); folder.startsWith(directory + sep); folder = dirname(folder)) folders.add(folder);
+    return { path, sha256: file.sha256 };
+  });
+  return { directory, files, folders: [...folders].sort() };
 }
 
 /** Integrity check for a persisted capture. The caller must separately recheck current account access. */

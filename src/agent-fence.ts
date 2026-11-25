@@ -44,6 +44,11 @@ import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } 
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
+/** Folders beside the database that hold files Toolroll writes for one launch, or runs' evidence: denied whatever the
+ * state folder is called (agentFence), and made first. coding-context: coding sessions' skills (serve.ts);
+ * code-map-delivery: builds' code maps (code-map-admission.ts deliveryRoot). An `evidence` folder there is denied too. */
+export const RESERVED_STATE_FOLDERS = ["coding-context", "code-map-delivery"] as const;
+
 /** The folder beside the database that holds Flexible threads' own folders (flexible-thread.ts). */
 export const FLEXIBLE_THREADS_DIR = "threads";
 
@@ -169,6 +174,19 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(codexSessions, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(codexSessions);
     fence.add(real(codexSessions));
+    // Where Toolroll writes what it hands one launch to read (coding sessions' skills, builds' code maps): denied by
+    // path, whatever the state folder is called, so no launch reaches another's files there (a launch's own files are
+    // granted back one by one). Made first (owner-only), like the folders above, so a launch never creates them.
+    for (const name of RESERVED_STATE_FOLDERS) {
+      const path = join(state, name);
+      try { mkdirSync(path, { mode: 0o700 }); } catch { /* name and target remain denied */ }
+      fence.add(path);
+      fence.add(real(path));
+    }
+    // An evidence root beside the database: denied by name, there or not, where the sandbox denies a missing path
+    // without making it (Seatbelt; Codex's profile gets the same list); elsewhere when it is there.
+    const evidence = join(state, "evidence");
+    if (process.platform === "darwin" || existsSync(evidence)) { fence.add(evidence); fence.add(real(evidence)); }
     // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
     // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
     // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it
@@ -429,6 +447,9 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
   /** Which `readable` entries are one exact file: read with no listing of its folder, so a sibling stays denied. */
   exactFiles?: string[];
+  /** The `exactFiles` that must be regular files (fenceFor's: a code map, skill files). Each is read by its own path
+   * only while it is one; one that has become a folder or a link opens nothing, on any backend (exactFileReads). */
+  exactRegular?: string[];
   /** Policy v1: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
@@ -841,6 +862,10 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   // Denies are keyed where they resolve; the console's run folder is also denied by its
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
+  // Exact files: read by their own path inside whatever is denied around them, never written, nothing beside them read.
+  // A read on a path covers what is under it: should the file become a folder after the profile is made, what it then
+  // holds stays denied (a pattern outranks the read; checked against `codex sandbox`).
+  for (const path of exactFileReads(grants)) { access.set(path, "read"); access.set(join(path, "**"), "deny"); }
   // Protected storage: denied by name and real path, and nothing granted inside it (Codex lets the more specific path
   // win, so a grant there would reopen it).
   const storage = grants.protectedStorage ?? [];
@@ -896,8 +921,11 @@ export const SPLIT_SECRET_PATTERNS = ["orders.db*", "*token*", "up-login*", "*.t
 export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRANTS, list: (path: string) => string[] = path => readdirSync(path)): { deny: string[]; readOnly: string[] } {
   const deny: string[] = [];
   const readOnly = new Set(grants.readOnly);
+  // An exact file never opens its folders: it is read by its own path inside them (exactFileReads), so nothing is split.
+  // One meant as a regular file opens nothing even after it became a folder or a link (never a fall back to a split).
+  const exact = new Set([...exactFileReads(grants), ...grants.exactRegular ?? []]);
   const split = (path: string): void => {
-    const within = grants.readable.filter(one => inside(one, path));
+    const within = grants.readable.filter(one => inside(one, path) && !exact.has(one));
     if (within.length === 0) { deny.push(path); return; }
     let entries: string[];
     try { entries = list(path); } catch (error) {
@@ -909,7 +937,7 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
     for (const pattern of SPLIT_SECRET_PATTERNS) deny.push(join(path, pattern));
     for (const entry of entries) {
       const child = join(path, entry);
-      if (grants.readable.includes(child)) readOnly.add(child);
+      if (grants.readable.includes(child)) { if (!exact.has(child)) readOnly.add(child); }
       else split(child);
     }
   };
@@ -919,6 +947,24 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
   const denied = deny.filter(path => !path.includes("*"));
   return { deny, readOnly: [...readOnly].filter(path => !denied.some(one => path === one || inside(path, one))) };
 }
+
+/**
+ * The exact files a Codex profile reads by their own path inside the denied folders around them: the `exactFiles` that
+ * are regular files now (never a link, never a folder). Codex lets the more specific path win (checked against
+ * `codex sandbox` on macOS, test/attacks/fence-skills.test.ts), so neither the folder's listing nor a sibling made
+ * after launch is read. An exact folder (a direct chat's clone) is still split by `flattened`.
+ */
+export function exactFileReads(grants: FenceGrants): string[] {
+  return (grants.exactFiles ?? []).filter(path => grants.readable.includes(path) && regularAt(path));
+}
+
+/** A regular file at exactly this canonical path: not a link, not a folder, not reached through a linked folder. */
+function regularAt(path: string): boolean {
+  try { const held = lstatSync(path); return held.isFile() && !held.isSymbolicLink() && realpathSync(path) === path; } catch { return false; }
+}
+
+/** Thrown by fenceFor when a file it was to grant exactly is there but is no longer the regular file it was. */
+export class ExactFileChanged extends Error {}
 
 /** Claude's own file tools refuse the fenced paths in every mode (its shell is fenced by the macOS sandbox), and
  * never edit a read-only one. */
@@ -973,7 +1019,11 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const denyRead = new Set<string>(fence.map(real));
   // A readable grant's own folder is read too: bundlers (esbuild) find node_modules by listing it. The runtime can't
   // grant a listing without the folder's files, so the shared copy's folder is read whole (its ready note among them).
-  const allowRead = new Set<string>(grants.readable.flatMap(path => grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
+  // An exact file meant as a regular file is read only while it is one, by its own canonical path: never through a link
+  // it became (that would grant where the link leads) and never as a folder.
+  const regular = new Set(grants.exactRegular ?? []);
+  const allowRead = new Set<string>(grants.readable.flatMap(path => regular.has(path) ? (regularAt(path) ? [path] : [])
+    : grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
@@ -1150,6 +1200,8 @@ export type FenceContext = {
   storage?: ProtectedStorage;
   /** One exact file read back inside the fence (a build's code map), or null. */
   exactFile?: string | null;
+  /** More exact files read back the same way (a launch's project skills, rechecked against their manifest first). */
+  exactFiles?: readonly string[];
   databaseFile: string | null;
   worktree: string | null;
   boundary: TaskBoundary | null;
@@ -1210,12 +1262,18 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   // launches: rewriting the code that fences a build would switch the fence off.
   const made = installDenied(found, ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null);
   const written = ctx.writes ?? null;
-  const exact = ctx.exactFile ?? null;
+  // Each exact file is checked as it is granted: one that is there but is no longer a regular file at its own canonical
+  // path (a folder, a link, a linked folder above it) refuses the whole launch; one that is gone is simply not granted.
+  const exact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])].filter(path => {
+    if (regularAt(path)) return true;
+    try { lstatSync(path); } catch { return false; }
+    throw new ExactFileChanged("A file this launch was to read changed before it started, so nothing was started.");
+  });
   const grants: FenceGrants = {
     ...made,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
-    // One exact file, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
-    ...(exact === null ? {} : { readable: [...made.readable, exact], exactFiles: [exact], readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), exact])].sort() }),
+    // Exact files, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
+    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, exactRegular: exact, readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
     // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use
