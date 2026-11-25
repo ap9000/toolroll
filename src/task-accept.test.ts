@@ -239,3 +239,19 @@ describe("what Accept and finish owes", () => {
     expect(state("owe-failed")).not.toBe("complete");
   });
 });
+
+/** Task ids as people type them (everyday-8 #9): the screens never show the generated `task-` prefix. Exact first, then
+ * exactly `task-<typed>`; never a prefix match. */
+describe("task show takes the id with or without task-", () => {
+  test("the table", async () => {
+    store.createTask({ id: "task-bb9f68bbbed6a0b0", title: "Add a subtract" }, NOW);
+    store.createTask({ id: "bb9f", title: "A task named like a prefix" }, NOW);
+    expect(await run(["task", "show", "bb9f68bbbed6a0b0", "--json"])).toBe(EXIT.ok);
+    expect(payload()["id"] ?? (payload()["task"] as Record<string, unknown> | undefined)?.["id"]).toBe("task-bb9f68bbbed6a0b0");
+    expect(await run(["task", "show", "task-bb9f68bbbed6a0b0", "--json"])).toBe(EXIT.ok);
+    // The exact id wins over a generated one; a prefix of an id names nothing.
+    expect(await run(["task", "show", "bb9f", "--json"])).toBe(EXIT.ok);
+    expect(JSON.stringify(payload())).toContain("A task named like a prefix");
+    expect(await run(["task", "show", "bb9f68", "--json"])).toBe(EXIT.refused);
+  });
+});

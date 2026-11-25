@@ -10157,7 +10157,8 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
 
 function showTask(positional: readonly string[], context: Context): number {
   const { store, write, json, now } = context;
-  const id = positional[0];
+  // As the person types it: the exact id first, else the generated `task-` id it names (everyday-8 #9).
+  const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
   if (id === undefined) return fail(write, json, "task show", "usage", "which task?", EXIT.usage);
 
   const task = store.getTask(id);
