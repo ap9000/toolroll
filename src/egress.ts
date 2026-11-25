@@ -176,27 +176,39 @@ export function repositoryEcosystems(repo: string): Ecosystem[] {
   return ecosystemsOf(paths);
 }
 
-/** The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries. */
-const PROVIDER_NEEDS_LOOPBACK: ReadonlySet<string> = new Set(["antigravity"]);
-
+/**
+ * The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries.
+ * The project's local-services choice is never overridden for a provider: an agent that can't work without them is
+ * refused at launch instead (localServicesRefusal).
+ */
 export function resolveNetwork(provider: string, project: ProjectNetwork, ecosystems: readonly Ecosystem[]): NetworkProfile {
-  const loopback: LoopbackMode = PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : project.loopback;
-  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback };
+  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback: project.loopback };
   const hosts = new Set<string>([
     ...(PROVIDER_HOSTS[provider] ?? []),
     ...ecosystems.flatMap(one => REGISTRY_HOSTS[one]),
     ...project.hosts,
   ]);
-  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback };
+  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback: project.loopback };
 }
 
+/** The network of a launch nothing sealed one for (a planner, a check): its provider's own hosts and nothing else. */
 export function providerOnlyNetwork(provider: string): NetworkProfile {
-  return {
-    version: NETWORK_POLICY_VERSION,
-    mode: "allowlist",
-    hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(),
-    loopback: PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : "proxy-only",
-  };
+  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(), loopback: "proxy-only" };
+}
+
+/**
+ * Agents that talk to a helper of their own on this machine's loopback, on a port they pick at start. The macOS sandbox
+ * can't admit one such port without admitting every local service, so these run on a Mac only where the project
+ * itself allows local services (or an open network); elsewhere they are refused, never widened.
+ */
+const NEEDS_LOCAL_SERVICES: Readonly<Record<string, string>> = { antigravity: "Antigravity" };
+
+/** Why `provider` can't start under `network` on `platform`, in plain words, or null when it can. */
+export function localServicesRefusal(provider: string, network: { mode: "open" } | { mode: "allowlist"; loopback: LoopbackMode } | undefined, platform: NodeJS.Platform = process.platform): string | null {
+  const name = NEEDS_LOCAL_SERVICES[provider];
+  if (name === undefined || platform !== "darwin") return null;
+  if (network !== undefined && (network.mode === "open" || network.loopback === "any")) return null;
+  return `${name} needs to reach its own helper on this Mac, and this project doesn't let builds reach local services, so nothing was started. To use ${name} here, allow local services in the project's network settings, or choose another agent.`;
 }
 
 /**

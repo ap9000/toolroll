@@ -54,7 +54,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
 import { buildCacheEnv, buildCacheFolder, codexOwnState, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
-import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
+import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
@@ -611,6 +611,16 @@ export async function invokeAgent(
       removeAgentDatabase(isolatedDb.dir);
       return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
         diagnostic: `The build's network could not be set up, so nothing was started: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    // An agent that needs this Mac's local services runs only where the network it was given admits them: the
+    // project's choice is never widened for it (egress.ts localServicesRefusal).
+    const localRefusal = fenced.method === "macos-sandbox" ? localServicesRefusal(spec.provider, grants.network, "darwin") : null;
+    if (localRefusal !== null) {
+      await egress?.close();
+      tools?.cleanup();
+      codexHome?.cleanup();
+      removeAgentDatabase(isolatedDb.dir);
+      return { kind: "refused", reason: "containment", providerVersion: acpAttestation?.agent.version ?? attested?.version ?? null, diagnostic: localRefusal };
     }
   }
   // The attempt's pinned fence, stamped on the run (C11): its method, policy version, the digest of exactly what it was
