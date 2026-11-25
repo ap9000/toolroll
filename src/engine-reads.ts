@@ -710,16 +710,26 @@ function agentChoicesOf(store: Store, taskId: string, ref: ReturnType<Store["loo
  * it couldn't be read, in words. */
 export type ThreadChanges = { ok: true; patch: string; truncated: boolean } | { ok: true; none: true } | { ok: false; message: string };
 
-/** A thread's patch line as shown: cleaned (controls, escapes, bidi out) and a line that looks like a key hidden, as the
- * live view hides one; inside a private key block every line is hidden. */
+/** A thread's patch as shown: every line cleaned (controls, escapes, bidi out) and anything that looks like a key hidden,
+ * as the live view hides one: a changed or context line (inside a private key block every line), a hunk header's
+ * function context (git copies a line of the file there; the header keeps only its numbers), and any other metadata
+ * line. A file's own header lines (`diff --git`, `---`, `+++`) are read by position, never mistaken for a hunk's
+ * `---`/`+++` lines. */
 function shownPatch(text: string): string {
-  let inKey = false;
+  let inKey = false, inHunk = false;
   return text.replace(/\r\n/g, "\n").split("\n").map(line => {
-    const marker = /^[-+ ]/.test(line) && !line.startsWith("+++ ") && !line.startsWith("--- ") ? line[0]! : "";
+    if (line.startsWith("diff --git ")) { inHunk = false; inKey = false; return cleanLiveText(line); }
+    const hunk = /^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)(.*)$/.exec(line);
+    if (hunk !== null) {
+      inHunk = true;
+      const context = hunk[2]!;
+      return /-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----/.test(context) || liveSecretHit(context) ? hunk[1]! : cleanLiveText(line);
+    }
+    const marker = inHunk && /^[-+ ]/.test(line) ? line[0]! : "";
     const body = marker === "" ? line : line.slice(1);
-    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(body)) inKey = true;
-    const hide = inKey || (marker !== "" && liveSecretHit(body));
-    if (/-----END [A-Z ]*PRIVATE KEY-----/.test(body)) inKey = false;
+    if (marker !== "" && /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(body)) inKey = true;
+    const hide = (marker !== "" && inKey) || liveSecretHit(body);
+    if (marker !== "" && /-----END [A-Z ]*PRIVATE KEY-----/.test(body)) inKey = false;
     return hide ? `${marker}${HIDDEN_LINE}` : `${marker}${cleanLiveText(body)}`;
   }).join("\n");
 }
@@ -738,7 +748,8 @@ export function threadDiffOf(thread: string, turn: number, changes: ThreadChange
       else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
     }
     const binary = /^(?:Binary files .* differ|GIT binary patch)$/m.test(text);
-    return { file: index, path: cleanLiveText(parsed?.path ?? "changed file"), oldPath: parsed?.oldPath == null ? null : cleanLiveText(parsed.oldPath), additions, deletions, binary,
+    const shownPath = (path: string): string => liveSecretHit(path) ? HIDDEN_LINE : cleanLiveText(path);
+    return { file: index, path: shownPath(parsed?.path ?? "changed file"), oldPath: parsed?.oldPath == null ? null : shownPath(parsed.oldPath), additions, deletions, binary,
       hunks: parsed?.hunks.length ?? 0 };
   });
   if (files.length === 0) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
@@ -754,7 +765,8 @@ export function threadDiffFileOf(thread: string, turn: number, changes: ThreadCh
   const one = parsed.files[0];
   if (one === undefined) return null;
   return { version: ENGINE_API_VERSION, task: thread, run: turn,
-    file: { file, path: cleanLiveText(one.path), oldPath: one.oldPath === null ? null : cleanLiveText(one.oldPath), meta: one.meta.map(cleanLiveText), hunks: one.hunks.map(hunk => ({ ...hunk, header: cleanLiveText(hunk.header) })),
+    file: { file, path: liveSecretHit(one.path) ? HIDDEN_LINE : cleanLiveText(one.path), oldPath: one.oldPath === null ? null : liveSecretHit(one.oldPath) ? HIDDEN_LINE : cleanLiveText(one.oldPath),
+      meta: one.meta.map(cleanLiveText), hunks: one.hunks.map(hunk => ({ ...hunk, header: cleanLiveText(hunk.header) })),
       lineCount: patchLineCount(one.hunks) },
     linesTruncated: parsed.linesTruncated };
 }

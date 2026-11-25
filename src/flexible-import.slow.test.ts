@@ -415,4 +415,23 @@ describe("what a thread changed, for its owner to read (never an import)", () =>
     expect(threadDiffFileOf(thread.id, 2, changes, 99)).toBeNull();
     expect(threadDiffOf(thread.id, 2, { ok: true, none: true }).problem).toMatch(/^No committed changes yet/);
   });
+
+  test("a key git copies into a hunk header's function context, or an added line shaped like a file header, is hidden from what the terminal and browser read", () => {
+    const key = keyLine().trim();
+    const patch = [
+      "diff --git a/src/b.ts b/src/b.ts", "index 1111111..2222222 100644", "--- a/src/b.ts", "+++ b/src/b.ts",
+      `@@ -7,3 +7,4 @@ ${key}`, " keep", "-old", "+new", `+++ ${key}`, `--- ${key}`, " end", "",
+    ].join("\n");
+    const changes = { ok: true as const, patch, truncated: false };
+    const read = threadDiffFileOf(thread.id, 1, changes, 0)!;
+    const everything = JSON.stringify(read);
+    expect(everything).not.toContain(key.slice(13, 33));
+    expect(read.file.hunks.map(hunk => hunk.header)).toEqual(["@@ -7,3 +7,4 @@"]);
+    expect(read.file.hunks[0]!.lines.map(line => [line.kind, line.text])).toEqual([["context", "keep"], ["deletion", "old"], ["addition", "new"], ["addition", HIDDEN_LINE],
+      ["deletion", HIDDEN_LINE], ["context", "end"]]);
+    // An ordinary function context stays.
+    const plain = threadDiffFileOf(thread.id, 1, { ok: true, patch: patch.replace(`@@ ${key}`, "@@ export function total() {"), truncated: false }, 0)!;
+    expect(plain.file.hunks[0]!.header).toBe("@@ -7,3 +7,4 @@ export function total() {");
+    expect(threadDiffOf(thread.id, 1, { ok: true, patch: patch.replaceAll("src/b.ts", `src/${key.slice(13, 33)}.ts`), truncated: false }).files[0]!.path).toBe(HIDDEN_LINE);
+  });
 });
