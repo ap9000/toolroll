@@ -93,6 +93,11 @@ describe("task sizing in the terms", () => {
 });
 
 describe("the summary, short and plain", () => {
+  // These texts are written for Linux, where Codex's own command sandbox keeps its commands offline; on a Mac Codex runs
+  // inside Toolroll's fence with the run's proxy, so its network line has no offline note (egress.ts codexCommandsOffline).
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  beforeEach(() => { Object.defineProperty(process, "platform", { ...platform, value: "linux" }); });
+  afterEach(() => { Object.defineProperty(process, "platform", platform); });
   test("representative scopes read as their decisions, what differs, every risk, and the usual settings by name", () => {
     const shown = Object.fromEntries(representative().map(one => [one.name, summaryLines(approvalSummaryOf(one.scope, one.context)).join("\n")]));
     expect(shown["plain"]).toMatchInlineSnapshot(`
