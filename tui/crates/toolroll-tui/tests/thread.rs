@@ -1426,6 +1426,45 @@ fn the_diff_tab_reads_the_threads_changes_again_when_its_turn_ends() {
 }
 
 #[test]
+fn a_diff_read_still_on_its_way_when_the_turn_ends_is_superseded_by_a_fresh_one() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    let Some(Effect::FetchThreadDiff(old)) = fx
+        .iter()
+        .find(|e| matches!(e, Effect::FetchThreadDiff(_)))
+        .cloned()
+    else {
+        panic!("{fx:?}")
+    };
+    // The turn ends before the first read answers.
+    let mut done = window();
+    done["live"] = json!(false);
+    done["thread"]["version"] = json!("3333333333333333");
+    done["thread"]["turn"]["status"] = json!("finished");
+    done["window"]["records"] = json!([]);
+    let fx = app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(done))));
+    let Some(Effect::FetchThreadDiff(fresh)) = fx
+        .iter()
+        .find(|e| matches!(e, Effect::FetchThreadDiff(a) if a.task == fake::THREAD))
+        .cloned()
+    else {
+        panic!("{fx:?}")
+    };
+    assert_ne!(fresh.gen, old.gen);
+    // The older answer (read before the turn ended) is dropped; the fresh one is shown.
+    app.update(Msg::Diff(old, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(!shown.contains("No committed changes yet."), "{shown}");
+    app.update(Msg::Diff(fresh, Ok(parse(thread_diff(Some("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only."))))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("uncommitted edits"), "{shown}");
+}
+
+#[test]
 fn a_reply_right_after_the_turn_is_done_goes_even_before_the_list_is_read_again() {
     // The list still says the turn runs; the thread's own window then says it finished.
     let mut app = thread_app(window());

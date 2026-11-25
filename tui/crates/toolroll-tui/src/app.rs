@@ -2964,9 +2964,11 @@ impl App {
                 self.selected = at;
             }
         }
+        // A read already on its way for this thread is superseded too (Codex round 1, finding 4): asking again moves the
+        // wanted generation on, so the older answer, read before the turn ended, is dropped when it arrives.
         let diff_again = facts_moved
-            && self.diff_wanted.is_none()
-            && self.diff.as_ref().is_some_and(|d| d.task == id);
+            && (self.diff.as_ref().is_some_and(|d| d.task == id)
+                || self.diff_wanted.as_ref().is_some_and(|w| w.task == id));
         let mut effects = match more {
             Some(cursor) => {
                 let view = self.threads.view.as_mut().unwrap();
