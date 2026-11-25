@@ -13,7 +13,10 @@ import { readVerificationReceipt } from "./contracts/verification-receipt.js";
 import { LEGACY_GATE_SOURCE, readVerificationView, type LegacyGateView } from "./contracts/verification-view.js";
 import { readCandidateEndpoints, savedInventoryPaths } from "./contracts/diff-stat.js";
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
-import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
+import { parseContract } from "./contracts/contract.js";
+import { sealedInventorySchema } from "./contracts/release-check.js";
+import { purposeCheckMode } from "./contracts/release-terms.js";
 import { provedComposition, type ComposedLinks, type Coverage } from "./release-recheck.js";
 import { checkAttemptOf } from "./store.js";
 
@@ -26,8 +29,9 @@ export const isVerificationReceipt = (a: Artifact) => a.kind === "structured-out
  * for a composed check the links its reader proves again. */
 export type ReleaseCheckFacts = { coverage: Coverage; check: { attempt: "full" | "targeted"; report: string | null; inventory: string | null; exitCode?: number | null; retried?: string[] | null }; composed: ComposedLinks | null };
 
-/** Whether a coverage lets a check pass: only full or composed (absent: a check that isn't a release check). */
-export const coveragePasses = (coverage: unknown): boolean => coverage === undefined || coverage === "full" || coverage === "composed";
+/** Whether a coverage lets a check pass: full, composed or a main release's deploy check (absent: a check that isn't a
+ * release check). A deploy check's pass deploys only a release from main (deploy-gate.ts, deploy-candidate.mjs). */
+export const coveragePasses = (coverage: unknown): boolean => coverage === undefined || coverage === "full" || coverage === "composed" || coverage === "deploy";
 
 /**
  * THE one place a release check's coverage meets its outcome (security review): a check whose coverage is partial or
@@ -133,6 +137,14 @@ export function verificationEvidence(store: Store, root: string, runId: number):
         if (one.truncated || one.redacted || one.captureStatus !== "ok" || !readVerifiedArtifact(root, one).ok) return fail("The release check's sealed report or inventory no longer verifies.");
       }
       if ((checked.coverage === "composed") !== (checked.composed !== undefined)) return fail("The release check's coverage and its links disagree.");
+      // A deploy check's coverage stands only on an inventory sealed as one before it ran, for a scope sealed as a release
+      // from main with the deploy check (release-from-main.md, part C).
+      if (checked.coverage === "deploy") {
+        const inventory = readSealedJson(store, root, runId, CHECK_INVENTORY_CAPTURE);
+        const sealed = inventory === null ? null : parseContract(sealedInventorySchema, inventory.value);
+        const purpose = store.getScope(store.refById(source.taskRef)?.externalId ?? "")?.releaseCheck ?? null;
+        if (sealed === null || !sealed.ok || sealed.value.sealed.deploy !== true || purposeCheckMode(purpose) !== "deploy") return fail("A deploy check's receipt isn't for a release from main sealed with the deploy check.");
+      }
       // A check that didn't cover what it owed can never read as a pass.
       if (!coveragePasses(checked.coverage) && checked.result.configured && checked.result.ran && checked.result.exitCode === 0) return fail("The release check reads as passed, but its coverage fell short.");
       if (checked.composed !== undefined) {

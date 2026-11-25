@@ -16,6 +16,12 @@ import { readVersioned, versioned, type ContractResult } from "./contract.js";
 /** The parts a release check is made of. */
 export const CHECK_PARTS = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"] as const;
 export type CheckPart = typeof CHECK_PARTS[number];
+/** A release from main's deploy check (docs/plans/release-from-main.md, part C): the candidate built, a copy of the
+ * live database upgraded by it and the candidate started against that copy, isolated. Never part of a full check. */
+export const DEPLOY_PART = "rehearsal" as const;
+/** Every part a report or an inventory may name: a full or targeted check's, and the deploy check's rehearsal. */
+export const REPORT_PARTS = [...CHECK_PARTS, DEPLOY_PART] as const;
+export type ReportPart = typeof REPORT_PARTS[number];
 export const JOURNEY_SCRIPTS = ["app", "flows"] as const;
 export type JourneyScript = typeof JOURNEY_SCRIPTS[number];
 
@@ -34,13 +40,14 @@ export const CHECK_REPORT_MAX_BYTES = 256 * 1024;
 export const checkReportSchema = versioned(1, {
   /** The nonce the plane wrote on the check's stdin: the report is this run's. */
   nonce: hex64,
-  mode: z.enum(["full", "targeted"]),
+  /** `deploy`: a release from main's deploy check (its parts: build, rehearsal, and the upgrade path when owed). */
+  mode: z.enum(["full", "targeted", "deploy"]),
   /** The digest of the targeted plan the orchestrator ran, as it received it; null for a full check. */
   planDigest: hex64.nullable(),
   /** The orchestrator's own exit code. */
   exitCode: z.int().min(0).max(255),
   parts: z.array(z.strictObject({
-    part: z.enum(CHECK_PARTS),
+    part: z.enum(REPORT_PARTS),
     selected: z.boolean(),
     ran: z.boolean(),
     code: z.int().min(0).max(255).nullable(),
@@ -51,7 +58,7 @@ export const checkReportSchema = versioned(1, {
     signal: z.string().max(20).nullable().optional(),
     stopped: z.boolean().optional(),
     spawnFailed: z.boolean().optional(),
-  })).max(CHECK_PARTS.length),
+  })).max(REPORT_PARTS.length),
   /** The unit suite, from the Vitest main process's fd-3 lines: every file's outcome, and the identities that failed,
    * were skipped, passed on a retry or were asked about. Null when the unit part didn't run. */
   units: z.strictObject({
@@ -111,11 +118,13 @@ export const checkInventorySchema = versioned(1, {
   units: z.array(repoPath).max(20_000),
   /** The parts the check owes. For a full check the plane decides them before it runs (check-report.ts
    * fullObligationsOf) and they ride on the handshake; every one needs an outcome. */
-  parts: z.array(z.enum(CHECK_PARTS)).max(CHECK_PARTS.length),
+  parts: z.array(z.enum(REPORT_PARTS)).max(REPORT_PARTS.length),
   /** Whether CI's run of the exact commit may stand in for the local unit suite. Absent is no. */
   ciSubstitute: z.boolean().optional(),
   /** Whether the plane prepared it as a release's check (sealed with the attempt; absent on older inventories). */
   release: z.boolean().optional(),
+  /** A release from main's deploy check (sealed with the attempt; only for a scope sealed as one). */
+  deploy: z.literal(true).optional(),
 });
 export type CheckInventory = z.infer<typeof checkInventorySchema>;
 
@@ -169,7 +178,9 @@ export type ObligationSnapshot = z.infer<typeof obligationSnapshotSchema>;
 /** What the plane writes on the check's stdin before closing it. `learn` (docs/plans/learning-loops.md) is advisory and
  * apart from everything else: exact case identities the check is asked to say it ran, on their own line
  * (LEARN_PREFIX), never in the report and never part of what the check owes. */
-export type CheckHandshake = { nonce: string; mode: "full" | "targeted"; plan: TargetedPlan | null; watch: string[]; owed?: CheckPart[]; ciSubstitute?: boolean; learn?: string[] };
+export type CheckHandshake = { nonce: string; mode: "full" | "targeted" | "deploy"; plan: TargetedPlan | null; watch: string[]; owed?: ReportPart[]; ciSubstitute?: boolean; learn?: string[];
+  /** The deploy check's copy of the live database, made by the plane (SQLite's online backup) in a folder of its own. */
+  copy?: string };
 
 // ------------------------------------------------------------------ advisory learning lines (docs/plans/learning-loops.md)
 

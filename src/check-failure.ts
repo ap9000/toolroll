@@ -26,7 +26,7 @@ import { regateTask } from "./dispose.js";
 import { INFRA_RERUNS_PER_CANDIDATE, INFRA_RERUNS_PER_INCIDENT, type FailureClassName } from "./release.js";
 import { releaseCheckScope, type Scope } from "./scope.js";
 import type { Store } from "./store.js";
-import { isVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
+import { coveragePasses, isVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
 import { checkAttemptOf } from "./store.js";
 import { endedInterrupted } from "./run-ending.js";
 
@@ -65,7 +65,7 @@ const busyWords = (why: string) => `${why}: Toolroll's own machine, so this comm
  */
 export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | null, load: CheckLoadRecord | null = null): ClassifiedFailure | null {
   const result = facts.result;
-  const passedCoverage = facts.coverage === undefined || facts.coverage === "full" || facts.coverage === "composed";
+  const passedCoverage = coveragePasses(facts.coverage);
   if (result.configured && result.ran === true && result.exitCode === 0 && passedCoverage) return null;
   if (!result.configured) return { class: "unknown", why: "no check is configured" };
   if (result.ran !== true) {

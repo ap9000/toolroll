@@ -35,6 +35,8 @@ export type AssignmentChecks = {
   exitCode: number | null; command: string | null; logArtifactId: number | null; detail: string;
   /** Which check this is (check-levels.ts): quick, full, or off; null before levels. */
   level?: CheckLevel | null;
+  /** A release check's coverage from its sealed receipt (full, composed, deploy…); absent when it names none. */
+  coverage?: string;
   /** A follow-up check waiting or running on this commit. */
   running?: "quick" | "full" | null;
   /** A batch check (batch-checks.ts): waiting for its batch, or how it was checked. */
@@ -196,9 +198,12 @@ function buildChecks(store: Store, root: string | undefined, runId: number): Ass
     // The sealed receipt names the grant that ran: the quick one, or the full one.
     const sealedLevel: CheckLevel = typeof receipt.command?.repo === "string" && receipt.command.repo.startsWith("quick:") ? "quick" : "full";
     const words = sealedLevel === "quick" ? "Quick checks" : "Checks";
+    // A release from main's deploy check says so: it isn't the full check (release-from-main.md, part C).
+    const deploy = receipt.coverage === "deploy";
     return { status: ran ? exitCode === 0 ? "passed" : "failed" : "not-run", exitCode,
       command: receipt.command.command, logArtifactId: receipt.log.artifactId, level: level === null ? null : sealedLevel,
-      detail: ran ? exitCode === 0 ? `${words} passed.` : `${words} failed (exit ${exitCode}).` : `${words} did not finish.` };
+      ...(typeof receipt.coverage === "string" ? { coverage: receipt.coverage } : {}),
+      detail: ran ? exitCode === 0 ? deploy ? "The deploy check passed." : `${words} passed.` : `${deploy ? "The deploy check" : words} failed (exit ${exitCode}).` : `${deploy ? "The deploy check" : words} did not finish.` };
   } catch { return unavailable("Saved checks could not be read."); }
 }
 

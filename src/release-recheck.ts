@@ -20,11 +20,12 @@
  * Coverage trusts test code (Alex, 2026-10-25): these results protect against accidental damage, not a hostile test.
  * Authority never reads them; the release's own records do.
  */
-import { CHECK_CONTEXT_CAPTURE, CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, OBLIGATION_SNAPSHOT_CAPTURE, TARGETED_PLAN_CAPTURE, checkContextOf, fullCheckProblem, isUnitFile, payloadDigest, projectGitDir, readSealedJson, treeFactsOf } from "./check-report.js";
+import { purposeCheckMode } from "./contracts/release-terms.js";
+import { CHECK_CONTEXT_CAPTURE, CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, OBLIGATION_SNAPSHOT_CAPTURE, TARGETED_PLAN_CAPTURE, checkContextOf, deployCheckProblem, fullCheckProblem, isUnitFile, payloadDigest, projectGitDir, readSealedJson, treeFactsOf } from "./check-report.js";
 import { readVerifiedCommit, verifiedTreeDiff } from "./commit-extract.js";
 import {
   checkContextSchema, fileIdentity, groupIdentity, journeyIdentity, obligationSnapshotSchema, readCheckReport, sealedInventorySchema, targetedPlanSchema, unitIdentity, versionIdentity,
-  type CheckContext, type CheckPart, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
+  CHECK_PARTS, type CheckContext, type CheckPart, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
 } from "./contracts/release-check.js";
 import { parseContract } from "./contracts/contract.js";
 import { releaseAuthority, releaseAuthorityOfTask, releaseCarries } from "./release-authority.js";
@@ -269,14 +270,16 @@ export function planTargetedRecheck(store: Store, root: string, input: { runId: 
   if (!facts.ok) return full("this commit can't be read", watch);
   if (payloadDigest(checkContextOf(facts.facts, input.command, input.access)) !== payloadDigest(base.context)) return full("the check runs somewhere other than the last full check did", watch);
   if (base.inventory.sealed.units.some(file => !facts.facts.units.includes(file))) return full("a unit file the last full check had is gone", watch);
-  const journeysRan = base.report!.parts.filter(one => one.ran).map(one => one.part);
+  const journeysRan = base.report!.parts.filter(one => one.ran).map(one => one.part).filter((part): part is CheckPart => (CHECK_PARTS as readonly string[]).includes(part));
   const plan = planFrom(base.run, { ...obligations, required: [...new Set([...obligations.required, ...owed])].sort(),
     units: [...new Set([...obligations.units, ...owed.flatMap(id => /^unit:(.+?)::/.exec(id)?.[1] ?? /^file:(.+)$/.exec(id)?.[1] ?? [])])].sort() }, snapshot, changed, facts.facts.units, journeysRan);
   return { mode: "targeted", authority: a.id, plan, snapshot, watch: plan.required };
 }
 
 /** Coverage of a check: full, composed from A, partial (never passes), or identity-removed (asks again). */
-export type Coverage = "full" | "composed" | "partial" | "identity-removed" | "no-result";
+/** `deploy`: a release from main's deploy check passed all it owed (release-from-main.md, part C); it covers that
+ * release's deploy alone (the deploy gates and the coordinator accept it only there). */
+export type Coverage = "full" | "composed" | "partial" | "identity-removed" | "no-result" | "deploy";
 
 /**
  * Whether a targeted run B, with A's sealed evidence, its plan and snapshot, covers every item of B's inventory
@@ -401,6 +404,13 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
     }
     return { coverage: "identity-removed", composed: null };
   };
+  // A release from main's deploy check (its inventory sealed as one before it ran): `deploy` only for a scope sealed as a
+  // main release with the deploy check, and only with a complete, valid result; anything else is no result.
+  if (b.attempt.mode === "full" && b.inventory?.sealed.deploy === true) {
+    const purpose = store.getScope(input.taskId)?.releaseCheck ?? null;
+    if (purposeCheckMode(purpose) !== "deploy" || deployCheckProblem({ report: b.report, inventory: b.inventory, exitCode: input.exitCode }) !== null) return { coverage: "no-result", composed: null };
+    return { coverage: "deploy", composed: null };
+  }
   if (b.attempt.mode === "full") {
     // The rule on removed or skipped required identities applies to full runs too.
     if (b.attempt.authority !== null) {

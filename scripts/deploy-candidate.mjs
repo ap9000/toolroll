@@ -63,7 +63,13 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   requireFact(evidence.ok && evidence.bytes, `Native check unavailable: ${evidence.problem ?? 'no receipt'}.`);
   const gate = JSON.parse(evidence.bytes);
   // A release check's coverage (receipt version 3): partial or identity-removed never deploys, whatever the exit.
-  requireFact(gate.coverage === undefined || gate.coverage === 'full' || gate.coverage === 'composed', `The release check didn't cover this candidate (${gate.coverage}).`);
+  requireFact(gate.coverage === undefined || gate.coverage === 'full' || gate.coverage === 'composed' || gate.coverage === 'deploy', `The release check didn't cover this candidate (${gate.coverage}).`);
+  // A deploy check (docs/plans/release-from-main.md, part C) deploys only a release from main whose approved commit the
+  // release coordinator proved after the approval (src/release-main-proof.ts), read from the plane's own records.
+  if (gate.coverage === 'deploy') {
+    const problem = mainReleaseProofProblem(store, ref.externalId, scope);
+    requireFact(problem === null, `This candidate passed only the deploy check, which deploys a release from main alone: ${problem}.`);
+  }
   const live = store.liveVerifyCommand(ref.repo);
   requireFact(gate.run === runId && gate.head === head && gate.scopeDigest === scope.digest &&
     gate.result?.ran === true && gate.result.exitCode === 0 && live && gate.command.command === live.command,
@@ -202,4 +208,22 @@ export function personApprovalFromRecords(store, taskId) {
   const proof = rows.find(row => proofDigestOf(row.detail) === scope.approvedDigest);
   if (proof === undefined) return { ok: false, why: 'no record shows a person approved these exact words; approve it again' };
   return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: String(proof.outcome) };
+}
+
+/**
+ * The same rule as src/release-main-proof.ts mainReleaseProofProblem, read here from the plane's records with the
+ * installed runtime's store: why a deploy check can't deploy this task, or null. A scope that isn't a sealed release
+ * from main (an installed runtime too old to read one reads none) refuses.
+ */
+export function mainReleaseProofProblem(store, taskId, scope) {
+  const purpose = scope?.releaseCheck ?? null;
+  if (purpose === null || purpose.purpose !== 'main-release') return 'only a release from main deploys on the deploy check';
+  if (typeof scope.approvedAt !== 'string') return "the release isn't approved";
+  const row = store.handle.prepare('SELECT at, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1').get(taskId, 'main release proved');
+  if (row === undefined) return "the release commit's proof isn't recorded: run `toolroll release` to prove it";
+  let facts;
+  try { facts = JSON.parse(String(row.detail)); } catch { return "the release commit's proof can't be read"; }
+  if (Date.parse(String(row.at)) < Date.parse(scope.approvedAt)) return "the release commit wasn't proven since it was approved: run `toolroll release` to prove it";
+  if (facts?.sha !== purpose.approvedSha || facts.sha !== scope.candidate || facts.tree !== purpose.approvedTree || facts.pr !== purpose.pr || facts.branch !== purpose.branch) return 'the recorded proof names another release commit than the one approved';
+  return null;
 }
