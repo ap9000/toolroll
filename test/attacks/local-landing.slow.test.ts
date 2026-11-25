@@ -10,7 +10,7 @@
  * commit after a last in-transaction check of authority, policy, receipt and check bindings; a key pinning everything
  * the person saw; recovery that only records, for people who may land there.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -22,7 +22,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { broughtInOnBranch, handoffsOf, handoffWords, land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
 import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
@@ -416,11 +416,10 @@ describe("undo: a new commit that reverts exactly what landed", () => {
     expect(await readLanding(store, "t", access(), NOW, { ...options(), undo: true })).toMatchObject({ ok: false, reason: "nothing" });
   });
 
-  test("undo while main is checked out in the folder with changes refuses with the git revert command; main unchanged", async () => {
+  test("undo while main is checked out in the folder refuses with the git revert command; main unchanged", async () => {
     built("t", { "a.txt": "two\n" });
     await landNow("t");
     git(repo, "checkout", "-q", "main");
-    writeFileSync(join(repo, "notes.txt"), "mine\n");
     const landedAt = at();
     const read = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
     expect(read).toMatchObject({ ok: false, reason: "occupied" });
@@ -429,56 +428,41 @@ describe("undo: a new commit that reverts exactly what landed", () => {
   });
 });
 
-describe("checked-out main (everyday-9 A1): in place only when the folder is completely clean, else a handoff", () => {
+describe("checked-out main (everyday-9 A1): never touched; a kept commit and the exact command instead", () => {
   const planOf = async () => {
     const read = await readLanding(store, "t", access(), NOW, options());
     if (!read.ok || !("plan" in read)) throw new Error(JSON.stringify(read));
     return read.plan;
   };
+  /** Every file and the index of the project folder, to show none changed. */
+  const folderState = () => ({ status: git(repo, "status", "--porcelain=v1", "--untracked-files=all"), head: at("HEAD"), index: git(repo, "ls-files", "-s"),
+    a: plain(join(repo, "a.txt")) });
 
-  test("clean folder on main: main and its files move together, hooks stay silent, the folder reads clean; undo goes back the same way", async () => {
-    const { head } = built("t", { "a.txt": "two\n", "b.txt": "new\n" });
-    git(repo, "checkout", "-q", "main");
-    writeFileSync(join(repo, ".git", "hooks", "post-checkout"), `#!/bin/sh\necho ran > '${join(markers, "post-checkout")}'\n`);
-    chmodSync(join(repo, ".git", "hooks", "post-checkout"), 0o755);
-    expect((await planOf()).mode).toBe("files");
-    expect((await landNow("t")).landed).toMatchObject({ ok: true, mode: "files" });
-    expect(git(repo, "rev-parse", "HEAD^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
-    expect(plain(join(repo, "a.txt"))).toBe("two\n");
-    expect(plain(join(repo, "b.txt"))).toBe("new\n");
-    expect(git(repo, "status", "--porcelain")).toBe("");
-    expect(existsSync(join(markers, "post-checkout"))).toBe(false);
-    expect((await landNow("t", { undo: true })).landed).toMatchObject({ ok: true, kind: "undo", mode: "files" });
-    expect(plain(join(repo, "a.txt"))).toBe("one\n");
-    expect(existsSync(join(repo, "b.txt"))).toBe(false);
-    expect(git(repo, "status", "--porcelain")).toBe("");
-  });
-
-  const dirty: Record<string, () => void> = {
+  const folders: Record<string, () => void> = {
+    "a clean folder on main": () => undefined,
     "a changed tracked file": () => writeFileSync(join(repo, "a.txt"), "my edit\n"),
     "a staged change": () => { writeFileSync(join(repo, "c.txt"), "staged\n"); git(repo, "add", "c.txt"); },
     "an untracked file": () => writeFileSync(join(repo, "notes.txt"), "mine\n"),
     "a merge in progress": () => writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${at()}\n`),
-    "a rebase in progress": () => mkdirSync(join(repo, ".git", "rebase-merge")),
   };
-  for (const [name, make] of Object.entries(dirty)) {
-    test(`${name}: no checkout is touched; the commit is kept and the exact ff-only command is shown`, async () => {
+  for (const [name, make] of Object.entries(folders)) {
+    test(`${name}: main and the folder stay exactly as they were; the commit is kept and the exact ff-only command is shown`, async () => {
       const { head } = built("t", { "a.txt": "two\n" });
       git(repo, "checkout", "-q", "main");
       make();
-      const before = at();
-      const files = plain(join(repo, "a.txt"));
+      const before = at(), was = folderState();
       const plan = await planOf();
       expect(plan.mode, name).toBe("handoff");
       const { landed } = await landNow("t");
       if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
       expect(at(), name).toBe(before);
-      expect(plain(join(repo, "a.txt")), name).toBe(files);
+      expect(folderState(), name).toEqual(was);
+      expect(landed.commit).toBe(plan.squash?.commit);
       expect(git(repo, "rev-parse", landed.handoff.ref)).toBe(landed.commit);
       expect(landed.handoff.command).toBe(`git -C '${repo}' merge --ff-only ${landed.commit}`);
       expect(git(repo, "rev-parse", `${landed.commit}^{tree}`)).toBe(git(repo, "rev-parse", `${head}^{tree}`));
       expect(git(repo, "rev-parse", `${landed.commit}^`)).toBe(before);
-      // The same yes again names the same commit.
+      // The same yes again names the same commit, writing nothing new.
       expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true, commit: landed.commit });
     });
   }
@@ -496,25 +480,39 @@ describe("checked-out main (everyday-9 A1): in place only when the folder is com
     expect(plain(join(other, "a.txt"))).toBe("one\n");
   });
 
-  test("a project folder named with a space, $(…), a quote and a newline: the copied command runs exactly git in that folder", async () => {
-    const weird = join(scratch(), "my proj $(touch PWNED) it's\nx");
-    renameSync(repo, weird);
-    repo = weird;
+  /** The command as the shell reads it: printf stands in for git and prints each argument as it arrives. */
+  const asTheShellReadsIt = (command: string): string[] =>
+    execFileSync("/bin/sh", ["-c", command.replace(/^git /, "printf '%s\\0' ")], { cwd: markers, encoding: "utf8" }).split("\0").slice(0, -1);
+  /** Move the project to a folder named `name` (Toolroll's records follow), with a fresh password proof for it. */
+  const moveProjectTo = (name: string) => {
+    const moved = join(scratch(), name);
+    renameSync(repo, moved);
+    repo = moved;
     store.setVerifyCommand({ repo, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
     const proved = verifyApproverByPassword(store, "alex", password, [repo]);
     if (!proved.ok) throw new Error("alex password");
     who = proved.who;
     person = { kind: "person", who };
+  };
+
+  test("a project folder named with a space, $(…), a quote and a backslash: the copied command's folder is exactly the recorded one", async () => {
+    moveProjectTo("my proj $(touch PWNED) it's \\ x");
     built("t", { "a.txt": "two\n" });
     git(repo, "checkout", "-q", "main");
-    writeFileSync(join(repo, "notes.txt"), "mine\n");
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff?.command == null) throw new Error(JSON.stringify(landed));
+    expect(asTheShellReadsIt(landed.handoff.command)).toEqual(["-C", repo, "merge", "--ff-only", landed.commit]);
+    expect(existsSync(join(markers, "PWNED"))).toBe(false);
+  });
+
+  test("a project folder whose name holds a newline: no command at all, only what to run in the project folder", async () => {
+    moveProjectTo("proj\nx");
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
     const { landed } = await landNow("t");
     if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
-    expect(landed.handoff.command).not.toContain("\n");
-    // As the shell reads it: printf stands in for git and shows each argument.
-    const shown = execFileSync("/bin/sh", ["-c", landed.handoff.command.replace(/^git /, "printf '%s\\n' ")], { cwd: markers, encoding: "utf8" });
-    expect(shown.split("\n").slice(0, 4)).toEqual(["-C", shownName(weird), "merge", "--ff-only"]);
-    expect(existsSync(join(markers, "PWNED"))).toBe(false);
+    expect(landed.handoff.command).toBeNull();
+    expect(handoffWords(landed.handoff, landed.commit)).toBe(`Toolroll can't write a safe command for this folder's name; run git merge --ff-only ${landed.commit} in your project folder.`);
   });
 
   test("HEAD elsewhere (detached at main's commit): only the branch moves; the folder stays where it was", async () => {
@@ -527,44 +525,101 @@ describe("checked-out main (everyday-9 A1): in place only when the folder is com
     expect(plain(join(repo, "a.txt"))).toBe("one\n");
   });
 
-  test("the folder gets a change between the look and the yes: refused, nothing moved", async () => {
+  test("main checked out between the look and the yes: refused, nothing moved, the folder untouched", async () => {
     built("t", { "a.txt": "two\n" });
-    git(repo, "checkout", "-q", "main");
     const plan = await planOf();
-    expect(plan.mode).toBe("files");
+    expect(plan.mode).toBe("ref");
     const before = at();
-    writeFileSync(join(repo, "notes.txt"), "mine\n");
+    git(repo, "checkout", "-q", "main");
     expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: false });
     expect(at()).toBe(before);
     expect(plain(join(repo, "a.txt"))).toBe("one\n");
   });
 
-  test("an ignored file in the way of a file the change adds: never overwritten; main goes back (or it's handed off), nothing changed", async () => {
-    built("t", { "a.txt": "two\n", "b.txt": "theirs\n" });
-    git(repo, "checkout", "-q", "main");
-    writeFileSync(join(repo, ".git", "info", "exclude"), "b.txt\n");
-    writeFileSync(join(repo, "b.txt"), "my secret\n");
-    expect(git(repo, "status", "--porcelain")).toBe("");
-    const before = at();
-    const { read, landed } = await landNow("t");
-    expect(read.ok && "plan" in read && read.plan.mode).toMatch(/^(files|handoff)$/);
-    if (read.ok && "plan" in read && read.plan.mode === "files") expect(landed).toMatchObject({ ok: false, reason: "dirty" });
-    expect(at()).toBe(before);
-    expect(plain(join(repo, "b.txt"))).toBe("my secret\n");
-    expect(plain(join(repo, "a.txt"))).toBe("one\n");
-  });
-
-  test("an ignored file appears in the way between the look and the yes: refused at the write, never overwritten", async () => {
-    built("t", { "a.txt": "two\n", "b.txt": "theirs\n" });
+  test("the handoff's ref can't be created: nothing is reported kept; the same yes again keeps it and settles", async () => {
+    built("t", { "a.txt": "two\n" });
     git(repo, "checkout", "-q", "main");
     const plan = await planOf();
-    expect(plan.mode).toBe("files");
+    let refused = false;
+    const failing: Runner = (file, args, opts) => {
+      if (!refused && args.includes("update-ref") && args.some(arg => arg.startsWith("refs/toolroll/land/"))) { refused = true; return Promise.resolve({ code: 1, stdout: "", stderr: "refused", timedOut: false } as never); }
+      return execRun(file, args, opts);
+    };
+    expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options({ git: failing }))).toMatchObject({ ok: false, reason: "git" });
+    expect(handoffsOf(store, repo, "t")).toEqual([]);
+    const again = await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options());
+    expect(again).toMatchObject({ ok: true, mode: "handoff", commit: plan.squash?.commit });
+    expect(handoffsOf(store, repo, "t").map(one => one.commit)).toEqual([plan.squash?.commit]);
+  });
+
+  test("a recorded handoff whose kept ref went missing: the same yes re-proves it, keeps it again, never reports it kept untrue", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const plan = await planOf();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    git(repo, "update-ref", "-d", landed.handoff.ref);
+    expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true, commit: landed.commit });
+    expect(git(repo, "rev-parse", landed.handoff.ref)).toBe(landed.commit);
+  });
+
+  test("handed off, brought in by the person, then Undo: recorded as landed (granting nothing) and that exact commit reverted", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
     const before = at();
-    // Right after the look inside the yes (as the commit is made), the ignored file appears.
-    const appears = racing("commit-tree", () => { writeFileSync(join(repo, ".git", "info", "exclude"), "b.txt\n"); writeFileSync(join(repo, "b.txt"), "my secret\n"); });
-    expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options({ git: appears }))).toMatchObject({ ok: false, reason: "dirty" });
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    git(repo, "merge", "-q", "--ff-only", landed.commit);
+    expect(recognisedOnBranch(store, repo, "t", git(repo, "rev-parse", "toolroll/t"), readGit)).toBe("On main");
+    expect(broughtInOnBranch(store, repo, "t", readGit)).toBe(true);
+    // With main still checked out, Undo says the exact revert to run there.
+    const there = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
+    expect(!there.ok && there.message).toContain(`revert --no-edit ${before}..${landed.commit}`);
+    git(repo, "checkout", "-q", "work");
+    const undone = await landNow("t", { undo: true });
+    expect(undone.landed).toMatchObject({ ok: true, kind: "undo" });
+    expect(git(repo, "rev-parse", "main^")).toBe(landed.commit);
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${before}^{tree}`));
+    expect(landingOf(store, "t")).toMatchObject({ undone: true, intent: { commit: landed.commit, fromHandoff: expect.any(Number) } });
+  });
+});
+
+describe("the landed commit is exactly what was read and checked (everyday-9 A1)", () => {
+  test("its id is in the yes before anything is written, made from the completion's own time: the same inputs give the same commit", async () => {
+    built("t", { "a.txt": "two\n" });
+    const first = await readLanding(store, "t", access(), NOW, options());
+    const second = await readLanding(store, "t", access(), new Date(NOW.getTime() + 60_000), options());
+    if (!first.ok || !("plan" in first) || !second.ok || !("plan" in second)) throw new Error("plan");
+    expect(second.plan.squash?.commit).toBe(first.plan.squash?.commit);
+    expect(second.plan.key).toBe(first.plan.key);
+    expect(() => git(repo, "cat-file", "-e", first.plan.squash!.commit)).toThrow();
+    expect(landingWords(first.plan).join("\n")).toContain("Checks ran on these exact files");
+    const { landed } = await landNow("t");
+    expect(landed).toMatchObject({ ok: true, commit: first.plan.squash?.commit });
+    expect(git(repo, "rev-parse", "refs/toolroll/land/t")).toBe(first.plan.squash?.commit);
+  });
+
+  test("a different squash after the yes (another parent, or other words) is refused: nothing lands", async () => {
+    built("t", { "a.txt": "two\n" });
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    store.handle.prepare("UPDATE task SET title = ? WHERE id = 't'").run("Different words");
+    const before = at();
+    expect(await land(store, "t", { key: read.plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: false, reason: "stale" });
     expect(at()).toBe(before);
-    expect(plain(join(repo, "b.txt"))).toBe("my secret\n");
+  });
+
+  test("the commit written isn't the one read (a git that answers another id): refused before anything moves", async () => {
+    built("t", { "a.txt": "two\n" });
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    const lying: Runner = async (file, args, opts) => {
+      const ran = await execRun(file, args, opts);
+      return args.includes("hash-object") ? { ...ran, stdout: `${"e".repeat(40)}\n` } : ran;
+    };
+    const before = at();
+    expect(await land(store, "t", { key: read.plan.key, into: "main" }, person, access(), NOW, options({ git: lying }))).toMatchObject({ ok: false, reason: "stale" });
+    expect(at()).toBe(before);
   });
 });
 

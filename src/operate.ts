@@ -159,7 +159,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
+import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -15999,8 +15999,8 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   if (result.handoff !== null) {
     const handoff = result.handoff;
     return succeed(write, json, command, { landing: result }, () => [
-      `${id} · Landing commit ${result.commit.slice(0, 7)} is ready (kept at ${handoff.ref}). Your folder has ${result.branch} checked out with changes, so Toolroll didn't touch it.`,
-      `To bring it onto ${result.branch}: ${handoff.command}`]);
+      `${id} · Landing commit ${result.commit.slice(0, 7)} is ready (kept at ${handoff.ref}). Your project folder has ${result.branch} checked out, so Toolroll didn't touch it.`,
+      handoffWords(handoff, result.commit)]);
   }
   return succeed(write, json, command, { landing: result }, () => [
     `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : result.mode === "files" ? "; your project folder's files are updated" : ""}.`,

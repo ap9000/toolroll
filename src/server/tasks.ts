@@ -124,7 +124,7 @@ import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
+import { handoffWords, land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
 import { localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
@@ -3292,8 +3292,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
     if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
-    if (done.handoff !== null && answersInPlace(ctx.request)) return answerActInPlace(response, "done", `Landing commit ${done.commit.slice(0, 7)} is ready; your folder has changes, so Toolroll didn't touch it. To bring it in: ${done.handoff.command}`, 200);
-    if (done.handoff !== null) return taskScreen(response, who, act.taskId, `Landing commit ${done.commit.slice(0, 7)} is ready. Your folder has ${done.branch} checked out with changes, so Toolroll didn't touch it. To bring it in: ${done.handoff.command}`, 200);
+    if (done.handoff !== null) {
+      const words = `Landing commit ${done.commit.slice(0, 7)} is ready. Your project folder has ${done.branch} checked out, so Toolroll didn't touch it. ${handoffWords(done.handoff, done.commit)}`;
+      return answersInPlace(ctx.request) ? answerActInPlace(response, "done", words, 200) : taskScreen(response, who, act.taskId, words, 200);
+    }
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(act.taskId));
   }
