@@ -1548,14 +1548,15 @@ export function childAuthEnv(args: { provider: string; phase: string; authMode: 
  */
 export function keptCodexSessions(store: Store, taskRef: number): string | null {
   const databaseFile = store.databaseFile();
-  let workspace: string;
-  try { workspace = store.workspaceIdentity().id; } catch { return null; }
-  const folder = codexSessionsFolder(databaseFile, workspace, taskRef);
+  let identity: { id: string; recoveryGeneration: string };
+  try { identity = store.workspaceIdentity(); } catch { return null; }
+  const folder = codexSessionsFolder(databaseFile, identity, taskRef);
   if (folder === null) return null;
+  // Kept: open tasks of this database in its current recovery generation, and only those (the launching task among
+  // them: its run is going). Everything else goes, an earlier generation's folders included.
   const open = store.handle.prepare(`SELECT r.id AS ref FROM task_ref r LEFT JOIN task t ON r.backend = 'built-in' AND t.id = r.external_id
     WHERE NOT (r.backend = 'built-in' AND (t.id IS NULL OR t.state IN ('done', 'cancelled', 'expired'))
       AND NOT EXISTS (SELECT 1 FROM run live WHERE live.task_ref = r.id AND live.finished_at IS NULL))`).all();
-  const keep = new Set([...open.map(row => codexSessionsName(workspace, Number(row["ref"]))), codexSessionsName(workspace, taskRef)]);
-  pruneCodexSessions(dirname(folder), keep);
+  pruneCodexSessions(dirname(folder), new Set(open.map(row => codexSessionsName(identity.id, identity.recoveryGeneration, Number(row["ref"])))));
   return folder;
 }

@@ -725,14 +725,15 @@ function worktreeGitDir(worktree: string): string | null {
  * folder to every launch). */
 export const CODEX_SESSIONS_DIR = "codex-sessions";
 /** The kept-sessions folder's name for one task: its database's own workspace id (random, made with the database, so a
- * database recreated in the same folder never matches) and the task's row id (AUTOINCREMENT: never reused within that
- * database, even after the task is deleted), domain-hashed. */
-export function codexSessionsName(workspaceId: string, taskRef: number): string {
-  return createHash("sha256").update(`codex-sessions:${workspaceId}:${taskRef}`, "utf8").digest("hex").slice(0, 32);
+ * database recreated in the same folder never matches), its recovery generation (rotated by every restore, which can
+ * bring back row ids handed out after the backup), and the task's row id (AUTOINCREMENT: never reused within one
+ * generation of that database), domain-hashed. */
+export function codexSessionsName(workspaceId: string, recoveryGeneration: string, taskRef: number): string {
+  return createHash("sha256").update(`codex-sessions:${workspaceId}:${recoveryGeneration}:${taskRef}`, "utf8").digest("hex").slice(0, 32);
 }
-export function codexSessionsFolder(databaseFile: string | null, workspaceId: string, taskRef: number): string | null {
-  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:" || workspaceId === "") return null;
-  return join(dirname(real(databaseFile)), CODEX_SESSIONS_DIR, codexSessionsName(workspaceId, taskRef));
+export function codexSessionsFolder(databaseFile: string | null, identity: { id: string; recoveryGeneration: string }, taskRef: number): string | null {
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:" || identity.id === "" || identity.recoveryGeneration === "") return null;
+  return join(dirname(real(databaseFile)), CODEX_SESSIONS_DIR, codexSessionsName(identity.id, identity.recoveryGeneration, taskRef));
 }
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;

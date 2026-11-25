@@ -31,10 +31,10 @@ function world(dir: string) {
   writeFileSync(database, "");
   writeFileSync(join(codex, "auth.json"), '{"operator":"sign-in"}');
   writeFileSync(join(codex, "sessions", "2026", "11", "25", "rollout-operator.jsonl"), "operator-session-secret\n");
-  const otherTask = codexSessionsFolder(database, "workspace-a", 2)!;
+  const otherTask = codexSessionsFolder(database, { id: "workspace-a", recoveryGeneration: "g1" }, 2)!;
   mkdirSync(join(otherTask, "2026"), { recursive: true });
   writeFileSync(join(otherTask, "2026", "rollout-other.jsonl"), "other-task-session-secret\n");
-  const ownTask = codexSessionsFolder(database, "workspace-a", 1)!;
+  const ownTask = codexSessionsFolder(database, { id: "workspace-a", recoveryGeneration: "g1" }, 1)!;
   mkdirSync(join(ownTask, "2026"), { recursive: true });
   writeFileSync(join(ownTask, "2026", "rollout-own.jsonl"), "own-earlier-session\n");
   const run = isolatedCodexHome(codex, runs, { signIn: true, sessions: ownTask });
@@ -141,6 +141,15 @@ describe("attack: a task inheriting another task's kept Codex sessions", () => {
       keptCodexSessions(second, other);
       expect(existsSync(after)).toBe(false);
       expect(existsSync(otherFolder)).toBe(true);
+
+      // A restore rotates the recovery generation (restore-retirement.ts), and can bring back row ids handed out after
+      // the backup: the same ref then names a different, empty folder, and the earlier generation's folder is pruned.
+      writeFileSync(join(otherFolder, "rollout-before-restore.jsonl"), "before the restore\n");
+      second.handle.prepare("UPDATE workspace_identity SET recovery_generation = ? WHERE singleton = 1").run("0123456789abcdef0123456789abcdef");
+      const restored = keptCodexSessions(second, other)!;
+      expect(restored).not.toBe(otherFolder);
+      expect(existsSync(otherFolder)).toBe(false);
+      expect(existsSync(restored)).toBe(false);
     } finally { second.close(); }
   });
 });
