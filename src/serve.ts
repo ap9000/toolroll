@@ -2462,7 +2462,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
   const engineHandlers = createEngineHandlers(handlerRuntime);
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
-  const chatHandlers = createChatHandlers(handlerRuntime);
+  let directChatHandlersRef: ReturnType<typeof createDirectChatHandlers> | null = null;
+  const chatHandlers = createChatHandlers(handlerRuntime, {
+    directChatStop: (owner, threadId) => directChatHandlersRef === null
+      ? { ok: false, status: 503, error: "Direct Chat host is not ready." }
+      : directChatHandlersRef.host.stopThread(owner, threadId),
+    publishDirectChat: threadId => liveBus.publish({ revision: `dc:${threadId}:lead:${Date.now()}` }),
+  });
   const settingsHandlers = createSettingsHandlers(handlerRuntime);
   const peopleHandlers = createPeopleHandlers(handlerRuntime);
 
@@ -2504,6 +2510,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     bus: liveBus,
     ...(options.directChatSeams === undefined ? {} : { seams: options.directChatSeams, disableLegacyImport: true }),
   });
+  directChatHandlersRef = directChatHandlers;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,

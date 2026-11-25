@@ -21,15 +21,15 @@ struct LeadMessageRow: View {
                 Text(message.text)
                     .font(.system(size: wide ? 13.5 : 13))
                     .lineSpacing(wide ? 3 : 2.5)
-                    .foregroundStyle(ToolrollPalette.ink)
+                    .foregroundStyle(ToolrollPalette.chatBubbleInk)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, wide ? 13 : 11)
             .padding(.vertical, wide ? 10 : 8)
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .background(ToolrollPalette.chatBubble, in: RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous).strokeBorder(ToolrollPalette.chatBubbleBorder, lineWidth: 1))
             .accessibilityElement(children: .combine)
             .accessibilityLabel("You: \(message.text)")
         } else {

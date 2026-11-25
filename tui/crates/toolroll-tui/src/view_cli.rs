@@ -13,15 +13,17 @@ use crate::theme::{Depth, Rgb, Role, Theme, ThemeName};
 use serde_json::{json, Map, Value};
 
 /// What `read` says about styling, for an agent that will change it.
-pub const GUIDE: &str = "Change the look with toolroll_view_set: a built-in theme (terminal, light, dark, high-contrast), \
-a saved theme (save_theme: a name, a built-in base and role colours; use: true switches to it), or role colours \
-(colors). Every pair of colours the screen draws must keep its contrast, as a 256-colour terminal shows it too: text \
-4.5:1, marks 3:1 — a change that breaks one is refused with the reason. Status colours (needs-you, running, passed, \
-failed and their -soft badges) come from the themes only and can't be set here. At 16 colours (or with NO_COLOR) role \
-colours aren't used and the base theme's terminal colours show, so pick a base that suits the person's terminal. \
-Notifications, the key bar, costs and columns can be turned on or added, never off or removed: that is the person's \
-to do. Keys can't be changed here: they stay with the person (tui.toml's [keys], or the Settings screen), so an \
-accept or a cancel never becomes a one-key accident.";
+pub const GUIDE: &str = "Change Toolroll's look (both the desktop app and terminal workbench) with toolroll_view_set: \
+a built-in theme (terminal, light, dark, high-contrast), a saved theme (save_theme: a name, a built-in base and role \
+colours; use: true switches to it), or role colours (colors — including chat-bubble and chat-bubble-ink for user chat \
+message bubbles). Every pair of colours the screen draws must keep its contrast, as a 256-colour terminal shows it too: \
+text 4.5:1, marks 3:1 — a change that breaks one is refused with the reason (setting chat-bubble alone automatically \
+picks contrasting text unless you also set chat-bubble-ink). Status colours (needs-you, running, passed, failed and \
+their -soft badges) come from the themes only and can't be set here. At 16 colours (or with NO_COLOR) role colours \
+aren't used and the base theme's terminal colours show, so pick a base that suits the person's terminal. Notifications, \
+the key bar, costs and columns can be turned on or added, never off or removed: that is the person's to do. Keys can't \
+be changed here: they stay with the person (tui.toml's [keys], or the Settings screen), so an accept or a cancel never \
+becomes a one-key accident.";
 
 /// The longest change accepted, and the most role colours in one.
 const MAX_INPUT: usize = 16 * 1024;

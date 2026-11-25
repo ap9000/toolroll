@@ -72,7 +72,13 @@ import { chatAckPage,chatPage,NOT_STARTED_SESSION,coordinatorProposalsSection,de
 import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
-export function createChatHandlers(runtime: ServerRuntime) {
+export function createChatHandlers(
+  runtime: ServerRuntime,
+  extras?: {
+    directChatStop?: (owner: string, threadId: string) => { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string };
+    publishDirectChat?: (threadId: string) => void;
+  },
+) {
   const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, sharedIndexPage, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, chatCatalogKnown, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
 
 
@@ -958,11 +964,17 @@ export function createChatHandlers(runtime: ServerRuntime) {
       type Admission = { refused: string } | { queued: boolean };
       const { promise: admission, resolve: finishAdmission } = deferredAdmission<Admission>();
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
+      const canActLocally = viewAllowed(request, who);
       void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
         onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); finishAdmission({ queued: false }); }, onProgress: event => onProgress?.(event), channel: "console", requestId,
-        // The workbench's look is this computer's person's own: a browser session from this computer, signed in as
-        // this computer's local owner, or as the one person of a single-person install (view-tools.ts).
-        ...(viewAllowed(request, who) ? { view: viewRunner } : {}), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
+        // The workbench's look and safe reversible local actions are this computer's person's own: a browser session
+        // from this computer, signed in as this computer's local owner, or as the one person of a single-person install.
+        ...(canActLocally ? {
+          view: viewRunner,
+          instantLocal: { authority: who.authority, evidenceRoot, chatProvider: teamChatProvider },
+          ...(extras?.directChatStop === undefined ? {} : { directChatStop: extras.directChatStop }),
+          ...(extras?.publishDirectChat === undefined ? {} : { publishDirectChat: extras.publishDirectChat }),
+        } : {}), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // Lost a race to another turn of this person's between deciding and admission: it waits instead of being refused.
           if (!outcome.ok && "refused" in outcome && (outcome.refused === "concurrent" || outcome.refused === "backlog") && queueIt().kind === "queued") {

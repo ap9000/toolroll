@@ -1195,4 +1195,20 @@ struct ToolrollCoreTests {
         #expect(report.followUps.count == 1)
         #expect(report.followUps[0].title == "Update hero copy")
     }
+
+    @Test("WorkspaceThemeStore parses chat-bubble and chat-bubble-ink overrides without forcing dark base")
+    func workspaceThemeParsesChatBubbleRoles() throws {
+        let toml = """
+        theme = "terminal"
+
+        [colors]
+        chat-bubble = "#ffbe98"
+        chat-bubble-ink = "#171717"
+        """
+        let cfg = WorkspaceThemeStore.parse(toml: toml)
+        let palette = try #require(cfg.effectiveCustomPalette)
+        #expect(palette.chatBubble == "#ffbe98")
+        #expect(palette.chatBubbleInk == "#171717")
+        #expect(palette.base == "system")
+    }
 }

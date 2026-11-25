@@ -109,7 +109,10 @@
     "propose_answer": [{ "decision": 1, "option": "a", "rationale": "The reversible one first." }],
     "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }],
     "toolroll_view_read": [{}],
-    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8" }, "use": true } }, { "colors": { "muted": "#a39d8f" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }]
+    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8", "chat-bubble": "#ffbe98", "chat-bubble-ink": "#171717" }, "use": true } }, { "colors": { "muted": "#a39d8f", "chat-bubble": "#ffbe98" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }],
+    "list_direct_chats": [{}, { "repo": "r1", "include_archived": true, "limit": 10 }],
+    "get_direct_chat": [{ "chat": "dc-1234", "limit": 12 }],
+    "manage_direct_chat": [{ "chat": "dc-1234", "operation": "stop" }, { "chat": "dc-1234", "operation": "set_model", "provider": "codex", "model": "gpt-6-astra", "effort": "high" }, { "chat": "dc-1234", "operation": "rename", "title": "Homepage polish" }]
   },
   "gateway": {
     "get_project_context": [{ "repo": "/repo/demo", "query": "footer" }, { "repo": "/repo/demo", "query": "src/serve.ts", "mode": "impact" }],

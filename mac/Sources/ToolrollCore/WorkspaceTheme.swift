@@ -13,6 +13,8 @@ public struct CustomThemePalette: Sendable, Equatable, Identifiable {
     public var line: String?
     public var selection: String?
     public var selectionInk: String?
+    public var chatBubble: String?
+    public var chatBubbleInk: String?
     public var live: String?
     public var success: String?
     public var warning: String?
@@ -30,6 +32,8 @@ public struct CustomThemePalette: Sendable, Equatable, Identifiable {
         line: String? = nil,
         selection: String? = nil,
         selectionInk: String? = nil,
+        chatBubble: String? = nil,
+        chatBubbleInk: String? = nil,
         live: String? = nil,
         success: String? = nil,
         warning: String? = nil,
@@ -46,6 +50,8 @@ public struct CustomThemePalette: Sendable, Equatable, Identifiable {
         self.line = line
         self.selection = selection
         self.selectionInk = selectionInk
+        self.chatBubble = chatBubble
+        self.chatBubbleInk = chatBubbleInk
         self.live = live
         self.success = success
         self.warning = warning
@@ -101,7 +107,13 @@ public struct WorkspaceAppearanceConfig: Sendable, Equatable {
     public var effectiveCustomPalette: CustomThemePalette? {
         let basePalette = savedThemes[activeTheme]
         guard basePalette != nil || colorOverrides != nil else { return nil }
-        var merged = basePalette ?? CustomThemePalette(name: activeTheme, base: activeTheme == "light" ? "light" : "dark")
+        let fallbackBase: String
+        switch activeTheme.lowercased() {
+        case "light": fallbackBase = "light"
+        case "dark", "high-contrast": fallbackBase = "dark"
+        default: fallbackBase = "system"
+        }
+        var merged = basePalette ?? CustomThemePalette(name: activeTheme, base: fallbackBase)
         if let ov = colorOverrides {
             if let v = ov.paper { merged.paper = v }
             if let v = ov.ground { merged.ground = v }
@@ -112,6 +124,8 @@ public struct WorkspaceAppearanceConfig: Sendable, Equatable {
             if let v = ov.line { merged.line = v }
             if let v = ov.selection { merged.selection = v }
             if let v = ov.selectionInk { merged.selectionInk = v }
+            if let v = ov.chatBubble { merged.chatBubble = v }
+            if let v = ov.chatBubbleInk { merged.chatBubbleInk = v }
             if let v = ov.live { merged.live = v }
             if let v = ov.success { merged.success = v }
             if let v = ov.warning { merged.warning = v }
@@ -289,6 +303,8 @@ public enum WorkspaceThemeStore {
         case "line", "rule": pal.line = value
         case "selection", "accent": pal.selection = value
         case "selection-ink", "selection_ink": pal.selectionInk = value
+        case "chat-bubble", "chat_bubble": pal.chatBubble = value
+        case "chat-bubble-ink", "chat_bubble_ink": pal.chatBubbleInk = value
         case "live", "info": pal.live = value
         case "success", "ok", "green": pal.success = value
         case "warning", "warn", "amber": pal.warning = value

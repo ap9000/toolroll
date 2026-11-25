@@ -176,6 +176,37 @@ public enum ToolrollPalette {
         }
         return dynamic(light: 0xE5E5E5, dark: 0x262626)
     }
+
+    private static func relativeLuminance(_ rgb: (r: Double, g: Double, b: Double)) -> Double {
+        func linear(_ c: Double) -> Double {
+            c <= 0.04045 ? (c / 12.92) : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b)
+    }
+
+    public static var chatBubble: Color {
+        fromHex(custom?.chatBubble) ?? raised
+    }
+
+    public static var chatBubbleInk: Color {
+        if let explicit = fromHex(custom?.chatBubbleInk) {
+            return explicit
+        }
+        if let rgb = WorkspaceThemeStore.parseHex(custom?.chatBubble) {
+            let lum = relativeLuminance(rgb)
+            return lum > 0.28
+                ? Color(red: 0x17 / 255.0, green: 0x17 / 255.0, blue: 0x17 / 255.0)
+                : Color(red: 0xEF / 255.0, green: 0xEF / 255.0, blue: 0xF1 / 255.0)
+        }
+        return ink
+    }
+
+    public static var chatBubbleBorder: Color {
+        if WorkspaceThemeStore.parseHex(custom?.chatBubble) != nil {
+            return chatBubbleInk.opacity(0.16)
+        }
+        return line
+    }
 }
 
 public struct HairlineDivider: View {

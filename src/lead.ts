@@ -15,6 +15,10 @@
  * (finding 8); and everything the model sees passed `leadView` (finding 9).
  */
 import type { CommitmentChannel } from "./lead-commitments.js";
+import { executeLocalInstantProposal } from "./lead-doors.js";
+import { teamRoomOf } from "./lead-people.js";
+import type { Authority } from "./local-owner.js";
+import type { TeamChatProviderResolver } from "./team-chat-authorization.js";
 import { Buffer } from "node:buffer";
 import { leadToolFailureReason, leadToolLabel, type LeadProgress, type LeadToolOutcome } from "./lead-progress.js";
 import { createHash } from "node:crypto";
@@ -123,6 +127,12 @@ export type LeadTurnInput = {
   /** The person's own workbench look (view-tools.ts): given only to the person's own conversation on this computer
    * (server/chat.ts). Absent: toolroll_view_read and toolroll_view_set refuse. */
   view?: import("./view-tools.js").ViewRunner;
+  /** Instant execution for safe, reversible proposals in the owner's local solo conversation on this computer. */
+  instantLocal?: { authority: Authority; evidenceRoot?: string; chatProvider?: TeamChatProviderResolver };
+  /** Stop a live Direct Chat turn (wired by server/chat.ts for manage_direct_chat). */
+  directChatStop?: (owner: string, threadId: string) => { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string };
+  /** Notify SSE subscribers when Lead updates a Direct Chat thread. */
+  publishDirectChat?: (threadId: string) => void;
 };
 
 /** Why a chat's standing changed under a turn: each has its own plain words (LEAD_CHANNEL_COPY). */
@@ -251,7 +261,7 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_code_map", "get_project_activity", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_flaky_tests", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
+const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_code_map", "get_project_activity", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_flaky_tests", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue", "list_direct_chats", "get_direct_chat"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
 export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
@@ -714,7 +724,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: leadToolLabel(call.name) });
       // A registered tool this request did not advertise is refused before it is read or run (the only production
       // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
-      const toolContext = (): LeadToolContext => ({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }), ...(input.view === undefined ? {} : { view: input.view }) });
+      const toolContext = (): LeadToolContext => ({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }), ...(input.view === undefined ? {} : { view: input.view }), ...(input.directChatStop === undefined ? {} : { directChatStop: input.directChatStop }), ...(input.publishDirectChat === undefined ? {} : { publishDirectChat: input.publishDirectChat }) });
       // propose_start (docs/plans/one-step-chat.md C3), after the advertisement gate: its input is validated first (so
       // invalid input never reaches the classifier), then Toolroll prepares this call's own preview in this turn (up to
       // the classifier's budget), then the person's standing and the thread are re-proved after that wait, and only then
@@ -731,6 +741,27 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       const outcome = !advertisedNames.has(call.name)
         ? { ok: false as const, message: `${call.name} isn't available in this step. Call find_tools with what you want to do; tools it finds can be called from your next step.` }
         : executeLeadTool({ ...toolContext(), ...(startPrepared === undefined ? {} : { startPrepared }) }, call.name, call.args, view);
+      let toolPayload: unknown = outcome.ok ? outcome.body : { ok: false, message: outcome.message };
+      if (
+        outcome.ok
+        && input.instantLocal !== undefined
+        && teamRoomOf(store, thread.id) === null
+        && typeof outcome.body === "object"
+        && outcome.body !== null
+        && typeof (outcome.body as Record<string, unknown>)["proposal"] === "number"
+      ) {
+        const proposalId = (outcome.body as Record<string, unknown>)["proposal"] as number;
+        const applied = executeLocalInstantProposal(store, who, proposalId, clock(), input.instantLocal);
+        if (applied.ok) {
+          toolPayload = {
+            ...(outcome.body as Record<string, unknown>),
+            appliedImmediately: true,
+            appliedSaid: applied.said,
+            awaiting: "none — applied immediately",
+            executed: true,
+          };
+        }
+      }
       let displayOutcome: LeadToolOutcome = { state: "succeeded" };
       if (!outcome.ok) {
         const reason = leadToolFailureReason(call.name, outcome.message);
@@ -749,7 +780,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
         const result = JSON.stringify(outcome.ok ? outcome.body : null, blanked)?.slice(0, 2000) ?? null;
         process.stderr.write(`mate-trace ${JSON.stringify({ turn: turnId, step: steps, tool: call.name, args: args.length < 1500 ? call.args : args, ok: outcome.ok, ...(outcome.ok ? { result } : { message: outcome.message }) }, blanked)}\n`);
       }
-      history.push({ role: "tool", callId: call.id, name: call.name, result: capped(outcome.ok ? outcome.body : { ok: false, message: outcome.message }) });
+      history.push({ role: "tool", callId: call.id, name: call.name, result: capped(toolPayload) });
     }
   }
   if (reply === null) {

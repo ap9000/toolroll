@@ -610,15 +610,15 @@ public struct AgentChatView: View {
                     Text(msg.text)
                         .font(.system(size: 13.5))
                         .lineSpacing(3)
-                        .foregroundStyle(ToolrollPalette.ink)
+                        .foregroundStyle(ToolrollPalette.chatBubbleInk)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 13)
                 .padding(.vertical, 10)
-                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .background(ToolrollPalette.chatBubble, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.chatBubbleBorder, lineWidth: 1))
             }
         } else {
             HStack(alignment: .top, spacing: 10) {
