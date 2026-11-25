@@ -7,9 +7,12 @@
  * database. Keeps the stable `workspace_id` immutable, rotates
  * `recovery_generation` to a fresh 32-hex value distinct from both the backup
  * and the replaced database, and retires all restored remote/browser
- * credential authority using each class's trusted owner functions.
+ * credential authority (chat pairings, pairing codes and chat buttons included)
+ * using each class's trusted owner functions.
  */
 import { randomBytes } from "node:crypto";
+import { ChatCore } from "./chat-core.js";
+import { CHAT_PROVIDERS } from "./contracts/chat-tables.js";
 import { revokeCoordinator } from "./coordinator.js";
 import { autoPublishHeld, holdAutoPublish, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "./release-auto.js";
 import type { Store } from "./store.js";
@@ -27,7 +30,18 @@ export type RestoreRetirementSummary = {
   publicationGrants: number;
   intakeGrants: number;
   releaseHolds: number;
+  chatBindings: number;
+  chatPairings: number;
+  chatActions: number;
 };
+
+/** Every chat button, note and prompt table that can still act: consumed here, by token (`consumed`, or `consumed_at`). */
+const CHAT_ACTION_TABLES = ["chat_action", "chat_flow_action", "chat_flow_choice", "chat_flow_note", "chat_question_action", "chat_ask_action", "chat_flow_prompt", "chat_question_prompt"] as const;
+const CHAT_DECIDE_TABLES = ["chat_decide_action", "chat_decide_prompt"] as const;
+const openChatActions = (store: Store): number =>
+  CHAT_ACTION_TABLES.reduce((sum, table) => sum + count(store, `SELECT count(*) AS n FROM ${table} WHERE consumed IS NULL`), 0)
+  + CHAT_DECIDE_TABLES.reduce((sum, table) => sum + count(store, `SELECT count(*) AS n FROM ${table} WHERE consumed_at IS NULL`), 0)
+  + count(store, "SELECT count(*) AS n FROM chat_note_draft WHERE state IN ('pending', 'armed')");
 
 const count = (store: Store, sql: string): number => Number(store.handle.prepare(sql).get()?.["n"] ?? 0);
 
@@ -141,7 +155,26 @@ export function retireRestoredAuthority(
     }
   }
 
-  // 9. Strict postcondition verification before commit.
+  // 9. Retire chat pairings, the codes that make them and every button or prompt a chat could still tap. A binding's
+  //    liveness reads the account generation, which a restore does not move: a chat unpaired after the backup would
+  //    otherwise act and approve again. Each binding through its trusted owner (ChatCore.revokeBinding).
+  const chatBindings = count(store, "SELECT count(*) AS n FROM chat_binding WHERE revoked IS NULL");
+  const chatPairings = count(store, "SELECT count(*) AS n FROM chat_pair WHERE consumed IS NULL");
+  const chatActions = openChatActions(store);
+  const stamp = now.toISOString();
+  for (const provider of CHAT_PROVIDERS) {
+    const chat = new ChatCore(store, provider);
+    for (const row of chat.prepare("SELECT id FROM chat_binding WHERE provider = :provider AND revoked IS NULL").all()) {
+      chat.revokeBinding({ id: Number(row["id"]) }, now, actor);
+    }
+    chat.prepare("UPDATE chat_room SET revoked = ?, revoked_by = ? WHERE provider = :provider AND revoked IS NULL").run(stamp, actor);
+  }
+  store.handle.prepare("UPDATE chat_pair SET consumed = ? WHERE consumed IS NULL").run(stamp);
+  for (const table of CHAT_ACTION_TABLES) store.handle.prepare(`UPDATE ${table} SET consumed = ? WHERE consumed IS NULL`).run(stamp);
+  for (const table of CHAT_DECIDE_TABLES) store.handle.prepare(`UPDATE ${table} SET consumed_at = ? WHERE consumed_at IS NULL`).run(stamp);
+  store.handle.prepare("UPDATE chat_note_draft SET state = 'discarded' WHERE state IN ('pending', 'armed')").run();
+
+  // 10. Strict postcondition verification before commit.
   const afterIdentity = store.workspaceIdentity();
   if (afterIdentity.id !== identity.id || afterIdentity.recoveryGeneration !== nextGeneration || excluded.has(afterIdentity.recoveryGeneration)) {
     throw new Error("Restored workspace identity postcondition failed");
@@ -163,6 +196,10 @@ export function retireRestoredAuthority(
     || count(store, "SELECT count(*) AS n FROM publication_grant WHERE revoked_at IS NULL") !== 0
     || count(store, "SELECT count(*) AS n FROM intake_grant WHERE revoked_at IS NULL") !== 0
     || count(store, "SELECT count(*) AS n FROM coordinator_proposal WHERE state IN ('pending', 'confirming')") !== 0
+    || count(store, "SELECT count(*) AS n FROM chat_binding WHERE revoked IS NULL") !== 0
+    || count(store, "SELECT count(*) AS n FROM chat_room WHERE revoked IS NULL") !== 0
+    || count(store, "SELECT count(*) AS n FROM chat_pair WHERE consumed IS NULL") !== 0
+    || openChatActions(store) !== 0
   ) {
     throw new Error("Restored credential retirement postcondition failed");
   }
@@ -179,5 +216,8 @@ export function retireRestoredAuthority(
     publicationGrants,
     intakeGrants,
     releaseHolds,
+    chatBindings,
+    chatPairings,
+    chatActions,
   };
 }
