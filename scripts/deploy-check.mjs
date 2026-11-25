@@ -66,6 +66,8 @@ export function fenceProfile({ root, checkout = null, home = homedir(), port = n
   return [
     "(version 1)",
     "(allow default)",
+    // No signal to any process but its own (Codex confirmation): ChildProcess.kill and /bin/kill bypass process.kill.
+    "(deny signal (target others))",
     // Reads: nothing but what is named here (metadata only elsewhere, so paths can be resolved).
     "(deny file-read-data)",
     `(allow file-read-data ${[...new Set(reads)].map(one => `(subpath ${sbString(one)})`).join(" ")} (literal "/"))`,
@@ -210,9 +212,18 @@ export function buildInFence({ checkout, copy }, io = {}) {
   try {
     const checked = throwaway({ root, world, home });
     const inFence = fenceFor(platform, root, "build-fence", { checkout, home, build: true });
-    const [cmd, ...args] = inFence(["npm", "run", "build"]);
+    // Its own process group (outside the fence, so this process can still stop it): anything the build leaves running
+    // is found and stopped, and fails the build (Codex confirmation: background children were never proven gone).
+    const [cmd, ...args] = ["/usr/bin/perl", "-e", "setpgrp(0,0); exec @ARGV or die", ...inFence(["npm", "run", "build"])];
     const built = run(cmd, args, { cwd: realpathSync(checkout), env: checked(), encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "inherit", "inherit"] });
+    const signal = io.kill ?? ((pid, sig) => process.kill(pid, sig));
+    let left = false;
+    if (typeof built.pid === "number" && built.pid > 0) {
+      try { signal(-built.pid, 0); left = true; } catch { left = false; }
+      if (left) { try { signal(-built.pid, "SIGKILL"); } catch { /* gone meanwhile */ } }
+    }
     if (built.error !== undefined) return { ok: false, why: `the build couldn't start: ${built.error.message}` };
+    if (left) return { ok: false, why: "the build left processes running; they were stopped" };
     if (built.status !== 0) return { ok: false, why: `the build exited ${built.status}` };
     return { ok: true };
   } catch (error) {

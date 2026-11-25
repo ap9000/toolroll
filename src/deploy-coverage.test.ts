@@ -103,6 +103,12 @@ describe("the deploy check's coverage", () => {
     expect(mainReleaseProofProblem(f.store, f.taskId, scope(), STALE)).toMatch(/older than 30 minutes/);
     expect(candidateRule(f.store, f.taskId, scope(), STALE)).toMatch(/older than 30 minutes/);
     expect(deploymentGate(f.store, { runId, evidenceRoot: EVIDENCE(f), now: STALE })).toMatchObject({ ok: false, message: expect.stringMatching(/older than 30 minutes/) });
+    // Exactly 30 minutes is already too old, and a clock set back (a negative age) never extends it.
+    const EDGE = new Date(LATER.getTime() + MAIN_PROOF_VALID_MS), BACK = new Date(LATER.getTime() - 1000);
+    for (const at of [EDGE, BACK]) {
+      expect(mainReleaseProofProblem(f.store, f.taskId, scope(), at)).toMatch(/older than 30 minutes/);
+      expect(candidateRule(f.store, f.taskId, scope(), at)).toMatch(/older than 30 minutes/);
+    }
     // A failed re-proof (a newer CI attempt failed, M left main) makes the earlier proof unusable at once.
     recordMainReleaseProofFailure(f.store, { taskId: f.taskId, version: VERSION, why: "node 24 · macos-latest: failure", now: LATER });
     expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toMatch(/last proof failed \(node 24/);

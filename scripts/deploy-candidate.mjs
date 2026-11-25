@@ -224,7 +224,8 @@ export function mainReleaseProofProblem(store, taskId, scope, now) {
   if (row === undefined) return "the release commit's proof isn't recorded: run `toolroll release` to prove it";
   // A failed re-proof makes every earlier proof unusable; a proof stands 30 minutes (src/release-main-proof.ts).
   if (row.action === 'main release proof failed') return `the release commit's last proof failed (${String(row.detail ?? 'no reason kept')})`;
-  if (!(now instanceof Date) || !(now.getTime() - Date.parse(String(row.at)) <= 30 * 60_000)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
+  const age = now instanceof Date ? now.getTime() - Date.parse(String(row.at)) : Number.NaN;
+  if (!(age >= 0 && age < 30 * 60_000)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
   let facts;
   try { facts = JSON.parse(String(row.detail)); } catch { return "the release commit's proof can't be read"; }
   if (Date.parse(String(row.at)) < Date.parse(scope.approvedAt)) return "the release commit wasn't proven since it was approved: run `toolroll release` to prove it";

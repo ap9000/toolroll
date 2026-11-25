@@ -236,8 +236,13 @@ type ReviewFacts
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
   // A rehearsal (release-from-main.md, part C) is entered before anything is made: the handlers below read it, and no
-  // signal leaves this process until the server closes (rehearsal.ts).
+  // signal leaves this process until the server closes (rehearsal.ts). A construction that throws leaves it at once.
   const leaveRehearsal = options.rehearsal === true ? enterRehearsal() : null;
+  try { return buildDecisionServer(options, leaveRehearsal); }
+  catch (error) { leaveRehearsal?.(); throw error; }
+}
+
+function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void) | null): DecisionServer {
   // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
   // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
   const identities = options.identities ?? syncProjectIdentities();

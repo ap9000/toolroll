@@ -48,7 +48,8 @@ export function mainReleaseProofProblem(store: Store, taskId: string, scope: Pic
   const row = store.handle.prepare("SELECT at, action, detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1").get(taskId, MAIN_PROOF_ACTION, MAIN_PROOF_FAILED_ACTION);
   if (row === undefined) return "the release commit's proof isn't recorded: run `toolroll release` to prove it";
   if (row["action"] === MAIN_PROOF_FAILED_ACTION) return `the release commit's last proof failed (${String(row["detail"] ?? "no reason kept")})`;
-  if (!(now.getTime() - Date.parse(String(row["at"])) <= MAIN_PROOF_VALID_MS)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
+  const age = now.getTime() - Date.parse(String(row["at"]));
+  if (!(age >= 0 && age < MAIN_PROOF_VALID_MS)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
   let facts: Record<string, unknown>;
   try { facts = JSON.parse(String(row["detail"])) as Record<string, unknown>; } catch { return "the release commit's proof can't be read"; }
   if (Date.parse(String(row["at"])) < Date.parse(scope.approvedAt)) return "the release commit wasn't proven since it was approved: run `toolroll release` to prove it";

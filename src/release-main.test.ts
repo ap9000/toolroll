@@ -158,6 +158,18 @@ describe("toolroll release <version>: a release from main", () => {
     expect(s.proofFailed).toEqual([expect.stringMatching(/node 24 · macos-latest/)]);
   });
 
+  test("a re-proof that errors (not a refusal) also voids the kept proof", async () => {
+    const { s, adapters } = world();
+    s.proofs = [{ ok: true, ...PROOF }];
+    const prove = adapters.github.main!.prove;
+    let calls = 0;
+    adapters.github.main!.prove = async (...args) => { if (++calls === 2) throw new Error("GitHub didn't answer"); return prove(...args); };
+    const outcome = await runRelease(options(stateDir()), adapters);
+    expect(outcome.ok).toBe(false);
+    expect(s.calls).not.toContain("deploy");
+    expect(s.proofFailed).toEqual([expect.stringMatching(/GitHub didn't answer/)]);
+  });
+
   test("resuming an interrupted deploy proves the release commit again before recovering it", async () => {
     const dir = stateDir();
     const { s, adapters } = world();

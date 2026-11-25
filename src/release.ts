@@ -927,8 +927,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       catch (error) {
         // A failed re-proof makes the plane's earlier proofs of this task unusable (Codex review, finding 3): a direct
         // deployment can't stand on them. Failing to record that stops the release too.
-        if (error instanceof Stop && j.task.scopeDigest !== null && rel?.proofFailed !== undefined) {
-          await rel.proofFailed({ taskId: j.task.id, version: j.packageVersion, why: error.message.slice(0, 280) });
+        if (j.task.scopeDigest !== null && rel?.proofFailed !== undefined) {
+          const why = error instanceof Error ? error.message : String(error);
+          await rel.proofFailed({ taskId: j.task.id, version: j.packageVersion, why: why.slice(0, 280) });
         }
         throw error;
       }
