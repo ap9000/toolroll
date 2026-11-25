@@ -30,6 +30,8 @@ export function checkSkillsManifest(manifest: SkillsManifest): { ok: true; files
     }
     for (const file of manifest.files) {
       if (!within(file.path, manifest.directory) || !manifest.folders.includes(dirname(file.path))) return changed("A skill file");
+      const there = lstatSync(file.path);
+      if (!there.isFile() || there.isSymbolicLink()) return changed("A skill file");
       let fd: number | null = null;
       try {
         fd = openSync(file.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);

@@ -429,6 +429,9 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
   /** Which `readable` entries are one exact file: read with no listing of its folder, so a sibling stays denied. */
   exactFiles?: string[];
+  /** The `exactFiles` that must be regular files (fenceFor's: a code map, skill files). Each is read by its own path
+   * only while it is one; one that has become a folder or a link opens nothing, on any backend (exactFileReads). */
+  exactRegular?: string[];
   /** Policy v1: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
@@ -842,7 +845,9 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
   // Exact files: read by their own path inside whatever is denied around them, never written, nothing beside them read.
-  for (const path of exactFileReads(grants)) access.set(path, "read");
+  // A read on a path covers what is under it: should the file become a folder after the profile is made, what it then
+  // holds stays denied (a pattern outranks the read; checked against `codex sandbox`).
+  for (const path of exactFileReads(grants)) { access.set(path, "read"); access.set(join(path, "**"), "deny"); }
   // Protected storage: denied by name and real path, and nothing granted inside it (Codex lets the more specific path
   // win, so a grant there would reopen it).
   const storage = grants.protectedStorage ?? [];
@@ -899,7 +904,8 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
   const deny: string[] = [];
   const readOnly = new Set(grants.readOnly);
   // An exact file never opens its folders: it is read by its own path inside them (exactFileReads), so nothing is split.
-  const exact = new Set(exactFileReads(grants));
+  // One meant as a regular file opens nothing even after it became a folder or a link (never a fall back to a split).
+  const exact = new Set([...exactFileReads(grants), ...grants.exactRegular ?? []]);
   const split = (path: string): void => {
     const within = grants.readable.filter(one => inside(one, path) && !exact.has(one));
     if (within.length === 0) { deny.push(path); return; }
@@ -913,7 +919,7 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
     for (const pattern of SPLIT_SECRET_PATTERNS) deny.push(join(path, pattern));
     for (const entry of entries) {
       const child = join(path, entry);
-      if (grants.readable.includes(child)) readOnly.add(child);
+      if (grants.readable.includes(child)) { if (!exact.has(child)) readOnly.add(child); }
       else split(child);
     }
   };
@@ -931,11 +937,16 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
  * after launch is read. An exact folder (a direct chat's clone) is still split by `flattened`.
  */
 export function exactFileReads(grants: FenceGrants): string[] {
-  return (grants.exactFiles ?? []).filter(path => {
-    if (!grants.readable.includes(path)) return false;
-    try { const held = lstatSync(path); return held.isFile() && !held.isSymbolicLink(); } catch { return false; }
-  });
+  return (grants.exactFiles ?? []).filter(path => grants.readable.includes(path) && regularAt(path));
 }
+
+/** A regular file at exactly this canonical path: not a link, not a folder, not reached through a linked folder. */
+function regularAt(path: string): boolean {
+  try { const held = lstatSync(path); return held.isFile() && !held.isSymbolicLink() && realpathSync(path) === path; } catch { return false; }
+}
+
+/** Thrown by fenceFor when a file it was to grant exactly is there but is no longer the regular file it was. */
+export class ExactFileChanged extends Error {}
 
 /** Claude's own file tools refuse the fenced paths in every mode (its shell is fenced by the macOS sandbox), and
  * never edit a read-only one. */
@@ -990,7 +1001,11 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const denyRead = new Set<string>(fence.map(real));
   // A readable grant's own folder is read too: bundlers (esbuild) find node_modules by listing it. The runtime can't
   // grant a listing without the folder's files, so the shared copy's folder is read whole (its ready note among them).
-  const allowRead = new Set<string>(grants.readable.flatMap(path => grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
+  // An exact file meant as a regular file is read only while it is one, by its own canonical path: never through a link
+  // it became (that would grant where the link leads) and never as a folder.
+  const regular = new Set(grants.exactRegular ?? []);
+  const allowRead = new Set<string>(grants.readable.flatMap(path => regular.has(path) ? (regularAt(path) ? [path] : [])
+    : grants.exactFiles?.includes(path) === true ? [real(path)] : [real(path), real(dirname(path))]));
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
@@ -1229,12 +1244,18 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   // launches: rewriting the code that fences a build would switch the fence off.
   const made = installDenied(found, ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null);
   const written = ctx.writes ?? null;
-  const exact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])];
+  // Each exact file is checked as it is granted: one that is there but is no longer a regular file at its own canonical
+  // path (a folder, a link, a linked folder above it) refuses the whole launch; one that is gone is simply not granted.
+  const exact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])].filter(path => {
+    if (regularAt(path)) return true;
+    try { lstatSync(path); } catch { return false; }
+    throw new ExactFileChanged("A file this launch was to read changed before it started, so nothing was started.");
+  });
   const grants: FenceGrants = {
     ...made,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     // Exact files, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
-    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
+    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, exactRegular: exact, readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
     // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use
