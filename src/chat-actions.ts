@@ -220,6 +220,7 @@ export const CHAT_ACTIONS = {
   direct_chat_start: { label: "Start Direct Chat", protected: false, password: false },
   direct_chat_reply: { label: "Send to Direct Chat", protected: false, password: false },
   direct_chat_promote: { label: "Promote to Task", protected: false, password: false },
+  direct_chat_ship: { label: "Open Ship preview", protected: false, password: false },
 } as const;
 /** Shared actions that add what builds run or reach (a tool, a flow's browser): credential acts. Their secure screen
  * takes a password typed now or a one-use identity-provider re-check, never the session (solo or Passwordless). */
@@ -448,6 +449,25 @@ export function prepareSharedAction(
       terms.push(
         `Direct Chat: ${String(row["title"])} (${String(row["provider"])} · ${String(row["model_id"])})`,
         `Message: ${prompt.slice(0, 280)}${prompt.length > 280 ? "…" : ""}`,
+      );
+    } else if (operation === "direct_chat_ship") {
+      const chat = text(input, "chat", 80);
+      const mode = input["mode"] === "keep-branch" ? "keep-branch" : "ship";
+      const row = store.handle.prepare("SELECT id, title, repo, branch, diff_cache_json FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL").get(chat, who.name) as Record<string, unknown> | undefined;
+      if (row === undefined || String(row["repo"]) !== repo) throw Error("That Direct Chat is not available in this project.");
+      let changedCount = 0;
+      try {
+        const parsed = typeof row["diff_cache_json"] === "string" ? JSON.parse(row["diff_cache_json"]) as { changedFiles?: unknown } : null;
+        if (Array.isArray(parsed?.changedFiles)) changedCount = parsed.changedFiles.length;
+      } catch {}
+      state = { chat, repo };
+      const chatTitle = String(row["title"] ?? "Direct Chat").slice(0, 60);
+      title = `Ship "${chatTitle}"`;
+      terms.push(
+        `Direct Chat: ${chatTitle} (branch ${String(row["branch"] ?? "")})`,
+        changedCount > 0 ? `Changes: ${changedCount} ${changedCount === 1 ? "file" : "files"} changed` : "Inspect current clone changes in the Ship preview.",
+        mode === "keep-branch" ? "Mode: Keep branch on this Mac." : "Mode: Ship (runs project check before merging).",
+        "Opens the Ship preview so you can review and confirm before anything is pushed or merged.",
       );
     } else {
       const chat = text(input, "chat", 80);
@@ -1487,6 +1507,12 @@ export function executeSharedAction(
       if (payload.operation === "direct_chat_reply") {
         const chatId = String(req["chat"] ?? "");
         return { ok: true as const, taskId: null, said: "Message queued for Direct Chat.", href: `/direct-chats/${encodeURIComponent(chatId)}` };
+      }
+      if (payload.operation === "direct_chat_ship") {
+        const chatId = String(req["chat"] ?? "");
+        const row = store.handle.prepare("SELECT title FROM direct_chat_thread WHERE id = ? AND owner = ?").get(chatId, actor) as Record<string, unknown> | undefined;
+        const label = typeof row?.["title"] === "string" && row["title"].trim() !== "" ? row["title"].trim() : "Direct Chat";
+        return { ok: true as const, taskId: null, said: `Ready to ship "${label}". Review and confirm in the Ship sheet.`, href: `/direct-chats/${encodeURIComponent(chatId)}/ship` };
       }
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));

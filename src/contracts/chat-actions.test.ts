@@ -89,6 +89,7 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   direct_chat_start: { repo: "/work/app", prompt: "Inspect hero CSS", provider: "claude", model: "opus", effort: "high" },
   direct_chat_reply: { repo: "/work/app", chat: "0123456789abcdef0123456789abcdef", prompt: "Check mobile layout too" },
   direct_chat_promote: { repo: "/work/app", chat: "0123456789abcdef0123456789abcdef", title: "Fix mobile header", goal: "Resolve sticky overlap at 375px.", planning: "auto" },
+  direct_chat_ship: { repo: "/work/app", chat: "0123456789abcdef0123456789abcdef", mode: "ship", title: "Ship mobile header fix" },
 };
 
 /** Values the 0.9.36 preparation branches ignored, defaulted or delegated to their owning reader. */

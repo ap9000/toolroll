@@ -6,6 +6,7 @@ import UserNotifications
 public final class DesktopNotifier: NSObject, @preconcurrency UNUserNotificationCenterDelegate {
     public static let shared = DesktopNotifier()
     public var onSelectTask: ((String) -> Void)?
+    public var onSelectChatThread: ((String) -> Void)?
 
     private var isBundledApp: Bool {
         Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
@@ -43,6 +44,23 @@ public final class DesktopNotifier: NSObject, @preconcurrency UNUserNotification
         UNUserNotificationCenter.current().add(req)
     }
 
+    public func notifyDirectChat(threadId: String, title: String, subtitle: String, body: String) {
+        guard isBundledApp else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = subtitle
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["chatThreadId": threadId]
+
+        let req = UNNotificationRequest(
+            identifier: "toolroll-chat-\(threadId)-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req)
+    }
+
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -54,7 +72,11 @@ public final class DesktopNotifier: NSObject, @preconcurrency UNUserNotification
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        if let taskId = response.notification.request.content.userInfo["taskId"] as? String {
+        let info = response.notification.request.content.userInfo
+        if let chatId = info["chatThreadId"] as? String {
+            NSApp.activate(ignoringOtherApps: true)
+            onSelectChatThread?(chatId)
+        } else if let taskId = info["taskId"] as? String {
             NSApp.activate(ignoringOtherApps: true)
             onSelectTask?(taskId)
         }

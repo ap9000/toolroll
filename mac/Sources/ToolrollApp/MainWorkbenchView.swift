@@ -259,6 +259,33 @@ public struct MainWorkbenchView: View {
             }
 
             Button {
+                store.isNotificationBellOpen.toggle()
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: store.notificationBellBadgeCount > 0 ? "bell.badge" : "bell")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(store.isNotificationBellOpen || store.notificationBellBadgeCount > 0 ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: Self.chromeControlHeight, height: Self.chromeControlHeight)
+                        .contentShape(Circle())
+                    if store.notificationBellBadgeCount > 0 {
+                        Text("\(min(store.notificationBellBadgeCount, 99))")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 14, minHeight: 14)
+                            .background(ToolrollPalette.warning, in: Capsule())
+                            .offset(x: 3, y: -2)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .toolrollGlassCapsule(interactive: true)
+            .help("Notifications — tasks & Direct Chats")
+            .popover(isPresented: $store.isNotificationBellOpen, arrowEdge: .bottom) {
+                NotificationBellPopover(store: store)
+            }
+
+            Button {
                 store.isCommandPaletteOpen.toggle()
             } label: {
                 Text("⌘K")

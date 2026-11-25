@@ -72,6 +72,27 @@ public struct PendingCancel: Equatable, Sendable, Identifiable {
     public let alsoArchive: Bool
 }
 
+public struct DirectChatAlert: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let threadId: String
+    public let title: String
+    public let projectName: String
+    public let provider: AgentChatProvider
+    public let status: String
+    public let subtitle: String
+    public let changedFilesCount: Int
+    public let timestamp: Date
+    public var isRead: Bool
+
+    public var relativeAge: String {
+        let secs = max(0, Int(Date().timeIntervalSince(timestamp)))
+        if secs < 60 { return "now" }
+        if secs < 3600 { return "\(secs / 60)m" }
+        if secs < 86400 { return "\(secs / 3600)h" }
+        return "\(secs / 86400)d"
+    }
+}
+
 @MainActor
 @Observable
 public final class WorkbenchStore {
@@ -114,6 +135,8 @@ public final class WorkbenchStore {
     }
     public var inspectorTab: InspectorTab = .diff
     public var isCommandPaletteOpen: Bool = false
+    public var isNotificationBellOpen: Bool = false
+    public private(set) var directChatAlerts: [DirectChatAlert] = []
     public var isPairSheetOpen: Bool = false
     public var isNewTaskSheetOpen: Bool = false
     public var isAddProjectSheetOpen: Bool = false
@@ -1087,6 +1110,63 @@ public final class WorkbenchStore {
         defaultChatEffort = effort
     }
 
+    public var notificationBellBadgeCount: Int {
+        needsRows.count + pendingAgentRequests.count + directChatAlerts.filter { !$0.isRead }.count
+    }
+
+    public func markDirectChatAlertRead(_ id: String) {
+        if let idx = directChatAlerts.firstIndex(where: { $0.id == id }) {
+            directChatAlerts[idx].isRead = true
+        }
+    }
+
+    public func markAllDirectChatAlertsRead() {
+        for idx in directChatAlerts.indices {
+            directChatAlerts[idx].isRead = true
+        }
+    }
+
+    private func recordDirectChatCompletion(thread: AgentChatThread) {
+        let lastAssistant = thread.messages.last(where: { $0.role == .assistant })
+        let status = lastAssistant?.isError == true ? "failed" : "completed"
+        let changedCount = chatThreadDiffs[thread.id]?.changedFiles.count ?? 0
+        let subtitle: String
+        if status == "failed" {
+            let errText = lastAssistant?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Turn ended with an error."
+            subtitle = "\(thread.provider.displayName) · \(thread.projectName) — \(String(errText.prefix(100)))"
+        } else if changedCount > 0 {
+            subtitle = "\(thread.provider.displayName) · \(thread.projectName) — \(changedCount) file\(changedCount == 1 ? "" : "s") changed · ready to ship"
+        } else {
+            subtitle = "\(thread.provider.displayName) · \(thread.projectName) — finished replying"
+        }
+        let alert = DirectChatAlert(
+            id: "\(thread.id)-\(Int(Date().timeIntervalSince1970))",
+            threadId: thread.id,
+            title: thread.title,
+            projectName: thread.projectName,
+            provider: thread.provider,
+            status: status,
+            subtitle: subtitle,
+            changedFilesCount: changedCount,
+            timestamp: Date(),
+            isRead: selectedChatThreadId == thread.id && NSApp.isActive
+        )
+        directChatAlerts.removeAll { $0.threadId == thread.id }
+        directChatAlerts.insert(alert, at: 0)
+        if directChatAlerts.count > 25 {
+            directChatAlerts = Array(directChatAlerts.prefix(25))
+        }
+        if !(selectedChatThreadId == thread.id && NSApp.isActive) {
+            DesktopNotifier.shared.notifyDirectChat(
+                threadId: thread.id,
+                title: status == "failed" ? "Direct Chat failed" : "Direct Chat finished",
+                subtitle: "\(thread.title) (\(thread.projectName))",
+                body: subtitle
+            )
+        }
+        Task { await refreshLeadChat() }
+    }
+
     public func refreshDirectChats() async {
         if activeProfile.isDemo {
             directChatAvailable = true
@@ -1105,6 +1185,7 @@ public final class WorkbenchStore {
             return
         }
         do {
+            let previousRunning = runningChatThreadIds
             let list = try await client.fetchDirectChats()
             directChatAvailable = list.available
             directChatProblem = list.problem
@@ -1118,8 +1199,16 @@ public final class WorkbenchStore {
                 .filter { !deletingChatThreadIds.contains($0.id) }
                 .map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
             chatThreads = pendingThreads + serverThreads
-            runningChatThreadIds = Set(chatThreads.filter(\.running).map(\.id))
-            if let sel = selectedChatThreadId, !sel.hasPrefix("pending-") {
+            let nextRunning = Set(chatThreads.filter(\.running).map(\.id))
+            runningChatThreadIds = nextRunning
+            let newlyFinished = previousRunning.subtracting(nextRunning)
+            for finishedId in newlyFinished where !deletingChatThreadIds.contains(finishedId) {
+                await refreshDirectChatDetail(threadId: finishedId)
+                if let thread = chatThreads.first(where: { $0.id == finishedId }) {
+                    recordDirectChatCompletion(thread: thread)
+                }
+            }
+            if let sel = selectedChatThreadId, !sel.hasPrefix("pending-"), !newlyFinished.contains(sel) {
                 await refreshDirectChatDetail(threadId: sel)
             }
             ensureDirectChatPolling()
@@ -2321,6 +2410,11 @@ public final class WorkbenchStore {
             self.workspaceMode = .workbench
             Task { await self.selectTask(taskId) }
         }
+        DesktopNotifier.shared.onSelectChatThread = { [weak self] threadId in
+            guard let self else { return }
+            self.workspaceMode = .workbench
+            self.selectChatThread(threadId)
+        }
         if activeProfile.isDemo {
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
@@ -3353,6 +3447,10 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: said)
             await refreshLeadChat()
             await refreshAll()
+            if let updatedCard = leadChat.messages.flatMap(\.cards).first(where: { $0.id == card.id }),
+               let shipLink = updatedCard.links.first(where: { $0.href.hasPrefix("/direct-chats/") && $0.href.hasSuffix("/ship") }) {
+                await openLeadLink(shipLink)
+            }
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
@@ -3394,10 +3492,21 @@ public final class WorkbenchStore {
             return
         }
         if href.hasPrefix("/direct-chats/") {
-            let chatId = String(href.dropFirst("/direct-chats/".count)).components(separatedBy: "?").first ?? ""
-            if !chatId.isEmpty, chatThreads.contains(where: { $0.id == chatId }) {
-                selectChatThread(chatId)
-                return
+            let tail = String(href.dropFirst("/direct-chats/".count)).components(separatedBy: "?").first ?? ""
+            let parts = tail.split(separator: "/").map(String.init)
+            let chatId = parts.first ?? ""
+            let wantsShip = parts.count >= 2 && parts[1] == "ship"
+            if !chatId.isEmpty {
+                if !chatThreads.contains(where: { $0.id == chatId }) {
+                    await refreshDirectChats()
+                }
+                if chatThreads.contains(where: { $0.id == chatId }) {
+                    selectChatThread(chatId)
+                    if wantsShip {
+                        await openChatShipSheet(threadId: chatId)
+                    }
+                    return
+                }
             }
         }
         openInBrowser(path: href)

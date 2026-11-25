@@ -194,6 +194,33 @@ function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseS
   return sha;
 }
 
+export function directChatShipReadiness(store: Store, repo: string): {
+  canAutoMerge: boolean;
+  autoMergeReason: string | null;
+  checkCommand: string | null;
+  githubRepo: string | null;
+  githubBase: string | null;
+  recommendedMode: DirectChatShipMode;
+} {
+  const github = destinationOf(store, repo);
+  const check = store.liveVerifyCommand(repo);
+  const canAutoMerge = github !== null && check !== null;
+  let autoMergeReason: string | null = null;
+  if (github === null) {
+    autoMergeReason = "This project isn't connected to GitHub pull requests yet — use Keep branch instead.";
+  } else if (check === null) {
+    autoMergeReason = "Set a project check command in Settings before auto-merging — or use Keep branch.";
+  }
+  return {
+    canAutoMerge,
+    autoMergeReason,
+    checkCommand: check?.command ?? null,
+    githubRepo: github?.repo ?? null,
+    githubBase: github?.base ?? null,
+    recommendedMode: canAutoMerge ? "ship" : "keep-branch",
+  };
+}
+
 export function previewDirectChatShip(
   store: Store,
   input: {
