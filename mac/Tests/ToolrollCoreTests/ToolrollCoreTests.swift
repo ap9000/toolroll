@@ -297,6 +297,48 @@ struct ToolrollCoreTests {
         #expect(models.version == 1)
     }
 
+    @Test("Live end-to-end Direct Chat create, stop, and instant delete on real APFS clone (when TOOLROLL_TEST_LOCAL_DISCOVER=1)")
+    func localConsoleDirectChatDeleteSpeed() async throws {
+        guard ProcessInfo.processInfo.environment["TOOLROLL_TEST_LOCAL_DISCOVER"] == "1" else { return }
+        let creds = await LocalConsoleConnector.discoverAndConnect()
+        #expect(creds != nil)
+        guard let creds else { return }
+        let client = ToolrollClient(localSession: creds)
+        let projects = try await client.fetchProjects()
+        let chosenProject = projects.projects.first(where: { $0.name == "alekseypelletier.com" })?.name
+            ?? projects.projects.first?.name
+        guard let firstProject = chosenProject else { return }
+
+        let started = try await client.startDirectChat(
+            project: firstProject,
+            prompt: "E2E delete speed verification",
+            provider: .claude,
+            modelId: "haiku"
+        )
+        #expect(started.ok == true)
+        guard let threadId = started.threadId else { return }
+
+        for _ in 0..<25 {
+            let stopped = try await client.stopDirectChat(threadId: threadId)
+            if stopped.ok && stopped.said == "Stopped." {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(150))
+        }
+
+        let deleteStart = ContinuousClock.now
+        let deleted = try await client.deleteDirectChat(threadId: threadId, discard: true, keepBranch: false)
+        let elapsed = deleteStart.duration(to: .now)
+        let elapsedMs = Double(elapsed.components.seconds) * 1000.0 + Double(elapsed.components.attoseconds) / 1e15
+        print("LIVE_E2E_DELETE_MS=\(String(format: "%.1f", elapsedMs)) project=\(firstProject) thread=\(threadId)")
+
+        #expect(deleted.ok == true)
+        #expect(elapsedMs < 500.0)
+
+        let listAfter = try await client.fetchDirectChats()
+        #expect(!listAfter.threads.contains(where: { $0.id == threadId }))
+    }
+
     @Test("YouiCanvasStorage round-trips youi.request/v1 spatial pins and layouts artboards cleanly")
     func canvasStorageRoundTrip() throws {
         let tmpDir = FileManager.default.temporaryDirectory
