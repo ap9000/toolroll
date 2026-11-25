@@ -123,7 +123,7 @@ import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
-import { land, landingWords, readLanding } from "../local-landing.js";
+import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
 import { localOwnerRefusal } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
@@ -3242,6 +3242,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo lands nothing.", 403);
     const ref = store.lookupRef(act.taskId);
     if (ref === null || !visible(ref.repo) || who.via !== "cookie") return refuse(response, who, 404, "no such task", "/");
+    if (ref.repo !== null && publishesThroughPullRequests(store, ref.repo)) return taskScreen(response, who, act.taskId, PULL_REQUESTS_INSTEAD, 409);
     const local = who.authority === "local-owner";
     const principal = local ? null : leadPrincipal(who);
     if (!local && principal === null) return taskScreen(response, who, act.taskId, "Your access changed. Sign in again.", 403);

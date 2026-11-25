@@ -40,6 +40,7 @@ import { projectCheckSet } from "./check-levels.js";
 import { recordActionWhole } from "./action-ledger.js";
 import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
+import { publishingOf } from "./pull-request-flow.js";
 
 export const LAND_DESTINATION = "land destination";
 export const LAND_INTENT = "land intent";
@@ -72,7 +73,7 @@ export type LandingRead =
   | { ok: true; plan: LandingPlan }
   | { ok: true; landed: { at: string; ref: string; commit: string; mode: "files" | "ref" } }
   | { ok: false; reason: LandRefusal; message: string };
-export type LandRefusal = "not-found" | "not-complete" | "checks" | "destination" | "moved" | "occupied" | "dirty" | "unsupported" | "git" | "busy" | "stale" | "authority" | "nothing";
+export type LandRefusal = "pull-requests" | "not-found" | "not-complete" | "checks" | "destination" | "moved" | "occupied" | "dirty" | "unsupported" | "git" | "busy" | "stale" | "authority" | "nothing";
 export type LandResult =
   | { ok: true; replayed: boolean; kind: "land" | "undo"; ref: string; branch: string; commit: string; old: string; mode: "files" | "ref"; warning: string | null }
   | { ok: false; reason: LandRefusal; message: string };
@@ -224,6 +225,13 @@ function projectOf(store: Store, repo: string | null): { repo: string; common: s
   return common === null ? null : { repo, common };
 }
 
+/** Whether this project's work goes through pull requests (any publication grant at all, read fail-closed): then local
+ * landing would put work on its branch around that road and its checks, so it never lands or undoes here. */
+export function publishesThroughPullRequests(store: Store, repo: string): boolean {
+  try { return publishingOf(store, repo).on || store.publicationGrantFor(repo) !== null; } catch { return true; }
+}
+export const PULL_REQUESTS_INSTEAD = "This project publishes through pull requests; open one from the task instead.";
+
 const ALREADY_MSG = (ref: string, commit: string) => `Already on ${ref.replace(/^refs\/heads\//, "")} (${short(commit)}).`;
 
 /**
@@ -233,6 +241,7 @@ const ALREADY_MSG = (ref: string, commit: string) => `Already on ${ref.replace(/
 export async function readLanding(store: Store, taskId: string, access: { repos: readonly string[] | null }, now: Date, options: Options & { into?: string; undo?: boolean }): Promise<LandingRead> {
   const assignment = assignmentOf(store, taskId, now, { principal: "operator", repos: access.repos, includeUnplaced: false }, options.root);
   if (assignment === null) return refuse("not-found", `No task \`${taskId}\` in your projects.`);
+  if (assignment.repo !== null && publishesThroughPullRequests(store, assignment.repo)) return refuse("pull-requests", PULL_REQUESTS_INSTEAD);
   const project = projectOf(store, assignment.repo);
   if (project === null) return refuse("destination", "This task's project isn't a local Git folder Toolroll can land in.");
   const git = gitFor(project.repo, options.git);
@@ -391,6 +400,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
   const ref = store.lookupRef(taskId);
   const repo = ref?.repo ?? null;
   if (repo === null) return refuse("not-found", `No task \`${taskId}\` in your projects.`);
+  if (publishesThroughPullRequests(store, repo)) return refuse("pull-requests", PULL_REQUESTS_INSTEAD);
   return locked(repo, async (): Promise<LandResult> => {
     // The same yes again: recognised from its record, re-proved, writing nothing.
     const done = intents(store, "repo = ? AND task_id IS NOT NULL", [repo]).find(one => one.key === input.key);
@@ -427,6 +437,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
       intentId = store.transact(() => {
         const who = standing(store, authority, plan.repo);
         if (!who.ok) throw new Refused(who);
+        if (publishesThroughPullRequests(store, plan.repo)) throw new Refused(refuse("pull-requests", PULL_REQUESTS_INSTEAD));
         if (intents(store, "repo = ?", [plan.repo]).some(one => settledOf(store, one.id) === null)) throw new Refused(refuse("busy", "Another landing in this project hasn't finished. Try again in a moment."));
         if (plan.kind === "land") {
           const again = assignmentOf(store, taskId, now, { principal: "operator", repos: access.repos }, options.root);
@@ -450,6 +461,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     }
     const who = standing(store, authority, plan.repo);
     if (!who.ok) { settle("refused", who.message); return who; }
+    if (publishesThroughPullRequests(store, plan.repo)) { settle("refused", PULL_REQUESTS_INSTEAD); return refuse("pull-requests", PULL_REQUESTS_INSTEAD); }
     const swapped = await git(["update-ref", "-m", `toolroll: land ${plan.taskId}`, plan.ref, commit!, plan.old]);
     if (swapped.code !== 0) {
       const words = `${plan.branch} moved while landing, so nothing changed. Look again, then land it.`;

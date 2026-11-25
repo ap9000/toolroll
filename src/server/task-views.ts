@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { landedWords, landingOf } from "../local-landing.js";
+import { landedWords, landingOf, publishesThroughPullRequests } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -768,7 +768,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
    * branch, and whether this viewer may land or undo it now. Null when neither applies. */
   function taskLandingOf(taskId: string, who: Who): TaskLanding | null {
     const repo = runtime.store.lookupRef(taskId)?.repo ?? null;
-    if (repo === null || publishingOf(runtime.store, repo).on) return null;
+    if (repo === null || publishesThroughPullRequests(runtime.store, repo)) return null;
     const rootId = runtime.familyOf(taskId)?.root.id ?? taskId;
     const record = landingOf(runtime.store, rootId);
     const complete = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot)?.state === "complete";

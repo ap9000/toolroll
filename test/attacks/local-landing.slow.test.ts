@@ -23,6 +23,7 @@ import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
 import type { Runner } from "../../src/backend.js";
 import { EXIT, runOperate } from "../../src/operate.js";
+import { savePublishing } from "../../src/pull-request-flow.js";
 
 const NOW = new Date("2026-11-25T12:00:00.000Z");
 const scratch = useScratch("land");
@@ -349,5 +350,41 @@ describe("the command", () => {
     expect(await cli(["land", "t", "--yes", "--key", key!, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.ok);
     expect(git(repo, "rev-parse", "main")).toBe(head);
     store = openStore(join(scratch(), "orders.db"));
+  });
+});
+
+describe("attack: land around a project's pull requests", () => {
+  const publishOn = () => savePublishing(store, { repo, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", {}, NOW);
+
+  test("pull requests on: the look, a yes read before they were set up, and the command all refuse; main unchanged", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    publishOn();
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "pull-requests" });
+    expect(await land(store, "t", { key: read.plan.key }, person, access(), NOW, options())).toMatchObject({ ok: false, reason: "pull-requests" });
+    expect(at()).toBe(before);
+  });
+
+  test("pull requests set up after it landed: undo refuses too; main unchanged", async () => {
+    built("t", { "a.txt": "two\n" });
+    await landNow("t");
+    const landed = at();
+    publishOn();
+    expect(await readLanding(store, "t", access(), NOW, { ...options(), undo: true })).toMatchObject({ ok: false, reason: "pull-requests" });
+    expect(await land(store, "t", { key: "0".repeat(16), undo: true }, person, access(), NOW, options())).toMatchObject({ ok: false, reason: "pull-requests" });
+    expect(at()).toBe(landed);
+  });
+
+  test("pull requests set up while it lands: refused before anything moves", async () => {
+    built("t", { "a.txt": "two\n" });
+    const before = at();
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    let done = false;
+    const racing: Runner = (file, args, opts) => { if (!done && args.includes("status")) { done = true; publishOn(); } return execRun(file, args, opts); };
+    expect(await land(store, "t", { key: read.plan.key }, person, access(), NOW, options({ git: racing }))).toMatchObject({ ok: false, reason: "pull-requests" });
+    expect(at()).toBe(before);
   });
 });
