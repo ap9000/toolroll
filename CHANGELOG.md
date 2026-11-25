@@ -4,6 +4,38 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.119 — 2026-11-25
+
+Thread agents remember the conversation, accepted work can land on your branch, and releases stop re-running the
+whole test suite.
+
+### New
+
+- **Threads remember the conversation.** Each reply's agent gets your earlier messages and its earlier answers, so a
+  follow-up builds on what was said. Your messages show in the transcript, in the terminal and the browser.
+- **A Diff for threads:** Tab on a thread in the workbench, or Open on Agents → Live in the browser.
+- **Land a task on your branch:** `toolroll task land <id>`, or **Land it** on the task page, shows what lands where
+  first; **Undo** reverts it with a new commit. When your project folder has the branch checked out, it gives you the
+  exact `git merge --ff-only` command to run there instead.
+- **Direct Chat pages:** `/direct-chats` lists your chats; each shows its turns, its changes and Ship.
+- **Send back and build again right away**, on the same terms, from the result page.
+- **Releasing Toolroll from main:** `toolroll release prepare <version>`, merge it, then `toolroll release <version>`
+  checks a copy of your database in a sealed sandbox in minutes instead of re-running every test.
+
+### Changed
+
+- **Accepted work stays accepted** when you change the check command; releases and pull requests still wait for fresh
+  checks.
+- **Accept asks for a reason only for an exception;** after "Looks right" it just accepts.
+- **The workbench key bar shows a thread's own keys,** and an ended thread says **T** starts a new one.
+
+### Fixed
+
+- **`verify set --repo .`** saves the project, not ".".
+- **Settings → Checks and Pull requests** open your project (or a picker) instead of "No such project".
+- **Task ids work with or without `task-`,** and the README's links work from the installed package.
+- **Quitting after a failed hand-over** no longer says "stopped" while a second Toolroll keeps running.
+
 ## 0.9.118 — 2026-11-25
 
 Agents can read the project skills they are told about.
