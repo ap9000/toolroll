@@ -26,35 +26,62 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import { assertIsolated, isolatedEnvironment } from "./isolated-env.mjs";
 import { openDeploymentDatabase, snapshot } from "./deploy-phases.mjs";
 
-/** The person's folders a rehearsal must never read: Toolroll's own state and every agent's and tool's secrets. */
+/** The person's folders that stay unreadable even where a wider read is allowed (Toolroll's state, every secret). */
 export const SECRET_FOLDERS = [".toolroll", ".standing-orders", ".config", ".ssh", ".gnupg", ".aws", ".claude", ".codex", ".gemini", ".docker", ".kube", ".netrc", ".npmrc",
   "Library/Keychains", "Library/Application Support/toolroll", "Library/Application Support/Toolroll", "Library/LaunchAgents"];
 
+/** What the operating system itself needs readable to run node and a shell: never a person's file. */
+export const SYSTEM_READS = ["/System", "/usr/lib", "/usr/share", "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/private/var/select", "/private/var/db/timezone",
+  "/private/var/db/dyld", "/Library/Apple", "/private/etc", "/dev", "/opt/homebrew", "/usr/local"];
+
 const sbString = value => `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+const realOr = path => { try { return realpathSync(path); } catch { return null; } };
 
 /**
- * The Seatbelt profile every candidate process of the rehearsal runs under: no network but this computer's loopback,
- * no write outside `root` (and the null and terminal devices), and none of the person's secret folders readable.
- * Accident-proofing for a person-approved candidate, never a sandbox against hostile code (AGENTS.md).
+ * The Seatbelt profile every candidate process of the deploy check runs under (Codex review, finding 4): reads denied
+ * by default — only the throwaway folder `root`, the release commit's checkout (its build output and dependencies, by
+ * their real paths), node's own install and the operating system's are readable, and the person's secret folders never;
+ * writes only inside `root` (a build also into the checkout, never its .git); no network, or (`port`) only the
+ * rehearsal's own loopback port. Accident-proofing for a person-approved candidate, never a sandbox against hostile
+ * code (AGENTS.md).
  */
-export function fenceProfile({ root, home = homedir() }) {
+export function fenceProfile({ root, checkout = null, home = homedir(), port = null, build = false, node = process.execPath }) {
   const realRoot = realpathSync(root);
+  const reads = [realRoot, ...SYSTEM_READS];
+  if (checkout !== null) {
+    const out = realpathSync(checkout);
+    reads.push(out);
+    // Dependencies a shared cache links in: readable where they really are.
+    const deps = realOr(join(out, "node_modules"));
+    if (deps !== null && deps !== join(out, "node_modules")) reads.push(deps);
+  }
+  const nodeHome = dirname(dirname(realpathSync(node)));
+  reads.push(nodeHome);
+  const writes = [realRoot, ...(build && checkout !== null ? [realpathSync(checkout)] : [])];
   return [
     "(version 1)",
     "(allow default)",
-    "(deny network*)",
-    "(allow network-bind (local ip \"localhost:*\"))",
-    "(allow network-inbound (local ip \"localhost:*\"))",
-    "(allow network-outbound (remote ip \"localhost:*\"))",
-    // A Unix socket a process makes for itself inside the throwaway folder (Node's own IPC).
-    `(allow network* (local unix-socket (subpath ${sbString(realRoot)})) (remote unix-socket (subpath ${sbString(realRoot)})))`,
-    "(deny file-write*)",
-    `(allow file-write* (subpath ${sbString(realRoot)}) (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/") (literal "/dev/dtracehelper"))`,
+    // Reads: nothing but what is named here (metadata only elsewhere, so paths can be resolved).
+    "(deny file-read-data)",
+    `(allow file-read-data ${[...new Set(reads)].map(one => `(subpath ${sbString(one)})`).join(" ")} (literal "/"))`,
     `(deny file-read* ${SECRET_FOLDERS.map(one => `(subpath ${sbString(join(home, one))})`).join(" ")})`,
+    // Writes: the throwaway folder (and, building, the checkout but never its Git directory).
+    "(deny file-write*)",
+    `(allow file-write* ${writes.map(one => `(subpath ${sbString(one)})`).join(" ")} (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/") (literal "/dev/dtracehelper"))`,
+    ...(build && checkout !== null ? [`(deny file-write* (subpath ${sbString(join(realpathSync(checkout), ".git"))}))`] : []),
+    // Network: none, but the rehearsal's own port on loopback, and Unix sockets inside the throwaway folder.
+    "(deny network*)",
+    ...(port === null ? [] : [
+      `(allow network-bind (local ip "localhost:${port}"))`,
+      `(allow network-inbound (local ip "localhost:${port}"))`,
+      `(allow network-outbound (remote ip "localhost:${port}"))`,
+    ]),
+    `(allow network* (local unix-socket (subpath ${sbString(realRoot)})) (remote unix-socket (subpath ${sbString(realRoot)})))`,
     "",
   ].join("\n");
 }
@@ -62,6 +89,15 @@ export function fenceProfile({ root, home = homedir() }) {
 /** argv inside the fence: sandbox-exec on macOS. Null elsewhere (the deploy check is a Mac's own check). */
 export function fenced(platform, profileFile, argv) {
   return platform === "darwin" ? ["/usr/bin/sandbox-exec", "-f", profileFile, ...argv] : null;
+}
+
+/** A free loopback port for the rehearsal's console, chosen before its fence is written (the fence names it). */
+export function freePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolvePort(port)); });
+  });
 }
 
 /** The child script the candidate's own store runs in, inside the fence: open the copy twice and report what changed. */
@@ -131,9 +167,30 @@ function firstEnvelope(child, timeoutMs) {
   });
 }
 
+/** A throwaway computer in `world` (inside `root`), built from nothing, and the check that refuses a spawn when anything
+ * of the person's would reach it (assertIsolated throws, naming every problem). */
+function throwaway({ root, world, home, set = {} }) {
+  mkdirSync(world, { recursive: true, mode: 0o700 });
+  // Its approved tools come from node's own folder and the system's, never from the caller's PATH.
+  const outer = { ...process.env, PATH: [dirname(realpathSync(process.execPath)), "/usr/bin", "/bin"].join(":") };
+  const made = isolatedEnvironment({ root: world, owner: root, outer, set: { TOOLROLL_NO_PLAN_PROBE: "1", TOOLROLL_NO_TASK_CLASSIFIER: "1", ...set } });
+  return () => { assertIsolated(made.env, { root, homes: [realpathSync(home)] }); return made.env; };
+}
+
+/** Write a fence profile into `root` and wrap argv in it; outside macOS, refuse. */
+function fenceFor(platform, root, name, options) {
+  const profile = join(root, `${name}.sb`);
+  writeFileSync(profile, fenceProfile({ root, ...options }), { mode: 0o600 });
+  return argv => {
+    const wrapped = fenced(platform, profile, argv);
+    if (wrapped === null) throw new Error(`the deploy check's fence needs macOS (sandbox-exec); this is ${platform}`);
+    return wrapped;
+  };
+}
+
 /**
- * The rehearsal. `io` (tests): `platform`, `spawnSync`, `spawn`, `fetch`, `home`. Returns `{ ok: true, facts }` or
- * `{ ok: false, step, why }`; the throwaway folder and the copy are gone either way.
+ * The rehearsal. `io` (tests): `platform`, `spawnSync`, `spawn`, `fetch`, `home`, `kill`, `sleep`. Returns `{ ok: true, facts }`
+ * or `{ ok: false, step, why }`. The throwaway folder, the fences and the copy are deleted however it ended.
  */
 export async function rehearse({ checkout, copy }, io = {}) {
   const platform = io.platform ?? process.platform, run = io.spawnSync ?? spawnSync, start = io.spawn ?? spawn, get = io.fetch ?? fetch;
@@ -145,63 +202,63 @@ export async function rehearse({ checkout, copy }, io = {}) {
   const root = realpathSync(dirname(copy));
   const world = join(root, "world");
   let group = null;
+  let outcome;
   try {
-    mkdirSync(world, { recursive: true, mode: 0o700 });
-    // A throwaway computer built from nothing, checked before every spawn: nothing of the person's reaches it.
-    const made = isolatedEnvironment({ root: world, owner: root, set: { TOOLROLL_DB: copy, TOOLROLL_NO_PLAN_PROBE: "1", TOOLROLL_NO_TASK_CLASSIFIER: "1" } });
-    const env = made.env;
-    // Throws, naming every problem, when anything of the person's would reach the child (assertIsolated).
-    const checked = () => { assertIsolated(env, { root, homes: [realpathSync(home)] }); return env; };
-    const profile = join(root, "fence.sb");
-    writeFileSync(profile, fenceProfile({ root, home }), { mode: 0o600 });
-    const inFence = argv => {
-      const wrapped = fenced(platform, profile, argv);
-      if (wrapped === null) throw new Error(`the deploy check's fence needs macOS (sandbox-exec); this is ${platform}`);
-      return wrapped;
-    };
+    const checked = throwaway({ root, world, home, set: { TOOLROLL_DB: copy } });
+    // Every step but the console's has no network at all; the console only its own loopback port.
+    const quiet = fenceFor(platform, root, "fence", { checkout, home });
     // 1. The candidate's store on the copy.
     let before, from;
     { const db = openDeploymentDatabase(copy, { readOnly: true }); try { before = snapshot(db); from = db.prepare("SELECT version FROM schema_version").get()?.version; } finally { db.close(); } }
-    const [cmd, ...args] = inFence([process.execPath, "--input-type=module", "-e", MIGRATE_SCRIPT, "--", dist, copy]);
+    const [cmd, ...args] = quiet([process.execPath, "--input-type=module", "-e", MIGRATE_SCRIPT, "--", dist, copy]);
     const migrated = run(cmd, args, { cwd: world, env: checked(), encoding: "utf8", timeout: 5 * 60_000, maxBuffer: 16 * 1024 * 1024 });
-    if (migrated.status !== 0) return fail("upgrade", `the candidate couldn't open the copy (exit ${migrated.status}): ${String(migrated.stderr ?? "").trim().split("\n").slice(-3).join(" ")}`);
     let result = null;
     try { result = JSON.parse(String(migrated.stdout).trim().split("\n").at(-1)); } catch { result = null; }
-    let after;
-    { const db = openDeploymentDatabase(copy, { readOnly: true }); try { after = snapshot(db); } finally { db.close(); } }
-    const problem = migrationProblem(result, { before, after });
-    if (problem !== null) return fail("upgrade", problem);
-    say(`deploy check: the candidate upgraded a copy of this computer's database from schema ${from} to ${result.to}, history kept (${before.length} tables).`);
-    // 2. The candidate's console on the copy, nothing else started.
-    const [serveCmd, ...serveArgs] = inFence([process.execPath, join(dist, "bin.js"), "serve", "--rehearsal", "--port", "0", "--json"]);
-    const child = start(serveCmd, serveArgs, { cwd: world, env: checked(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    group = child.pid ?? null;
-    let errors = "";
-    child.stderr?.on("data", chunk => { errors = (errors + String(chunk)).slice(-4000); });
-    const envelope = await firstEnvelope(child, 60_000);
-    if (envelope?.ok !== true || !Number.isInteger(envelope.port)) return fail("start", `the candidate's console didn't start on the copy: ${(errors.trim().split("\n").slice(-3).join(" ")) || "no answer within a minute"}`);
-    // 3. It answers, and reads tasks.
-    const health = await get(`http://127.0.0.1:${envelope.port}/healthz`, { signal: AbortSignal.timeout(15_000) });
-    if (health.status !== 200) return fail("health", `/healthz answered ${health.status}`);
-    const [listCmd, ...listArgs] = inFence([process.execPath, join(dist, "bin.js"), "task", "list", "--json"]);
-    const listed = run(listCmd, listArgs, { cwd: world, env: checked(), encoding: "utf8", timeout: 2 * 60_000, maxBuffer: 64 * 1024 * 1024 });
-    let tasks = null;
-    try { tasks = JSON.parse(String(listed.stdout)); } catch { tasks = null; }
-    if (listed.status !== 0 || tasks?.ok !== true) return fail("tasks", `the candidate couldn't list the copy's tasks (exit ${listed.status}): ${String(listed.stderr ?? "").trim().split("\n").slice(-2).join(" ")}`);
-    say(`deploy check: the candidate's console answered /healthz on 127.0.0.1:${envelope.port} and listed the copy's tasks.`);
-    return { ok: true, facts: { from, to: result.to, tables: before.length } };
-  } catch (error) {
-    return fail("rehearsal", String(error?.message ?? error));
-  } finally {
-    // 4. Every process stopped and proven gone; the throwaway folder and the copy deleted.
-    if (group !== null) {
-      const left = await stopGroup(group, io.kill === undefined ? {} : { kill: io.kill });
-      if (left !== null) say(`deploy check: ${left}`);
+    let after = [];
+    if (migrated.status === 0) { const db = openDeploymentDatabase(copy, { readOnly: true }); try { after = snapshot(db); } finally { db.close(); } }
+    const problem = migrated.status !== 0 ? `the candidate couldn't open the copy (exit ${migrated.status}): ${String(migrated.stderr ?? "").trim().split("\n").slice(-3).join(" ")}` : migrationProblem(result, { before, after });
+    if (problem !== null) outcome = fail("upgrade", problem);
+    else {
+      say(`deploy check: the candidate upgraded a copy of this computer's database from schema ${from} to ${result.to}, history kept (${before.length} tables).`);
+      // 2. The candidate's console on the copy, nothing else started, reachable only on its own port.
+      const port = await freePort();
+      const served = fenceFor(platform, root, "serve-fence", { checkout, home, port });
+      const [serveCmd, ...serveArgs] = served([process.execPath, join(dist, "bin.js"), "serve", "--rehearsal", "--port", String(port), "--json"]);
+      const child = start(serveCmd, serveArgs, { cwd: world, env: checked(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      group = child.pid ?? null;
+      let errors = "";
+      child.stderr?.on("data", chunk => { errors = (errors + String(chunk)).slice(-4000); });
+      const envelope = await firstEnvelope(child, 60_000);
+      if (envelope?.ok !== true || envelope.port !== port) outcome = fail("start", `the candidate's console didn't start on the copy: ${(errors.trim().split("\n").slice(-3).join(" ")) || "no answer within a minute"}`);
+      else {
+        // 3. It answers (never by a redirect), and reads tasks.
+        const health = await get(`http://127.0.0.1:${port}/healthz`, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+        if (health.status !== 200) outcome = fail("health", `/healthz answered ${health.status}`);
+        else {
+          const [listCmd, ...listArgs] = quiet([process.execPath, join(dist, "bin.js"), "task", "list", "--json"]);
+          const listed = run(listCmd, listArgs, { cwd: world, env: checked(), encoding: "utf8", timeout: 2 * 60_000, maxBuffer: 64 * 1024 * 1024 });
+          let tasks = null;
+          try { tasks = JSON.parse(String(listed.stdout)); } catch { tasks = null; }
+          if (listed.status !== 0 || tasks?.ok !== true) outcome = fail("tasks", `the candidate couldn't list the copy's tasks (exit ${listed.status}): ${String(listed.stderr ?? "").trim().split("\n").slice(-2).join(" ")}`);
+          else {
+            say(`deploy check: the candidate's console answered /healthz on 127.0.0.1:${port} and listed the copy's tasks.`);
+            outcome = { ok: true, facts: { from, to: result.to, tables: before.length } };
+          }
+        }
+      }
     }
-    rmSync(world, { recursive: true, force: true });
-    rmSync(join(root, "fence.sb"), { force: true });
-    for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(`${copy}${suffix}`, { force: true });
+  } catch (error) {
+    outcome = fail("rehearsal", String(error?.message ?? error));
   }
+  // 4. Every process stopped and proven gone; the throwaway folder, the fences and the copy deleted.
+  if (group !== null) {
+    const running = await stopGroup(group, { ...(io.kill === undefined ? {} : { kill: io.kill }), ...(io.sleep === undefined ? {} : { sleep: io.sleep }) });
+    if (running !== null) say(`deploy check: ${running}`);
+  }
+  rmSync(world, { recursive: true, force: true });
+  for (const name of ["fence.sb", "serve-fence.sb"]) rmSync(join(root, name), { force: true });
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(`${copy}${suffix}`, { force: true });
+  return outcome;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

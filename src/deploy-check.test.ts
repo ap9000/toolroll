@@ -9,7 +9,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { fenced, fenceProfile, migrationProblem, rehearse, SECRET_FOLDERS, stopGroup } from "../scripts/deploy-check.mjs";
+import { fenced, fenceProfile, freePort, migrationProblem, rehearse, SECRET_FOLDERS, stopGroup } from "../scripts/deploy-check.mjs";
+import { createServer } from "node:net";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 import { openStore } from "./store.js";
 
@@ -32,15 +33,23 @@ describe("deploy check rules", () => {
     expect(migrationProblem(same, { before: [table("task", 2, "a")], after: [table("task", 1, "c")] })).toMatch(/changed rows of task/);
   });
 
-  test("the fence: loopback only, writes only in the throwaway folder, the person's secret folders unreadable; macOS only", () => {
+  test("the fence: reads denied by default, writes only in the throwaway folder, the rehearsal's own port alone; macOS only", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-")));
-    const profile = fenceProfile({ root, home: "/Users/sam" });
+    const profile = fenceProfile({ root, home: "/Users/sam", port: 41234 });
+    expect(profile).toContain("(deny file-read-data)");
+    expect(profile).toContain(`(allow file-read-data (subpath "${root}")`);
+    expect(profile).not.toMatch(/subpath "\/Users\/sam"\)/);
     expect(profile).toContain("(deny network*)");
-    expect(profile).toContain(`(allow network-outbound (remote ip "localhost:*"))`);
+    expect(profile).toContain(`(allow network-outbound (remote ip "localhost:41234"))`);
+    expect(profile).not.toContain(`localhost:*`);
     expect(profile).toContain("(deny file-write*)");
     expect(profile).toContain(`(allow file-write* (subpath "${root}")`);
     for (const folder of [".toolroll", ".ssh", "Library/Keychains"]) expect(SECRET_FOLDERS).toContain(folder);
     expect(profile).toContain(`(subpath "/Users/sam/.toolroll")`);
+    // No port: no network at all; a build may write into its checkout, never its .git.
+    const quiet = fenceProfile({ root, home: "/Users/sam", checkout: root, build: true });
+    expect(quiet).not.toContain("localhost");
+    expect(quiet).toContain(`(deny file-write* (subpath "${join(root, ".git")}"))`);
     expect(fenced("darwin", "/f.sb", ["node", "x"])).toEqual(["/usr/bin/sandbox-exec", "-f", "/f.sb", "node", "x"]);
     expect(fenced("linux", "/f.sb", ["node"])).toBeNull();
   });
@@ -58,30 +67,38 @@ describe("deploy check rules", () => {
 });
 
 describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
-  test("the fence refuses the network and writes outside the folder; loopback and the folder work", () => {
+  test("the fence refuses the network, other loopback ports, reads and writes outside; its own port and folder work", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-real-")));
     const inside = join(root, "box");
     mkdirSync(inside);
-    writeFileSync(join(inside, "fence.sb"), fenceProfile({ root: inside }));
+    writeFileSync(join(root, "secret.txt"), "not yours");
+    // A live console of the computer's own, on another loopback port.
+    const other = createServer(socket => socket.end("live")).listen(0, "127.0.0.1");
+    await new Promise<void>(done => other.once("listening", () => done()));
+    const otherPort = (other.address() as { port: number }).port;
+    const port = await freePort();
+    writeFileSync(join(inside, "fence.sb"), fenceProfile({ root: inside, port }));
     const probe = `
       const fs = require("node:fs"), net = require("node:net");
       const out = {};
       try { fs.writeFileSync(${JSON.stringify(join(root, "outside.txt"))}, "x"); out.outside = "written"; } catch (e) { out.outside = e.code; }
+      try { fs.readFileSync(${JSON.stringify(join(root, "secret.txt"))}); out.read = "read"; } catch (e) { out.read = e.code; }
       try { fs.writeFileSync(${JSON.stringify(join(inside, "inside.txt"))}, "x"); out.inside = "written"; } catch (e) { out.inside = e.code; }
-      const server = net.createServer(s => s.end("hi")).listen(0, "127.0.0.1", () => {
-        const loop = net.connect(server.address().port, "127.0.0.1");
-        loop.on("data", () => { out.loopback = "ok"; loop.destroy();
-          const away = net.connect(443, "1.1.1.1");
-          away.on("connect", () => { out.network = "connected"; finish(); });
-          away.on("error", e => { out.network = e.code; finish(); });
-        });
-        loop.on("error", e => { out.loopback = e.code; finish(); });
+      const tryConnect = (p, host) => new Promise(done => { const s = net.connect(p, host); s.on("connect", () => { s.destroy(); done("connected"); }); s.on("error", e => done(e.code)); });
+      const server = net.createServer(s => s.end("hi")).listen(${port}, "127.0.0.1", async () => {
+        out.own = await tryConnect(${port}, "127.0.0.1");
+        out.otherPort = await tryConnect(${otherPort}, "127.0.0.1");
+        out.network = await tryConnect(443, "1.1.1.1");
+        server.close(); console.log(JSON.stringify(out));
       });
-      function finish() { server.close(); console.log(JSON.stringify(out)); }`;
-    const ran = execFileSync("/usr/bin/sandbox-exec", ["-f", join(inside, "fence.sb"), process.execPath, "-e", probe], { encoding: "utf8", timeout: 30_000 });
-    const out = JSON.parse(ran.trim().split("\n").at(-1)!);
-    expect(out).toMatchObject({ outside: "EPERM", inside: "written", loopback: "ok" });
-    expect(out.network).not.toBe("connected");
+      server.on("error", e => { out.own = e.code; console.log(JSON.stringify(out)); });`;
+    try {
+      const ran = execFileSync("/usr/bin/sandbox-exec", ["-f", join(inside, "fence.sb"), process.execPath, "-e", probe], { encoding: "utf8", timeout: 30_000 });
+      const out = JSON.parse(ran.trim().split("\n").at(-1)!);
+      expect(out).toMatchObject({ outside: "EPERM", read: "EPERM", inside: "written", own: "connected" });
+      expect(out.otherPort).not.toBe("connected");
+      expect(out.network).not.toBe("connected");
+    } finally { other.close(); }
   });
 
   test("the built candidate upgrades and serves a copy with everything due or waiting, then nothing of it is left", async () => {
