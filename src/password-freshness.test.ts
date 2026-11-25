@@ -169,7 +169,9 @@ const WRAPPERS = ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpres
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
 const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow",
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading are watched too.
-  "authenticateCredential", "credentialApprover", "proveCredential", "passwordlessSessionFor", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
+  "authenticateCredential", "credentialApprover", "proveCredential", "passwordlessSessionFor", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone",
+  // Everyday 9 A6 (Codex round 2): the empty-field approval predicate reads freshness facts; its callers are watched too.
+  "sessionYesPossible"]);
 type Node = { type?: string; [key: string]: unknown };
 const each = (node: unknown, visit: (one: Node) => void): void => {
   if (node === null || typeof node !== "object") return;
@@ -1141,6 +1143,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/send-back-build.ts#<module>": 2,
     "src/server/send-back-build.ts#sessionYesPossible@1": 1,
   },
+  // Everyday 9 A6 (Codex round 2): the empty-field approval predicate's own body and its two reviewed callers, the result
+  // page's offer and Send back and build. A new caller (aliased or not) is a reviewed change here.
+  sessionYesPossible: {
+    "src/server/send-back-build.ts#sessionYesPossible@1": 1,
+    "src/server/task-views.ts#<module>": 2,
+    "src/server/task-views.ts#createTaskViews@1>resultDetailOf@31": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>runComment@32": 1,
+  },
 };
 describe("the tripwire", () => {
   const sources = productionSources;
@@ -1310,6 +1321,15 @@ describe("the tripwire", () => {
     ]) expect(b).not.toEqual(a);
     // The wrappers that check a password are watched by name.
     expect(mentions([{ path: "w.ts", text: "export const w = (store: never, by: string, p: string) => verifyApproverByPassword(store, by, p, []);" }])["verifyApproverByPassword"]).toEqual({ "w.ts": 1 });
+    // The empty-field approval predicate (Codex round 2): an aliased or namespaced caller is still seen, and its place too.
+    for (const text of [
+      `import { sessionYesPossible as offer } from "./send-back-build.js"; export const a = (s: never, n: string) => offer(s, n, false);`,
+      `import * as build from "./send-back-build.js"; export const a = (s: never, n: string) => build.sessionYesPossible(s, n, false);`,
+      `export const a = (s: never, n: string) => sessionYesPossible(s, n, false);`,
+    ]) {
+      expect(Object.keys(mentions([{ path: "a.ts", text }])["sessionYesPossible"] ?? {}), text).toEqual(["a.ts"]);
+      expect(Object.keys(places([{ path: "a.ts", text }])["sessionYesPossible"] ?? {}).length, text).toBeGreaterThan(0);
+    }
     const roads = mentions([{ path: "roads.ts", text: "export const a = (store: never, n: string, p: string) => { const h = store.approverHash(n); scrypt(p, 'salt', 64, () => {}); return db.prepare(`SELECT credential_hash FROM approver WHERE name = ${n}`); };" }]);
     expect(roads["approverHash"]).toEqual({ "roads.ts": 1 });
     expect(roads["scrypt"]).toEqual({ "roads.ts": 1 });
