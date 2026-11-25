@@ -39,10 +39,12 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// The stand-in's shell creates its log before it writes the line, so the wait is for a whole line, not the file.
 const logged = async (name: string, timeoutMs = 5_000): Promise<string[]> => {
   const file = join(dir, `${name}.log`);
-  for (const until = Date.now() + timeoutMs; Date.now() < until && !existsSync(file);) await new Promise(done => setTimeout(done, 25));
-  return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  const lines = (): string[] => existsSync(file) && readFileSync(file, "utf8").endsWith("\n") ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  for (const until = Date.now() + timeoutMs; Date.now() < until && lines().length === 0;) await new Promise(done => setTimeout(done, 25));
+  return lines();
 };
 
 describe("a console's agents run from its own PATH", () => {
