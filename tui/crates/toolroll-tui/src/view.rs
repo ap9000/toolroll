@@ -4314,6 +4314,27 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             )));
             (title, lines)
         }
+        Mode::ConfirmLand { lines: said, .. } => {
+            // The console's own lines for what lands where (everyday-9 A4), then the one act.
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled("Land this work?", ink())),
+                Line::raw(""),
+            ];
+            for one in said {
+                for l in wrap(one, w) {
+                    lines.push(Line::raw(l));
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Land it", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
+            (" Land ", lines)
+        }
         Mode::ConfirmResume { .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
             let paused = app.paused_here();
