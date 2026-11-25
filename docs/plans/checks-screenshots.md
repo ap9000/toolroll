@@ -74,7 +74,7 @@ capture script (never build-controlled code driving the browser's launch):
   reasons; the `builder.ts:1011` requirement with and without a capture configured.
 - Native (macOS, real sandbox-exec): the capture script starts headless Chromium in a `check` fence and saves a PNG
   of a tiny static preview; with local services off it refuses with the setting's words.
-- Live: the alekseypelletier.com task with its screenshot criterion completes on Codex with desktop and phone images.
+- Live: a task on a sample site (my-site) with a screenshot criterion completes on Codex with desktop and phone images.
 
 ## Out of scope
 

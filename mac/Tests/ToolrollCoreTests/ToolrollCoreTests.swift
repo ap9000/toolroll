@@ -305,7 +305,7 @@ struct ToolrollCoreTests {
         guard let creds else { return }
         let client = ToolrollClient(localSession: creds)
         let projects = try await client.fetchProjects()
-        let chosenProject = projects.projects.first(where: { $0.name == "alekseypelletier.com" })?.name
+        let chosenProject = projects.projects.first(where: { $0.name == "my-site" })?.name
             ?? projects.projects.first?.name
         guard let firstProject = chosenProject else { return }
 
@@ -1116,7 +1116,7 @@ struct ToolrollCoreTests {
     func previewServerOwnership() {
         #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll", root: "/Users/a/Documents/toolroll"))
         #expect(PreviewServerManager.isInside("/Users/a/Documents/toolroll/web", root: "/Users/a/Documents/toolroll"))
-        #expect(!PreviewServerManager.isInside("/Users/a/Documents/alekseypelletier.com", root: "/Users/a/Documents/toolroll"))
+        #expect(!PreviewServerManager.isInside("/Users/a/Documents/my-site", root: "/Users/a/Documents/toolroll"))
         #expect(!PreviewServerManager.isInside("/Users/a/Documents/toolroll-old", root: "/Users/a/Documents/toolroll"))
     }
 
@@ -1124,7 +1124,7 @@ struct ToolrollCoreTests {
     func automationsRunNow() throws {
         let json = """
         {"version":1,"canAct":true,"automations":[
-          {"id":1,"name":"Morning triage","project":"oddcircle","group":"on","starts":"Every weekday at 09:00","nextAt":"2026-11-24T09:00:00.000Z",
+          {"id":1,"name":"Morning triage","project":"my-site","group":"on","starts":"Every weekday at 09:00","nextAt":"2026-11-24T09:00:00.000Z",
            "waiting":0,"inProgress":0,"trouble":null,
            "triggers":[{"id":7,"kind":"schedule","words":"Every weekday at 09:00","state":"active","nextAt":"2026-11-24T09:00:00.000Z",
                         "lastAt":null,"lastOutcome":null,"failures":0,"canPress":false,"canCheck":true}]},
@@ -1260,15 +1260,15 @@ struct ToolrollCoreTests {
         why does it look yellow
 
         Attached context:
-        - Image: /Users/alex/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png (1814×304)
-        - File: /Users/alex/repo/README.md
-        - Folder: /Users/alex/repo/src
+        - Image: /Users/me/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png (1814×304)
+        - File: /Users/me/repo/README.md
+        - Folder: /Users/me/repo/src
         """
         let parsed = ComposerAttachmentStore.parseAttachedContext(from: raw)
         #expect(parsed.body == "why does it look yellow")
         #expect(parsed.attachments.count == 3)
         #expect(parsed.attachments[0].kind == .image)
-        #expect(parsed.attachments[0].path == "/Users/alex/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png")
+        #expect(parsed.attachments[0].path == "/Users/me/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png")
         #expect(parsed.attachments[0].pixelSize == "1814×304")
         #expect(parsed.attachments[1].kind == .file)
         #expect(parsed.attachments[1].displayName == "README.md")
