@@ -259,13 +259,14 @@ export const DEPLOY_PART_NAMES = ["build", "rehearsal", "upgrade"];
 
 /**
  * A release from main's deploy check (docs/plans/release-from-main.md, part C), run by the plane after a person's
- * approval: the build, then the rehearsal (scripts/deploy-check.mjs: the candidate upgrades the plane's copy of its
+ * approval: the build (inside the deploy check's isolated computer and fence), then the rehearsal (scripts/deploy-check.mjs: the candidate upgrades the plane's copy of its
  * database and starts against it, isolated), and the upgrade path when the plane owes it. Its report is the last line,
  * in deploy mode, with every deploy part and nothing else. `run` is a partRunner's.
  */
 export async function deployCheck(handshake, { run, failure, upgradeLines = [] }) {
   const owed = new Set(["build", "rehearsal", ...handshake.owed]);
-  const build = await run("build", "npm", ["run", "build"]);
+  // The build too runs inside the deploy check's throwaway computer and fence (Codex review, finding 2).
+  const build = await run("build", process.execPath, [join("scripts", "deploy-check.mjs"), "--build", "--copy", handshake.copy]);
   const rehearsal = build.code === 0 ? await run("rehearsal", process.execPath, [join("scripts", "deploy-check.mjs"), "--copy", handshake.copy]) : null;
   const upgrade = owed.has("upgrade") && build.code === 0 && existsSync(join("scripts", "upgrade-path.mjs"))
     ? await run("upgrade", process.execPath, ["scripts/upgrade-path.mjs"], { TOOLROLL_CHECK_KEEP_GOING: "1" }, line => upgradeLines.push(line)) : null;
@@ -563,6 +564,29 @@ export function insidePlaneFence({ platform = process.platform, handshake, enclo
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const started = Date.now();
+  // The plane's handshake first (a person's --plan run reads none): a deploy check (release-from-main.md, part C) runs
+  // nothing of a full check's planning, not even its fetch of origin's tags.
+  const handshake = planOnly ? null : await readHandshake();
+  const releaseRun = handshake !== null;
+  // A release from main's deploy check runs its own few parts and reports them; nothing else of a full check runs.
+  if (handshake?.mode === "deploy") {
+    const dir = makeTempRoot("release-check-");
+    const parts = partRunner(dir, { failFast: false });
+    const deadline = checkDeadline(started, handshake.limitMs);
+    const limiter = setTimeout(() => parts.stop(`the check reached its own limit, ${took(deadline - started)} after it started, before the plane's`), Math.max(0, deadline - Date.now()));
+    limiter.unref?.();
+    console.log(`Deploy check of a release from main: the build, then the candidate upgrades a copy of this computer's database and starts against it${handshake.owed.includes("upgrade") ? ", then the upgrade path" : ""}.`);
+    const { exitCode, report, ran } = await deployCheck(handshake, { run: parts.run, failure: parts.failure });
+    clearTimeout(limiter);
+    console.log("== summary");
+    for (const one of Object.values(ran).filter(each => each !== null)) console.log(`${one.label}: exit ${one.code} (${took(one.ms)})`);
+    if (ran.rehearsal === null) console.log("rehearsal not run: the build failed");
+    console.log(`whole deploy check ${took(Date.now() - started)}`);
+    process.exitCode = exitCode;
+    const line = reportLine(report, handshake.reportBytes);
+    if (line === null) console.log("The deploy check's report is too large for this plane to read back, so none is given.");
+    else process.stdout.write(`${line}\n`);
+  } else {
   // Run by a plane, its temp folder inside the check's launch folder: every part takes a temp root beside that folder
   // when it can be made there (an unsandboxed check; a sandboxed one can't write there, and nests no fence anyway).
   const enclosing = enclosingLaunchOf();
@@ -599,27 +623,6 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (planOnly) process.exit(0);
   // The plane's handshake (docs/plans/release-once.md): a release run keeps going past failures, reports on its pipes and
   // prints its report last. A targeted one runs exactly its plan. A person's own run reads none and behaves as before.
-  const handshake = await readHandshake();
-  const releaseRun = handshake !== null;
-  // A release from main's deploy check runs its own few parts and reports them; nothing else of a full check runs.
-  if (handshake?.mode === "deploy") {
-    const dir = makeTempRoot("release-check-");
-    const parts = partRunner(dir, { failFast: false });
-    const deadline = checkDeadline(started, handshake.limitMs);
-    const limiter = setTimeout(() => parts.stop(`the check reached its own limit, ${took(deadline - started)} after it started, before the plane's`), Math.max(0, deadline - Date.now()));
-    limiter.unref?.();
-    console.log(`Deploy check of a release from main: the build, then the candidate upgrades a copy of this computer's database and starts against it${handshake.owed.includes("upgrade") ? ", then the upgrade path" : ""}.`);
-    const { exitCode, report, ran } = await deployCheck(handshake, { run: parts.run, failure: parts.failure });
-    clearTimeout(limiter);
-    console.log("== summary");
-    for (const one of Object.values(ran).filter(each => each !== null)) console.log(`${one.label}: exit ${one.code} (${took(one.ms)})`);
-    if (ran.rehearsal === null) console.log("rehearsal not run: the build failed");
-    console.log(`whole deploy check ${took(Date.now() - started)}`);
-    process.exitCode = exitCode;
-    const line = reportLine(report, handshake.reportBytes);
-    if (line === null) console.log("The deploy check's report is too large for this plane to read back, so none is given.");
-    else process.stdout.write(`${line}\n`);
-  } else {
   // The residue check's unreadable places, accepted only inside the plane's macOS fence (insidePlaneFence); a value the
   // caller brought in is never kept.
   delete process.env.TOOLROLL_RESIDUE_UNREADABLE;

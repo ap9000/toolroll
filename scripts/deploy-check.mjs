@@ -200,6 +200,30 @@ function removeLeft(root, paths) {
 }
 
 /**
+ * The release commit's build, inside a throwaway computer and the fence (no network, reads only of the checkout, node
+ * and the system, writes only into the checkout and the throwaway folder): `npm run build`, its scripts and every
+ * dependency they load included. `{ ok, why }`.
+ */
+export function buildInFence({ checkout, copy }, io = {}) {
+  const platform = io.platform ?? process.platform, run = io.spawnSync ?? spawnSync, home = io.home ?? homedir();
+  const root = realpathSync(dirname(copy)), world = join(root, "build-world");
+  try {
+    const checked = throwaway({ root, world, home });
+    const inFence = fenceFor(platform, root, "build-fence", { checkout, home, build: true });
+    const [cmd, ...args] = inFence(["npm", "run", "build"]);
+    const built = run(cmd, args, { cwd: realpathSync(checkout), env: checked(), encoding: "utf8", timeout: 10 * 60_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "inherit", "inherit"] });
+    if (built.error !== undefined) return { ok: false, why: `the build couldn't start: ${built.error.message}` };
+    if (built.status !== 0) return { ok: false, why: `the build exited ${built.status}` };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, why: String(error?.message ?? error) };
+  } finally {
+    const left = removeLeft(root, [world, join(root, "build-fence.sb")]);
+    if (left.length > 0) return { ok: false, why: `the build's throwaway folder wasn't removed: ${left.join("; ")}` }; // eslint-disable-line no-unsafe-finally
+  }
+}
+
+/**
  * The rehearsal. `io` (tests): `platform`, `spawnSync`, `spawn`, `fetch`, `home`, `kill`, `sleep`. Returns `{ ok: true, facts }`
  * or `{ ok: false, step, why }`. Cleanup fails closed (Codex review, finding 5): a process of the rehearsal still
  * running, or the throwaway folder or the copy still there, is a failure, whatever came before.
@@ -276,9 +300,15 @@ export async function rehearse({ checkout, copy }, io = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const copy = args.includes("--copy") ? args[args.indexOf("--copy") + 1] : undefined;
-  if (typeof copy !== "string" || !copy.startsWith("/")) { console.error("usage: deploy-check.mjs --copy <the plane's copy of its database>"); process.exit(2); }
+  if (typeof copy !== "string" || !copy.startsWith("/")) { console.error("usage: deploy-check.mjs [--build] --copy <the plane's copy of its database>"); process.exit(2); }
   chmodSync(dirname(copy), 0o700);
-  const outcome = await rehearse({ checkout: process.cwd(), copy });
-  if (!outcome.ok) { console.error(`Deploy check failed at ${outcome.step}: ${outcome.why}`); process.exit(1); }
-  console.log(`Deploy check passed: schema ${outcome.facts.from} → ${outcome.facts.to}, ${outcome.facts.tables} tables kept, the console answered and read the tasks.`);
+  if (args.includes("--build")) {
+    const built = buildInFence({ checkout: process.cwd(), copy });
+    if (!built.ok) { console.error(`Deploy check: the build failed: ${built.why}`); process.exit(1); }
+    console.log("Deploy check: the release commit built inside the fence.");
+  } else {
+    const outcome = await rehearse({ checkout: process.cwd(), copy });
+    if (!outcome.ok) { console.error(`Deploy check failed at ${outcome.step}: ${outcome.why}`); process.exit(1); }
+    console.log(`Deploy check passed: schema ${outcome.facts.from} → ${outcome.facts.to}, ${outcome.facts.tables} tables kept, the console answered and read the tasks.`);
+  }
 }

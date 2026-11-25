@@ -45,24 +45,36 @@ homebrew. Gone: branch update, carry, ci, merge, tree.
 
 The worker copies its own database with SQLite's online backup into a 0700 temp folder, seals the attempt (inventory
 marked `deploy`; owed: build, rehearsal, and the upgrade path when a full check would owe it), and hands
-`scripts/release-check.mjs` only that copy on its handshake (`{"mode":"deploy","copy":…}`). The check runs
-`npm run build`, then `scripts/deploy-check.mjs`, then the upgrade path when owed. The folder is deleted when the
-check ends.
+`scripts/release-check.mjs` only that copy on its handshake (`{"mode":"deploy","copy":…}`). The check reads the
+handshake first and runs nothing of a full check's planning (not even its fetch of origin's tags), then the build, the
+rehearsal and the upgrade path when owed. The plane deletes the folder however the check ends; a copy it can't delete
+fails the check.
 
-`deploy-check.mjs`, before any candidate code runs:
+**What is fenced, and what isn't.** The check's own entry, `scripts/release-check.mjs`, and what it and
+`scripts/deploy-check.mjs` import (`isolated-env.mjs`, `deploy-phases.mjs`, `suite-lifecycle.mjs`…), are the release
+commit's code and run as the plane's approved check command with the project's check access (for Toolroll, outside the
+sandbox: full access to this computer) — that can't be fenced from inside it, and the release card says so. Everything
+else runs in a throwaway computer and a fence written before it starts:
 
-- a throwaway computer in the copy's folder (`isolated-env.mjs`: its own HOME, XDG folders, TMPDIR and PATH of approved
-  tools, stand-ins for gh, launchctl and browsers, no credentials), checked before every spawn;
-- every candidate process inside a Seatbelt fence: network only to and from loopback, writes only inside the folder,
-  the person's secret folders (`~/.toolroll`, `~/.ssh`, `~/.config`, keychains, LaunchAgents…) unreadable. Outside
-  macOS it refuses.
+- the throwaway computer, in the copy's folder (`isolated-env.mjs`: its own HOME, XDG folders, TMPDIR and PATH of
+  approved tools from node's own folder and the system's, stand-ins for gh, launchctl and browsers, no credentials),
+  checked before every spawn;
+- a Seatbelt profile per step that denies reading file contents by default (readable: the throwaway folder, the
+  checkout with its dependencies by their real paths, node's own install, the system's folders; the person's secret
+  folders never), writes only in the throwaway folder (the build also in the checkout, never its `.git`), and no
+  network but, for the console, its own loopback port. Outside macOS it refuses.
 
-Then: the candidate's store opens the copy twice (history kept, integrity and foreign keys clean), its console starts
+Fenced so: `npm run build` (with every build script and dependency it loads), the candidate's store on the copy, its
+console and its `task list`. Then: the candidate's store opens the copy twice (history kept, integrity and foreign keys clean), its console starts
 with `serve --rehearsal` (127.0.0.1, ephemeral port; no loop beside the console, no queue, team, lead upkeep,
 telemetry, background check, backup, sign-in probe, update check or git-incident notice; bridges, webhooks, schedules
 and flows only ever run in the worker, which `serve` never starts), `/healthz` must answer, the candidate's
-`task list` must read the copy, and the process group is stopped and proven gone. On this Mac it took about 2 s on a
-fresh database; the owner's database will take longer to migrate.
+`task list` must read the copy, and the process group is stopped and proven gone. `/healthz` is fetched with no
+redirect followed. Anything the rehearsal started or made that is still there afterwards (a process, its folder, the
+copy) fails it. A rehearsal never signals a process its copy records: Direct Chat polling, thread recovery and engine
+upkeep don't start, and while it serves, `process.kill` and custody's signal road refuse any pid but its own. On this
+Mac the fenced build took about 4 s and the fenced rehearsal about 11 s on a fresh database; the owner's database will
+take longer to migrate.
 
 The upgrade-path sample stays, under the full check's rule (only when store, schema or migration code changed since the
 last release). It installs the last five releases from npm, so it adds minutes when it runs; it was not measured on the
@@ -73,7 +85,8 @@ owner's Mac. Real-model journeys are not part of the release path.
 - Speed: a release doesn't re-run the full suite on this Mac. `--full` runs it, on request.
 - Judge, build or test-harness changes since the previous release are **shown** (with `--full` offered), never forced.
 - Real-model journeys are not part of the release path.
-- Approval comes before the deploy check, which runs the candidate's code with full access to this computer.
+- Approval comes before the deploy check. Its own scripts run the candidate's code with the project's check access (for
+  Toolroll, full access to this computer); its build, store and console run fenced.
 
 **Residual risk, accepted by the owner:** candidate code can influence its own CI results through build scripts,
 dependencies, test setup or reporters (Codex review, finding 1); the local full check no longer guards against that by
@@ -84,9 +97,10 @@ Neither flow defends against a malicious test author.
 
 - 3 (journeys and upgrades): the owner chose not to keep a blocking local journey run; the upgrade sample is kept
   under its existing rule; real-model journeys are out of the release path.
-- 4 (rehearsal isolation): isolated environment and fence before any candidate process; every start path of the
-  console disabled and tested (`src/serve-rehearsal.test.ts`), the real fence and a real rehearsal tested on macOS
-  (`src/deploy-check.test.ts`); process-group cleanup.
+- 4 (rehearsal isolation): isolated environment and a deny-by-default fence for the build and every candidate process
+  (the check's own orchestration scripts excepted, said above and on the card); every start path of the console
+  disabled and tested (`src/serve-rehearsal.test.ts`), including the recorded processes of a copy left alive; the real
+  fence, the fenced build and a real rehearsal tested on macOS (`src/deploy-check.test.ts`); cleanup fails closed.
 - 5 (complete proof, refreshed): the whole of publish.yml's proof before filing, deploy and tag, plus first-parent
   membership; every resume bound to the same M, tree, version, pull request and head.
 - 8 (activation and legacy): an older plane reads a `main-release` scope or a `deploy` receipt as malformed and refuses

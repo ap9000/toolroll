@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { fenced, fenceProfile, freePort, migrationProblem, rehearse, SECRET_FOLDERS, stopGroup } from "../scripts/deploy-check.mjs";
+import { buildInFence, fenced, fenceProfile, freePort, migrationProblem, rehearse, SECRET_FOLDERS, stopGroup } from "../scripts/deploy-check.mjs";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
@@ -143,6 +143,23 @@ describe.skipIf(!REAL_MAC)("deploy check on this Mac (sandbox-exec)", () => {
       expect(out.otherPort).not.toBe("connected");
       expect(out.network).not.toBe("connected");
     } finally { other.close(); }
+  });
+
+  test("the build runs inside the fence: it writes its output, and a build that writes outside its checkout fails", () => {
+    const make = (script: string) => {
+      const box = realpathSync(mkdtempSync(join(tmpdir(), "so-build-fence-")));
+      const checkout = join(box, "checkout"), copyDir = join(box, "copy");
+      mkdirSync(checkout); mkdirSync(copyDir, { mode: 0o700 });
+      writeFileSync(join(checkout, "package.json"), JSON.stringify({ name: "x", version: "1.0.0", scripts: { build: script } }));
+      writeFileSync(join(copyDir, "orders.db"), "");
+      return { box, checkout, copy: join(copyDir, "orders.db") };
+    };
+    const good = make(`node -e "require('fs').mkdirSync('dist',{recursive:true}); require('fs').writeFileSync('dist/out.txt','built')"`);
+    expect(buildInFence({ checkout: good.checkout, copy: good.copy })).toEqual({ ok: true });
+    expect(existsSync(join(good.checkout, "dist", "out.txt"))).toBe(true);
+    const bad = make(`node -e "require('fs').writeFileSync('../escaped.txt','x')"`);
+    expect(buildInFence({ checkout: bad.checkout, copy: bad.copy })).toMatchObject({ ok: false });
+    expect(existsSync(join(bad.box, "escaped.txt"))).toBe(false);
   });
 
   test("the built candidate upgrades and serves a copy with everything due or waiting, then nothing of it is left", async () => {

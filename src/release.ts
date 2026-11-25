@@ -1627,7 +1627,7 @@ export function mainGoalWords(j: Pick<ReleaseJournal, "packageName" | "packageVe
   const check = j.full === true
     ? "runs the full release check on this Mac (about 40 minutes)"
     : "runs the deploy check on this Mac: it builds it, upgrades a copy of your database and starts it against that copy (about 4 minutes)";
-  return `Release ${j.packageName} ${j.packageVersion} from main at ${j.candidate.sha} (pull request #${j.pr}). GitHub ran every required check on this tree on #${j.pr} (its head ${j.main?.head ?? "unknown"}). After your approval Toolroll ${check}, then deploys it here, tags ${j.tag} and publishes to npm and Homebrew. The ${j.full === true ? "check" : "deploy check"} runs this commit's code with full access to this computer.`;
+  return `Release ${j.packageName} ${j.packageVersion} from main at ${j.candidate.sha} (pull request #${j.pr}). GitHub ran every required check on this tree on #${j.pr} (its head ${j.main?.head ?? "unknown"}). After your approval Toolroll ${check}, then deploys it here, tags ${j.tag} and publishes to npm and Homebrew. ${j.full === true ? "The check runs this commit's code with full access to this computer." : "The deploy check's own scripts run this commit's code with this project's check access (for Toolroll, full access to this computer); its build, the upgraded copy and the console run fenced: no network but their own loopback port, nothing written outside a throwaway folder."}`;
 }
 
 /** The first run of a release from main: the release commit found and proven before anything changes. */
