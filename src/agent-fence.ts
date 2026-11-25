@@ -163,6 +163,12 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(backups, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(backups);
     fence.add(real(backups));
+    // Each task's kept Codex sessions (provider-home.ts): copied into a launch's own home and back by Toolroll, never
+    // reached by any launch, so no run reads or writes another task's session.
+    const codexSessions = join(state, CODEX_SESSIONS_DIR);
+    try { mkdirSync(codexSessions, { mode: 0o700 }); } catch { /* name and target remain denied */ }
+    fence.add(codexSessions);
+    fence.add(real(codexSessions));
     // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
     // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
     // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it
@@ -251,8 +257,8 @@ const HOME_CONFIGURATION = [
   ...ACP_PROVIDER_IDS.flatMap(id => ACP_AGENTS[id].home),
 ];
 /** What a provider's own CLI reads to sign in and keep its sessions. The OS fence around Claude and Gemini holds
- * their whole process, so those stay reachable there. Codex keeps none by name: inside the OS fence it gets its exact
- * sign-in and sessions (codexOwnState); in its own profile it fences only its agent's commands. */
+ * their whole process, so those stay reachable there. Codex keeps none by name: it signs in and keeps its sessions in a
+ * home of the launch's own (provider-home.ts isolatedCodexHome), never the operator's Codex folder. */
 const PROVIDER_HOME: Record<string, readonly string[]> = {
   claude: [".claude", ".claude.json"], gemini: [".gemini"], codex: [], openrouter: [],
   // Each ACP agent keeps its own configuration and sign-in where its row says (acp-agents.ts).
@@ -433,8 +439,6 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   browser?: true;
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
-  /** macOS: a Codex or OpenRouter build's own Codex state inside the OS fence (codexOwnState). */
-  codexState?: CodexState;
   /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
   writeDenies?: string[];
   /** Protected storage (protected-storage.ts): denied to read and write by every backend, and no grant equal to or
@@ -717,38 +721,12 @@ function worktreeGitDir(worktree: string): string | null {
   }
 }
 
-/** What a Codex build's harness touches of the operator's Codex folder when it runs inside the OS fence: its sign-in
- * (`read`, `write`: a refresh writes through the run home's link) and its sessions folder (`write`), each by its real
- * path; `denyWrite` is every other name there now, and Codex's configuration and extension names whether present or
- * not, so nothing a later Codex session loads can be planted. `home` is the folder itself (its whole-folder deny is
- * lifted for these). */
-export type CodexState = { home: string; read: string[]; write: string[]; denyWrite: string[] };
-
-/** The names inside a Codex home that configure or extend the operator's next Codex session. */
-export const CODEX_CONFIG_NAMES: readonly string[] = ["config.toml", "AGENTS.md", "AGENTS.override.md", ".env", "hooks", "hooks.json",
-  "rules", "plugins", "skills", "prompts", "memories", "themes", "profiles", "keybindings.json", "requirements.toml", "managed_config.toml"];
-
-/** A Codex build's own state inside the OS fence (FenceGrants.codexState), from Toolroll's own resolution of the
- * operator's Codex folder (provider-home.ts codexHomeDir: never the build's environment). Only a real folder counts;
- * the sign-in and sessions are granted only as what they are now (resolved, the sign-in a regular file). */
-export function codexOwnState(codexHome: string, options: { signIn: boolean } = { signIn: true }): CodexState | null {
-  let base: string;
-  try { if (!lstatSync(codexHome).isDirectory()) return null; base = realpathSync(codexHome); } catch { return null; }
-  const write: string[] = [];
-  const read: string[] = [];
-  // Only a Codex build signs in with it: an OpenRouter build carries its own key, and never reaches the ChatGPT sign-in.
-  if (options.signIn) try { const auth = realpathSync(join(base, "auth.json")); if (lstatSync(auth).isFile()) { read.push(auth); write.push(auth); } } catch { /* signed in some other way */ }
-  try { const sessions = realpathSync(join(base, "sessions")); if (lstatSync(sessions).isDirectory()) write.push(sessions); } catch { /* none yet */ }
-  const kept = new Set(options.signIn ? ["auth.json", "sessions"] : ["sessions"]);
-  let entries: string[] = [];
-  try { entries = readdirSync(base); } catch { entries = []; }
-  const denyWrite = new Set<string>();
-  for (const name of [...entries.filter(entry => !kept.has(entry)), ...CODEX_CONFIG_NAMES]) {
-    const path = join(base, name);
-    denyWrite.add(path);
-    denyWrite.add(resolvedPath(path));
-  }
-  return { home: base, read: read.sort(), write: write.sort(), denyWrite: [...denyWrite].sort() };
+/** Where each task's Codex sessions are kept between its launches, beside the database (agentFence denies the
+ * folder to every launch). */
+export const CODEX_SESSIONS_DIR = "codex-sessions";
+export function codexSessionsFolder(databaseFile: string | null, taskRef: string): string | null {
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
+  return join(dirname(real(databaseFile)), CODEX_SESSIONS_DIR, createHash("sha256").update(`codex-sessions:${taskRef}`, "utf8").digest("hex").slice(0, 32));
 }
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -998,15 +976,6 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
     if (folders.own !== null) allowRead.add(folders.own);
     for (const path of folders.alsoOwn ?? []) allowRead.add(path);
   }
-  // A Codex build's own state inside the OS fence (codexOwnState): its sign-in and sessions read and written again,
-  // the rest of the operator's Codex folder never written (by name, present or not). The whole-folder write deny is
-  // lifted for exactly that folder, since the runtime can't write back inside a write deny.
-  const codex = grants.codexState;
-  if (codex !== undefined) {
-    for (const path of [codex.home, real(codex.home)]) denyWrite.delete(path);
-    for (const path of codex.denyWrite) denyWrite.add(path);
-    for (const path of [...codex.read, ...codex.write]) allowRead.add(path);
-  }
   const pool = grants.pool;
   if (pool !== undefined) {
     // Under v1 the pools are unread too, the build's own checkout read again; under v2 they are read (owner Q-C).
@@ -1035,7 +1004,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   // Writing anywhere: everything but the denies. The launch's own checkout and folder are named too, so a backend that
   // binds a read deny's re-allowed paths back (bubblewrap) binds those back writable.
   const allowOnly = writes === undefined ? ["/", ...(pool?.own == null ? [] : [real(pool.own)]), ...(folders?.own == null ? [] : [folders.own]), ...(folders?.alsoOwn ?? [])]
-    : [...writes.subpaths, ...(folders?.alsoOwn ?? []), ...(codex?.write ?? []), ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
+    : [...writes.subpaths, ...(folders?.alsoOwn ?? []), ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
       .filter(path => grants.noSharedTemp !== true || !SHARED_TEMP.includes(path))];
   const network = grants.network;
   return {
@@ -1378,8 +1347,8 @@ export function homeWriteDenies(home: string, binding: WorktreeBinding | null, p
  * where it always has), and never the build's own checkout or launch folder read back (nothing a build wrote loads in a
  * process that holds a tool's secrets). */
 export function serverGrantsOf(grants: FenceGrants): FenceGrants {
-  // Never the agent's own Codex state either (its sign-in, sessions and run home: codexState, runFolders.alsoOwn).
-  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, browser: _checkOnly, codexState: _agentCodex, ...rest } = grants;
+  // Never the agent's own Codex home either (its sign-in copy and sessions: runFolders.alsoOwn).
+  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, browser: _checkOnly, ...rest } = grants;
   return {
     ...rest,
     ...(rest.pool === undefined ? {} : { pool: { ...rest.pool, own: null } }),

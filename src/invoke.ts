@@ -52,10 +52,10 @@ import { readDenyPath } from "./project-sandbox.js";
 import { linuxSandboxToolsWords, sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
-import { buildCacheEnv, buildCacheFolder, codexOwnState, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
-import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
+import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type CodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
@@ -486,10 +486,11 @@ export async function invokeAgent(
   // Codex in its own permission profile (no OS fence here): its harness runs outside the command sandbox, its commands
   // offline. On a Mac it runs inside the OS fence instead, its own sandbox off, like every other agent (codex-os-fence.md).
   const codexProfile = codexHarness && containment.fence !== "macos-sandbox";
-  // A Codex build's own CODEX_HOME (provider-home.ts): the operator's sign-in and sessions, linked, and nothing else.
-  let codexHome: { dir: string; cleanup: () => void } | null = null;
+  // A Codex build's own CODEX_HOME (provider-home.ts): a copy of the operator's sign-in and this task's own sessions,
+  // nothing that leads back to the operator's Codex folder or another task's sessions.
+  let codexHome: CodexHome | null = null;
   if (codexHarness && invocation.phase !== "review") {
-    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex" }); }
+    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex", sessions: codexSessionsFolder(store.databaseFile(), String(run.taskRef)) }); }
     catch {
       tools?.cleanup();
       removeAgentDatabase(isolatedDb.dir);
@@ -521,12 +522,10 @@ export async function invokeAgent(
     grants.network = "policy" in network && network.policy.mode === "open" ? { mode: "open" }
       : { mode: "allowlist", proxyPort: 0, brokerPorts: [], loopback: "proxy-only", socketRoots: [] };
   }
-  // Codex inside the OS fence: its own run home read and written as this launch's, its operator sign-in and sessions
-  // exactly (codexOwnState), and trustd, which its TLS verification needs (measured, as signInGrants).
+  // Codex inside the OS fence: its own run home (its sign-in copy and sessions) read and written as this launch's, and
+  // nothing of the operator's Codex folder; trustd, which its TLS verification needs (measured, as signInGrants).
   if (fence.length > 0 && codexHarness && !codexProfile && codexHome !== null) {
-    const own = codexOwnState(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), { signIn: spec.provider === "codex" });
     grants.runFolders = { ...(grants.runFolders ?? runFolders(ownTools)), alsoOwn: [realpathSync(codexHome.dir)] };
-    if (own !== null) grants.codexState = own;
     if (process.platform === "darwin") grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];
   }
   if (fence.length > 0 && spec.provider === "antigravity" && process.platform === "darwin") {
@@ -846,6 +845,8 @@ export async function invokeAgent(
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
+    // The task keeps this launch's sessions (a repair resumes them), copied out by Toolroll before the home goes.
+    codexHome?.keep();
     codexHome?.cleanup();
     // What the run's proxy saw (shown on its result): connections it made and refused. A connection the OS refused
     // outright never reached it, and isn't counted.

@@ -8,15 +8,21 @@
  *   model they chose (Claude's settings.json `model`, Codex's config.toml
  *   `model`), Claude's `alwaysThinkingEnabled` and Codex's reasoning effort.
  *   Nothing else of either file (hooks, plugins, MCP servers) is read.
- * - A Codex build gets its own CODEX_HOME for the launch: links to the
- *   operator's `auth.json` and `sessions/` (so it signs in, and a repair
- *   resumes the same thread), and no skills, AGENTS.md or anything else from
- *   theirs. Links, never copies: a refreshed sign-in lands in the real file.
- *   The folder is fenced from the agent's commands and removed after the run.
+ * - A Codex build gets its own CODEX_HOME for the launch: a copy of the
+ *   operator's `auth.json` (so it signs in) and a sessions folder of its own
+ *   holding only this task's earlier sessions (so a repair resumes the same
+ *   thread), and no skills, AGENTS.md or anything else from theirs. Nothing
+ *   there leads back to the operator's folder: the run never writes their
+ *   sign-in, nor reads or writes any other session. A sign-in the run
+ *   refreshes stays in its copy (it is never written back: the run controls
+ *   that file); if Codex later asks the operator to sign in again, `codex
+ *   login` fixes it. The folder is the launch's own (fenced from every other
+ *   launch) and removed after the run, its sessions kept for the task first.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { validModelId } from "./provider.js";
 
 /** The operator's own choices a no-model build keeps. */
@@ -67,24 +73,130 @@ export function codexDefaults(codexHome: string): ProviderDefaults {
   };
 }
 
+/** A Codex launch's own CODEX_HOME. `keep` saves its sessions for its task (after the run, before `cleanup`). */
+export type CodexHome = { dir: string; keep: () => void; cleanup: () => void };
+
+/** How much of a task's sessions is kept between its launches: bounded, so a run can't fill the disk through it. */
+const SESSIONS_MAX_BYTES = 512 * 1024 * 1024;
+const SESSIONS_MAX_ENTRIES = 20_000;
+const SESSIONS_MAX_DEPTH = 8;
+/** A name Codex gives a session file or folder (`2026/11/25/rollout-….jsonl`): nothing else is carried. */
+const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+
 /**
- * One Codex launch's CODEX_HOME: a private folder linking the operator's
- * sign-in and sessions. A missing `auth.json` stays missing (an API-key
- * build needs none); a missing `sessions/` is made where Codex would make
- * it, so a resumed build finds the thread its first launch wrote.
+ * One Codex launch's CODEX_HOME: a private folder holding a copy of the operator's sign-in (never a link to it) and
+ * a sessions folder of its own, filled from `options.sessions` (this task's kept sessions, a folder of Toolroll's own
+ * that no launch reaches) when given. A missing `auth.json` stays missing (an API-key build needs none); one that
+ * isn't a plain file refuses.
  */
-export function isolatedCodexHome(source: string, root: string = tmpdir(), options: { signIn: boolean } = { signIn: true }): { dir: string; cleanup: () => void } {
+export function isolatedCodexHome(source: string, root: string = tmpdir(), options: { signIn: boolean; sessions?: string | null } = { signIn: true }): CodexHome {
   const dir = mkdtempSync(join(root, "so-codex-"));
+  const sessions = join(dir, "sessions");
   try {
     chmodSync(dir, 0o700);
     // Only a Codex build signs in with it: an OpenRouter build carries its own key and never gets the ChatGPT sign-in.
-    if (options.signIn && existsSync(join(source, "auth.json"))) symlinkSync(join(source, "auth.json"), join(dir, "auth.json"));
-    mkdirSync(join(source, "sessions"), { recursive: true, mode: 0o700 });
-    symlinkSync(join(source, "sessions"), join(dir, "sessions"), "dir");
+    if (options.signIn) {
+      const auth = signInBytes(join(source, "auth.json"));
+      if (auth !== null) writeFileSync(join(dir, "auth.json"), auth, { mode: 0o600, flag: "wx" });
+    }
+    mkdirSync(sessions, { mode: 0o700 });
+    if (options.sessions != null) copySessions(options.sessions, sessions);
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
-  // rm removes the links themselves, never what they point to.
-  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dir,
+    // Best effort: a task whose sessions couldn't be kept resumes in a fresh session's place (its next launch finds none).
+    keep: () => { if (options.sessions != null) { try { keepSessions(sessions, options.sessions); } catch { /* not kept */ } } },
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** The operator's sign-in as it is now: its bytes, or null when there is none. A sign-in that isn't a plain file
+ * (a folder, a pipe) refuses: the build would otherwise start signed out, or hang reading it. */
+function signInBytes(path: string): Buffer | null {
+  let real: string;
+  try { real = realpathSync(path); } catch { return null; }
+  const fd = openSync(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const held = fstatSync(fd);
+    if (!held.isFile() || held.size > 1024 * 1024) throw new Error("the Codex sign-in isn't a plain file");
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
+}
+
+/** One file under `root`, read only as the very file found there: opened without following a link, and proven after
+ * the open to be the same file at the same place (so a folder on its way swapped for a link while it was read is
+ * caught: the file opened through the link isn't the one found there again). Null when it isn't. */
+function provenFile(root: string, path: string, limit: number): Buffer | null {
+  let fd: number;
+  try { fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch { return null; }
+  try {
+    const held = fstatSync(fd);
+    if (!held.isFile() || held.size > limit) return null;
+    const there = lstatSync(path);
+    if (!there.isFile() || there.ino !== held.ino || there.dev !== held.dev) return null;
+    const inside = relative(root, realpathSync(dirname(path)));
+    if (inside.startsWith("..") || inside.startsWith("/")) return null;
+    const bytes = Buffer.alloc(held.size);
+    let read = 0;
+    while (read < held.size) { const got = readSync(fd, bytes, read, held.size - read, read); if (got === 0) break; read += got; }
+    return bytes.subarray(0, read);
+  } catch { return null; } finally { closeSync(fd); }
+}
+
+/** Every plain file under `from` (Codex's session names only, never through a link, bounded), written under `to`. */
+function copyTree(from: string, to: string): void {
+  const root = realpathSync(from);
+  let entries = 0, bytes = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > SESSIONS_MAX_DEPTH) return;
+    let names: string[];
+    try { names = readdirSync(join(root, dir)); } catch { return; }
+    for (const name of names) {
+      if (!SESSION_NAME.test(name) || ++entries > SESSIONS_MAX_ENTRIES) continue;
+      const rel = join(dir, name);
+      let held: import("node:fs").Stats;
+      try { held = lstatSync(join(root, rel)); } catch { continue; }
+      if (held.isDirectory()) {
+        mkdirSync(join(to, rel), { recursive: true, mode: 0o700 });
+        walk(rel, depth + 1);
+      } else if (held.isFile()) {
+        const content = provenFile(root, join(root, rel), SESSIONS_MAX_BYTES - bytes);
+        if (content === null) continue;
+        bytes += content.length;
+        mkdirSync(join(to, dir), { recursive: true, mode: 0o700 });
+        writeFileSync(join(to, rel), content, { mode: 0o600, flag: "wx" });
+      }
+    }
+  };
+  walk("", 0);
+}
+
+/** A task's kept sessions into a launch's own sessions folder. */
+function copySessions(kept: string, into: string): void {
+  try { if (!lstatSync(kept).isDirectory()) return; } catch { return; }
+  copyTree(kept, into);
+}
+
+/** A launch's sessions, after its run, as its task's kept sessions: copied (never moved: the launch's folder may still
+ * be written by what it left running) into a fresh folder of Toolroll's own, then put in place of the earlier ones. */
+function keepSessions(from: string, kept: string): void {
+  const parent = dirname(kept);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const tag = randomBytes(8).toString("hex");
+  const next = `${kept}.new-${tag}`;
+  const old = `${kept}.old-${tag}`;
+  mkdirSync(next, { mode: 0o700 });
+  try {
+    copyTree(from, next);
+    let had = false;
+    try { renameSync(kept, old); had = true; } catch { had = false; }
+    renameSync(next, kept);
+    if (had) rmSync(old, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(next, { recursive: true, force: true });
+    throw error;
+  }
 }
