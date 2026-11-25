@@ -55,8 +55,7 @@ describe("the conversation so far, as a fresh agent is handed it", () => {
   test("the cap holds: the newest turns are kept whole, and how many earlier ones were left out is said", () => {
     const turns = Array.from({ length: 30 }, (_, at) => said(at + 1, `message ${at + 1} `.repeat(150), `reply ${at + 1} `.repeat(150)));
     const lines = conversationBriefLines(turns, 12_000);
-    const quotedSize = inside(lines).reduce((sum, one) => sum + one.length + 1, 0);
-    expect(quotedSize).toBeLessThanOrEqual(12_000 + 100);
+    expect(lines.join("\n").length + 1).toBeLessThanOrEqual(12_000);
     const kept = inside(lines).filter(one => /^\| Turn \d+, the person said:$/.test(one)).map(one => Number(/Turn (\d+)/.exec(one)![1]));
     expect(kept).toEqual(Array.from({ length: kept.length }, (_, at) => 30 - kept.length + 1 + at));
     expect(inside(lines)[0]).toBe(`| ${30 - kept.length} earlier turns are left out to keep this short.`);
@@ -66,8 +65,21 @@ describe("the conversation so far, as a fresh agent is handed it", () => {
 
   test("the newest turn alone longer than the cap is still there, cut and said so", () => {
     const lines = conversationBriefLines([said(1, "x".repeat(50_000), "y".repeat(50_000))], 6_000);
-    expect(inside(lines).reduce((sum, one) => sum + one.length + 1, 0)).toBeLessThanOrEqual(6_000);
+    expect(lines.join("\n").length + 1).toBeLessThanOrEqual(6_000);
     expect(inside(lines).filter(one => one === "| (the rest of this is left out)")).toHaveLength(2);
+  });
+
+  test.each([
+    ["newline-heavy messages", [said(1, "\n".repeat(40_000), "a\n".repeat(20_000)), said(2, "b\n".repeat(30_000), "\n".repeat(9_000))]],
+    ["very long file names", Array.from({ length: 6 }, (_, at) => said(at + 1, "ok", "done", { files: Array.from({ length: 40 }, (_, n) => `${"dir/".repeat(900)}${at}-${n}.ts`) }))],
+    ["many short turns", Array.from({ length: 2_000 }, (_, at) => said(at + 1, "\n\n\nhi", "\n\nok", { files: ["a.ts"] }))],
+  ])("the cap holds on the history exactly as it is handed over (%s): quote marks and newlines counted", (_name, turns) => {
+    for (const chars of [24_000, 6_000, 2_500]) {
+      const lines = conversationBriefLines(turns, chars);
+      expect(lines.join("\n").length + 1).toBeLessThanOrEqual(chars);
+      // The newest turn is always there.
+      expect(inside(lines).some(one => one === `| Turn ${turns.at(-1)!.seq}, the person said:`)).toBe(true);
+    }
   });
 
   test("a stopped turn and one with no reply say so; a turn's files are named, the rest counted", () => {
@@ -102,33 +114,33 @@ function finished(words: string, reply: string | null): string {
   return made.turn;
 }
 
-beforeEach(() => {
-  world = threadWorld();
-  const store = world.store;
-  store.saveApprover("alex", "hash-a", NOW);
-  store.saveApprover("pat", "hash-p", NOW);
-  expect(store.setAccountProjects("pat", [world.project], "alex", NOW)).toEqual({ ok: true });
-  const terms: FlexibleTerms = { version: 1, repo: world.project, signer: "alex", signerGeneration: store.accountOf("alex")!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full",
-    max: "full", default: "full", network: "confined", caps: { liveThreads: 3, turnsPerDayProject: 300, turnsPerDayPerson: 150, measuredMicrousdPerDay: null } };
-  digest = flexibleDigestOf(terms);
-  store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
-    VALUES (?, ?, ?, ?, ?, 'alex', ?, 'password-now', 'alex', ?)`).run(world.project, flexibleTermsJson(terms), digest, flexibleTermsJson(terms), digest, NOW.toISOString(), NOW.toISOString());
-  const folder = join(world.state, "threads", T1);
-  mkdirSync(folder, { recursive: true });
-  store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
-    .run(T1, world.project, world.second, `refs/toolroll/threads/${T1}/base`, folder, NOW.toISOString());
-  const opened = openFlexibleSessions(store);
-  if (!opened.ok) throw new Error(opened.message);
-  sessions = opened.sessions;
-});
-afterEach(async () => {
-  for (const one of sessions.threads.values()) await one.relay?.close();
-  sessions.catalog.close();
-  world.store.close();
-  rmSync(world.dir, { recursive: true, force: true });
-});
-
 describe("what was said, recorded per turn", () => {
+  beforeEach(() => {
+    world = threadWorld();
+    const store = world.store;
+    store.saveApprover("alex", "hash-a", NOW);
+    store.saveApprover("pat", "hash-p", NOW);
+    expect(store.setAccountProjects("pat", [world.project], "alex", NOW)).toEqual({ ok: true });
+    const terms: FlexibleTerms = { version: 1, repo: world.project, signer: "alex", signerGeneration: store.accountOf("alex")!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full",
+      max: "full", default: "full", network: "confined", caps: { liveThreads: 3, turnsPerDayProject: 300, turnsPerDayPerson: 150, measuredMicrousdPerDay: null } };
+    digest = flexibleDigestOf(terms);
+    store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
+      VALUES (?, ?, ?, ?, ?, 'alex', ?, 'password-now', 'alex', ?)`).run(world.project, flexibleTermsJson(terms), digest, flexibleTermsJson(terms), digest, NOW.toISOString(), NOW.toISOString());
+    const folder = join(world.state, "threads", T1);
+    mkdirSync(folder, { recursive: true });
+    store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
+      .run(T1, world.project, world.second, `refs/toolroll/threads/${T1}/base`, folder, NOW.toISOString());
+    const opened = openFlexibleSessions(store);
+    if (!opened.ok) throw new Error(opened.message);
+    sessions = opened.sessions;
+  });
+  afterEach(async () => {
+    for (const one of sessions.threads.values()) await one.relay?.close();
+    sessions.catalog.close();
+    world.store.close();
+    rmSync(world.dir, { recursive: true, force: true });
+  });
+
   test("each turn's message, reply, start commit and files are written once; a withdrawn turn is left out of the conversation", () => {
     const first = finished("Fix the parser", "Fixed.");
     recordFlexibleSaid(world.store, { turn: first, thread: T1, seq: 1, said: "something else", at: NOW.toISOString() });
