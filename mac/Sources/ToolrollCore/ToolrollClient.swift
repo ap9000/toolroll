@@ -61,6 +61,7 @@ public enum ClientTransport: Sendable, Equatable {
 
 public actor ToolrollClient {
     public private(set) var transport: ClientTransport
+    private var pinnedInstall: String?
     public var profile: ConnectionProfile {
         switch transport {
         case .remoteBearer(let p): return p
@@ -80,6 +81,7 @@ public actor ToolrollClient {
 
     public init(localSession: LocalSessionCredentials, session: URLSession = .shared) {
         self.transport = .localSession(localSession)
+        self.pinnedInstall = Self.installPath(localSession.databasePath)
         self.session = session
         self.decoder = JSONDecoder()
     }
@@ -215,15 +217,23 @@ public actor ToolrollClient {
 
     private func reconnectLocalSession() async -> Bool {
         guard case .localSession(let current) = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
-        guard Self.sameInstall(current, fresh) else { return false }
+        guard Self.renewalAllowed(pinned: pinnedInstall, current: current, fresh: fresh) else { return false }
         transport = .localSession(fresh)
         sessionRenewed?(fresh)
         return true
     }
 
+    static func installPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func renewalAllowed(pinned: String?, current: LocalSessionCredentials, fresh: LocalSessionCredentials) -> Bool {
+        guard let pinned else { return false }
+        return sameInstall(current, fresh) && installPath(fresh.databasePath) == pinned
+    }
+
     static func sameInstall(_ a: LocalSessionCredentials, _ b: LocalSessionCredentials) -> Bool {
-        let resolve = { (p: String) in URL(fileURLWithPath: p).resolvingSymlinksInPath().standardizedFileURL.path }
-        return a.account == b.account && resolve(a.databasePath) == resolve(b.databasePath)
+        a.account == b.account && installPath(a.databasePath) == installPath(b.databasePath)
     }
 
     private var sessionRenewed: (@Sendable (LocalSessionCredentials) -> Void)?

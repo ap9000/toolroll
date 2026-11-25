@@ -46,6 +46,7 @@ public final class PreviewServerManager {
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
     private var startConsent: StartConsent?
+    private var startEpoch = 0
     public private(set) var pendingStart: (projectRoot: String, command: DetectedDevCommand)?
 
     private struct StartConsent: Hashable {
@@ -115,13 +116,16 @@ public final class PreviewServerManager {
     public func ensureRunning(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
         let consent = startConsent
         startConsent = nil
+        startEpoch &+= 1
+        let epoch = startEpoch
         if activeProjectRoot == projectRoot, let url = activeURL {
             touchActivity()
             return url
         }
 
         if let preferred = preferredOrigin, await isReachable(urlString: preferred) {
-            stopManagedServer()
+            guard epoch == startEpoch else { return nil }
+            stopServerProcess()
             activeProjectRoot = projectRoot
             managedByToolroll = false
             status = .external(url: preferred)
@@ -129,8 +133,9 @@ public final class PreviewServerManager {
         }
 
         let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
+        guard epoch == startEpoch else { return nil }
         guard let detected = detectedCommand else {
-            stopManagedServer()
+            stopServerProcess()
             activeProjectRoot = projectRoot
             status = .asleep
             return nil
@@ -139,20 +144,22 @@ public final class PreviewServerManager {
         if await isReachable(urlString: detected.expectedURL) {
             let port = detected.expectedPort
             let listener = await Task.detached(priority: .userInitiated) { Self.listenerDirectory(port: port) }.value
+            guard epoch == startEpoch else { return nil }
             if let owner = listener, !Self.isInside(owner, root: projectRoot) {
-                stopManagedServer()
+                stopServerProcess()
                 activeProjectRoot = projectRoot
                 status = .failed("Port \(detected.expectedPort) is in use by another project (\((owner as NSString).lastPathComponent)). Stop it, or start this project's dev server on another port.")
                 return nil
             }
-            stopManagedServer()
+            stopServerProcess()
             activeProjectRoot = projectRoot
             managedByToolroll = false
             status = .external(url: detected.expectedURL)
             return detected.expectedURL
         }
 
-        stopManagedServer()
+        guard epoch == startEpoch else { return nil }
+        stopServerProcess()
         activeProjectRoot = projectRoot
 
         let nodeModulesPath = "\(projectRoot)/node_modules"
@@ -199,7 +206,7 @@ public final class PreviewServerManager {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
             status = .failed("Timed out waiting for \(detected.displayCommand) on :\(detected.expectedPort).")
-            stopManagedServer()
+            stopServerProcess()
             return nil
         } catch {
             status = .failed("Could not start \(detected.displayCommand): \(error.localizedDescription)")
@@ -287,6 +294,11 @@ public final class PreviewServerManager {
     }
 
     public func stopManagedServer() {
+        startEpoch &+= 1
+        stopServerProcess()
+    }
+
+    private func stopServerProcess() {
         startConsent = nil
         idleSleepTask?.cancel()
         idleSleepTask = nil

@@ -74,7 +74,9 @@ public enum HardenedGit {
     }
 
     public static func refusal(in cwd: String) -> String? {
-        guard let out = run(["config", "--list", "--includes", "-z"], in: cwd), out.status == 0 else { return nil }
+        guard let out = run(["config", "--list", "--includes", "-z"], in: cwd), out.status == 0 else {
+            return "Toolroll couldn't read this project's git settings, so it won't read the project with git."
+        }
         return refusal(configList: out.stdout)
     }
 
