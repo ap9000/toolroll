@@ -78,6 +78,7 @@ export function createChatHandlers(
   extras?: {
     directChatHost?: () => import("../direct-chat.js").DirectChatHost | null;
     directChatStop?: (owner: string, threadId: string) => { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string };
+    directChatDiff?: (owner: string, threadId: string) => { ok: true; diff: { changedFiles: string[]; diffText: string; dirty: boolean }; running: boolean } | { ok: false; status: number; error: string };
     publishDirectChat?: (threadId: string) => void;
   },
 ) {
@@ -1030,6 +1031,7 @@ export function createChatHandlers(
           view: viewRunner,
           ...(wantsInstantLocal ? { instantLocal: { authority: who.authority, evidenceRoot, chatProvider: teamChatProvider } } : {}),
           ...(extras?.directChatStop === undefined ? {} : { directChatStop: extras.directChatStop }),
+          ...(extras?.directChatDiff === undefined ? {} : { directChatDiff: extras.directChatDiff }),
           ...(extras?.publishDirectChat === undefined ? {} : { publishDirectChat: extras.publishDirectChat }),
         } : {}), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {

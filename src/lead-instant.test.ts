@@ -502,4 +502,97 @@ describe("Lead instant solo actions and Direct Chat tools", () => {
     }, later);
     expect(blocked).toEqual({ ok: false, reason: "latched" });
   });
+
+  test("get_direct_chat_diff inspects clone changes and Ship readiness, and propose_direct_chat ship drafts a 1-click Ship handoff card", () => {
+    const chatId = "0123456789abcdef0123456789abcdef";
+    const diffCache = {
+      changedFiles: ["src/hero.tsx", "src/hero.css"],
+      diffText: "diff --git a/src/hero.tsx b/src/hero.tsx\n+export const Hero = () => <h1/>;\n",
+      dirty: true,
+    };
+    store.handle.prepare(
+      `INSERT INTO direct_chat_thread (id, owner, account_generation, title, repo, clone_path, branch, base_sha, provider, model_id, effort, diff_cache_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      chatId, "alex", who.generation, "Refactor hero layout", REPO, "/tmp/clone-hero", "toolroll/chat-hero", "abc123",
+      "codex", "gpt-6-astra", "high", JSON.stringify(diffCache), T0.toISOString(), T0.toISOString(),
+    );
+    store.handle.prepare(
+      `INSERT INTO direct_chat_turn (id, thread_id, seq, user_prompt, log_path, stderr_path, status, assistant_text, created_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "turn-hero-1", chatId, 1, "Polish the hero", "/tmp/l.log", "/tmp/e.log",
+      "completed", "Updated hero layout and spacing.", T0.toISOString(), T0.toISOString(),
+    );
+
+    const drafted: { kind: string; payload: Record<string, unknown> }[] = [];
+    const ctx: LeadToolContext = {
+      store,
+      who,
+      now: T0,
+      step: 1,
+      readDecisions: new Map(),
+      draft: (kind, payload) => {
+        drafted.push({ kind, payload });
+        return drafted.length;
+      },
+    };
+
+    const diffRes = executeLeadTool(ctx, "get_direct_chat_diff", { chat: chatId });
+    expect(diffRes.ok).toBe(true);
+    const diffBody = (diffRes as { ok: true; body: Record<string, unknown> }).body;
+    expect(diffBody["changedFiles"]).toEqual(["src/hero.tsx", "src/hero.css"]);
+    expect(diffBody["canShip"]).toBe(true);
+    expect(diffBody["recommendedMode"]).toBe("keep-branch");
+    expect(String(diffBody["patch"])).toContain("Hero");
+
+    // get_recent_updates includes changedFilesCount and readyToShip for updated Direct Chats.
+    const updates = executeLeadTool(ctx, "get_recent_updates", { hours: 24 });
+    expect(updates.ok).toBe(true);
+    const updatedChats = (updates as { ok: true; body: { directChatsUpdated: Record<string, unknown>[] } }).body.directChatsUpdated;
+    expect(updatedChats[0]).toMatchObject({ chat: chatId, changedFilesCount: 2, readyToShip: true });
+
+    // propose_direct_chat ship drafts a 1-click confirmation card that opens /direct-chats/<id>/ship on confirm.
+    const shipDraft = executeLeadTool(ctx, "propose_direct_chat", { operation: "ship", chat: chatId });
+    expect(shipDraft.ok).toBe(true);
+    expect(drafted).toHaveLength(1);
+    expect(drafted[0]!.payload["operation"]).toBe("direct_chat_ship");
+
+    const sessionId = store.mintLeadSession({
+      approver: who.name,
+      approverGeneration: who.generation,
+      credentialKey: "sub:claude",
+      ceilingMicrousd: 0,
+      ceilingDigest: who.ceilingDigest,
+      termsDigest: "t".repeat(64),
+    }, T0);
+    const thread = store.openLeadThread(who.name, who.ceilingDigest, T0).thread;
+    const turn = store.openLeadTurn({
+      approver: who.name,
+      session: sessionId,
+      thread: thread.id,
+      credentialKey: "sub:claude",
+      reservedMicrousd: 0,
+      dailyTurns: 100,
+      weeklyCeilingMicrousd: 0,
+      deadlineMs: 60_000,
+      provider: "claude",
+    }, T0);
+    if (!turn.ok) throw new Error(turn.reason);
+    const started = store.startLeadTurn(turn.id, T0);
+    if (!started.ok) throw new Error("turn did not start");
+    const proposalId = store.draftLeadProposal({
+      thread: thread.id,
+      turn: turn.id,
+      ceilingDigest: who.ceilingDigest,
+      kind: "action",
+      payload: drafted[0]!.payload,
+    }, T0);
+    expect(store.finalizeLeadTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 10, tokensOut: 10 }, T0)).toBe(true);
+    const confirmed = confirmLeadProposal(store, who, proposalId, T0, { authority: "full", via: "web", person: true });
+    expect(confirmed.ok).toBe(true);
+    if (confirmed.ok) {
+      expect(confirmed.href).toBe(`/direct-chats/${chatId}/ship`);
+    }
+  });
 });

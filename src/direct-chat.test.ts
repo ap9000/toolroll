@@ -930,6 +930,74 @@ describe("DirectChatHost & helpers", () => {
       store.close();
     }
   });
+
+  test("settling a completed Direct Chat turn refreshes diff cache and posts a turn-less status notice to the owner's open Lead thread", async () => {
+    const root = tempDir();
+    const repo = makeTempRepo(root);
+    const store = openStore(join(root, "state.db"));
+    store.saveApprover("alex", "h".repeat(64), new Date());
+    const leadThread = store.openLeadThread("alex", "c".repeat(64), new Date()).thread;
+    const custody = new FakeCustody();
+    let logPath = "";
+
+    const host = new DirectChatHost(store, {
+      stateRoot: join(root, "state"),
+      custody,
+      bootId: () => "boot-1",
+      locateBinary: () => "/fake/codex",
+      readDiff: () => ({
+        changedFiles: ["src/header.tsx", "src/header.css"],
+        diffText: "diff --git a/src/header.tsx b/src/header.tsx\n+export const Header = () => null;\n",
+        dirty: true,
+      }),
+      spawnTurn: opts => {
+        logPath = opts.logPath;
+        const pid = fakePid(190);
+        custody.add(pid, pid, "start-190");
+        return { pid, pgid: pid, startIdentity: "start-190" };
+      },
+    });
+
+    try {
+      const started = await host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "9".repeat(32),
+        repo,
+        provider: "codex",
+        prompt: "Refactor the header",
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+
+      mkdirSync(dirname(logPath), { recursive: true });
+      writeFileSync(
+        logPath,
+        `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Refactored header spacing and added responsive breakpoints." } })}\n${JSON.stringify({ type: "turn.completed" })}\n`,
+      );
+      custody.kill(fakePid(190));
+      host.reconcileRunningTurns();
+
+      const inspected = host.inspectThreadDiff("alex", started.thread.id);
+      expect(inspected.ok).toBe(true);
+      if (inspected.ok) {
+        expect(inspected.running).toBe(false);
+        expect(inspected.diff.changedFiles).toEqual(["src/header.tsx", "src/header.css"]);
+      }
+
+      const leadMsgs = store.listLeadMessages(leadThread.id, 10);
+      expect(leadMsgs).toHaveLength(1);
+      expect(leadMsgs[0]!.role).toBe("assistant");
+      expect(leadMsgs[0]!.turn).toBeNull();
+      expect(leadMsgs[0]!.text).toContain("Direct Chat finished");
+      expect(leadMsgs[0]!.text).toContain("2 files changed — ready to review or ship.");
+      expect(leadMsgs[0]!.text).toContain("Refactored header spacing");
+    } finally {
+      host.close();
+      store.close();
+    }
+  });
 });
 
 function makeRepoSimple(root: string): string {
