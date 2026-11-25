@@ -4,12 +4,41 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
-## Unreleased
+## 0.9.117 — 2026-11-25
+
+Interactive agent threads keep working reply after reply, Direct Chat arrives, and agents get tighter fences.
+
+### New
+
+- **Direct Chat:** chat with Claude, Codex or Gemini in an isolated copy of your project, see each turn's diff, and
+  Ship what you reviewed. It runs inside the same sandbox and network rules as a build.
+- **The Toolroll Mac app (preview), built from source:** `cd mac && ./build-app.sh`. It finds or starts your local
+  Toolroll, and approvals use Touch ID or your password.
+
+### Changed
+
+- **Ship says what it needs before you press anything,** and commits exactly the files you previewed: a file
+  changed after the preview, even made executable, stops the Ship.
+- **Changing a task's model keeps your approval only when the project's tools are unchanged;** otherwise it asks again.
+- **An agent's network request shows exactly what it would change** and applies only that, to your settings as they
+  are when you approve.
+- **Esc leaves the Diff tab,** and accepting or sending back a result takes you out of it.
 
 ### Fixed
 
-- **Codex and OpenRouter builds follow your project's network settings on a Mac.** They now run in the same sandbox
-  as Claude, so **Allow this Mac's local services** (Vite prerender, local servers) and allowed hosts apply to them.
+- **Replying to a thread works every time.** A reply after a finished turn no longer stops its own new agent.
+- **Typed text no longer runs as workbench keys,** a reply sent twice runs once, and turning threads off stops only
+  the agents that were running.
+- **Codex builds keep their own conversation history,** never another task's or yours.
+- **Codex and OpenRouter builds follow your project's network settings on a Mac,** including **Allow this Mac's
+  local services**.
+- **Restoring a backup retires its chat-app connections and pairing codes;** pair your chat apps again after.
+
+### Action needed
+
+- **Codex:** if a build says its sign-in expired, run `codex login` once.
+- **Direct Chat** uses each agent's own sign-in (`claude`, `codex`), not API keys set on the Toolroll server.
+
 
 ## 0.9.116 — 2026-11-19
 
