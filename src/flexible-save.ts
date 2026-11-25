@@ -22,7 +22,7 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical-json.js";
 import { flexibleStanding } from "./flexible.js";
-import { flexibleImportRef, importFlexibleCandidate, projectMergeHint, readFlexibleCandidate, type FlexibleImportRefusal } from "./flexible-import.js";
+import { flexibleImportRef, importFlexibleCandidate, projectMergeHint, projectThreadBranch, readFlexibleCandidate, type FlexibleImportRefusal } from "./flexible-import.js";
 import { branchHeld, nextSeq, turnRunning } from "./flexible-ship.js";
 import { flexibleThread, flexibleThreadBranch, withFlexibleThreadLock } from "./flexible-thread.js";
 import { machineActing } from "./scope.js";
@@ -34,7 +34,8 @@ export type FlexibleSaveTerms = {
   base: string; candidate: string; branch: string; importRef: string; changedPaths: string[];
 };
 
-export type FlexibleSaveReason = "machine-proof" | "thread-unknown" | "not-owner" | "not-an-approver" | "stale-generation" | "thread-running" | "thread-removed" | "changed";
+export type FlexibleSaveReason = "machine-proof" | "thread-unknown" | "not-owner" | "not-an-approver" | "stale-generation" | "thread-running" | "thread-removed" | "changed"
+  | "branch-gone" | "branch-moved";
 export type FlexibleSaveRefusal = { ok: false; reason: FlexibleSaveReason; message: string };
 export type FlexibleSaved = { ok: true; already: boolean; branch: string; candidate: string; seq: number | null; changedPaths: string[];
   /** The command a person copies to put it on their checked-out branch, or why there isn't one. */
@@ -49,6 +50,8 @@ const WORDS: Readonly<Record<FlexibleSaveReason, string>> = Object.freeze({
   "thread-running": "The agent is still working on your last message. Wait for it, or stop its turn, then save. Nothing was saved.",
   "thread-removed": "This thread's working copy was removed, so there's nothing left to save.",
   "changed": "The thread changed while it was being saved. Try again. Nothing was saved.",
+  "branch-gone": "Toolroll saved this work before, but its branch was deleted from your repository since. Toolroll doesn't make it again by itself. Nothing was changed.",
+  "branch-moved": "This thread's branch in your repository was changed by someone else since Toolroll saved it. Toolroll won't overwrite it. Nothing was changed.",
 });
 const refuse = (reason: FlexibleSaveReason): FlexibleSaveRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
@@ -98,6 +101,11 @@ export async function saveFlexibleBranch(store: Store, input: { thread: string; 
     const branch = flexibleThreadBranch(input.thread);
     const held = branchHeld(store, input.thread);
     if (held === read.candidate) {
+      // What the repository really holds, not only what Toolroll recorded (round 1, finding 2): a deleted or moved branch
+      // is said, never reported as saved, and never overwritten.
+      const actual = await projectThreadBranch(store, { thread: input.thread, ...runner });
+      if (actual === null) return refuse("branch-gone");
+      if (actual !== read.candidate) return refuse("branch-moved");
       return { ok: true, already: true, branch, candidate: read.candidate, seq: null, changedPaths: read.changedPaths, next: await nextWords(store, input.thread, read.candidate, branch, input.runner) };
     }
     const at = input.now.toISOString();

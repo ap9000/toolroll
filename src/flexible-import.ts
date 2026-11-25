@@ -798,6 +798,19 @@ export async function flexibleTaskBranch(store: Store, input: { thread: string; 
   return done.code === 0;
 }
 
+/** What the thread's branch toolroll/code-<thread> holds in its project right now, read through the hardened runner from
+ * Toolroll's record of the thread (never the thread's folder): its commit, null when it doesn't exist, "unreadable". */
+export async function projectThreadBranch(store: Store, input: { thread: string; runner?: Runner }): Promise<string | null | "unreadable"> {
+  const thread = flexibleThread(store, input.thread);
+  if (thread === null) return "unreadable";
+  let project: string;
+  try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { return "unreadable"; }
+  const read = gitIn(input.runner ?? run, "read");
+  const held = await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", `refs/heads/${flexibleThreadBranch(thread.id)}`]);
+  if (held.code === 0 && SHA.test(held.stdout.trim())) return held.stdout.trim();
+  return held.code === 1 ? null : "unreadable";
+}
+
 /**
  * Where a saved thread branch would go in its project (Save as branch, flexible-save.ts): the project's checked-out branch
  * (null when HEAD is detached or unreadable) and whether that branch is an ancestor of `candidate` (a fast-forward merges

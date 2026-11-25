@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, removeFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { saveFlexibleBranch } from "./flexible-save.js";
-import { flexibleShipTerms, shipFlexible } from "./flexible-ship.js";
+import { flexibleSaveDigestOf, saveFlexibleBranch } from "./flexible-save.js";
+import { flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, reconcileFlexibleShips, removeFlexibleImport, shipFlexible } from "./flexible-ship.js";
+import { canonicalJson } from "./canonical-json.js";
 import { enableFlexible, proposedFlexibleTerms } from "./flexible.js";
 import { addApprover } from "./scope.js";
 import { allowWhereUnfenced } from "./unfenced-test-support.js";
@@ -135,4 +136,59 @@ describe("Save as branch", () => {
     expect(branchAt()).toBe(candidate);
     expect(await save()).toMatchObject({ ok: false, reason: "thread-removed" });
   });
+
+  // Codex round 1, finding 2: what the repository really holds decides "already saved".
+  test("saved, then the branch deleted or moved in the repository: saving again says so and overwrites nothing", async () => {
+    const candidate = commit({ "a.txt": "one\n" });
+    expect(await save()).toMatchObject({ ok: true, already: false });
+    tgit(world.project, "update-ref", "-d", `refs/heads/${branch()}`);
+    expect(await save()).toMatchObject({ ok: false, reason: "branch-gone" });
+    expect(branchAt()).toBeNull();
+    tgit(world.project, "update-ref", `refs/heads/${branch()}`, world.second);
+    expect(await save()).toMatchObject({ ok: false, reason: "branch-moved" });
+    expect(branchAt()).toBe(world.second);
+    expect(branchAt()).not.toBe(candidate);
+    expect(rows()).toHaveLength(1);
+  });
+
+  test("a save's record is never a Ship's authority: its digest, its id and a forged arming are all refused", async () => {
+    commit({ "a.txt": "one\n" });
+    const saved = await save();
+    expect(saved.ok).toBe(true);
+    const row = store.handle.prepare("SELECT id, digest FROM flexible_ship WHERE seq = 1").get()!;
+    const digest = String(row["digest"]);
+    store.setVerifyCommand({ repo: world.project, command: "test -f README.md", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    savePublishing(store, { repo: world.project, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", { mergeMethod: "squash", mergeWhenGreen: true }, NOW);
+    // Pressing Ship with the save's digest and key: not the terms shown, so nothing is shipped.
+    expect(await shipFlexible(store, { thread: thread.id, by: "alex", proof: { kind: "password-now", password: token }, shownDigest: digest, shownKey: digest, now: NOW }))
+      .toMatchObject({ ok: false, reason: "changed" });
+    expect(flexibleShipsOf(store, thread.id)).toEqual({ ok: true, ships: [] });
+    expect(await removeFlexibleImport(store, { ship: digest, by: { name: "alex", generation: generation() }, now: NOW })).toMatchObject({ ok: false, reason: "not-found" });
+    // A row forged into "armed" with a task: the armed merge reads no Ship from it.
+    store.handle.prepare("UPDATE flexible_ship SET state = 'armed', task_id = ?, scope_digest = 'forged' WHERE id = ?").run(`flexible-${digest}`, digest);
+    expect(await mergeArmedFlexible(store, { taskId: `flexible-${digest}`, root: join(world.dir, "evidence") })).toMatchObject({ ok: false, reason: "not-found" });
+  });
+
+  test("a save a crash interrupted mid-import is settled: its refs put back, then saving works again", async () => {
+    const first = commit({ "a.txt": "one\n" });
+    expect(await save()).toMatchObject({ ok: true, seq: 1 });
+    const second = commit({ "a.txt": "two\n" });
+    // What a save writes before its import (the record, born approved), then the import half done: its ref and the branch.
+    const terms = { kind: "flexible-save" as const, version: 1 as const, thread: thread.id, repo: world.project, owner: "alex", ownerGeneration: generation(), seq: 2,
+      base: thread.baseSha, candidate: second, branch: branch(), importRef: `refs/toolroll/import/${thread.id}/2`, changedPaths: ["a.txt"] };
+    const digest = flexibleSaveDigestOf(terms);
+    const at = NOW.toISOString();
+    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, branch_before, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, delegation_id, state, state_at)
+      VALUES (?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'alex', ?, 'session', ?, 0, 'approved', ?)`).run(digest, thread.id, world.project, thread.baseSha, second, terms.importRef, branch(), first,
+      canonicalJson(terms), digest, digest, generation(), at, at);
+    tgit(world.project, "fetch", "-q", "--no-tags", paths.repo, `HEAD:${terms.importRef}`);
+    tgit(world.project, "update-ref", `refs/heads/${branch()}`, second, first);
+    expect(await reconcileFlexibleShips(store, { now: NOW })).toMatchObject({ ok: true, settled: 1 });
+    expect(rows().find(one => one["seq"] === 2)).toMatchObject({ state: "failed", reason: "interrupted", kind: "flexible-save" });
+    expect(branchAt()).toBe(first);
+    expect(() => tgit(world.project, "rev-parse", "--verify", "--quiet", terms.importRef)).toThrow();
+    expect(await save()).toMatchObject({ ok: true, seq: 3, candidate: second });
+    expect(branchAt()).toBe(second);
+  });
 });
+
