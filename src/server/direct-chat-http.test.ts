@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -419,5 +419,52 @@ describe("Direct Chat HTTP + SSE routes", () => {
 
     const afterList = JSON.parse((await world.send("/engine/direct-chats", "GET", { cookie: world.cookie })).body) as { threads: unknown[] };
     expect(afterList.threads).toHaveLength(0);
+  });
+
+  test("POST /engine/direct-chats/:id/delete returns quickly on heavy node_modules clones and cleans up off the event loop", async () => {
+    const world = await openDirectChatWorld();
+    worlds.push(world);
+    const created = await world.post("/engine/direct-chats", {
+      project: "payments-api",
+      prompt: "Create heavy clone for delete latency test",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      request: "e".repeat(32),
+    });
+    expect(created.status).toBe(200);
+    const started = JSON.parse(created.body) as { threadId: string };
+
+    const stopRes = await world.post(`/engine/direct-chats/${started.threadId}/stop`, {});
+    expect(stopRes.status).toBe(200);
+
+    // Look up the clone path and fill it with 1,500 files under node_modules + an uncommitted edit.
+    const row = world.store.handle.prepare("SELECT clone_path FROM direct_chat_thread WHERE id = ?").get(started.threadId) as { clone_path: string };
+    const nm = join(row.clone_path, "node_modules");
+    for (let p = 0; p < 30; p += 1) {
+      const dir = join(nm, `dep-${p}`);
+      mkdirSync(dir, { recursive: true });
+      for (let f = 0; f < 50; f += 1) {
+        writeFileSync(join(dir, `m-${f}.js`), "module.exports = 1;\n");
+      }
+    }
+    writeFileSync(join(row.clone_path, "dirty.ts"), "export const dirty = true;\n");
+
+    // Without discard=1, 409 unmerged_changes still protects the edits.
+    const protectedRes = await world.post(`/engine/direct-chats/${started.threadId}/delete`, {});
+    expect(protectedRes.status).toBe(409);
+    expect(JSON.parse(protectedRes.body)).toMatchObject({ ok: false, code: "unmerged_changes" });
+    expect(existsSync(row.clone_path)).toBe(true);
+
+    // With discard=1, HTTP delete returns fast without blocking on recursive unlink and clone path is gone immediately.
+    const t0 = performance.now();
+    const delRes = await world.post(`/engine/direct-chats/${started.threadId}/delete`, { discard: "1" });
+    const elapsedMs = performance.now() - t0;
+    expect(delRes.status).toBe(200);
+    expect(JSON.parse(delRes.body)).toMatchObject({ ok: true });
+    expect(elapsedMs).toBeLessThan(250);
+    expect(existsSync(row.clone_path)).toBe(false);
+
+    const listAfter = JSON.parse((await world.send("/engine/direct-chats", "GET", { cookie: world.cookie })).body) as { threads: unknown[] };
+    expect(listAfter.threads).toHaveLength(0);
   });
 });

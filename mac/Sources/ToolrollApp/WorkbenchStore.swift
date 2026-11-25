@@ -126,6 +126,7 @@ public final class WorkbenchStore {
     public var taskViewMode: TaskViewMode = .activity
     public var terminalIsScratch: Bool = false
     private var lastKnownTaskStatuses: [String: TaskStatusTone] = [:]
+    private var deletingChatThreadIds: Set<String> = []
     public var isComposingNewWork: Bool = false
     public var isSetupOpen: Bool = false
     public var isSettledExpanded: Bool = false
@@ -1099,8 +1100,10 @@ public final class WorkbenchStore {
                 directChatModels = list.models
             }
             let existingById = Dictionary(uniqueKeysWithValues: chatThreads.map { ($0.id, $0) })
-            let pendingThreads = chatThreads.filter { $0.id.hasPrefix("pending-") }
-            let serverThreads = list.threads.map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
+            let pendingThreads = chatThreads.filter { $0.id.hasPrefix("pending-") && !deletingChatThreadIds.contains($0.id) }
+            let serverThreads = list.threads
+                .filter { !deletingChatThreadIds.contains($0.id) }
+                .map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
             chatThreads = pendingThreads + serverThreads
             runningChatThreadIds = Set(chatThreads.filter(\.running).map(\.id))
             if let sel = selectedChatThreadId, !sel.hasPrefix("pending-") {
@@ -1121,6 +1124,7 @@ public final class WorkbenchStore {
         guard let client, isLocalSession else { return }
         do {
             let detail = try await client.fetchDirectChatDetail(threadId: threadId)
+            guard !deletingChatThreadIds.contains(threadId) else { return }
             let updated = AgentChatThread(detail: detail)
             if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
                 chatThreads[idx] = updated
@@ -1527,11 +1531,55 @@ public final class WorkbenchStore {
             return
         }
         guard let client, isLocalSession else { return }
+        guard !deletingChatThreadIds.contains(id) else { return }
+
+        let existingIndex = chatThreads.firstIndex(where: { $0.id == id })
+        let existingThread = existingIndex.map { chatThreads[$0] }
+        let existingDiff = chatThreadDiffs[id]
+        let existingGitError = chatGitBindingErrors[id]
+        let wasSelected = selectedChatThreadId == id
+
+        if !discardChanges && !keepBranch,
+           let thread = existingThread,
+           !thread.running,
+           thread.changedFilesCount > 0 || (existingDiff?.dirty == true) {
+            chatDeleteConfirmationThread = thread
+            return
+        }
+
+        let shouldOptimisticallyHide = discardChanges || keepBranch || (existingThread?.running != true)
+        deletingChatThreadIds.insert(id)
+        if chatDeleteConfirmationThread?.id == id {
+            chatDeleteConfirmationThread = nil
+        }
+        if shouldOptimisticallyHide {
+            chatThreads.removeAll { $0.id == id }
+            chatThreadDiffs.removeValue(forKey: id)
+            chatGitBindingErrors.removeValue(forKey: id)
+            runningChatThreadIds.remove(id)
+            if wasSelected {
+                selectedChatThreadId = nil
+            }
+        }
+
         Task {
             do {
                 let res = try await client.deleteDirectChat(threadId: id, discard: discardChanges, keepBranch: keepBranch)
+                deletingChatThreadIds.remove(id)
                 if !res.ok {
-                    if res.code == "unmerged_changes", let thread = chatThreads.first(where: { $0.id == id }) {
+                    if shouldOptimisticallyHide, let thread = existingThread {
+                        if !chatThreads.contains(where: { $0.id == id }) {
+                            let targetIndex = min(existingIndex ?? 0, chatThreads.count)
+                            chatThreads.insert(thread, at: targetIndex)
+                        }
+                        if let existingDiff { chatThreadDiffs[id] = existingDiff }
+                        if let existingGitError { chatGitBindingErrors[id] = existingGitError }
+                        if thread.running { runningChatThreadIds.insert(id) }
+                        if wasSelected && selectedChatThreadId == nil {
+                            selectedChatThreadId = id
+                        }
+                    }
+                    if res.code == "unmerged_changes", let thread = existingThread ?? chatThreads.first(where: { $0.id == id }) {
                         chatDeleteConfirmationThread = thread
                         return
                     }
@@ -1543,11 +1591,26 @@ public final class WorkbenchStore {
                 chatThreadDiffs.removeValue(forKey: id)
                 chatGitBindingErrors.removeValue(forKey: id)
                 runningChatThreadIds.remove(id)
-                if selectedChatThreadId == id {
-                    selectedChatThreadId = nil
+                if wasSelected {
+                    if selectedChatThreadId == id {
+                        selectedChatThreadId = nil
+                    }
                     restartSSE()
                 }
             } catch {
+                deletingChatThreadIds.remove(id)
+                if shouldOptimisticallyHide, let thread = existingThread {
+                    if !chatThreads.contains(where: { $0.id == id }) {
+                        let targetIndex = min(existingIndex ?? 0, chatThreads.count)
+                        chatThreads.insert(thread, at: targetIndex)
+                    }
+                    if let existingDiff { chatThreadDiffs[id] = existingDiff }
+                    if let existingGitError { chatGitBindingErrors[id] = existingGitError }
+                    if thread.running { runningChatThreadIds.insert(id) }
+                    if wasSelected && selectedChatThreadId == nil {
+                        selectedChatThreadId = id
+                    }
+                }
                 notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
             }
         }

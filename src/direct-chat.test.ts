@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -839,6 +839,85 @@ describe("DirectChatHost & helpers", () => {
       expect(buildProviderCommand({ provider: "gemini", modelId: "gemini-4-neon", effort: "xhigh", prompt: "hi", sessionId: null })).toEqual(
         expect.arrayContaining(["--model", "gemini-4-neon-xhigh", "--effort", "xhigh"]),
       );
+    } finally {
+      host.close();
+      store.close();
+    }
+  });
+
+  test("deleteThread relocates heavy clones to trash in O(1), skips git diff when discardChanges is set, and sweeps crash leftovers", async () => {
+    const root = tempDir();
+    const repo = makeTempRepo(root);
+    const stateRoot = join(root, "state");
+    const store = openStore(join(root, "state.db"));
+    const custody = new FakeCustody();
+    let readDiffCalls = 0;
+
+    const host = new DirectChatHost(store, {
+      stateRoot,
+      custody,
+      bootId: () => "boot-1",
+      locateBinary: () => "/fake/claude",
+      readDiff: () => {
+        readDiffCalls += 1;
+        return { changedFiles: [], diffText: "", dirty: false };
+      },
+      spawnTurn: () => {
+        custody.add(7701, 7701, "start-7701");
+        return { pid: 7701, pgid: 7701, startIdentity: "start-7701" };
+      },
+    });
+
+    try {
+      const started = await host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "9".repeat(32),
+        repo,
+        provider: "claude",
+        prompt: "Heavy node_modules test",
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      host.stopThread("alex", started.thread.id);
+
+      // Populate 2,000 files inside a fake node_modules tree in the clone.
+      const nm = join(started.thread.clonePath, "node_modules");
+      for (let p = 0; p < 50; p += 1) {
+        const pkgDir = join(nm, `pkg-${p}`);
+        mkdirSync(pkgDir, { recursive: true });
+        for (let f = 0; f < 40; f += 1) {
+          writeFileSync(join(pkgDir, `file-${f}.js`), "export default 1;\n");
+        }
+      }
+
+      readDiffCalls = 0;
+      const t0 = performance.now();
+      const deleted = host.deleteThread({ owner: "alex", threadId: started.thread.id, discardChanges: true });
+      const elapsedMs = performance.now() - t0;
+
+      expect(deleted.ok).toBe(true);
+      if (deleted.ok) expect(deleted.removedClone).toBe(true);
+      // Instant O(1) rename + DB archive — never blocks on synchronous recursive rmSync or unnecessary git diff.
+      expect(readDiffCalls).toBe(0);
+      expect(elapsedMs).toBeLessThan(150);
+      expect(existsSync(started.thread.clonePath)).toBe(false);
+      expect(started.thread.gitDir && existsSync(started.thread.gitDir)).toBe(false);
+      expect(host.getThread("alex", started.thread.id)).toBeNull();
+
+      // Background cleanup drains trash completely.
+      await host.drainPendingCleanups();
+      const trashRoot = join(stateRoot, "direct-chat", "trash");
+      expect(existsSync(trashRoot) ? readdirSync(trashRoot) : []).toEqual([]);
+
+      // Simulate a crash leftover in trash and verify startup sweeps it asynchronously.
+      const crashLeftover = join(trashRoot, "crash-leftover-clone");
+      mkdirSync(crashLeftover, { recursive: true });
+      writeFileSync(join(crashLeftover, "orphan.txt"), "stale");
+      host.startPolling(1000);
+      await host.drainPendingCleanups();
+      expect(existsSync(crashLeftover)).toBe(false);
     } finally {
       host.close();
       store.close();

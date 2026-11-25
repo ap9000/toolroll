@@ -1,6 +1,7 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
@@ -827,12 +828,14 @@ export class DirectChatHost {
   private readonly spawnTurnFn: NonNullable<DirectChatHostSeams["spawnTurn"]>;
   private readonly prepareCloneFn: NonNullable<DirectChatHostSeams["prepareClone"]>;
   private readonly readDiffFn: NonNullable<DirectChatHostSeams["readDiff"]>;
+  private readonly hasCustomReadDiff: boolean;
   private readonly onNotify: (note: DirectChatNotification) => void;
   private readonly sawTerminalByTurn = new Set<string>();
   private readonly resetOnNextTextDelta = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
   private readonly inFlightCreates = new Map<string, Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }>>();
+  private readonly pendingCleanups = new Set<Promise<void>>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pollTicks = 0;
 
@@ -846,6 +849,7 @@ export class DirectChatHost {
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
     this.prepareCloneFn = seams.prepareClone ?? defaultPrepareCloneAsync;
+    this.hasCustomReadDiff = seams.readDiff !== undefined;
     this.readDiffFn = seams.readDiff ?? defaultReadDiff;
     this.onNotify = seams.onNotify ?? (() => {});
   }
@@ -853,6 +857,7 @@ export class DirectChatHost {
   startPolling(intervalMs = 80): void {
     if (this.pollTimer !== null) return;
     this.pollTicks = 0;
+    this.sweepTrash();
     const custodyEvery = Math.max(1, Math.round(500 / Math.max(20, intervalMs)));
     this.reconcileRunningTurns();
     this.pollTimer = setInterval(() => {
@@ -870,6 +875,70 @@ export class DirectChatHost {
     if (this.pollTimer !== null) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
+    }
+  }
+
+  /** Await any background trash deletions scheduled by deleteThread(). */
+  async drainPendingCleanups(): Promise<void> {
+    while (this.pendingCleanups.size > 0) {
+      await Promise.allSettled([...this.pendingCleanups]);
+    }
+  }
+
+  private trackCleanup(task: Promise<void>): void {
+    const wrapped = task.catch(() => {}).finally(() => {
+      this.pendingCleanups.delete(wrapped);
+    });
+    this.pendingCleanups.add(wrapped);
+  }
+
+  /**
+   * Atomically relocate a managed clone or git-dir into `direct-chat/trash/` in O(1) via renameSync, then
+   * unlink it asynchronously off the event loop so deleting a clone with node_modules never stalls the server.
+   */
+  private scheduleAsyncDelete(targetPath: string): void {
+    if (!existsSync(targetPath)) return;
+    const trashRoot = join(this.stateRoot, "direct-chat", "trash");
+    let toRemove = targetPath;
+    try {
+      mkdirSync(trashRoot, { recursive: true, mode: 0o700 });
+      const staged = join(trashRoot, `${randomBytes(8).toString("hex")}-${basename(targetPath)}`);
+      renameSync(targetPath, staged);
+      toRemove = staged;
+    } catch {
+      // Cross-device or race: fall back to async removal of the original managed path.
+    }
+    this.trackCleanup(rm(toRemove, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+  }
+
+  /** Sweep any leftover entries under `direct-chat/trash/` left behind by a prior hard crash. */
+  private sweepTrash(): void {
+    const trashRoot = join(this.stateRoot, "direct-chat", "trash");
+    if (!existsSync(trashRoot)) return;
+    this.trackCleanup((async () => {
+      const entries = await readdir(trashRoot);
+      await Promise.allSettled(
+        entries.map(name => rm(join(trashRoot, name), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+      );
+    })());
+  }
+
+  /** Fast boolean dirty check for delete protection: avoids generating full diff patches or DB cache writes. */
+  private hasUnmergedChanges(thread: DirectChatThreadRow): boolean {
+    const binding = this.bindingOf(thread);
+    if (binding === null) return false;
+    if (this.hasCustomReadDiff) {
+      return this.readDiffFn({ binding, baseSha: thread.baseSha }).dirty;
+    }
+    if (!existsSync(binding.clonePath)) return false;
+    const verified = assertTrustedCloneGit(binding);
+    if (!verified.ok) return false;
+    try {
+      if (runTrustedCloneGit(binding, ["status", "--porcelain"]).trim() !== "") return true;
+      if (runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", thread.baseSha]).trim() !== "") return true;
+      return false;
+    } catch {
+      return false;
     }
   }
 
@@ -1367,24 +1436,26 @@ export class DirectChatHost {
       }
     }
 
-    const diff = this.refreshDiffCache(thread);
-    if (diff.dirty && !input.discardChanges && !input.keepClone) {
-      return {
-        ok: false,
-        status: 409,
-        code: "unmerged_changes",
-        error: "This chat has unmerged changes. Confirm discarding changes or choose to keep the branch.",
-      };
+    // Skip git dirty checks completely when the caller already confirmed discarding changes or keeping the clone.
+    if (!input.discardChanges && !input.keepClone) {
+      if (this.hasUnmergedChanges(thread)) {
+        return {
+          ok: false,
+          status: 409,
+          code: "unmerged_changes",
+          error: "This chat has unmerged changes. Confirm discarding changes or choose to keep the branch.",
+        };
+      }
     }
 
     const stamp = this.now().toISOString();
     this.store.handle.prepare(`UPDATE direct_chat_thread SET archived_at = ?, updated_at = ? WHERE id = ?`).run(stamp, stamp, thread.id);
 
     let removedClone = false;
-    if (!input.keepClone && (!diff.dirty || input.discardChanges === true)) {
+    if (!input.keepClone) {
       const managed = assertManagedClonePath(this.stateRoot, thread.clonePath);
       if (managed.ok) {
-        rmSync(managed.realClone, { recursive: true, force: true });
+        this.scheduleAsyncDelete(managed.realClone);
         removedClone = true;
       }
       if (thread.gitDir && existsSync(thread.gitDir)) {
@@ -1395,9 +1466,9 @@ export class DirectChatHost {
             const realGd = realpathSync(thread.gitDir);
             const rel = relative(realRoot, realGd);
             if (rel !== "" && rel !== ".." && !rel.startsWith(`..${"/"}`) && !isAbsolute(rel)) {
-              rmSync(realGd, { recursive: true, force: true });
+              this.scheduleAsyncDelete(realGd);
               const backup = pinnedConfigBackupPath(realGd);
-              if (existsSync(backup)) rmSync(backup, { force: true });
+              if (existsSync(backup)) this.scheduleAsyncDelete(backup);
             }
           } catch {
             // Best-effort cleanup of separate git-dir.
