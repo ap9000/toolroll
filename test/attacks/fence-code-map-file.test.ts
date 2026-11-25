@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { codexFenceArgv, fenceFor, flattened, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, trustedWorktreeBinding, writeAllowlist } from "../../src/agent-fence.js";
+import { codexFenceArgv, codexFenceConfig, fenceFor, flattened, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, trustedWorktreeBinding, writeAllowlist } from "../../src/agent-fence.js";
 import { codexSandbox, git, needs, osFence, q, repository, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("code-map-file");
@@ -67,10 +67,15 @@ test("policy: exactly that file is read back, with no listing of its folder, and
   expect(JSON.stringify(terms)).toContain(at.file);
   expect(JSON.stringify(terms)).not.toContain(`${JSON.stringify(dirname(at.file))}`);
   expect(grants.readOnly).toContain(at.file);
+  // Codex: the file is read by its own path; nothing is split around it, so its folder (and a sibling made later) stays
+  // denied whole.
   const flat = flattened(fence, grants);
-  expect(flat.readOnly).toContain(at.file);
-  expect(flat.deny).toContain(at.sibling);
-  expect(flat.deny).toContain(dirname(at.other));
+  expect(flat.readOnly).not.toContain(at.file);
+  expect(flat.readOnly).not.toContain(dirname(at.file));
+  expect(flat.deny).toContain(at.delivery);
+  const access = codexFenceConfig(fence, false, grants)["permissions.standing-orders.filesystem"] as Record<string, string>;
+  expect(access[at.file]).toBe("read");
+  expect(access[at.delivery]).toBe("deny");
 });
 
 describe.each([["a write allowlist", true], ["write anywhere", false]])("under %s", (_name, workspace) => {

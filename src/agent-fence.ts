@@ -841,6 +841,8 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   // Denies are keyed where they resolve; the console's run folder is also denied by its
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
+  // Exact files: read by their own path inside whatever is denied around them, never written, nothing beside them read.
+  for (const path of exactFileReads(grants)) access.set(path, "read");
   // Protected storage: denied by name and real path, and nothing granted inside it (Codex lets the more specific path
   // win, so a grant there would reopen it).
   const storage = grants.protectedStorage ?? [];
@@ -896,8 +898,10 @@ export const SPLIT_SECRET_PATTERNS = ["orders.db*", "*token*", "up-login*", "*.t
 export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRANTS, list: (path: string) => string[] = path => readdirSync(path)): { deny: string[]; readOnly: string[] } {
   const deny: string[] = [];
   const readOnly = new Set(grants.readOnly);
+  // An exact file never opens its folders: it is read by its own path inside them (exactFileReads), so nothing is split.
+  const exact = new Set(exactFileReads(grants));
   const split = (path: string): void => {
-    const within = grants.readable.filter(one => inside(one, path));
+    const within = grants.readable.filter(one => inside(one, path) && !exact.has(one));
     if (within.length === 0) { deny.push(path); return; }
     let entries: string[];
     try { entries = list(path); } catch (error) {
@@ -918,6 +922,19 @@ export function flattened(fence: readonly string[], grants: FenceGrants = NO_GRA
   // the more specific path win). Patterns stay as Codex patterns; they can't contain a grant here.
   const denied = deny.filter(path => !path.includes("*"));
   return { deny, readOnly: [...readOnly].filter(path => !denied.some(one => path === one || inside(path, one))) };
+}
+
+/**
+ * The exact files a Codex profile reads by their own path inside the denied folders around them: the `exactFiles` that
+ * are regular files now (never a link, never a folder). Codex lets the more specific path win (checked against
+ * `codex sandbox` on macOS, test/attacks/fence-skills.test.ts), so neither the folder's listing nor a sibling made
+ * after launch is read. An exact folder (a direct chat's clone) is still split by `flattened`.
+ */
+export function exactFileReads(grants: FenceGrants): string[] {
+  return (grants.exactFiles ?? []).filter(path => {
+    if (!grants.readable.includes(path)) return false;
+    try { const held = lstatSync(path); return held.isFile() && !held.isSymbolicLink(); } catch { return false; }
+  });
 }
 
 /** Claude's own file tools refuse the fenced paths in every mode (its shell is fenced by the macOS sandbox), and
@@ -1150,6 +1167,8 @@ export type FenceContext = {
   storage?: ProtectedStorage;
   /** One exact file read back inside the fence (a build's code map), or null. */
   exactFile?: string | null;
+  /** More exact files read back the same way (a launch's project skills, rechecked against their manifest first). */
+  exactFiles?: readonly string[];
   databaseFile: string | null;
   worktree: string | null;
   boundary: TaskBoundary | null;
@@ -1210,12 +1229,12 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   // launches: rewriting the code that fences a build would switch the fence off.
   const made = installDenied(found, ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null);
   const written = ctx.writes ?? null;
-  const exact = ctx.exactFile ?? null;
+  const exact = [...new Set([...(ctx.exactFile == null ? [] : [ctx.exactFile]), ...ctx.exactFiles ?? []])];
   const grants: FenceGrants = {
     ...made,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
-    // One exact file, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
-    ...(exact === null ? {} : { readable: [...made.readable, exact], exactFiles: [exact], readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), exact])].sort() }),
+    // Exact files, granted as the shared dependencies are, and never written (Claude's Edit rules read `readOnly`).
+    ...(exact.length === 0 ? {} : { readable: [...made.readable, ...exact], exactFiles: exact, readOnly: [...new Set([...made.readOnly, ...(written?.readOnly ?? []), ...exact])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
     // A project's checks may drive a browser (Playwright's Chromium), and so may a flow's script zone whose browser use
