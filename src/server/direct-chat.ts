@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { inRehearsal } from "../rehearsal.js";
 import { tmpdir } from "node:os";
 import {
   checkEngineResponse,
@@ -38,7 +39,10 @@ import { localOwnerStandsNow, type LocalOwnerAct } from "../local-owner.js";
 import { projectName, rowVisible } from "../project.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
-import { respond } from "./http.js";
+import { redirect, respond } from "./http.js";
+import { html, postForm } from "../html.js";
+import { screen } from "./chrome.js";
+import { btn } from "./kit.js";
 import { rereadBrowser } from "./live.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
@@ -68,7 +72,10 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       deps.bus.publish({ revision: `dc:${note.threadId}:${Date.now()}` });
     },
   });
-  if (!deps.disableLegacyImport && !store.isDemo() && dbFile && dbFile !== ":memory:" && soloNow(store)) {
+  // A rehearsal (release-from-main.md, part C) serves a copy: no import and no polling, which would reconcile the copy's
+  // turns and stop their processes — the real computer's.
+  const rehearsing = inRehearsal();
+  if (!rehearsing && !deps.disableLegacyImport && !store.isDemo() && dbFile && dbFile !== ":memory:" && soloNow(store)) {
     try {
       const owners = store.handle
         .prepare("SELECT name, generation FROM approver WHERE revoked_at IS NULL")
@@ -80,7 +87,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       // Legacy Mac JSON import is best-effort and never blocks server startup.
     }
   }
-  host.startPolling();
+  if (!rehearsing) host.startPolling();
 
   const json = (ctx: HandlerContext, status: number, value: unknown): void =>
     respond(ctx.response, status, "application/json", JSON.stringify(value));
@@ -606,9 +613,90 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     return checked(ctx, 200, "directChatMutated", { ok: true, said: "Auto-merge cancelled." } satisfies DirectChatMutated);
   }
 
+  // ---- the pages (everyday-8 #6): the same saved chats the engine API reads, for a browser with no app --------------
+
+  const PAGE_PATH = /^\/direct-chats\/([a-f0-9]{32})(?:\/(ship-review|ship))?$/;
+  const STATUS_WORDS: Record<string, string> = { completed: "Finished", failed: "Failed", interrupted: "Stopped", running: "Working", queued: "Waiting" };
+  const DIFF_SHOWN = 200_000;
+  function pageRefusal(ctx: HandlerContext, status: number, words: string): void {
+    runtime.sendScreen(ctx.response, status, screen("Direct Chats", html`<h1>Direct Chats</h1><p class="problem" role="alert">${words}</p><p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`, { chrome: runtime.chromeFor(null, "tasks") }));
+  }
+
+  async function pageList(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threads = host.listThreads(gate.who.name, null).filter(t => canReachThread(gate.who.name, t));
+    const rows = threads.map(t => html`<li class="k-row" data-direct-chat="${t.id}"><a class="k-link" href="/direct-chats/${t.id}"><b>${t.title || "Direct Chat"}</b></a> <span class="k-note">${t.project} · ${t.provider}${t.running ? " · Working" : t.lastStatus === null ? "" : ` · ${STATUS_WORDS[t.lastStatus] ?? t.lastStatus}`}${t.changedFilesCount > 0 ? ` · ${t.changedFilesCount} ${t.changedFilesCount === 1 ? "file" : "files"} changed` : ""}</span></li>`);
+    const body = threads.length === 0
+      ? html`<h1>Direct Chats</h1><p>No Direct Chats yet. Ask the lead in Chat to start one in a project.</p>`
+      : html`<h1>Direct Chats</h1><ul class="k-list" data-direct-chats>${rows}</ul>`;
+    return runtime.sendScreen(ctx.response, 200, screen("Direct Chats", body, { chrome: runtime.chromeFor(null, "tasks") }));
+  }
+
+  async function pageDetail(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) return pageRefusal(ctx, 404, "That Direct Chat isn't here.");
+    const { thread, turns, diff, running } = found;
+    const turnHtml = turns.map(turn => html`<section class="card" data-turn="${turn.id}"><p><b>You</b> · <span class="k-note">${STATUS_WORDS[turn.status] ?? turn.status}</span></p><p class="pre-wrap">${turn.userPrompt}</p>${
+      turn.assistantText.trim() === "" ? "" : html`<p><b>${thread.provider === "claude" ? "Claude" : thread.provider === "codex" ? "Codex" : "Gemini"}</b></p><p class="pre-wrap">${turn.assistantText}</p>`}${
+      turn.errorText === null ? "" : html`<p class="problem">${turn.errorText}</p>`}</section>`);
+    const shownDiff = diff.diffText.length > DIFF_SHOWN ? `${diff.diffText.slice(0, DIFF_SHOWN)}\n… (shortened)` : diff.diffText;
+    // The saved diff is the clone as of its last turn, said so: never presented as the files right now.
+    const changes = diff.changedFiles.length === 0 ? html`<p class="k-note">No changes in its copy of the project.</p>`
+      : html`<p class="k-note">${diff.changedFiles.length} ${diff.changedFiles.length === 1 ? "file" : "files"} changed in its own copy of the project, as of its last turn${running ? " (it's still working)" : ""}.</p><ul>${diff.changedFiles.map(file => html`<li class="k-mono">${file}</li>`)}</ul>${shownDiff === "" ? "" : html`<details><summary>The changes</summary><pre class="k-mono" data-direct-chat-diff>${shownDiff}</pre></details>`}`;
+    const ships = listDirectChatShips(store, thread.id);
+    const shipped = ships.length === 0 ? "" : html`<ul>${ships.map(one => html`<li>${one.mode === "keep-branch" ? "Saved as branch" : "Shipped"} <span class="k-mono">${one.branch}</span> · ${one.state}${one.taskId === null ? "" : html` · <a class="k-link" href="/t/${encodeURIComponent(one.taskId)}">Open task</a>`}</li>`)}</ul>`;
+    const shipAct = running || diff.changedFiles.length === 0 ? "" : postForm(`/direct-chats/${thread.id}/ship-review`, btn("Review Ship", { variant: "primary", type: "submit" }));
+    const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}<h2>Changes</h2>${changes}<h2>Ship</h2>${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
+    return runtime.sendScreen(ctx.response, 200, screen(thread.title || "Direct Chat", body, { chrome: runtime.chromeFor(thread.repo, "tasks") }));
+  }
+
+  /** Ship, reviewed first: its exact terms read now (git in the chat's own clone, so a POST), then one yes. */
+  async function pageShipReview(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "read");
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) return pageRefusal(ctx, 404, "That Direct Chat isn't here.");
+    const res = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: gate.who.name, threadId, mode: undefined, title: undefined, goal: undefined });
+    if (!res.ok) return pageRefusal(ctx, res.status, res.error);
+    const preview = res.preview;
+    const local = gate.who.authority === "local-owner";
+    const facts = html`<ul><li>${preview.mode === "keep-branch" ? "Saved as branch" : "Shipped from branch"} <span class="k-mono">${preview.branch}</span></li><li>${preview.changedFiles.length} ${preview.changedFiles.length === 1 ? "file" : "files"}: ${preview.changedFiles.slice(0, 20).join(", ")}${preview.changedFiles.length > 20 ? "…" : ""}</li><li>${preview.checkCommand === null ? "No check command" : html`Check: <span class="k-mono">${preview.checkCommand}</span>`}</li><li>${preview.mergeSummary}</li>${preview.autoMergeReason === null ? "" : html`<li>${preview.autoMergeReason}</li>`}</ul>`;
+    const form = postForm(`/direct-chats/${threadId}/ship`, html`${local ? "" : html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`}${btn(preview.mode === "keep-branch" ? "Save the branch" : "Ship it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: `/direct-chats/${threadId}` })}`,
+      { hidden: { mode: preview.mode, termsDigest: preview.termsDigest, title: preview.title, goal: preview.goal } });
+    return runtime.sendScreen(ctx.response, 200, screen("Ship", html`<h1>Ship ${preview.title}</h1>${facts}${form}`, { chrome: runtime.chromeFor(thread.repo, "tasks") }));
+  }
+
+  async function pageShip(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-ship");
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) return pageRefusal(ctx, 404, "That Direct Chat isn't here.");
+    const mode = ctx.posted.get("mode") ?? "";
+    const termsDigest = ctx.posted.get("termsDigest") ?? "";
+    if ((mode !== "ship" && mode !== "keep-branch") || !HEX32.test(termsDigest)) return pageRefusal(ctx, 400, "That Ship isn't the one on screen. Review it again.");
+    const password = ctx.posted.get("password") ?? undefined;
+    const localOwner = gate.who.authority === "local-owner" && gate.who.session.localGeneration !== null ? { localGeneration: gate.who.session.localGeneration } : null;
+    const res = executeDirectChatShip(store, { stateRoot: host.stateRoot, owner: gate.who.name, threadId, mode, termsDigest,
+      title: ctx.posted.get("title") ?? undefined, goal: ctx.posted.get("goal") ?? undefined, password, localOwner });
+    if (!res.ok) return pageRefusal(ctx, res.status, res.error);
+    host.refreshDiffCache(thread);
+    deps.bus.publish({ revision: `dc:${threadId}:ship:${Date.now()}` });
+    return redirect(ctx.response, `/direct-chats/${threadId}`);
+  }
+
   return {
     host,
     registrations: handlersOf("tasks", {
+      "direct-chat.page-list": pageList,
+      "direct-chat.page": pageDetail,
+      "direct-chat.page-ship-review": pageShipReview,
+      "direct-chat.page-ship": pageShip,
       "direct-chat.list": list,
       "direct-chat.detail": detail,
       "direct-chat.start": start,

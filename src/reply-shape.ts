@@ -141,10 +141,18 @@ function limitBold(text: string, state: ShapeState): string {
     .replace(/(^|[^*\w])\*(?![\s*])([^*\n]*?[^\s*])\*(?![*\w])/g, "$1$2");
 }
 
+/** Toolroll's own notices may link one of its pages by path (`[Review it](/direct-chats/<id>)`, everyday-8 #6): made
+ * absolute on the app's own origin, or just the words where no origin is known. Only these exact page shapes. */
+function ownPageLinks(text: string, appOrigin: ShapeOptions["appOrigin"]): string {
+  const origins = appOrigin === null || appOrigin === undefined ? [] : typeof appOrigin === "string" ? [appOrigin] : appOrigin;
+  const origin = origins.find((one): one is string => typeof one === "string" && /^https?:\/\/[^\s/]+$/.test(one.replace(/\/$/, ""))) ?? null;
+  return text.replace(/\[([^\]\n]{1,120})\]\((\/direct-chats\/[a-f0-9]{32})\)/g, (_all, label: string, path: string) => origin === null ? label : `[${label}](${origin.replace(/\/$/, "")}${path})`);
+}
+
 /** Code and links held aside so no rule rewrites inside them; a bare URL is labelled as it is held. */
 function holdAside(text: string, options: ShapeOptions): { body: string; held: string[] } {
   const held: string[] = [];
-  const body = text.replace(/\r\n?/g, "\n").replace(PROTECTED, (match: string) => {
+  const body = ownPageLinks(text, options.appOrigin).replace(/\r\n?/g, "\n").replace(PROTECTED, (match: string) => {
     if (match.startsWith("`")) { held.push(match); return HOLD(held.length - 1); }
     if (match.startsWith("[")) {
       LINK.lastIndex = 0;

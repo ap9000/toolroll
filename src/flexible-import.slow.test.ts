@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, foldName, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
+import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, flexibleThreadTip, foldName, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, readFlexibleChanges, removeFlexibleImportRefs } from "./flexible-import.js";
+import { patchFiles, threadDiffFileOf, threadDiffOf } from "./engine-reads.js";
+import { HIDDEN_LINE } from "./live-records.js";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { THREAD_GIT_ENV, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
@@ -369,3 +371,90 @@ describe("the thread's repository is attacker input", () => {
     expect(calls.filter(call => call.cwd === world.project).length).toBe(0);
   });
 });
+
+describe("what a thread changed, for its owner to read (never an import)", () => {
+  test("nothing committed is none; then its files and patch, read in a quarantine: no git in the thread's folder, no ref moved, nothing left behind", async () => {
+    const before = projectRefs();
+    expect(flexibleThreadTip(world.store, thread.id)).toBe(world.second);
+    expect(await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy })).toEqual({ ok: true, none: true, base: world.second });
+    const first = commit({ "src/one.ts": "export const one = 1;\n" });
+    const second = commit({ "src/two.ts": "export const two = 2;\n" });
+    expect(flexibleThreadTip(world.store, thread.id)).toBe(second);
+    const all = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy });
+    if (!all.ok || "none" in all) throw new Error(JSON.stringify(all));
+    expect(all).toMatchObject({ base: world.second, tip: second, paths: ["src/one.ts", "src/two.ts"], truncated: false });
+    expect(all.patch).toMatch(/^diff --git a\/src\/one\.ts b\/src\/one\.ts$/m);
+    // One turn's own: between two of its commits.
+    expect(await readFlexibleChanges(world.store, { thread: thread.id, from: first, to: second, patch: false, runner: spy })).toMatchObject({ ok: true, paths: ["src/two.ts"] });
+    expect(calls.every(call => call.cwd !== paths.repo && call.cwd !== world.project)).toBe(true);
+    expect(projectRefs()).toBe(before);
+    expect(existsSync(join(paths.root, FLEXIBLE_IMPORTS_DIR)) ? readdirSync(join(paths.root, FLEXIBLE_IMPORTS_DIR)) : []).toEqual([]);
+    // Past its limit the patch keeps whole files only, and says it was cut.
+    const cut = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy, limits: { patchBytes: all.patch.indexOf("diff --git a/src/two.ts") + 20 } });
+    expect(cut).toMatchObject({ ok: true, truncated: true });
+    if (cut.ok && !("none" in cut)) expect(patchFiles(cut.patch).map(one => one.split("\n")[0])).toEqual(["diff --git a/src/one.ts b/src/one.ts"]);
+  });
+
+  test("hostile names and contents are drawn inert: controls, escapes and bidi out, a key-shaped line hidden", async () => {
+    const hostile = `const shown = "\x1b]52;c;ZXZpbA==\x07ok\x1b[2J‮gnp.exe";\n${keyLine()}const after = 1;\n`;
+    commit({ "src/a.ts": hostile, "src/‮evil.ts": "x\n" });
+    const read = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy });
+    if (!read.ok || "none" in read) throw new Error(JSON.stringify(read));
+    const changes = { ok: true as const, patch: read.patch, truncated: read.truncated };
+    const listed = threadDiffOf(thread.id, 2, changes);
+    expect(listed).toMatchObject({ task: thread.id, run: 2, problem: null });
+    const unsafe = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+    expect(listed.files.map(one => one.path).some(path => unsafe.test(path))).toBe(false);
+    const at = listed.files.findIndex(one => one.path === "src/a.ts");
+    const file = threadDiffFileOf(thread.id, 2, changes, at)!;
+    const lines = file.file.hunks.flatMap(hunk => hunk.lines.map(line => line.text));
+    expect(lines.some(line => unsafe.test(line))).toBe(false);
+    expect(lines).toContain(HIDDEN_LINE);
+    expect(lines.join("\n")).not.toContain(keyLine().trim().slice(13, 33));
+    expect(lines).toContain("const after = 1;");
+    expect(threadDiffFileOf(thread.id, 2, changes, 99)).toBeNull();
+    expect(threadDiffOf(thread.id, 2, { ok: true, none: true }).problem).toMatch(/^No committed changes yet/);
+  });
+
+  test("a key git copies into a hunk header's function context, or an added line shaped like a file header, is hidden from what the terminal and browser read", () => {
+    const key = keyLine().trim();
+    const patch = [
+      "diff --git a/src/b.ts b/src/b.ts", "index 1111111..2222222 100644", "--- a/src/b.ts", "+++ b/src/b.ts",
+      `@@ -7,3 +7,4 @@ ${key}`, " keep", "-old", "+new", `+++ ${key}`, `--- ${key}`, " end", "",
+    ].join("\n");
+    const changes = { ok: true as const, patch, truncated: false };
+    const read = threadDiffFileOf(thread.id, 1, changes, 0)!;
+    const everything = JSON.stringify(read);
+    expect(everything).not.toContain(key.slice(13, 33));
+    expect(read.file.hunks.map(hunk => hunk.header)).toEqual(["@@ -7,3 +7,4 @@"]);
+    expect(read.file.hunks[0]!.lines.map(line => [line.kind, line.text])).toEqual([["context", "keep"], ["deletion", "old"], ["addition", "new"], ["addition", HIDDEN_LINE],
+      ["deletion", HIDDEN_LINE], ["context", "end"]]);
+    // An ordinary function context stays.
+    const plain = threadDiffFileOf(thread.id, 1, { ok: true, patch: patch.replace(`@@ ${key}`, "@@ export function total() {"), truncated: false }, 0)!;
+    expect(plain.file.hunks[0]!.header).toBe("@@ -7,3 +7,4 @@ export function total() {");
+    // A file name that looks like a key is hidden everywhere it is read: the list, the file's path and its header lines.
+    const named = { ok: true as const, patch: patch.replaceAll("src/b.ts", `src/${key.slice(13, 33)}.ts`), truncated: false };
+    expect(threadDiffOf(thread.id, 1, named).files[0]!.path).toBe("[a name was hidden]");
+    const namedFile = threadDiffFileOf(thread.id, 1, named, 0)!;
+    expect(JSON.stringify(namedFile)).not.toContain(key.slice(13, 33));
+    expect(namedFile.file.path).toBe("[a name was hidden]");
+    expect(namedFile.file.meta).toEqual(["diff --git a/[a name was hidden] b/[a name was hidden]", "index 1111111..2222222 100644", "--- a/[a name was hidden]", "+++ b/[a name was hidden]"]);
+  });
+
+  test.each([
+    ["a zero-width space", "\u200b"], ["a word joiner", "\u2060"], ["a direction mark", "\u200e"], ["an escape", "\x1b[0m"],
+  ])("a key split by %s (joined again when it is cleaned) is still hidden: lines, hunk header context and names", (_name, split) => {
+    const hidden = `to${split}ken=opaquecredential9f8e7d6c`;
+    const patch = [
+      `diff --git a/src/${hidden}.ts b/src/${hidden}.ts`, `--- a/src/${hidden}.ts`, `+++ b/src/${hidden}.ts`,
+      `@@ -1,2 +1,3 @@ const ${hidden}`, " keep", `+const ${hidden};`, `-AKIA${split}Q7ZKM3XWP9TRB2NV`, "",
+    ].join("\n");
+    const read = threadDiffFileOf(thread.id, 1, { ok: true, patch, truncated: false }, 0)!;
+    const everything = JSON.stringify(read);
+    expect(everything).not.toContain("opaquecredential");
+    expect(everything).not.toContain("Q7ZKM3XWP9TRB2NV");
+    expect(read.file.hunks[0]!.header).toBe("@@ -1,2 +1,3 @@");
+    expect(threadDiffOf(thread.id, 1, { ok: true, patch, truncated: false }).files[0]!.path).toBe("[a name was hidden]");
+  });
+});
+

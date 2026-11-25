@@ -1778,6 +1778,8 @@ export function taskBodyParts(data: {
   /** The pull request opened through Complete (its state, link, CI and merge), or the offer to open one for a
    * result already marked complete; null when neither applies. */
   pullRequest?: TaskPullRequest | null;
+  /** Land on main (everyday-8 #1): where accepted work stands on the project's own branch, for a project with no pull requests. */
+  landing?: TaskLanding | null;
   /** Fresh base: the commit this task's work starts from, and how far current main has moved past it. */
   base?: TaskBaseView | null;
   /** The task's whole family (the original and its revisions) and every attempt across it, for the thread. */
@@ -2016,7 +2018,7 @@ export function taskBodyParts(data: {
         accepted || data.csrf === ""
           ? ""
           : html`<details class="proof-exception"><summary>${humanReview ? "Accept result" : "Accept with exception"}</summary>${
-            postForm(`${taskHref(task.id)}/accept-proof`, html`<input type="text" name="note" maxlength="500" placeholder="${humanReview ? "What did you verify?" : "Why is this safe to accept?"}" aria-label="${humanReview ? "review note" : "exception reason"}" required><button type="submit">${humanReview ? "Accept result" : "Accept with exception"}</button>`, {
+            postForm(`${taskHref(task.id)}/accept-proof`, html`<input type="text" name="note" maxlength="500" placeholder="${humanReview ? "What did you verify?" : "Why is this safe to accept?"}" aria-label="${humanReview ? "review note" : "exception reason"}"${humanReview ? "" : html` required`}><button type="submit">${humanReview ? "Accept result" : "Accept with exception"}</button>`, {
               attrs: { class: "proof-exception-form" },
               hidden: { run: proof.runId },
             })}</details>`;
@@ -3166,6 +3168,7 @@ export function taskBodyParts(data: {
       { key: "route-change", html: data.routeChange == null ? "" : htmlString(html`<div class="card"><p>${data.routeChange}</p></div>`) },
       { key: "fast-grown", html: data.fastGrown == null || data.csrf === "" ? "" : htmlString(html`<div class="card"><p>${data.fastGrown}</p>${postForm(`${taskHref(task.id)}/keep-grown`, btn("Approve it", { variant: "primary", type: "submit" }))}</div>`) },
       { key: "pull-request", html: fragmentString(pullRequestCard) },
+      { key: "landing", html: data.landing == null ? "" : htmlString(landingCardHtml(data.landing, data.csrf)) },
       { key: "needs-scope", html: fragmentString(needsScopeCard) },
       { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel), ...(liveRunId === null ? {} : { instance: String(liveRunId) }) },
     ].filter(one => one.html !== ""),
@@ -3417,4 +3420,17 @@ function agentlessRoute(dispatch: { summary: string } | null, route: RouteView |
  * in the cancel's own transaction (store.ts cancelTask), so an old page never cancels a task that moved on. */
 export function cancelPinsOf(state: string, runs: readonly { id: number }[]): { state: string; run: string } {
   return { state, run: runs.length === 0 ? "none" : String(Math.max(...runs.map(one => one.id))) };
+}
+
+/** Land on main (everyday-8 #1): where a task's accepted work stands on the project's branch, as the task page shows it. */
+export type TaskLanding = { taskId: string; landed: string | null; canLand: boolean; canUndo: boolean };
+
+/** One card: landed (and the undo), or not yet (and Land it, which first shows exactly what lands where). */
+export function landingCardHtml(landing: TaskLanding, csrf: string): Html {
+  const act = csrf === "" ? "" : landing.canLand
+    ? postForm(`${taskHref(landing.taskId)}/land`, btn("Land it", { type: "submit" }))
+    : landing.canUndo ? postForm(`${taskHref(landing.taskId)}/land`, btn("Undo landing", { variant: "ghost", type: "submit" }), { hidden: { undo: "1" } }) : "";
+  const title = landing.landed !== null && !landing.canLand ? landing.landed : "Not on your branch yet";
+  const meta = landing.canLand ? "You see where it lands before anything moves." : "";
+  return html`<section class="card" id="land" data-landing="${landing.landed === null ? "no" : "yes"}"><strong>${title}</strong>${meta === "" ? "" : html`<p class="meta">${meta}</p>`}${act}</section>`;
 }

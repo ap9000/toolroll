@@ -24,7 +24,8 @@ import { existsSync,lstatSync,realpathSync } from "node:fs";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
-import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
+import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator,owedAcceptance } from '../assignment.js';
+import { ACCEPT_NEEDS_REASON } from '../result-acts.js';
 import { attentionCardForUnverifiedDone,classify } from "../board.js";
 import { nightlyNeedsYou } from "../nightly-github.js";
 import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
@@ -122,8 +123,9 @@ import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,
 import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
-import { approvalFactsNow } from "./kit.js";
-import { localOwnerRefusal } from "../local-owner.js";
+import { approvalFactsNow, btn } from "./kit.js";
+import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
+import { localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
 
@@ -1312,7 +1314,24 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const typedNote = (body.get("note") ?? "").trim();
     const sentNote = withContext(body.get("context"), typedNote);
     if (body.get("intent") === "revise") {
+      // Send back and build (everyday-8 #7): this computer's local owner, who may approve a plan with no password, says
+      // yes to the revision in the same act; approve() re-proves the approve-plan act and every rule. Anyone else (and
+      // a refusal) keeps the revised plan's own approval.
+      const buildNow = body.get("approve") === "1" && who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
       const result = requestResultChanges(store, evidenceRoot, {
+        ...(buildNow ? {
+          // Only the exact result this form was drawn for, while it is still its task's current one.
+          currentResult: () => {
+            const task = store.externalIdFor(found.taskRef);
+            const current = task === null ? null : assignmentOf(store, task, now, { principal: "operator", repos: admissionList() }, evidenceRoot);
+            return current !== null && current.activeTaskId === task && current.receipt?.runId === id ? null
+              : "A newer build of this task came in since this page was drawn. Open the current result, then send it back.";
+          },
+          approveNow: (child: string) => withLocalAct("approve-plan", () => {
+            const filed = store.getScope(child);
+            return filed !== null && !approvalOf(filed).approved && approveScope(store, child, who.name, now, filed.digest, "").ok;
+          }),
+        } : {}),
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
         // A browser session is a person's proof; a bearer credential is a machine's.
@@ -2507,6 +2526,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (back !== null && (back.startsWith("/review?") || /^\/t\/[^/?#]+\?(?:[^#]*&)?tab=result(?:[&#]|$)/.test(back))) return redirect(response, withRefusal(back, "reason"));
           return taskScreen(response, who, taskId, ACCEPT_ANYWAY_NEEDS_REASON, 400);
         }
+        // An exception is accepted only with its reason, by the completion's own rule (assignment.ts owedAcceptance):
+        // an acceptance recorded here without one would let the completion that follows skip it (everyday-8 #5).
+        if (note === null) {
+          const current = assignmentOf(store, taskId, now, { principal: "operator", repos: admissionList() }, evidenceRoot);
+          if (current?.receipt?.runId === latest.id && owedAcceptance(current.receipt, current.readiness?.blockers ?? []) === "exception") return taskScreen(response, who, taskId, `${ACCEPT_NEEDS_REASON}.`, 400);
+        }
         store.acceptProof(latest.id, verifiedAuthor(who.name), note, now);
         return redirect(response, body.get("return") === null ? taskHref(taskId) : safeReturn(body.get("return")));
       }
@@ -3089,6 +3114,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.retry-review": taskAct("retry-review"),
     "task.act.complete": taskAct("complete"),
     "task.act.merge": taskMerge,
+    "task.act.land": taskLand,
     "task.act.recheck-stopped": taskRecheckStopped,
     "task.act.stop": taskAct("stop"),
     "task.act.stop-carrying": taskAct("stop-carrying"),
@@ -3224,6 +3250,45 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       default: return refused("Reload the page and try again.");
     }
+  }
+
+  /**
+   * Land on main (everyday-8 #1, local-landing.ts): accepted work onto the project's own branch. Without a key the page
+   * shows exactly what would land where, and its one button posts that key back; with the key it lands exactly that, or
+   * says what changed. The same authority as Accept: an approver's browser session, or this computer's local owner
+   * acting as exactly land-task (the route admits that act; the writer checks it again).
+   */
+  async function taskLand(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, posted, now } = ctx;
+    const act = matchTaskPath(url.pathname, "/land$");
+    if (act === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.taskLand);
+    if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo lands nothing.", 403);
+    const ref = store.lookupRef(act.taskId);
+    if (ref === null || !visible(ref.repo) || who.via !== "cookie") return refuse(response, who, 404, "no such task", "/");
+    if (ref.repo !== null && publishesThroughPullRequests(store, ref.repo)) return taskScreen(response, who, act.taskId, PULL_REQUESTS_INSTEAD, 409);
+    const local = who.authority === "local-owner";
+    const principal = local ? null : leadPrincipal(who);
+    if (!local && principal === null) return taskScreen(response, who, act.taskId, "Your access changed. Sign in again.", 403);
+    const access = { repos: principal !== null ? principal.repos : store.knownRepos().filter(repo => store.accountCanAccess(who.name, repo)) };
+    const undo = body.get("undo") === "1";
+    const into = (body.get("into") ?? "").trim();
+    const options = { root: evidenceRoot, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) };
+    const key = body.get("key") ?? "";
+    if (key === "") {
+      const read = await readLanding(store, act.taskId, access, now, options);
+      if (!read.ok) return taskScreen(response, who, act.taskId, read.message, 409);
+      if (!("plan" in read)) return redirect(response, taskHref(act.taskId));
+      const plan = read.plan;
+      const title = undo ? "Undo landing" : `Land on ${plan.branch}`;
+      return sendScreen(response, 200, screen(title, html`<h1>${title}</h1>${landingWords(plan).map(line => html`<p>${line}</p>`)}${postForm(`${taskHref(act.taskId)}/land`,
+        html`${btn(undo ? "Undo it" : "Land it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: taskHref(act.taskId) })}`,
+        { hidden: { key: plan.key, ...(into === "" ? {} : { into }), ...(undo ? { undo: "1" } : {}) } })}`, { chrome: chromeFor(ref.repo, "tasks") }));
+    }
+    const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
+    if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
+    if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
+    return redirect(response, taskHref(act.taskId));
   }
 
   return { registrations, workListFor, showOrder, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };

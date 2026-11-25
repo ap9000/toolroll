@@ -36,6 +36,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "pause-run",
   "resume-run",
   "complete-task",
+  // Land accepted work on the project's own branch (everyday-8 #1, local-landing.ts): the same authority as Accept on a
+  // solo install. Fast-forward only into a destination Toolroll records and shows first; the writer checks this exact act.
+  "land-task",
   "request-revision",
   "archive-task",
   "add-project",

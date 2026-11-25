@@ -114,7 +114,7 @@ export function proofProblem({ repo, sha, required, commit, pulls, headCommit, r
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };
 
 /** One GitHub API read, with the workflow's token sent to GitHub's API alone. */
-async function api(path) {
+async function fetchApi(path) {
   const token = process.env.GITHUB_TOKEN;
   if (typeof token !== "string" || token === "") throw new Error("no GITHUB_TOKEN");
   const response = await fetch(`https://api.github.com/${path}`, {
@@ -125,7 +125,7 @@ async function api(path) {
 }
 
 /** Read every page, refusing truncation, duplicate rows and changing totals. Never follow a response-supplied URL. */
-async function pages(path, key, identity) {
+async function pages(api, path, key, identity) {
   const all = [], seen = new Set();
   let total;
   for (let page = 1; page <= 100; page++) {
@@ -155,7 +155,7 @@ async function pages(path, key, identity) {
 }
 
 /** The current remote tag, peeled without trusting a checkout's cached refs (including annotated tags). */
-async function verifyTag(repo, sha, tag) {
+export async function verifyTag(repo, sha, tag, api = fetchApi) {
   if (typeof tag !== "string" || !/^v[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(tag)) throw new Error("--tag must name a version tag");
   const ref = await api(`repos/${repo}/git/ref/tags/${encodeURIComponent(tag)}`);
   if (ref?.ref !== `refs/tags/${tag}`) throw new Error("GitHub didn't describe the exact tag");
@@ -171,20 +171,17 @@ async function verifyTag(repo, sha, tag) {
   if (object?.type !== "commit" || object.sha !== sha) throw new Error(`${tag} no longer names the proven commit ${sha}`);
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  const [command, ...args] = process.argv.slice(2);
+/**
+ * The whole proof, as publish.yml runs it: every read below, then proofProblem. `api(path)` is one GitHub API read that
+ * answers parsed JSON or throws (publish.yml: fetch with the workflow's token; `toolroll release`: the plane's signed-in
+ * gh, its own reader). Resolves `{ ok: true, pr, head, branch, tree }` or `{ ok: false, why }`; never trusts a checkout.
+ */
+export async function proveRelease({ repo, sha, required }, api = fetchApi) {
   try {
-    if (command !== "verify" && command !== "tag") { console.error("usage: release-proof.mjs verify|tag --repo <owner/name> --sha <commit> [--required <JSON>] [--tag <version>]"); process.exit(2); }
-    const repo = flag(args, "repo") ?? "", sha = flag(args, "sha") ?? "", required = parseRequired(flag(args, "required") ?? "");
-    if (!REPO.test(repo) || !SHA.test(sha)) throw new Error("--repo owner/name and --sha <40 hex> are required");
-    if (command === "tag") {
-      await verifyTag(repo, sha, flag(args, "tag"));
-      console.log(`The remote tag still names ${sha}.`);
-      process.exit(0);
-    }
-    if (required === null) throw new Error("--required must map each check name to a workflow this proof knows");
+    if (!REPO.test(repo ?? "") || !SHA.test(sha ?? "")) throw new Error("--repo owner/name and --sha <40 hex> are required");
+    if (parseRequired(JSON.stringify(required ?? null)) === null) throw new Error("--required must map each check name to a workflow this proof knows");
     const commit = await api(`repos/${repo}/git/commits/${sha}`);
-    const pulls = await pages(`repos/${repo}/commits/${sha}/pulls`, undefined, "number");
+    const pulls = await pages(api, `repos/${repo}/commits/${sha}/pulls`, undefined, "number");
     const merged = mergedPulls(pulls, repo, sha);
     if (merged.length !== 1) throw new Error(`expected exactly one merged pull request into main, found ${merged.length}`);
     const pr = merged[0];
@@ -198,28 +195,46 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       || !SHA.test(commit?.parents?.[0]?.sha ?? "") || comparison?.merge_base_commit?.sha !== commit.parents[0].sha
       || !Array.isArray(comparison.commits) || comparison.commits.length !== 1 || comparison.commits[0]?.sha !== sha) throw new Error("not a single squash commit on the tested head's ancestry");
     const owner = repo.split("/")[0];
-    const branchPulls = await pages(`repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${pr?.head?.ref ?? ""}`)}`, undefined, "number");
+    const branchPulls = await pages(api, `repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${pr?.head?.ref ?? ""}`)}`, undefined, "number");
     const runsPath = `repos/${repo}/actions/runs?head_sha=${head}`;
-    const runs = await pages(runsPath, "workflow_runs", "id");
+    const runs = await pages(api, runsPath, "workflow_runs", "id");
     const jobs = new Map();
     for (const file of new Set(Object.values(required))) {
       const newest = provingRun(runs, file, { repo, head, branch: pr?.head?.ref });
       if (newest === undefined || !Number.isSafeInteger(newest.run_attempt) || newest.run_attempt < 1) continue;
-      jobs.set(newest.id, await pages(`repos/${repo}/actions/runs/${newest.id}/attempts/${newest.run_attempt}/jobs`, "jobs", "id"));
+      jobs.set(newest.id, await pages(api, `repos/${repo}/actions/runs/${newest.id}/attempts/${newest.run_attempt}/jobs`, "jobs", "id"));
     }
     // GitHub's run PR metadata changes on retargeting. As in readCheckRuns, refuse a PR that ever changed base.
-    const timeline = await pages(`repos/${repo}/issues/${pr.number}/timeline`);
+    const timeline = await pages(api, `repos/${repo}/issues/${pr.number}/timeline`);
     if (timeline.some(event => typeof event.event !== "string" || event.event === "base_ref_changed")) throw new Error("pull request base changed or its timeline is unreadable");
     // The attempt may have changed while we paged through its jobs. Do not combine the old attempt with a new run.
-    const fresh = await pages(runsPath, "workflow_runs", "id");
+    const fresh = await pages(api, runsPath, "workflow_runs", "id");
     for (const file of new Set(Object.values(required))) {
       const before = provingRun(runs, file, { repo, head, branch: pr.head.ref });
       const after = provingRun(fresh, file, { repo, head, branch: pr.head.ref });
       if (before?.id !== after?.id || before?.run_attempt !== after?.run_attempt || before?.status !== after?.status) throw new Error(`${file}: newest run or attempt changed during proof`);
     }
     const problem = proofProblem({ repo, sha, required, commit, pulls, headCommit, runs: fresh, runsTotal: fresh.length, jobs, branchPulls });
-    if (problem !== null) { console.error(`Not proven: ${problem}.`); process.exit(1); }
+    if (problem !== null) return { ok: false, why: problem };
+    return { ok: true, pr: pr.number, head, branch: pr.head.ref, tree: commit.tree.sha };
+  } catch (error) { return { ok: false, why: String(error?.message ?? error) }; }
+}
+
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  const [command, ...args] = process.argv.slice(2);
+  try {
+    if (command !== "verify" && command !== "tag") { console.error("usage: release-proof.mjs verify|tag --repo <owner/name> --sha <commit> [--required <JSON>] [--tag <version>]"); process.exit(2); }
+    const repo = flag(args, "repo") ?? "", sha = flag(args, "sha") ?? "", required = parseRequired(flag(args, "required") ?? "");
+    if (!REPO.test(repo) || !SHA.test(sha)) throw new Error("--repo owner/name and --sha <40 hex> are required");
+    if (command === "tag") {
+      await verifyTag(repo, sha, flag(args, "tag"));
+      console.log(`The remote tag still names ${sha}.`);
+      process.exit(0);
+    }
+    if (required === null) throw new Error("--required must map each check name to a workflow this proof knows");
+    const proven = await proveRelease({ repo, sha, required });
+    if (!proven.ok) { console.error(`Not proven: ${proven.why}.`); process.exit(1); }
     if (args.includes("--tag")) await verifyTag(repo, sha, flag(args, "tag"));
-    console.log(`${sha} is pull request #${pr.number}'s head tree (${head}), and every one of its ${Object.keys(required).length} required checks passed there.`);
+    console.log(`${sha} is pull request #${proven.pr}'s head tree (${proven.head}), and every one of its ${Object.keys(required).length} required checks passed there.`);
   } catch (error) { console.error(`Not proven: ${String(error?.message ?? error)}.`); process.exit(1); }
 }

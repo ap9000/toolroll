@@ -11,6 +11,8 @@
  *   GET  /agents/live/run/<id>       a run's LiveSession window (liveSessionWindow)
  *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window with its facts (liveSessionWindow + thread):
  *                                    its owner's only
+ *   GET  /agents/live/thread/<id>/diff  what a Flexible thread changed since it started, or one file's hunks with ?file=
+ *                                    (resultDiff, resultDiffFile: `task` is the thread, `run` its latest turn): its owner's only
  *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them, and whether
  *                                    interactive agent threads are on (liveThreads)
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
@@ -54,6 +56,8 @@ const liveRecordSchema = z.union([
   z.object({ k: z.literal("open"), at: iso, detail: z.enum(["base", "commands"]), s: z.number().int().optional() }),
   z.object({ k: z.literal("start"), at: iso, s: z.number().int().optional() }),
   z.object({ k: z.literal("say"), at: iso, t: z.array(z.string()), s: z.number().int().optional() }),
+  /** A thread's only: what the person said (their own message, cleaned), never the agent's words. */
+  z.object({ k: z.literal("you"), at: iso, t: z.array(z.string()) }),
   z.object({ k: z.literal("step"), at: iso, id: z.string(), kind: z.string(), target: z.string().optional(), once: z.literal(true).optional(), s: z.number().int().optional() }),
   z.object({ k: z.literal("done"), at: iso, id: z.string(), ok: z.boolean().nullable(), out: z.array(z.string()).optional(), s: z.number().int().optional() }),
   z.object({ k: z.literal("cut"), at: iso, s: z.number().int().optional() }),

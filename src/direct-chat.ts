@@ -1077,16 +1077,17 @@ export class DirectChatHost {
     let text: string;
     if (finalStatus === "completed") {
       const changed = diff?.changedFiles.length ?? 0;
+      // The page that shows it (everyday-8 #6): its changes, its turns and Ship.
       const diffPart = changed > 0
-        ? `${changed} ${changed === 1 ? "file" : "files"} changed — ready to review or ship.`
-        : "no file changes yet.";
+        ? `${changed} ${changed === 1 ? "file" : "files"} changed. [Review it](/direct-chats/${thread.id})`
+        : `no file changes yet. [Open it](/direct-chats/${thread.id})`;
       const snippet = sanitizeLine(assistantText).slice(0, 160);
       text = snippet !== ""
         ? `Direct Chat finished — "${title}" (${providerLabel}, ${proj}): ${diffPart}\n${snippet}${assistantText.trim().length > 160 ? "…" : ""}`
         : `Direct Chat finished — "${title}" (${providerLabel}, ${proj}): ${diffPart}`;
     } else {
       const reason = sanitizeLine(errorText ?? "Ended without completing.").slice(0, 180);
-      text = `Direct Chat ${finalStatus} — "${title}" (${providerLabel}, ${proj}): ${reason}`;
+      text = `Direct Chat ${finalStatus} — "${title}" (${providerLabel}, ${proj}): ${reason} [Open it](/direct-chats/${thread.id})`;
     }
     this.store.appendLeadMessage({ thread: leadThreadId, turn: null, role: "assistant", text, activity: null }, now);
   }

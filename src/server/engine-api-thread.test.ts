@@ -17,7 +17,7 @@ import { createDecisionServer } from "../serve.js";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn } from "../flexible-turns.js";
 import { attachFlexibleAgent, startFlexibleThreadSession, type FlexibleSessions } from "../flexible-session.js";
-import { liveSessionWindowSchema, liveThreadsSchema } from "../contracts/engine-api.js";
+import { liveSessionWindowSchema, liveThreadsSchema, resultDiffSchema } from "../contracts/engine-api.js";
 import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.js";
 import { fakePid } from "../../test/fake-pid.js";
 import { standInSignIn } from "../../test/flexible-sign-in-kit.js";
@@ -175,6 +175,14 @@ describe("a thread's LiveSession is its owner's only", () => {
     expect((await read("token", "/agents/live/threads")).status).toBe(403);
     expect((await read("pat", `/agents/live/thread/${"b".repeat(32)}`)).body).toEqual({ error: "thread" });
     expect((await read("pat", `${THREAD}?file=other`)).status).toBe(400);
+    // What it changed is its owner's only too (this stand-in thread has no repository Toolroll made: said, never thrown).
+    const changes = await read("pat", `${THREAD}/diff`);
+    expect(changes.status).toBe(200);
+    expect(resultDiffSchema.parse(changes.body)).toMatchObject({ task: T1, run: 1, files: [], problem: expect.stringMatching(/^This thread's changes can't be read/) });
+    for (const persona of ["ines", "alex"]) expect(await read(persona, `${THREAD}/diff`), persona).toEqual({ status: 404, body: { error: "thread" } });
+    expect((await read("token", `${THREAD}/diff`)).status).toBe(403);
+    expect((await read("pat", `${THREAD}/diff?file=x`)).status).toBe(400);
+    expect((await read("pat", `${THREAD}/diff?file=0`))).toEqual({ status: 404, body: { error: "file" } });
   });
 });
 

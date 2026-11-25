@@ -353,6 +353,13 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "digest", takesValue: true, meaning: "the exact receipt from assignment show; accepts and finishes exactly that result" },
       { name: "despite", takesValue: true, meaning: "accept with this reason, without finishing; never combines with --finish or --digest (--note is its alias)" }],
     notableReasons: ["usage", "unknown-task", "no-run", "not-ready"] },
+  { ...operator("task land", "put accepted work on the project's own branch when it has no pull requests: bare shows exactly what lands where; --yes --key <key> lands it as a fast-forward; --undo reverts it with a new commit"),
+    positionals: [{ name: "id", required: true, meaning: "the task" }],
+    flags: [jsonFlag, dbFlag, { name: "into", takesValue: true, meaning: "land on this branch instead of the recorded one (the yes records it)" },
+      { name: "undo", takesValue: false, meaning: "revert the landing with a new commit on the branch" },
+      { name: "yes", takesValue: false, meaning: "land it; needs --key" },
+      { name: "key", takesValue: true, meaning: "the key the bare call showed: what lands is what you read" }],
+    notableReasons: ["usage", "not-complete", "checks", "dirty", "moved", "occupied", "stale"] },
   operator("task repair", "inspect or approve a repair draft; --yes starts the repair a failed check is waiting for, under the normal plan approval"),
   operatorRead("task handover", "where a task stands, from Toolroll's records: revision, decisions, rejected approaches, open findings, checks and the next action"),
   operator("task before-after", "before-and-after evidence: read it, save a failing result, or rerun the same check on the latest commit with no agent"),
@@ -568,7 +575,7 @@ const REMOTE_FOLLOW_THROUGH: readonly string[] = [
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle",
   // Putting tasks away and restoring them: a person's act, in the console or on the server's machine.
-  "task archive", "task restore", "task tidy", "knowledge apply",
+  "task archive", "task restore", "task tidy", "task land", "knowledge apply",
   // Changing project memory: a person's own password, never a token (the lead only proposes it in chat).
   "memory decide", "memory retire", "memory apply", "memory tidy", "memory restore", "memory unmerge",
   "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
@@ -631,6 +638,8 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task continue": "resume-run",
   "task unhold": "resume-run",
   "task complete": "complete-task",
+  // Everyday-8 #1: landing accepted work, the same authority as Accept (local-landing.ts checks this exact act).
+  "task land": "land-task",
   // Local-owner slice 2: its own road (operate.ts localPlanCommand); the writer checks this exact act.
   "task plan": "request-plan",
   // Local-owner slice 3: its own road (operate.ts localRetryCommand); the writer checks this exact act.

@@ -174,7 +174,7 @@ function requestChange(statement: string) {
 }
 
 /** The changed lines an item cites, wrapped: a phone never scrolls sideways to read them. */
-function Excerpt({ excerpt, changesHref }: { excerpt: BrowserCheckItem["excerpts"][number]; changesHref: string | null }) {
+export function Excerpt({ excerpt, changesHref }: { excerpt: BrowserCheckItem["excerpts"][number]; changesHref: string | null }) {
   return <figure className="overflow-hidden rounded-md border border-border" data-check-excerpt={excerpt.path}>
     <figcaption className="flex flex-wrap items-baseline gap-x-2 border-b border-border bg-muted px-3 py-1.5 text-xs text-muted-foreground">
       <span className="font-mono text-foreground [overflow-wrap:anywhere]">{excerpt.path}</span>

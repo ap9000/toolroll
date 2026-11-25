@@ -50,7 +50,8 @@ describe("one card, both sealed forms", () => {
     const card = cardOf();
     expect(card.seal.kind).toBe("check");
     const purpose = card.terms.filter(line => line.key.startsWith("releaseCheck."));
-    expect(purpose.map(line => line.key.slice("releaseCheck.".length)).sort()).toEqual(schemaLeaves(releaseCheckPurposeSchema).sort());
+    // `check` belongs to a release from main's purpose only (release-from-main.md).
+    expect(purpose.map(line => line.key.slice("releaseCheck.".length)).sort()).toEqual(schemaLeaves(releaseCheckPurposeSchema).filter(leaf => leaf !== "check").sort());
     expect(purpose.find(line => line.key === "releaseCheck.approvedSha")?.value).toBe(f.approved);
     expect(purpose.find(line => line.key === "releaseCheck.access")?.value).toBe("unsandboxed");
     expect(purpose.every(line => line.value !== "none")).toBe(true);

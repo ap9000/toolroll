@@ -27,6 +27,8 @@ import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff,
 import { agentSetupOf, detectionLines, NO_AGENT_YET, npmRegistryOf, type AgentDetection } from "./agent-detect.js";
 import { readVerifiedArtifact, reportShotsOf, scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
+import { cleanLiveText, HIDDEN_LINE } from "./live-records.js";
+import { keyShaped } from "./flexible-conversation.js";
 import { viewedGitSync } from "./teardown-git.js";
 import { wasInterrupted } from "./run-ending.js";
 import { agentChoicesFor, routeOfTask } from "./agentconfig.js";
@@ -701,4 +703,83 @@ function agentChoicesOf(store: Store, taskId: string, ref: ReturnType<Store["loo
   const choices = agentChoicesFor(store, ref?.repo ?? null, routed?.kind === "route" ? routed.route : null);
   const pairs = (phase: "plan" | "build") => choices[phase].filter(one => one.selectable).map(one => ({ provider: one.provider, model: one.model }));
   return { plan: pairs("plan"), build: pairs("build") };
+}
+
+// ---- a Flexible thread's changes, file by file ---------------------------------------------------------------------
+
+/** What a thread's changes read gave (flexible-import.ts readFlexibleChanges): its patch, nothing committed yet, or why
+ * it couldn't be read, in words. */
+export type ThreadChanges = { ok: true; patch: string; truncated: boolean } | { ok: true; none: true } | { ok: false; message: string };
+
+/** A thread's patch as shown: every line cleaned (controls, escapes, bidi out) and anything that looks like a key hidden,
+ * as the live view hides one: a changed or context line (inside a private key block every line), a hunk header's
+ * function context (git copies a line of the file there; the header keeps only its numbers), and any other metadata
+ * line. A file's own header lines (`diff --git`, `---`, `+++`) are read by position, never mistaken for a hunk's
+ * `---`/`+++` lines. */
+function shownPatch(text: string): string {
+  let inKey = false, inHunk = false;
+  return text.replace(/\r\n/g, "\n").split("\n").map(line => {
+    // A file's own header names its paths: one that looks like a key is replaced by a marker, the line kept whole.
+    if (line.startsWith("diff --git ")) {
+      inHunk = false; inKey = false;
+      return keyShaped(line) ? `diff --git a/${HIDDEN_NAME} b/${HIDDEN_NAME}` : cleanLiveText(line);
+    }
+    const named = inHunk ? null : /^(---|\+\+\+) (.*)$/.exec(line);
+    if (named !== null) return keyShaped(named[2]!) ? `${named[1]} ${named[1] === "---" ? "a" : "b"}/${HIDDEN_NAME}` : cleanLiveText(line);
+    const hunk = /^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)(.*)$/.exec(line);
+    if (hunk !== null) {
+      inHunk = true;
+      const context = hunk[2]!;
+      return PRIVATE_KEY_MARK.test(context) || PRIVATE_KEY_MARK.test(cleanLiveText(context)) || keyShaped(context) ? hunk[1]! : cleanLiveText(line);
+    }
+    const marker = inHunk && /^[-+ ]/.test(line) ? line[0]! : "";
+    const body = marker === "" ? line : line.slice(1);
+    const seen = cleanLiveText(body);
+    if (marker !== "" && (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(body) || /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(seen))) inKey = true;
+    const hide = (marker !== "" && inKey) || keyShaped(body);
+    if (marker !== "" && (/-----END [A-Z ]*PRIVATE KEY-----/.test(body) || /-----END [A-Z ]*PRIVATE KEY-----/.test(seen))) inKey = false;
+    return hide ? `${marker}${HIDDEN_LINE}` : `${marker}${seen}`;
+  }).join("\n");
+}
+
+/** A private key block's first or last line. */
+const PRIVATE_KEY_MARK = /-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----/;
+/** Said in place of a file name that looks like a key. */
+const HIDDEN_NAME = "[a name was hidden]";
+
+/** A thread's changed files with their counts (`task` is the thread's id; `run` the number of its latest turn, which
+ * the file reads name back), from its committed work against the commit it started from. */
+export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges): ResultDiff {
+  const empty = (problem: string): ResultDiff => ({ version: ENGINE_API_VERSION, task: thread, run: turn, totals: null, files: [], patchTruncated: false, problem });
+  if (!changes.ok) return empty(`This thread's changes can't be read: ${cleanLiveText(changes.message)}`);
+  if ("none" in changes) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
+  const files = patchFiles(changes.patch).map((text, index) => {
+    const parsed = parseReviewDiff(text).files[0];
+    let additions = 0, deletions = 0;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+      else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+    }
+    const binary = /^(?:Binary files .* differ|GIT binary patch)$/m.test(text);
+    const shownPath = (path: string): string => keyShaped(path) ? HIDDEN_NAME : cleanLiveText(path);
+    return { file: index, path: shownPath(parsed?.path ?? "changed file"), oldPath: parsed?.oldPath == null ? null : shownPath(parsed.oldPath), additions, deletions, binary,
+      hunks: parsed?.hunks.length ?? 0 };
+  });
+  if (files.length === 0) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
+  return { version: ENGINE_API_VERSION, task: thread, run: turn, totals: null, files, patchTruncated: changes.truncated, problem: null };
+}
+
+/** One file's hunks of a thread's changes, cleaned and with key-shaped lines hidden; null when there is no such file. */
+export function threadDiffFileOf(thread: string, turn: number, changes: ThreadChanges, file: number): ResultDiffFile | null {
+  if (!changes.ok || "none" in changes) return null;
+  const text = patchFiles(changes.patch)[file];
+  if (text === undefined) return null;
+  const parsed = parseReviewDiff(shownPatch(text));
+  const one = parsed.files[0];
+  if (one === undefined) return null;
+  return { version: ENGINE_API_VERSION, task: thread, run: turn,
+    file: { file, path: keyShaped(one.path) ? HIDDEN_NAME : cleanLiveText(one.path), oldPath: one.oldPath === null ? null : keyShaped(one.oldPath) ? HIDDEN_NAME : cleanLiveText(one.oldPath),
+      meta: one.meta.map(cleanLiveText), hunks: one.hunks.map(hunk => ({ ...hunk, header: cleanLiveText(hunk.header) })),
+      lineCount: patchLineCount(one.hunks) },
+    linesTruncated: parsed.linesTruncated };
 }

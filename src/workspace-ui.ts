@@ -615,7 +615,7 @@ export function acceptWordsOf(facts: AcceptFacts): AcceptWords {
   const joined = parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
   const effect = facts.action === "accept" ? "Records that you accept it. The task stays open."
     : facts.publishing === "pull-request" ? "Finishes the task. No pull request opens; you can open one from the task after."
-    : facts.publishing === "off" ? "Finishes the task. The branch stays; publishing isn't set up."
+    : facts.publishing === "off" ? "Finishes the task. Then you can land it on your project's branch."
     : "Finishes the task. Nothing is published.";
   const checksGap = facts.checks !== "passed" && facts.checks !== "off";
   return { label: ready ? "Accept" : checksGap ? "Accept without checks" : "Accept anyway", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };

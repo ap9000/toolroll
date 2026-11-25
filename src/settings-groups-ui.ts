@@ -478,7 +478,7 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
     ...(facts.operator && (advancedOn(facts) || facts.sso !== null) ? [
       settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),
     ...(facts.operator && (advancedOn(facts) || facts.passwordless === true) ? [
-      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: signing in is the only password" : "Off: approvals ask for your password" })] : []),
+      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: approvals need no password" : "Off: approvals ask for your password" })] : []),
     // Local mode moved to General (settings plan F0); this row keeps the old #local-mode for links and bookmarks.
     ...(facts.local?.canTurnOff === true ? [html`<div id="local-mode">${settingsLink({ href: "/settings/general?section=local-mode", title: "Local mode", status: "On · in General" })}</div>`] : []),
   ];
@@ -700,7 +700,7 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
   return settingsSubPage("access", "Passwordless", joinHtml([
     answer,
     settingsSection({ id: "passwordless", title: `Passwordless is ${view.on ? "on" : "off"}`, state: view.since === null ? "" : ` · ${view.since}`,
-      lead: "When it’s on, signing in is the only password: approvals, settings, budgets, signing a mode and starting a terminal no longer ask again, in the browser, on the phone, and in this computer’s toolroll command (through its remembered login).",
+      lead: "When it’s on, approvals, settings, budgets, signing a mode and starting a terminal no longer ask for your password again, in the browser, on the phone, and in this computer’s toolroll command (through its remembered login). Changes that add a way in still ask: sign-in, tokens, connections, agent threads and check commands.",
       body: joinHtml([note(view.trade), control]) }),
   ]), { lead: "Sign in once; most approvals then need no password." });
 }

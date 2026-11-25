@@ -40,6 +40,7 @@
  *
  * Nothing here decides who may stop a thread; it is the mechanism flexible-launch.ts calls under the thread's lock.
  */
+import { inRehearsal } from "./rehearsal.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import { readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
@@ -535,6 +536,8 @@ export function realCustodyIO(bootId: () => string | null): CustodyIO {
     namespaceOf: pid => platform === "linux" ? linuxNamespace(pid) : null,
     holdersOf: folder => platform === "linux" ? linuxHolders(folder) : platform === "darwin" ? macHolders(folder) : null,
     signal: (targets, signal) => {
+      // A rehearsal serves a copy of someone's database: every recorded pid is the real computer's (rehearsal.ts).
+      if (inRehearsal()) return new Map(targets.map(one => [one.pid, "denied" as const]));
       const safe = targets.filter(one => Number.isSafeInteger(one.pid) && one.pid > 1 && one.pid !== process.pid);
       const results = platform === "linux" ? linuxSignal(safe, signal) : platform === "darwin" ? macSignal(safe, signal) : new Map(safe.map(one => [one.pid, "unavailable" as const]));
       for (const one of targets) if (!safe.includes(one)) results.set(one.pid, "denied");

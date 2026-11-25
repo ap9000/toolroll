@@ -336,8 +336,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     write(died);
     return EXIT.failed;
   }
-  const child = ownedNow();
-  if (child !== null) {
+  if (ownedNow() !== null) {
     if (exit === "keep") {
       const said = await handoff();
       write(said);
@@ -346,10 +345,15 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
         return EXIT.ok;
       }
     }
-    write("Stopping Toolroll… (running work is saved)");
-    stopOwned(child);
-    await child.exited;
-    write("Toolroll stopped.");
+    // Read again after a hand-off that didn't take: it started a new `up` in this terminal, and that one is what stops
+    // here (everyday-8 #9: stopping the old, already-stopped one said "stopped" while the new one kept running).
+    const child = ownedNow();
+    if (child !== null) {
+      write("Stopping Toolroll… (running work is saved)");
+      stopOwned(child);
+      await child.exited;
+      write("Toolroll stopped.");
+    }
   }
   write("Reopen with: toolroll");
   return EXIT.ok;

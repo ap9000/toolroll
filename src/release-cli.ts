@@ -14,11 +14,12 @@ import { createRequire } from "node:module";
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import { checkedEnvelopeJson } from "./contracts/cli.js";
 import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome } from "./release.js";
-import { processes, releaseAdapters } from "./release-adapters.js";
+import { exec, prepareRelease, processes, readMainVersion, recordedReleaseRepo, releaseAdapters, releaseTools } from "./release-adapters.js";
+import { mainRunKey, releaseBranchFor } from "./release-main.js";
 import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
 import { settleDeployment, takeReleaseRun, type RunLockSeams, type SettleWorld } from "./release-next.js";
-import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, releaseProgressFor, revokeRelease, type Database } from "./store.js";
+import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, readSchemaVersion, releaseProgressFor, revokeRelease, SCHEMA_VERSION, type Database } from "./store.js";
 import { dur, plural } from "./design/kit.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
@@ -27,7 +28,25 @@ import { createNightlyCheckFlow } from "./nightly-check.js";
 import { aliasNightlyLane, optInGithubNightly, retireNightlyLane } from "./nightly-github.js";
 import { parseSchedule } from "./flow-schedule.js";
 
-export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
+export const RELEASE_HELP = `toolroll release [<version>] — release Toolroll from main: proves the version's release commit passed every
+  required check on its pull request, asks you, runs the deploy check on this Mac, deploys here, tags, publishes.
+
+  The release commit is main's squash merge of the release pull request from release-<version> (\`toolroll release
+  prepare\`). It is proven with publication's own proof before anything is filed, again right before the deploy and
+  again right before the tag; commits that land on main after it go in the next release. The deploy check builds it,
+  upgrades a copy of your database and starts it against that copy (about 4 minutes), after your approval: it runs
+  this commit's code with full access to this computer. With no version, main's own. Run the same command to go on
+  after any stop.
+
+  --full                 run the full release check on this Mac (about 40 minutes) instead of the deploy check
+
+toolroll release prepare <version> [--notes <file>] — open the version pull request: a release-<version> branch from
+  main with only the version changed in package.json and package-lock.json, and the CHANGELOG entry (--notes, unless
+  CHANGELOG.md already has one). Merge it like any pull request once its checks pass, then run \`toolroll release
+  <version>\`.
+
+toolroll release <branch> — the earlier way: release from a pushed branch with an open pull request (kept until the
+  releases it began are finished)
 
   First looks at the pull request's checks: a required check that failed stops before anything is filed or sent for
   approval, and checks not started or still running are named and waited for (stopping if they don't finish within
@@ -115,13 +134,19 @@ export type ReleaseCliDeps = {
   /** What a stopped deployment left, settled before the release goes on (release-next.ts). Tests that inject adapters skip it. */
   settle?: SettleWorld;
   runLock?: RunLockSeams;
+  /** main's version (a release with none named); the recorded repository's, from GitHub, by default. */
+  mainVersion?: () => Promise<string | null>;
+  /** `release prepare` (release-adapters.ts prepareRelease) by default. */
+  prepare?: (input: { version: string; notes: string | null }) => Promise<{ ok: true; pr: number; branch: string; commit: string } | { ok: false; why: string }>;
   /** The plane's database for the authority commands (default: this installation's). */
   database?: string;
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire", "--branch"]);
-const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire", "--branch", "--notes"]);
+const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github", "--full"]);
+/** A version, as `toolroll release <version>` takes it: never a branch (a branch shaped so is named with --branch). */
+const VERSION_ARG = /^\d+\.\d+\.\d+$/;
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
   // The flag, not a secret's value that happens to read "--json".
@@ -140,7 +165,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   let branchFlag: string | undefined, literal = false, branchFlags = 0;
   // Only what follows `--` is literal: it never changes how the words before it read.
   const literalArgs: string[] = [];
-  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
+  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined, notes: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const raw = args[i]!;
     // After `--`, every argument is a branch name, never a flag or a subcommand.
@@ -175,6 +200,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       else if (arg === "--stage") stage = value;
       else if (arg === "--lane-retire") laneRetire = value;
       else if (arg === "--branch") { branchFlag = value; branchFlags += 1; }
+      else if (arg === "--notes") notes = value;
       else {
         const match = /^([a-z]+)=([0-9]+)$/.exec(value);
         if (match === null || !(match[1]! in RELEASE_LIMITS) || Number(match[2]) < 1) return refuse("usage", `--limit takes <step>=<minutes> for one of: ${Object.keys(RELEASE_LIMITS).join(", ")}.`, 2);
@@ -219,35 +245,60 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   if (!named && ["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
-  if (!named && positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
-  const branch = branchFlag ?? literalArgs[0] ?? positional[0]!;
+  // A release from main (docs/plans/release-from-main.md): `prepare <version>`, `<version>`, or nothing (main's own).
+  if (!named && positional[0] === "prepare") {
+    if (positional.length !== 2 || !VERSION_ARG.test(positional[1]!)) return refuse("usage", "`toolroll release prepare <version>` takes one version (0.9.119, say).", 2);
+    return runPrepareCommand(positional[1]!, { repo: resolve(deps.cwd ?? process.cwd(), repo ?? "."), notes: notes === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), notes) }, write, json, deps);
+  }
+  if (notes !== undefined) return refuse("usage", "--notes goes with `toolroll release prepare <version>`.", 2);
+  const fromMain = !named && (positional.length === 0 || (positional.length === 1 && VERSION_ARG.test(positional[0]!)));
+  if (fromMain && bare.has("--no-carry")) return refuse("usage", "--no-carry doesn't apply to releases from main: nothing carries, the release commit never moves.", 2);
+  if (!fromMain && bare.has("--full")) return refuse("usage", "--full goes with `toolroll release <version>`.", 2);
+  if (!fromMain && !named && positional.length !== 1) return refuse("usage", `Which version? \`toolroll release <version>\`.\n${RELEASE_HELP}`, 2);
+  // A release from main names its version (or main's own); its journal and lock are the version's, never a branch's.
+  let version: string | undefined = fromMain ? positional[0] : undefined;
+  const branch = fromMain ? "" : branchFlag ?? literalArgs[0] ?? positional[0]!;
 
-  if (!named && LEASE_SHAPED.test(branch)) {
+  if (!fromMain && !named && LEASE_SHAPED.test(branch)) {
     const releaseOptions = args.filter(arg => VALUE_FLAGS.has(arg) || arg === "--new");
     if (releaseOptions.length > 0) return refuse("ambiguous", `${branch} looks like a lease id, but ${releaseOptions[0]} is a release option. Return a lease with \`toolroll worker release <lease>\`; a branch shaped like a lease id can't be released.`, 2);
     (deps.warn ?? (line => process.stderr.write(`${line}\n`)))(LEASE_DEPRECATION);
     if (deps.releaseLease === undefined) return refuse("usage", "This build can't return leases from here: use `toolroll worker release <lease>`.", 2);
     return deps.releaseLease(args);
   }
-  if (!/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith("-") || branch.includes("..")) return refuse("usage", `${branch} is not a branch name this command takes.`, 2);
+  if (!fromMain && (!/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith("-") || branch.includes(".."))) return refuse("usage", `${branch} is not a branch name this command takes.`, 2);
 
   const checkout = resolve(deps.cwd ?? process.cwd(), repo ?? ".");
   const stateDir = deps.stateDir ?? dirname(databasePath(process.env, homedir()));
+  // The coordinator talks to this computer's database through its own build: one that isn't the database's own build
+  // (a candidate's checkout run before its deploy, say) would migrate it under the running services. Refused first.
+  if (fromMain && deps.adapters === undefined) {
+    const problem = liveSchemaProblem(deps.database ?? databasePath(process.env, homedir()));
+    if (problem !== null) return refuse("mixed-runtime", problem, 3);
+  }
   const lines: string[] = [];
   const say = (line: string) => { if (json) lines.push(line); else write(line); };
   const adapters = deps.adapters === undefined
     ? releaseAdapters({ checkout, say, ...(tap === undefined ? {} : { tap }), ...(limits["deploy"] === undefined ? {} : { deployMinutes: limits["deploy"] }) })
     : { ...deps.adapters, say };
+  if (fromMain && version === undefined) {
+    const read = deps.mainVersion ?? (async () => readMainVersion(exec, releaseTools("").gh, await adapters.repo.github()));
+    try { version = await read() ?? undefined; }
+    catch (error) { return refuse("github", `Couldn't read main's version from GitHub: ${(error as Error).message}. Name it: \`toolroll release <version>\`.`, 3); }
+    if (version === undefined) return refuse("usage", "Main's package.json names no version. Name it: `toolroll release <version>`.", 2);
+  }
+  const lockKey = version === undefined ? branch : mainRunKey(version);
   // One command: wait out another run of this release, settle what a stopped deployment left, then go on from the journal.
-  const taken = await takeReleaseRun(stateDir, branch, say, deps.runLock);
-  if (!taken.ok) return refuse("running", `Another release of ${branch} is still running on ${taken.holder.host} (process ${taken.holder.pid}). Nothing was changed.`, 3);
+  const taken = await takeReleaseRun(stateDir, lockKey, say, deps.runLock);
+  if (!taken.ok) return refuse("running", `Another release of ${version ?? branch} is still running on ${taken.holder.host} (process ${taken.holder.pid}). Nothing was changed.`, 3);
   try {
     const world = deps.settle ?? (deps.adapters === undefined ? { rescue: installedRescueWorld(checkout), gate: installedGateWorld() } : null);
     if (world !== null) {
       const settled = await settleDeployment(world, say);
       if (!settled.ok) return refuse("deployment", settled.message, 3);
     }
-    const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
+    const outcome = await runRelease({ branch: version === undefined ? branch : releaseBranchFor(version), checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry"),
+      ...(version === undefined ? {} : { version, full: bare.has("--full") }) }, adapters);
     return report(outcome, write, json, lines);
   } finally { taken.release(); }
 }
@@ -518,4 +569,41 @@ async function runStatusCommand(task: string | undefined, write: (line: string) 
     if (progress.building !== null) write(`Build #${progress.building.run} is running the check.`);
     return 0;
   } finally { store.close(); }
+}
+
+/**
+ * Why this build mustn't coordinate a release against `database`, or null: its schema (read without opening it as a
+ * store, so nothing migrates) isn't this build's. The installed build always matches; a newer candidate's own build,
+ * run before it is deployed, doesn't — it would migrate the live database under the running services, which then
+ * refuse it (release-from-main.md, Bootstrap).
+ */
+export function liveSchemaProblem(database: string): string | null {
+  if (!existsSync(database)) return null;
+  let version: number | null = null;
+  try {
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    try { const read = readSchemaVersion(db); version = read.ok ? read.version : null; } finally { db.close(); }
+  } catch { return "This computer's Toolroll database can't be read, so no release starts. Check it, then run the installed `toolroll release` again."; }
+  if (version === null || version === SCHEMA_VERSION) return null;
+  return `This Toolroll build (database schema ${SCHEMA_VERSION}) isn't the one this computer's database belongs to (schema ${version}): coordinating a release with it would ${version < SCHEMA_VERSION ? "upgrade the live database under the running services" : "use a database written by a newer build"}. Nothing was changed. Run \`toolroll release\` with the build this database belongs to${version < SCHEMA_VERSION ? " (the installed one)" : " (the one a deploy already put in place)"}.`;
+}
+
+/** `toolroll release prepare <version>`: the version pull request (release-adapters.ts prepareRelease). */
+async function runPrepareCommand(version: string, flags: { repo: string; notes: string | undefined }, write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const command = "release prepare";
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command, ...fields } as never) : words); return code; };
+  let notes: string | null = null;
+  if (flags.notes !== undefined) {
+    try { notes = readFileSync(flags.notes, "utf8"); } catch { return answer(false, { reason: "usage", message: `${flags.notes} can't be read.` }, `${flags.notes} can't be read.`, 2); }
+  }
+  const prepare = deps.prepare ?? (async (input: { version: string; notes: string | null }) => {
+    const slug = recordedReleaseRepo(databasePath(process.env, homedir()), flags.repo).slug;
+    return { ...(await prepareRelease(exec, releaseTools("").gh, { repo: slug, version: input.version, notes: input.notes, date: new Date().toISOString().slice(0, 10) })), repo: slug };
+  });
+  let made: Awaited<ReturnType<typeof prepare>>;
+  try { made = await prepare({ version, notes }); }
+  catch (error) { return answer(false, { reason: "refused", message: (error as Error).message }, (error as Error).message, 1); }
+  if (!made.ok) return answer(false, { reason: "refused", message: `The release pull request for ${version} wasn't opened: ${made.why}.` }, `The release pull request for ${version} wasn't opened: ${made.why}.`, 1);
+  return answer(true, { version, pullRequest: made.pr, branch: made.branch, commit: made.commit },
+    `Opened pull request #${made.pr} (${made.branch}): the version and changelog for ${version}. Merge it like any pull request once its checks pass, then run \`toolroll release ${version}\`.`, 0);
 }

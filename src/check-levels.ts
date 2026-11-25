@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Store, VerifyCommand } from "./store.js";
+import { folderAnswers } from "./folder-gate.js";
 import { approvalOf } from "./scope.js";
 
 export const CHECK_LEVELS = ["quick", "full", "off"] as const;
@@ -154,6 +155,8 @@ export function runCheckLevel(store: Store, runId: number): CheckLevel | null {
 /** A starting point for the quick command, from the project's own scripts.
  * It is only a suggestion: a person approves the exact command. */
 export function suggestQuickCommand(repo: string): string | null {
+  // On the console's thread, a folder that stopped answering gets no suggestion rather than a frozen page.
+  if (!folderAnswers(repo)) return null;
   const file = join(repo, "package.json");
   if (!existsSync(file)) return null;
   let scripts: Record<string, unknown> = {};

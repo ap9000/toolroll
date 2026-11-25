@@ -189,6 +189,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.resume-arm": "resume-run",
   "task.act.resume": "resume-run",
   "task.act.complete": "complete-task",
+  "task.act.land": "land-task",
   // Local-owner slice 2: the plan button, on its own road (tasks.ts localOwnerPlan; the writer checks this exact act).
   "task.act.plan": "request-plan",
   // Local-owner slice 3: Retry, on its own road (tasks.ts localOwnerRetry; the writer checks this exact act).
@@ -220,6 +221,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.repair": "direct-chat-manage",
   "direct-chat.ship-preview": "read",
   "direct-chat.ship": "direct-chat-ship",
+  "direct-chat.page-ship-review": "read",
+  "direct-chat.page-ship": "direct-chat-ship",
   "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
@@ -448,6 +451,9 @@ get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sampl
 const DIRECT_CHAT = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Direct chat is for local solo operators.", "/") } as const;
 get("tasks", "direct-chat.list", "/engine/direct-chats", DIRECT_CHAT);
 get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}` });
+// The pages (everyday-8 #6): the same chats, as a browser with no app reads them.
+get("tasks", "direct-chat.page-list", "/direct-chats", DIRECT_CHAT);
+get("tasks", "direct-chat.page", `^\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}` });
 get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
@@ -526,6 +532,8 @@ get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unsco
 // A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
 get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie", "bearer"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
+// What a thread changed since it started (its committed work, read in a quarantine), its owner's only: a read.
+get("pages", "agents.live.thread.diff", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/diff$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}/diff` });
 // Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.
 get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped", callers: ["cookie"], ...free });
@@ -675,6 +683,9 @@ post("tasks", "direct-chat.repair", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/r
 // Reading a chat clone's git diff for Ship preview runs git in an agent-writable workspace, so it is a POST (never a GET).
 post("tasks", "direct-chat.ship-preview", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-preview$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-preview` });
 post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/ship` });
+// Ship from the page: its terms read in the chat's clone (a POST, never a GET), then the yes, as the API's ship is.
+post("tasks", "direct-chat.page-ship-review", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
+post("tasks", "direct-chat.page-ship", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/ship` });
 post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
@@ -884,6 +895,8 @@ post("tasks", "task.act.route", `^\\/t\\/${TASK}\\/route$`, { project: "task", l
 post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { project: "task", limited: "resource", sample: "/t/one/retry-review" });
 post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
+// Land on main (everyday-8 #1, local-landing.ts): a person's act from a browser, the same authority as Accept.
+post("tasks", "task.act.land", `^\\/t\\/${TASK}\\/land$`, { project: "task", limited: "resource", sample: "/t/one/land", ...approver("Only an approver can land work.") });
 // Check again: Toolroll looks at this computer's processes for a finished build once more (stop-proof.ts). Nobody
 // vouches that a build stopped, so no password: it only asks for the look the worker makes on its own anyway.
 post("tasks", "task.act.recheck-stopped", `^\\/t\\/${TASK}\\/recheck-stopped$`, { project: "task", limited: "resource", sample: "/t/one/recheck-stopped", ...approver("Only an approver can have Toolroll check a build again.") });

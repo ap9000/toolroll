@@ -6,7 +6,7 @@
     "destinations = page rows + mixed rows. It must stay at or under ceiling.destinations: a slice that removes a page lowers the ceiling in the same change. Ceremonies are counted apart and are never in-place pages.",
     "src/server/destinations.test.ts fails when a route row has no entry here (declare new pages), when an entry names no row, and when a demo or an operator console answers a row differently from its kind."
   ],
-  "ceiling": {"destinations":77,"ceremonies":12},
+  "ceiling": {"destinations":79,"ceremonies":12},
   "routes": {
     "code.page": {"kind":"page","path":"/code"},
     "code.session": {"kind":"page","path":"/code/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -33,6 +33,8 @@
     "engine.automations": {"kind":"data","path":"/engine/automations","what":"the flows the person can see, grouped as the Flows list groups them (JSON, the engine API; the Mac app's Automations screen)"},
     "engine.projects": {"kind":"data","path":"/engine/projects","what":"the projects the person can see, and the repositories on this computer they could add (JSON, the engine API; the Mac app's project list)"},
     "engine.chat": {"kind":"data","path":"/engine/chat","what":"Lead chat history and state (JSON, the engine API)"},
+    "direct-chat.page-list": {"kind":"page","path":"/direct-chats"},
+    "direct-chat.page": {"kind":"page","path":"/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
     "direct-chat.list": {"kind":"data","path":"/engine/direct-chats","what":"the person's own direct-chat threads on this computer (JSON, the engine API)"},
     "direct-chat.detail": {"kind":"data","path":"/engine/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","what":"one direct-chat thread's turns, tools, and isolated clone diff (JSON, the engine API)"},
     "direct-chat.artifact": {"kind":"data","path":"/engine/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/artifacts/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","what":"a direct-chat captured image or user attachment (binary/text, sandboxed CSP)"},
@@ -64,6 +66,7 @@
     "agents.live.read": {"kind":"data","path":"/agents/live/1","what":"one agent's live output (JSON)"},
     "agents.live.run": {"kind":"data","path":"/agents/live/run/1","what":"one run's LiveSession window (JSON, the engine API)"},
     "agents.live.thread": {"kind":"data","path":"/agents/live/thread/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","what":"a Flexible thread's LiveSession window (JSON; refused while Flexible isn't available)"},
+    "agents.live.thread.diff": {"kind":"data","path":"/agents/live/thread/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/diff","what":"what a Flexible thread changed since it started (JSON; its owner's only)"},
     "agents.live.threads": {"kind":"data","path":"/agents/live/threads","what":"the person's own Flexible threads (JSON; refused while Flexible isn't available)"},
     "agents.terminals": {"kind":"alias","path":"/agents/terminals","to":"/term"},
     "fleet": {"kind":"alias","path":"/fleet","to":"/settings/computers"},

@@ -74,6 +74,7 @@ import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
 import { withWorkReads } from "./work-reads.js";
 import { createEngineHandlers } from "./server/engine-api.js";
+import { enterRehearsal } from "./rehearsal.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -234,6 +235,14 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
+  // A rehearsal (release-from-main.md, part C) is entered before anything is made: the handlers below read it, and no
+  // signal leaves this process until the server closes (rehearsal.ts). A construction that throws leaves it at once.
+  const leaveRehearsal = options.rehearsal === true ? enterRehearsal() : null;
+  try { return buildDecisionServer(options, leaveRehearsal); }
+  catch (error) { leaveRehearsal?.(); throw error; }
+}
+
+function buildDecisionServer(options: ServeOptions, leaveRehearsal: (() => void) | null): DecisionServer {
   // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
   // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
   const identities = options.identities ?? syncProjectIdentities();
@@ -722,8 +731,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     });
   });
 
-  server.once('listening', () => store.telemetry.start());
-  server.once('close', () => store.telemetry.stop());
+  if (options.rehearsal !== true) {
+    server.once('listening', () => store.telemetry.start());
+    server.once('close', () => store.telemetry.stop());
+  }
+  if (leaveRehearsal !== null) server.once('close', leaveRehearsal);
 
   // --public-url (arc 3): validated to EXACTLY an https origin. Its host
   // joins the allowed set, its origin authorizes POSTs, and cookies turn
@@ -759,7 +771,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   {
     // The engine API's upkeep rides this tick (engine-api.ts: a Flexible thread's answers past their deadlines; nothing
     // while Flexible is off). Its handlers exist before the first tick: they are made while this server is built.
-    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } engineHandlers.upkeep(); };
+    // No upkeep in a rehearsal: it would settle and stop the copy's threads, whose processes are the real computer's.
+    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } if (options.rehearsal !== true) engineHandlers.upkeep(); };
     const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
     timer.unref?.();
     server.on("close", () => { clearInterval(timer); flushBudget(); });
@@ -2158,7 +2171,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let leadClosing = false;
   // Started in the console's folder scope (folder-gate.ts), so their own timers and the personal queue's kick (which
   // restores the context it was started in, never a request's) read folders as the console's work does.
-  server.once('listening', () => consoleFolders(options, identities, () => {
+  // A rehearsal (the deploy check, release-from-main.md) answers pages only: no queue, no team, no lead upkeep.
+  if (options.rehearsal !== true) server.once('listening', () => consoleFolders(options, identities, () => {
     team.start();
     personalQueue.start();
     leadMaintenance = startMaintenance({ intervalMs: 5_000, shouldStop: () => leadClosing,
@@ -2175,7 +2189,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // rule run from this pass (or a person's Check now), not from a GET.
   let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
   let agentsCheckedAt = 0;
-  if (options.backgroundChecks === true) server.once('listening', () => {
+  if (options.backgroundChecks === true && options.rehearsal !== true) server.once('listening', () => {
     // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
     try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
     backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,

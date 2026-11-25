@@ -188,6 +188,9 @@ export type ServeOptions = {
    * how often they run and ask this computer's agents again. */
   backgroundChecks?: boolean;
   backgroundChecksMs?: number;
+  /** The deploy check's rehearsal (docs/plans/release-from-main.md, part C): pages only. No queue, team, lead upkeep,
+   * telemetry or background check starts, whatever else is set. */
+  rehearsal?: boolean;
   /** Injected by tests: told after each background pass has finished, every check it started included, so a test waits
    * for passes (a fact), never for a stretch of time. */
   onBackgroundPass?: () => void;

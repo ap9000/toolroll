@@ -16,6 +16,7 @@
  * person's yes to its terms card (flexible-start.ts), named by the card's key and proved as an approval's yes is; its
  * agent's network and storage come from this console's launcher (flexible-launcher.ts).
  */
+import { inRehearsal } from "../rehearsal.js";
 import { homedir } from "node:os";
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -29,7 +30,7 @@ import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
 import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
-  recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
+  recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
 import { summaryLines, type ApprovalSummary } from "../approval-summary.js";
@@ -41,7 +42,7 @@ import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
-import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf, taskResultOf } from "../engine-reads.js";
+import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf, taskResultOf, threadDiffFileOf, threadDiffOf, type ThreadChanges } from "../engine-reads.js";
 import { leadChatOf } from "../engine-chat.js";
 import { remoteAllows } from "../operate-remote.js";
 import { verifyApproverStanding } from "../principal.js";
@@ -195,6 +196,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
    * close with their launches, and all of them when the console stops (`close`, below). */
   let launcher: FlexibleLauncher | null = null;
   const openHost = (): FlexibleSessions | null => {
+    // A rehearsal never opens the copy's threads: opening recovers their holders and stops their launches.
+    if (inRehearsal()) return null;
     if (flexible !== null) return flexible;
     const opened = openFlexibleSessions(store);
     if (!opened.ok) return null;
@@ -261,6 +264,40 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const body: LiveSessionWindow = { version: ENGINE_API_VERSION, session: { kind: "thread", id, task: null }, room: `thread:${id}`, live: read.live, file: query.file, window: read.window,
       ...(known === read.facts.version ? {} : { thread: read.facts }) };
     return sendChecked(response, 200, "liveSessionWindow", body);
+  }
+
+  /** The last read of each thread's changes, by the commit it read: a file read of the same commit reuses it. */
+  const changesRead = new Map<string, { tip: string | null; changes: ThreadChanges }>();
+  async function threadChanges(id: string): Promise<ThreadChanges> {
+    const tip = flexibleThreadTipOf(store, id);
+    const held = changesRead.get(id);
+    if (held !== undefined && tip !== null && held.tip === tip) return held.changes;
+    const read = await flexibleThreadChanges(store, { thread: id });
+    if (changesRead.size >= 32) changesRead.delete(changesRead.keys().next().value!);
+    // Only a read that names the commit it read is kept for the next file read of that same commit.
+    if (read.tip !== null && read.tip === tip) changesRead.set(id, { tip: read.tip, changes: read.changes });
+    return read.changes;
+  }
+
+  /** GET /agents/live/thread/<id>/diff[?file=<n>]: what a thread changed since it started (its committed work against the
+   * commit it started from, read in a quarantine: flexible-import.ts readFlexibleChanges), as a result's changes are
+   * shown: its files, or one file's hunks. Cleaned, key-shaped lines hidden. Its owner's only, admitted before and after
+   * the read; a read, answered while interactive agent threads are off too. */
+  async function liveThreadDiff(ctx: HandlerContext): Promise<void> {
+    const { url, who, request, response } = ctx;
+    if (who.via !== "cookie") return refusal(response, 403, "session");
+    const params = url.searchParams, fileParam = params.get("file");
+    if ([...params.keys()].some(key => key !== "file") || params.getAll("file").length > 1 || (fileParam !== null && !/^(0|[1-9][0-9]{0,5})$/.test(fileParam))) return refusal(response, 400, "request");
+    const flexible = threadsRead();
+    if (flexible === null) return refusal(response, 404, "thread");
+    const id = url.pathname.slice("/agents/live/thread/".length, -"/diff".length);
+    if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
+    const changes = await threadChanges(id);
+    const turn = Number(store.handle.prepare("SELECT max(seq) AS seq FROM thread_turn WHERE thread = ? AND status <> 'withdrawn'").get(id)?.["seq"] ?? 0);
+    if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
+    if (fileParam === null) return sendChecked(response, 200, "resultDiff", threadDiffOf(id, turn, changes));
+    const one = threadDiffFileOf(id, turn, changes, Number(fileParam));
+    return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }
 
   /** GET /agents/live/threads: the person's own Flexible threads, as the work list shows them, and whether interactive
@@ -589,7 +626,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (!sent.ok) return acted(response, 409, "refused", sent.message);
     // A resend after an attempt that never reached the agent says so, with why that one ended.
     const again = sent.resent === undefined ? "" : `Your earlier send (turn ${sent.resent.seq}) never reached the agent${sent.resent.detail === null ? "" : ` (${sent.resent.detail.slice(0, 200)})`}, so it was sent again. `;
-    return json(response, 200, { outcome: "done", words: again + (sent.replayed ? "That reply was already sent." : sent.fresh ? `Sent. Turn ${sent.seq} started with a fresh agent: it doesn't remember earlier turns.` : `Sent. Turn ${sent.seq} started.`),
+    return json(response, 200, { outcome: "done", words: again + (sent.replayed ? "That reply was already sent." : `Sent. Turn ${sent.seq} started; the agent has the conversation so far.`),
       turn: sent.turn });
   }
 
@@ -688,7 +725,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const sent = await sendBackFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, feedback, key, freshProof: FRESH_PROOFS.has(proved.method),
       held, launcher, now: new Date() });
     if (!sent.ok) return acted(response, 409, "refused", sent.message);
-    return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started${sent.fresh ? " with a fresh agent: it doesn't remember earlier turns" : ""}.`);
+    return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started; the agent has the conversation so far.`);
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as
@@ -818,7 +855,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       try { if (host !== null) await closeFlexibleSessions(store, host); } finally { await made?.close(); }
     },
     registrations: [
-      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "engine.chat": leadChat, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
+      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "engine.chat": leadChat, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.thread.diff": liveThreadDiff, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff, "task.result": taskResult }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),

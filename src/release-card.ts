@@ -104,7 +104,7 @@ export const RELEASE_TERM_LABELS: Readonly<Record<string, string>> = {
 export const RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
   version: "Release check version", purpose: "Approved as", repo: "Repository", packageVersion: "Package version", branch: "Branch", pr: "Pull request",
   base: "Base", approvedSha: "Approved commit", approvedTree: "Approved tree", "grant.id": "Release check grant", "grant.digest": "Release check grant digest",
-  access: "Release check access",
+  access: "Release check access", check: "Check on this Mac",
 };
 
 /** What a release scope sealed, either form: release terms (later test-only commits may carry) or a release check's
@@ -181,7 +181,12 @@ export function approvalTermsOf(store: Store, scope: Scope, words: CardWords): T
   if (terms === null && scope.releaseCheck != null) {
     const purpose = scope.releaseCheck;
     for (const path of schemaLeaves(releaseCheckPurposeSchema)) {
-      const value = path === "pr" ? `#${purpose.pr}` : path === "purpose" ? "a release check: every later commit asks again" : path === "repo" ? where(purpose.repo) : said(valueAt(purpose, path));
+      // Only a release from main names its check; a branch release's purpose has no such field to show.
+      if (path === "check" && purpose.check === undefined) continue;
+      const value = path === "pr" ? `#${purpose.pr}`
+        : path === "purpose" ? purpose.purpose === "main-release" ? "a release from main: this commit, proven again before the deploy and the tag" : "a release check: every later commit asks again"
+        : path === "check" ? purpose.check === "deploy" ? "the deploy check: build, upgrade a copy of your database, start against it (about 4 minutes)" : "the full release check (about 40 minutes)"
+        : path === "repo" ? where(purpose.repo) : said(valueAt(purpose, path));
       lines.push({ key: `releaseCheck.${path}`, label: RELEASE_CHECK_LABELS[path] ?? path, value });
     }
     return lines;

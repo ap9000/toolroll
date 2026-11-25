@@ -47,6 +47,11 @@ pub enum LiveRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         s: Option<i64>,
     },
+    /// A thread's only: what the person said (their own message, cleaned), never the agent's words.
+    You {
+        at: String,
+        t: Vec<String>,
+    },
     Step {
         at: String,
         id: String,
@@ -109,7 +114,7 @@ impl LiveRecord {
             | LiveRecord::Cut { s, .. }
             | LiveRecord::Cap { s, .. } => *s,
             LiveRecord::Child { s, .. } | LiveRecord::End { s, .. } => Some(*s),
-            LiveRecord::Over {} => None,
+            LiveRecord::Over {} | LiveRecord::You { .. } => None,
         }
     }
 }

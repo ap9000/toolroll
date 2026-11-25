@@ -189,7 +189,9 @@ export function releaseTermsFor(store: Store, input: { repo: string; version: st
  * this exact candidate as a release's check (strict report rules, no CI stand-in, the plane's own rerun after confirmed
  * infrastructure on the same candidate under the same approval). Null with why when even that can't be read.
  */
-export function releaseCheckPurposeFor(store: Store, input: { repo: string; version: string; branch: string; pr: number; candidate: string }):
+export function releaseCheckPurposeFor(store: Store, input: { repo: string; version: string; branch: string; pr: number; candidate: string;
+  /** A release from main (docs/plans/release-from-main.md): the check its scope seals, the deploy check or the full one. */
+  main?: { check: "deploy" | "full" } }):
   { ok: true; purpose: ReleaseCheckPurpose } | { ok: false; why: string } {
   const gitDir = projectGitDir(input.repo);
   if (gitDir === null) return { ok: false, why: "the project's Git directory can't be read" };
@@ -198,7 +200,7 @@ export function releaseCheckPurposeFor(store: Store, input: { repo: string; vers
   const grant = store.liveVerifyCommand(input.repo);
   if (grant === null) return { ok: false, why: "the project has no approved release check" };
   return { ok: true, purpose: {
-    version: 1, purpose: "release-check", repo: input.repo, packageVersion: input.version, branch: input.branch, pr: input.pr, base: "main",
+    version: 1, ...(input.main === undefined ? { purpose: "release-check" as const } : { purpose: "main-release" as const, check: input.main.check }), repo: input.repo, packageVersion: input.version, branch: input.branch, pr: input.pr, base: "main",
     approvedSha: input.candidate, approvedTree: commit.value.tree, grant: { id: grant.id, digest: grant.digest }, access: store.projectCheckAccess(input.repo),
   } };
 }

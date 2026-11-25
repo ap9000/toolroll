@@ -83,7 +83,8 @@ export const receiptLogSchema = z.strictObject({
 
 export const RECEIPT_VERSION = 3;
 
-export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed", "no-result"] as const;
+/** `deploy`: a release from main's deploy check (release-from-main.md, part C). An older reader refuses the receipt. */
+export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed", "no-result", "deploy"] as const;
 export type ReceiptCoverage = typeof RECEIPT_COVERAGES[number];
 
 const receiptFields = {

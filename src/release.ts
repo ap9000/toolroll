@@ -39,6 +39,7 @@ import { dirname, join } from "node:path";
 import { personProof } from "./person-proof.js";
 import { RELEASE_CI_RUNNING_WORDS as CI_RUNNING_WORDS } from "./release-ci-hold.js";
 import { transientFailure } from "./release-net.js";
+import { changelogHas, harnessChanges, mainJournalFile, mainResumeCommand, releaseBranchFor, sameRelease, VERSION_PATTERN, type MainProof, type MainPull } from "./release-main.js";
 
 /** The pull-request checks a release waits for, by exact job name (docs/plans/test-matrix.md). Every one must have
  * concluded `success` — executed, never skipped — on the gated commit; src/ci-workflow.test.ts holds the workflows to
@@ -181,7 +182,9 @@ export type GateState = {
      * §1.5). Absent from a plane too old to say, which is no person's approval. */
     person?: { ok: true; method: string } | { ok: false; why: string } } | null;
   /** The newest finished build of the task: its sealed result and check. */
-  result: { run: number; head: string | null; check: string; level: string | null; receipt: string; worktree: string | null } | null;
+  result: { run: number; head: string | null; check: string; level: string | null; receipt: string; worktree: string | null;
+    /** What the check covered, from its sealed receipt (full, composed, deploy…); absent from a plane too old to say. */
+    coverage?: string | null } | null;
   /** A finished build that left no result to complete (it failed before the check), in words. */
   failed: string | null;
   /** A newer attempt is queued or running (`task regate` after a failed check): the result shown is the one before it.
@@ -255,6 +258,12 @@ export type ReleaseAuthorityAdapter = {
   /** One-tap release approval (docs/plans/trusted-release-reports.md, slice A): what the plane tells a person and
    * keeps for the approval sheet. Best effort: a failure here never changes the release. Absent on an older plane. */
   ready?: ReleaseReadyAdapter;
+  /** A release from main (release-from-main.md): the coordinator proved `proof.sha` with publish.yml's own proof just
+   * now, for this task. The plane keeps it (its action ledger), and its deploy gates accept a deploy check's coverage
+   * only for a main release whose approved commit has such a record. Absent on an older plane: nothing deploys. */
+  proved?(input: { taskId: string; version: string; proof: MainProof }): Promise<void>;
+  /** A re-proof failed: the plane keeps that, and no earlier proof of the task deploys anything any more. */
+  proofFailed?(input: { taskId: string; version: string; why: string }): Promise<void>;
 };
 
 /** What the coordinator tells the plane for a person's release (release-approval.ts). Ids and its own readings only. */
@@ -328,7 +337,9 @@ export type ReleaseAdapters = {
     gate(taskId: string): Promise<GateState>;
     fileGate(input: { taskId: string; title: string; checkout: string; candidate: string; goal: string; acceptance: string;
       /** Release terms to file with the scope (task scope --release): the version, pull request and branch. */
-      release?: { version: string; pr: number; branch: string; noCarry: boolean } }): Promise<{ scopeDigest: string }>;
+      release?: { version: string; pr: number; branch: string; noCarry: boolean;
+        /** A release from main (release-from-main.md): its scope is sealed as one, with the check it runs. */
+        main?: { full: boolean } } }): Promise<{ scopeDigest: string }>;
     /** `reason` "stopping": Toolroll is still proving the check's build stopped (stop-proof.ts); it clears on its own. */
     complete(taskId: string, receipt: string): Promise<{ ok: true } | { ok: false; message: string; reason?: string }>;
     busy(): Promise<{ running: number; tasks: string[] }>;
@@ -367,6 +378,8 @@ export type ReleaseAdapters = {
     tag(repo: string, tag: string): Promise<string | null>;
     createTag(repo: string, tag: string, sha: string): Promise<void>;
     release(repo: string, tag: string): Promise<boolean>;
+    /** Releases from main (release-from-main.md). Absent: this coordinator can't release from main. */
+    main?: MainAdapter;
   };
   registry: { published(name: string, version: string): Promise<boolean> };
   homebrew: {
@@ -382,6 +395,20 @@ export type ReleaseAdapters = {
     verified(pr: number, head: string, version: string): Promise<{ ok: true } | { ok: false; why: string }>;
     merge(pr: number, head: string): Promise<void>;
   };
+};
+
+/** GitHub, as a release from main reads it: every answer is GitHub's own, never a checkout's refs. */
+export type MainAdapter = {
+  /** The newest pull request from `release-<version>` into main in this repository: merged (its squash commit), still
+   * open, or none. */
+  pull(repo: string, version: string): Promise<MainPull>;
+  /** publish.yml's proof (scripts/release-proof.mjs proveRelease), read through the plane's own gh. */
+  prove(repo: string, sha: string): Promise<({ ok: true } & MainProof) | { ok: false; why: string }>;
+  /** Whether `sha` is on main's first-parent history now (from main's head as GitHub's API answers), and what came after
+   * it, newest first. */
+  firstParent(repo: string, sha: string): Promise<{ ok: true; after: string[] } | { ok: false; why: string }>;
+  /** The files that changed from `tag` to `sha`, by GitHub's comparison; null when it can't say. */
+  changedSince?(repo: string, tag: string, sha: string): Promise<string[] | null>;
 };
 
 export type ReleaseJournal = {
@@ -434,6 +461,14 @@ export type ReleaseJournal = {
   /** Set with ciAhead and never cleared for this commit: a person's release reads CI again, fresh, right before the
    * deploy, whatever was seen while asking (a green CI may have a newer attempt failing since). */
   ciBeforeDeploy?: boolean;
+  /** A release from main (release-from-main.md): the release commit is `candidate` (also `merge`: it is main's own
+   * squash commit), proven before filing, before the deploy and before the tag. Absent: a branch release, read exactly
+   * as before. */
+  mode?: "main";
+  /** `--full`: the full release check on this Mac instead of the deploy check. */
+  full?: boolean;
+  /** GitHub's record of the release commit this journal is bound to: every proof must name the same. */
+  main?: { head: string; branch: string; previousTag: string | null; harness: string[] | null; after: string[] };
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -447,6 +482,10 @@ export type ReleaseOutcome =
 
 export type ReleaseOptions = {
   branch: string;
+  /** Release this version from main (release-from-main.md) instead of a branch: `branch` is then ignored. */
+  version?: string;
+  /** With `version`: the full release check on this Mac before the deploy, instead of the deploy check. */
+  full?: boolean;
   /** The gate checkout: a clone of the repository the release check runs in. */
   checkout: string;
   /** Where journals live (the installation's state folder). */
@@ -553,8 +592,9 @@ export function tagChecksVerdict(runs: readonly CheckRun[]): ReturnType<typeof c
 
 /** Run the release from wherever its journal stopped. */
 export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapters): Promise<ReleaseOutcome> {
-  const file = journalFile(options.stateDir, options.branch);
-  const resume = resumeCommand(options.branch, options.checkout);
+  const fromMain = options.version !== undefined;
+  const file = fromMain ? mainJournalFile(options.stateDir, options.version!) : journalFile(options.stateDir, options.branch);
+  const resume = fromMain ? mainResumeCommand(options.version!, options.checkout) : resumeCommand(options.branch, options.checkout);
   const limits = { ...RELEASE_LIMITS, ...options.limits };
   const pollMs = options.pollMs ?? POLL_MS;
   const say = adapters.say;
@@ -610,6 +650,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
   try {
     journal = readJournal(file);
     if (journal !== null && options.fresh === true && journal.step !== "done") {
+      // A release from main is past its point of no return once it began tagging: it finishes, never starts over.
+      if (journal.mode === "main" && (journal.intents.tag !== undefined || journal.tagged !== null)) throw new Stop("tagging", `The release of ${journal.candidate.sha.slice(0, 7)} already began tagging ${journal.tag}; finish it with \`${resume}\` instead of starting over.`);
       if (journal.intents.merge !== undefined) throw new Stop("merging", `The release of ${journal.candidate.sha.slice(0, 7)} already began merging; finish it with \`${resume}\` instead of starting over.`);
       await recoverDeploy();
       const aside = file.replace(/\.json$/, `.superseded-${adapters.now().toISOString().replace(/[:.]/g, "-")}.json`);
@@ -628,8 +670,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     const finishingHomebrew = journal !== null && journal.step === "homebrew" && journal.published !== null && options.fresh !== true;
 
     if (!await adapters.github.authenticated()) throw new Stop("github-auth", "GitHub CLI is not signed in: run `gh auth login`, then rerun.");
+    /** A release from main proven by its first run moments ago: its gate doesn't prove it a second time. */
+    let provenNow = false;
     if (journal === null) {
-      journal = await begin(options, adapters, adapters.now());
+      journal = fromMain ? await beginMain(options, adapters, adapters.now()) : await begin(options, adapters, adapters.now());
+      provenNow = fromMain;
       // The earlier attempt needs a person's fresh approval (a CI failure after its deploy): this one files a task of its
       // own for the same commit, so the old approval can't carry it.
       // A check that stopped this same commit is the same: its task keeps that failure, so reusing it would only stop again
@@ -650,6 +695,10 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     }
     else say(`Resuming the release of ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) at ${journal.step}.`);
     const j = journal;
+    // A journal is read as what it is: a release from main never by a branch command, nor a branch's by a version.
+    if ((j.mode === "main") !== fromMain) throw new Stop("usage", j.mode === "main" ? `This journal is the release of ${j.packageVersion} from main: run \`${mainResumeCommand(j.packageVersion, j.checkout)}\`.` : `This journal is a branch release; run \`${resumeCommand(j.branch, j.checkout)}\`.`);
+    const isMain = j.mode === "main";
+    if (isMain && j.full !== true && options.full === true) throw new Stop("usage", `The release of ${j.packageVersion} was filed with the deploy check; to run the full check instead, start it again with \`toolroll release ${j.packageVersion} --full --new\`.`);
     // A journal an older coordinator filed ahead of CI: its deploy reads CI fresh too.
     if (j.ciAhead === true && j.ciBeforeDeploy !== true) j.ciBeforeDeploy = true;
     if (j.checkout !== options.checkout) throw new Stop("checkout", `This release runs in ${j.checkout}; rerun with --repo ${j.checkout}.`);
@@ -859,8 +908,51 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (answer.warning !== null) say(`  ${answer.warning}`);
       if (!answer.ok) throw new Stop("nightly-debt", `${answer.why} Nothing was ${phase === "deploy" ? "deployed" : phase === "merge" ? "merged" : "tagged or published"}; rerun the release once it passes.`);
     };
-    /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
-    const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
+    /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. A release from main has
+     * no branch or open pull request to watch: its repository is read again, and its proof at each step that acts. */
+    const watch = async (action: ReleaseAction) => {
+      if (isMain) { if (await adapters.repo.github() !== j.github) throw new Stop("drift", `The release's repository is no longer ${j.github}.`); return; }
+      if (rel !== undefined) await identity(action, true);
+    };
+    /**
+     * A release from main, proven again now (release-from-main.md, Codex review finding 5): publish.yml's complete proof of
+     * the journal's commit (squash ancestry, retarget history, attempt races, every required job on the tested head),
+     * the same commit, tree, pull request and head this journal was bound to, still on main's first-parent history
+     * (commits after it are harmless; a rewrite or removal stops), and every other check reported on the tested head
+     * passing. The plane keeps the proof for this task, so its deploy gates can require it. `nothing` says what hasn't
+     * happened when it fails.
+     */
+    const mainProof = async (nothing: string): Promise<string[]> => {
+      try { return await proveMain(nothing); }
+      catch (error) {
+        // A failed re-proof makes the plane's earlier proofs of this task unusable (Codex review, finding 3): a direct
+        // deployment can't stand on them. Failing to record that stops the release too.
+        if (j.task.scopeDigest !== null && rel?.proofFailed !== undefined) {
+          const why = error instanceof Error ? error.message : String(error);
+          await rel.proofFailed({ taskId: j.task.id, version: j.packageVersion, why: why.slice(0, 280) });
+        }
+        throw error;
+      }
+    };
+    const proveMain = async (nothing: string): Promise<string[]> => {
+      const main = adapters.github.main;
+      if (main === undefined) throw new Stop("usage", "This build of Toolroll can't release from main.");
+      const short = j.candidate.sha.slice(0, 7);
+      const proven = await main.prove(j.github, j.candidate.sha);
+      if (!proven.ok) throw new Stop("proof", mainProofWords(j.packageVersion, short, proven.why, nothing));
+      const drift = sameRelease({ sha: j.candidate.sha, tree: j.candidate.tree, pr: j.pr, head: j.main!.head, branch: j.main!.branch }, proven);
+      if (drift !== null) throw new Stop("drift", `${drift}. ${nothing}; this release stays bound to what it was approved for. Start it again with \`toolroll release ${j.packageVersion} --new\`.`);
+      const placed = await main.firstParent(j.github, j.candidate.sha);
+      if (!placed.ok) throw new Stop("drift", `${short} is no longer on main's history (${placed.why}): main was rewritten or the commit removed. ${nothing}.`);
+      // Every other check GitHub reported on the tested head (node 26 · SQLite, say), judged as a person's release
+      // judges them: the required ones from their own workflows, advisory ones left out, anything else must pass.
+      const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.main!.head), j.main!.head, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      if (verdict.state !== "passed") throw new Stop("ci-failed", mainProofWords(j.packageVersion, short, `the checks on pull request #${j.pr}'s head ${j.main!.head.slice(0, 7)} aren't all passing: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}`, nothing));
+      if (j.task.scopeDigest !== null) await rel?.proved?.({ taskId: j.task.id, version: j.packageVersion, proof: { sha: j.candidate.sha, tree: j.candidate.tree, pr: j.pr, head: j.main!.head, branch: j.main!.branch } });
+      if (placed.after.join() !== j.main!.after.join()) { j.main = { ...j.main!, after: placed.after }; save(); }
+      if (placed.after.length > 0) say(`  ${placed.after.length} later commit${placed.after.length === 1 ? "" : "s"} on main go${placed.after.length === 1 ? "es" : ""} in the next release`);
+      return placed.after;
+    };
     /**
      * Behind main (plain-toolroll.md P2.6): update the branch under this release's lease and the head it was gated on.
      * A concurrent push aborts it. The approval stops first, so nothing can ride it across the update; the updated head
@@ -992,9 +1084,20 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       const owner = ownerApproval(gate, j.task.scopeDigest);
       if (!owner.ok) throw new Stop("approval", `Task ${j.task.id}: ${owner.why}. An active approver must approve the release scope.`);
     };
+    /** A failed check, in the words of the release it stops: a branch's (checkFailedWords) or a release from main's. */
+    const checkFailed = (input: { run: number; class: FailureClassName | null; why: string }) => isMain
+      ? `The ${j.full === true ? "full release check" : "deploy check"} of ${j.candidate.sha.slice(0, 7)} failed (run ${input.run}): ${input.why}. Nothing was deployed, tagged or published; Toolroll here is unchanged. Fix it on main, merge a release pull request for ${j.packageVersion} again, then run \`toolroll release ${j.packageVersion} --new\`.`
+      : checkFailedWords({ sha: j.candidate.sha, ...input, branch: j.branch, checkout: j.checkout, taskId: j.task.id });
     const fullCheck = (gate: GateState) => {
       if (gate.result?.level !== "full") throw new Stop("check-level", `A Full check is required for this release (run ${gate.result?.run ?? "unknown"}: ${gate.result?.level ?? "unknown"}). Quick and Off checks cannot release a build.`);
-      if (gate.result.check !== "passed") throw new Stop("check-failed", checkFailedWords({ sha: j.candidate.sha, run: gate.result.run, class: null, why: `its check reads ${gate.result.check}`, branch: j.branch, checkout: j.checkout, taskId: j.task.id }));
+      if (gate.result.check !== "passed") throw new Stop("check-failed", checkFailed({ run: gate.result.run, class: null, why: `its check reads ${gate.result.check}` }));
+      // A release from main deploys on the deploy check its scope was sealed with (or the full check, with --full), never
+      // on a result whose coverage this plane can't name: a deploy check's coverage is never a branch release's.
+      if (isMain) {
+        const coverage = gate.result.coverage ?? null;
+        const wanted = j.full === true ? ["full"] : ["deploy", "full"];
+        if (coverage === null || !wanted.includes(coverage)) throw new Stop("check-level", `Run ${gate.result.run}'s check of ${j.candidate.sha.slice(0, 7)} covered ${coverage ?? "something this Toolroll doesn't name"}, not the ${j.full === true ? "full release check" : "deploy check"} this release was approved for. Update Toolroll here, then run \`toolroll release ${j.packageVersion} --new\`.`);
+      } else if (gate.result.coverage === "deploy") throw new Stop("check-level", `Run ${gate.result.run} ran only the deploy check, which releases from main alone may use.`);
     };
     /** The commit the passing build recorded: what the deployed runtime is stamped with. */
     const builtHead = () => j.check?.head ?? j.candidate.sha;
@@ -1014,7 +1117,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       try {
       switch (j.step) {
         case "gate": {
-          await pinned();
+          // A release from main: proven before anything is filed or anyone is asked (release-from-main.md).
+          if (isMain) { if (!provenNow) await mainProof("Nothing was checked, deployed, tagged or published"); }
+          else await pinned();
           // The same commit's earlier gate belongs to a release that no longer stands (a CI failure after its deploy, a
           // revoke): a fresh task asks a person again, and their yes opens a new generation.
           if (rel !== undefined && j.freshTask !== true) {
@@ -1027,14 +1132,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           }
           // The tree CI tested (the pull request's head, not GitHub's merge commit) is the tree that merges only when the
           // branch already contains main's head: refused here, before anything is filed, and again right before merging.
-          try { await containsMain(adapters, j, "Nothing was filed or sent for approval"); }
-          catch (error) {
-            if (!(error instanceof Stop) || error.reason !== "base-moved") throw error;
-            const head = await updateFromMain();
-            if (head === null) throw error;
-            throw new Restart(head, true);
+          if (!isMain) {
+            try { await containsMain(adapters, j, "Nothing was filed or sent for approval"); }
+            catch (error) {
+              if (!(error instanceof Stop) || error.reason !== "base-moved") throw error;
+              const head = await updateFromMain();
+              if (head === null) throw error;
+              throw new Restart(head, true);
+            }
+            if (j.intents.gate === undefined) await mainProtection(adapters, j, false, "Nothing was filed or sent for approval");
           }
-          if (j.intents.gate === undefined) await mainProtection(adapters, j, false, "Nothing was filed or sent for approval");
           const existing = await adapters.toolroll.gate(j.task.id);
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
           if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
@@ -1046,7 +1153,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The gate only stops on a check that already failed: the task is filed and a person asked while CI runs, and
             // the release check runs beside it (pipeline-speed.md, D2 and "Decision: a person's release asks during
             // CI"). The automatic approval waits for CI (the check step); nothing deploys before it passes (the deploy).
-            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true, seen: (runs, verdict) => noteCi(runs, verdict) });
+            // A release from main was proven just now: every required check passed on its pull request's tested head.
+            const settled = isMain ? true : await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true, seen: (runs, verdict) => noteCi(runs, verdict) });
             // Recorded before the task exists, so its approval card says CI still runs from the first moment.
             if (!settled) await rel?.auto?.ciRunning?.(j.task.id, j.candidate.sha);
             j.ciAhead = !settled;
@@ -1055,13 +1163,21 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing deploys before they pass`); }
             intend("gate");
             await adapters.repo.sync(j.branch);
-            const filed = await adapters.toolroll.fileGate({
+            const filed = await adapters.toolroll.fileGate(isMain ? {
+              taskId: j.task.id, title: `Release ${j.packageVersion}`, checkout: j.checkout, candidate: j.candidate.sha,
+              goal: mainGoalWords(j),
+              acceptance: `The ${j.full === true ? "full release check" : "deploy check"} passes on the release commit|check`,
+              release: { version: j.packageVersion, pr: j.pr, branch: j.branch, noCarry: true, main: { full: j.full === true } },
+            } : {
               taskId: j.task.id, title: `Release ${j.packageVersion}`, checkout: j.checkout, candidate: j.candidate.sha,
               goal: `Verify ${j.packageName} ${j.packageVersion} (${j.branch} at ${j.candidate.sha}) passes the approved release check before it is deployed, merged, tagged and published.`,
               acceptance: "The approved release check passes on the candidate commit|check",
               ...(rel === undefined ? {} : { release: { version: j.packageVersion, pr: j.pr, branch: j.branch, noCarry: options.noCarry === true } }),
             });
             j.task.scopeDigest = filed.scopeDigest;
+            save();
+            // The plane keeps this proof for the task it now has (its deploy gates read it).
+            if (isMain) await rel?.proved?.({ taskId: j.task.id, version: j.packageVersion, proof: { sha: j.candidate.sha, tree: j.candidate.tree, pr: j.pr, head: j.main!.head, branch: j.main!.branch } });
             // The checks the gate read before the task existed, kept for its approval sheet now that it does.
             const seen = currentCi();
             if (seen !== null) await tell(ready => ready.ci({ taskId: j.task.id, ...seen }));
@@ -1074,7 +1190,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // `auto-check` so the release check runs first; the approval itself is sealed after it passed. A fresh task
           // after a CI failure after the deploy, or an automatic refusal, always asks a person.
           const auto = rel?.auto;
-          if (auto !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && j.task.scopeDigest !== null && await auto.setting(j.task.id)) {
+          // A release from main always asks a person (its deploy check runs the candidate's code on this computer).
+          if (!isMain && auto !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && j.task.scopeDigest !== null && await auto.setting(j.task.id)) {
             await watch("dispatch");
             const gate = await adapters.toolroll.gate(j.task.id);
             if (gate.scopeDigest !== j.task.scopeDigest) throw new Stop("scope-changed", `The scope of ${j.task.id} changed after it was filed; the release only runs on the scope it filed.`);
@@ -1098,7 +1215,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // scope digest, so a crash between filing and here is healed by the next run.
           await tell(ready => ready.asked(j.task.id));
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
-          say(`  Or approve it from here: \`toolroll release approve ${releaseBranchArg(j.branch)}\`.`);
+          say(`  Or approve it from here: \`toolroll release approve ${isMain ? j.packageVersion : releaseBranchArg(j.branch)}\`.`);
           if (j.ciAhead === true) say(`  ${CI_RUNNING_WORDS}`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
@@ -1138,9 +1255,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
                 say(`  run ${gate.result.run} failed: ${answer.why}. Toolroll confirmed it as its own infrastructure, so the check runs again on ${j.candidate.sha.slice(0, 7)} under the same approval`);
                 return null;
               }
-              throw new Stop("check-failed", checkFailedWords({ sha: j.candidate.sha, run: gate.result.run, class: answer.class, why: answer.why, branch: j.branch, checkout: j.checkout, taskId: j.task.id }));
+              throw new Stop("check-failed", checkFailed({ run: gate.result.run, class: answer.class, why: answer.why }));
             }
-            if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`, true);
+            if (gate.failed !== null) throw new Stop("check-failed", isMain ? checkFailed({ run: gate.result?.run ?? 0, class: null, why: `its build failed: ${gate.failed}` }) : `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`, true);
             if (gate.result === null || gate.result.check === "running" || gate.result.check === "pending") return null;
             // The build records a prepared candidate as a commit of its own (its message names the task): it must hold
             // exactly the candidate's tree, or it isn't the release.
@@ -1154,7 +1271,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // infrastructure the release reran; what passed only on a retry is said (and an automatic approval refuses it).
             if (rel?.standing !== undefined) {
               const standing = await rel.standing(j.task.id, gate.result.run);
-              if (!standing.ok) throw new Stop("check-failed", `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}: approve this commit again with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`, or fix the branch and release the new commit the same way.`);
+              if (!standing.ok) throw new Stop("check-failed", isMain ? `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}. Nothing was deployed, tagged or published: run \`toolroll release ${j.packageVersion} --new\` to check it again.` : `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}: approve this commit again with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`, or fix the branch and release the new commit the same way.`);
               if (standing.retried === null) say(`  run ${gate.result.run} passed, but its report can't be read, so whether anything passed only on a retry is unknown`);
               else if (standing.retried.length > 0) say(`  run ${gate.result.run} passed, but only on a retry: ${standing.retried.join(", ")}`);
             }
@@ -1239,6 +1356,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "deploy": {
           const check = j.check!;
+          // A release from main resuming an interrupted deploy proves its commit again first: the recovery that finishes
+          // it forward is proven by the plane's deploy gate, which takes only a fresh proof.
+          if (isMain && j.intents.deploy !== undefined) await mainProof("The interrupted deploy wasn't finished; nothing was tagged or published");
           await recoverDeploy();
           await checked(await adapters.toolroll.gate(j.task.id), "deploy");
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
@@ -1260,14 +1380,21 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             }
           }
           if (runtime === null) {
-            // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
-            // A person's release: every required check passed on the exact commit, read now (the approval may have come
-            // while CI ran). A check that failed stops here, before anything is deployed.
-            await personCiBeforeDeploy();
-            await watch("deploy");
-            await pinned();
-            // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
-            await autoCiHolds("the deploy");
+            if (isMain) {
+              // A release from main: its complete proof, immediately before the deploy (a newer attempt may have failed
+              // while the approval waited), recorded for the plane's deploy gates.
+              await watch("deploy");
+              await mainProof("Nothing was deployed, tagged or published");
+            } else {
+              // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
+              // A person's release: every required check passed on the exact commit, read now (the approval may have
+              // come while CI ran). A check that failed stops here, before anything is deployed.
+              await personCiBeforeDeploy();
+              await watch("deploy");
+              await pinned();
+              // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
+              await autoCiHolds("the deploy");
+            }
             await nightlyHolds("deploy");
             let operation: string | undefined, secret = "";
             if (rel !== undefined && j.authority && epoch !== null) {
@@ -1314,7 +1441,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const everywhere = await deployed(adapters, builtHead());
           if (everywhere !== runtime) throw new Stop("mixed-runtime", `After relinking, the console, worker and both CLI names don't all run ${runtime} at ${j.candidate.sha.slice(0, 7)}.`);
           say(`  toolroll and standing-orders run ${join(runtime, "bin.js")}`);
-          advance("ci");
+          if (isMain) {
+            // No ci, merge or tree: the release commit is already main's own, its tree in the proof. The release's
+            // verified record (trusted-release-reports.md A1): the next release's change list starts here.
+            await tell(ready => ready.verified({ taskId: j.task.id, merge: j.candidate.sha }));
+            advance("tag");
+          } else advance("ci");
           break;
         }
         case "ci": {
@@ -1401,7 +1533,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await publishHold();
           const at = await adapters.github.tag(j.github, j.tag);
           if (at !== null && at !== merge.sha) throw new Stop("conflict", `${j.tag} already points at ${at.slice(0, 7)}, not the merge ${merge.sha.slice(0, 7)}.`);
-          if (at === null) { await autoCiHolds("the tag"); await nightlyHolds("tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
+          if (at === null) {
+            // A release from main: its complete proof again, immediately before the tag (publish.yml proves it once more).
+            if (isMain) await mainProof("It runs here; nothing was tagged or published");
+            else await autoCiHolds("the tag");
+            await nightlyHolds("tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha);
+          }
           j.tagged = { sha: merge.sha };
           advance("publish");
           break;
@@ -1439,7 +1576,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       }
     }
     const left = homebrewLeft as { state: "pending" | "failed"; why: string | null } | null;
-    if (left === null) say(`Released ${j.tag}: deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, published and ${j.homebrew?.state === "superseded" ? `left Homebrew as it is (${j.homebrew.why ?? "the tap names a newer version"})` : "on Homebrew"}.`);
+    if (left === null && isMain) say(`Released ${j.tag} from main at ${j.candidate.sha.slice(0, 7)}: deployed here, tagged, published and ${j.homebrew?.state === "superseded" ? `left Homebrew as it is (${j.homebrew.why ?? "the tap names a newer version"})` : "on Homebrew"}.`);
+    else if (left === null) say(`Released ${j.tag}: deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, published and ${j.homebrew?.state === "superseded" ? `left Homebrew as it is (${j.homebrew.why ?? "the tap names a newer version"})` : "on Homebrew"}.`);
     else say(`Published ${j.tag} (deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, on npm and GitHub); Homebrew ${left.state}${left.why === null ? "" : `: ${left.why}`}. Finish it with \`${resume}\`.`);
     // The automatic road's note, once: when this run published (a run that only finishes Homebrew already said it).
     if (j.auto?.state === "approved" && !finishingHomebrew) { try { await rel?.auto?.released(j.task.id, j.tag); } catch { /* the release is done; the note is best effort */ } }
@@ -1494,6 +1632,85 @@ async function begin(options: ReleaseOptions, adapters: ReleaseAdapters, now: Da
     step: "gate", task: { id: gateTaskId(pkg.version, sha), scopeDigest: null }, approval: null, check: null, completion: null, deploy: null, ci: null,
     merge: null, tagged: null, published: null, homebrew: null, intents: {}, stopped: null, createdAt: at, updatedAt: at,
   };
+}
+
+/** Why a version can't be released from a commit, what hasn't happened, and the one way on (release-from-main.md). */
+export function mainProofWords(version: string, short: string, why: string, nothing: string): string {
+  return `${version} can't be released from ${short}: ${why.replace(/\.$/, "")}. ${nothing}. Merge a release pull request for ${version} (\`toolroll release prepare ${version}\`), then run \`toolroll release ${version}\`.`;
+}
+
+/** The release task's goal for a release from main: what a person approves (release-from-main.md, Words). */
+export function mainGoalWords(j: Pick<ReleaseJournal, "packageName" | "packageVersion" | "candidate" | "pr" | "tag" | "full" | "main">): string {
+  const check = j.full === true
+    ? "runs the full release check on this Mac (about 40 minutes)"
+    : "runs the deploy check on this Mac: it builds it, upgrades a copy of your database and starts it against that copy (about 4 minutes)";
+  return `Release ${j.packageName} ${j.packageVersion} from main at ${j.candidate.sha} (pull request #${j.pr}). GitHub ran every required check on this tree on #${j.pr} (its head ${j.main?.head ?? "unknown"}). After your approval Toolroll ${check}, then deploys it here, tags ${j.tag} and publishes to npm and Homebrew. ${j.full === true ? "The check runs this commit's code with full access to this computer." : "The deploy check's own scripts run this commit's code with this project's check access (for Toolroll, full access to this computer); its build, the upgraded copy and the console run fenced: no network but their own loopback port, nothing written outside a throwaway folder."}`;
+}
+
+/** The first run of a release from main: the release commit found and proven before anything changes. */
+async function beginMain(options: ReleaseOptions, adapters: ReleaseAdapters, now: Date): Promise<ReleaseJournal> {
+  const version = options.version!;
+  const { checkout } = options;
+  if (!VERSION_PATTERN.test(version)) throw new Stop("usage", `${version} isn't a version: \`toolroll release <major.minor.patch>\`.`);
+  const main = adapters.github.main;
+  if (main === undefined) throw new Stop("usage", "This build of Toolroll can't release from main.");
+  const installed = await adapters.toolroll.installed();
+  const runtimes = new Set([...installed.services, ...installed.clis.map(one => one.runtime ?? "(not linked)")]);
+  if (installed.services.length === 0 || runtimes.size !== 1) {
+    throw new Stop("mixed-runtime", `The console, worker and CLI names don't run one build (${[...installed.services.map(one => `service ${one}`), ...installed.clis.map(one => `${one.name} ${one.runtime ?? "not linked"}`)].join("; ")}). Update them to one verified build first.`);
+  }
+  const github = await adapters.repo.github();
+  const nothing = "Nothing was checked, deployed, tagged or published";
+  const pull = await main.pull(github, version);
+  if (pull.kind === "none") throw new Stop("no-release-commit", mainProofWords(version, "main", `no pull request from ${releaseBranchFor(version)} has merged into main`, nothing));
+  if (pull.kind === "open") throw new Stop("not-merged", `Releases now go from main. Merge #${pull.pr} like any pull request once its checks pass, then run \`toolroll release ${version}\`.`);
+  const short = pull.sha.slice(0, 7);
+  const proven = await main.prove(github, pull.sha);
+  if (!proven.ok) throw new Stop("proof", mainProofWords(version, short, proven.why, nothing));
+  if (proven.sha !== pull.sha || proven.pr !== pull.pr) throw new Stop("proof", mainProofWords(version, short, `the proof names pull request #${proven.pr} at ${proven.sha.slice(0, 7)}`, nothing));
+  if (proven.branch !== releaseBranchFor(version)) throw new Stop("proof", mainProofWords(version, short, `pull request #${proven.pr} came from ${proven.branch}, not ${releaseBranchFor(version)} (where Node 22 runs)`, nothing));
+  const placed = await main.firstParent(github, pull.sha);
+  if (!placed.ok) throw new Stop("proof", mainProofWords(version, short, `it isn't on main's history (${placed.why})`, nothing));
+  // Every other check GitHub reported on the tested head (node 26 · SQLite, say) passing too, judged as a person's
+  // release judges them.
+  const verdict = prChecksVerdict(await adapters.github.checks(github, proven.head), proven.head, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+  if (verdict.state !== "passed") throw new Stop("ci-failed", mainProofWords(version, short, `the checks on pull request #${proven.pr}'s head ${proven.head.slice(0, 7)} aren't all passing: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}`, nothing));
+  // The checkout reads the release commit's own files (fetched from the recorded remote, read through hardened Git).
+  await adapters.repo.sync(releaseBranchFor(version));
+  if (await adapters.repo.tree(pull.sha) !== proven.tree) throw new Stop("proof", mainProofWords(version, short, "this checkout's copy of it doesn't have the tree GitHub proved", nothing));
+  const manifest = await adapters.repo.fileAt(pull.sha, "package.json");
+  let pkg: { name?: unknown; version?: unknown } | null = null;
+  try { pkg = manifest === null ? null : JSON.parse(manifest) as { name?: unknown; version?: unknown }; } catch { pkg = null; }
+  if (typeof pkg?.name !== "string" || pkg.version !== version) throw new Stop("version", mainProofWords(version, short, `its package.json names ${typeof pkg?.version === "string" ? pkg.version : "no version"}`, nothing));
+  if (!changelogHas(await adapters.repo.fileAt(pull.sha, "CHANGELOG.md") ?? "", version)) throw new Stop("changelog", mainProofWords(version, short, `its CHANGELOG.md has no "## ${version}" entry`, nothing));
+  const tag = `v${version}`;
+  if (await adapters.github.tag(github, tag) !== null) throw new Stop("version", `${tag} already exists. ${nothing}.`);
+  if (await adapters.registry.published(pkg.name, version)) throw new Stop("version", `${pkg.name}@${version} is already on npm. ${nothing}.`);
+  // What changed in CI's own rules, the build or the test harness since the previous release (shown, never forcing).
+  const previous = previousVersion(version);
+  const changed = previous === null || main.changedSince === undefined ? null : await main.changedSince(github, `v${previous}`, pull.sha);
+  const harness = changed === null ? null : harnessChanges(changed.filter(path => path !== "package.json" && path !== "package-lock.json" && path !== "CHANGELOG.md"));
+  const at = now.toISOString();
+  adapters.say(`Releasing ${pkg.name} ${version} from main at ${short} (pull request #${proven.pr}).`);
+  if (harness !== null && harness.length > 0 && options.full !== true) {
+    adapters.say(`  CI's own rules, the build or the test harness changed since ${previous} (${harness.slice(0, 5).join(", ")}${harness.length > 5 ? `, and ${harness.length - 5} more` : ""}). \`toolroll release ${version} --full --new\` runs the full check on this Mac first, about 40 minutes.`);
+  }
+  if (placed.after.length > 0) adapters.say(`  ${placed.after.length} later commit${placed.after.length === 1 ? "" : "s"} on main go${placed.after.length === 1 ? "es" : ""} in the next release.`);
+  return {
+    version: 1, id: randomUUID(), github, checkout, branch: proven.branch, candidate: { sha: pull.sha, tree: proven.tree }, packageName: pkg.name, packageVersion: version, tag, pr: proven.pr,
+    step: "gate", task: { id: gateTaskId(version, pull.sha), scopeDigest: null }, approval: null, check: null, completion: null, deploy: null, ci: null,
+    // The release commit is main's own squash commit: what tag and publication name.
+    merge: { sha: pull.sha, tree: proven.tree }, tagged: null, published: null, homebrew: null, intents: {}, stopped: null, createdAt: at, updatedAt: at,
+    mode: "main", ...(options.full === true ? { full: true } : {}),
+    main: { head: proven.head, branch: proven.branch, previousTag: previous === null ? null : `v${previous}`, harness, after: placed.after },
+  };
+}
+
+/** The release before `version` by number (0.9.118 → 0.9.117), or null for a .0 (its predecessor isn't derivable). */
+export function previousVersion(version: string): string | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (match === null || Number(match[3]) === 0) return null;
+  return `${match[1]}.${match[2]}.${Number(match[3]) - 1}`;
 }
 
 /** A deployment stop; when it left an update pause before the swap, the guided way to lift it. */

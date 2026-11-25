@@ -1122,6 +1122,34 @@ impl Client {
         )
     }
 
+    /// What a Flexible thread changed since it started (its committed work), as a result's changes are read.
+    pub async fn thread_diff(&self, thread: &str) -> Result<ResultDiff, ApiError> {
+        versioned(
+            self.get::<ResultDiff>(
+                &format!("/agents/live/thread/{}/diff", encode(thread)),
+                "the thread's changes",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
+    /// One file's hunks of a thread's changes.
+    pub async fn thread_diff_file(
+        &self,
+        thread: &str,
+        file: i64,
+    ) -> Result<ResultDiffFile, ApiError> {
+        versioned(
+            self.get::<ResultDiffFile>(
+                &format!("/agents/live/thread/{}/diff?file={file}", encode(thread)),
+                "the file's changes",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
     /// Lines `from`..`from + count - 1` of a result's file at its head (context a hunk hides).
     pub async fn diff_context(
         &self,

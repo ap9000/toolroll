@@ -12,6 +12,7 @@ import type { Store } from "./store.js";
 import { refArchived } from "./task-archive.js";
 import { releaseCiRunningOf } from "./release-ci-hold.js";
 import { nightlyDebtHold } from "./nightly-github.js";
+import { mainReleaseProofProblem } from "./release-main-proof.js";
 
 export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
@@ -61,7 +62,13 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   const live = ref.repo === null ? null : store.liveVerifyCommand(ref.repo);
   const result = gate["result"] as { ran?: unknown; exitCode?: unknown } | undefined;
   // A release check's coverage (receipt version 3): partial or identity-removed never deploys, whatever the exit.
-  if (gate["coverage"] !== undefined && gate["coverage"] !== "full" && gate["coverage"] !== "composed") return refuse(`The release check didn't cover this candidate (${String(gate["coverage"])}).`);
+  if (gate["coverage"] !== undefined && gate["coverage"] !== "full" && gate["coverage"] !== "composed" && gate["coverage"] !== "deploy") return refuse(`The release check didn't cover this candidate (${String(gate["coverage"])}).`);
+  // A deploy check (release-from-main.md, part C) deploys only a release from main whose approved commit was proven,
+  // after the approval, by the release coordinator with publication's own proof (release-main-proof.ts).
+  if (gate["coverage"] === "deploy") {
+    const problem = mainReleaseProofProblem(store, ref.externalId, scope, input.now);
+    if (problem !== null) return refuse(`This candidate passed only the deploy check, which deploys a release from main alone: ${problem}.`);
+  }
   const command = gate["command"] as { command?: unknown } | undefined;
   if (gate["run"] !== input.runId || gate["head"] !== head || gate["scopeDigest"] !== scope.digest || result?.ran !== true || result.exitCode !== 0
     || live === null || command?.command !== live.command) return refuse("The native check did not pass this candidate under the currently approved command.");

@@ -22,7 +22,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
 import {
-  CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, learnRequest, readCheckReport,
+  CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, DEPLOY_PART, learnRequest, readCheckReport, type ReportPart,
   type CheckContext, type CheckPart, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
 } from "./contracts/release-check.js";
 import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
@@ -180,7 +180,9 @@ export type PreparedAttempt = {
   runId: number;
   nonce: string;
   stdin: string;
-  mode: "full" | "targeted";
+  /** `deploy`: a release from main's deploy check. Its attempt row reads `full` (the level it runs at; the row's own
+   * modes predate it), and its sealed inventory says `deploy`: the inventory's digest is in that row. */
+  mode: "full" | "targeted" | "deploy";
   inventory: CheckInventory;
   context: CheckContext;
   plan: TargetedPlan | null;
@@ -212,6 +214,10 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   learn?: readonly string[];
   /** The limit the check runs under when the plane gave it more than the approved one (check-load.ts checkLimitFor). */
   limitMs?: number | undefined;
+  /** A release from main's deploy check (release-from-main.md, part C), only for a scope sealed as one: the copy of the
+   * live database the plane made for it. It owes the build and the rehearsal (and the upgrade path when a full check
+   * would owe it); never a plan. */
+  deploy?: { copy: string } | null;
 }, now: Date): PreparedAttempt | null {
   if (checkAttemptOf(store, input.runId) !== null) return null;
   const gitDir = projectGitDir(input.repo);
@@ -231,18 +237,22 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     }
     baseFacts = baseRead.facts;
   }
-  const owed = fullObligationsOf(read.facts, baseFacts, baseFacts === null ? [] : versionBumpsOf(gitDir, baseFacts, read.facts));
+  const fullOwed = fullObligationsOf(read.facts, baseFacts, baseFacts === null ? [] : versionBumpsOf(gitDir, baseFacts, read.facts));
+  const deploy = input.deploy ?? null;
+  if (deploy !== null && plan !== null) throw new Error("A deploy check runs no targeted plan.");
+  // The deploy check owes the build, the rehearsal and, as a full check would, the upgrade path.
+  const owed: ReportPart[] = deploy === null ? fullOwed : ["build", DEPLOY_PART, ...(fullOwed.includes("upgrade") ? ["upgrade" as const] : [])];
   const release = input.release !== false;
   const ciSubstitute = !release;
-  const inventory = inventoryOf(read.facts, plan, { owed, release });
+  const inventory: CheckInventory = deploy === null ? inventoryOf(read.facts, plan, { owed: fullOwed, release }) : { version: 1, units: [], parts: owed, ciSubstitute: false, release: true, deploy: true };
   const context = checkContextOf(read.facts, input.command, input.access);
   const nonce = randomBytes(32).toString("hex");
-  const mode = plan === null ? "full" as const : "targeted" as const;
+  const mode = deploy !== null ? "deploy" as const : plan === null ? "full" as const : "targeted" as const;
   sealJson(store, root, input.runId, "check-context.json", context, CHECK_CONTEXT_CAPTURE, now);
   if (plan !== null) sealJson(store, root, input.runId, "targeted-plan.json", plan, TARGETED_PLAN_CAPTURE, now);
   if (snapshot !== null) sealJson(store, root, input.runId, "obligation-snapshot.json", snapshot, OBLIGATION_SNAPSHOT_CAPTURE, now);
   recordCheckAttempt(store, {
-    run: input.runId, authority: input.authority ?? null, mode, baseRun: plan?.base ?? null,
+    run: input.runId, authority: input.authority ?? null, mode: mode === "deploy" ? "full" : mode, baseRun: plan?.base ?? null,
     planDigest: plan === null ? null : payloadDigest(plan), snapshotDigest: snapshot === null ? null : payloadDigest(snapshot),
     inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
   }, now);
@@ -250,7 +260,8 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   // `reportBytes`: the largest report this plane reads back once sealed. A plane that doesn't say (0.9.77 and older) reads
   // only 64 KiB, so the check gives it no larger report rather than one that poisons the receipt (scripts/release-check.mjs).
   const learn = learnRequest(input.learn ?? []);
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: Number.isSafeInteger(input.limitMs) && input.limitMs! >= input.command.timeoutMs ? input.limitMs! : input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}), ...(learn.length > 0 ? { learn } : {}) });
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: Number.isSafeInteger(input.limitMs) && input.limitMs! >= input.command.timeoutMs ? input.limitMs! : input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}), ...(learn.length > 0 && deploy === null ? { learn } : {}),
+    ...(deploy === null ? {} : { copy: deploy.copy }) });
   return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])], learn };
 }
 
@@ -312,6 +323,42 @@ export function readSealedJson(store: Store, root: string, runId: number, captur
 }
 
 /**
+ * Why a release from main's deploy check (release-from-main.md, part C) has no result it can count, or null when it
+ * qualifies: it ended on its own; its report is this run's, in deploy mode, agreeing with its exit; it was sealed as a
+ * deploy check before it ran; and on a passing exit every part it owed (the build, the rehearsal, the upgrade path when
+ * owed) was selected, ran to its end and passed, the upgrade path's versions listed and every one passed.
+ */
+export function deployCheckProblem(input: { report: CheckReport | null; inventory: SealedInventory | null; exitCode: number | null }): string | null {
+  const { report, inventory, exitCode } = input;
+  if (exitCode === null) return "the deploy check didn't end on its own (it timed out or was stopped), so it has no result";
+  if (report === null) return "the deploy check gave no valid report for this run";
+  if (report.mode !== "deploy") return `the check reported a ${report.mode} run, not the deploy check it was asked for`;
+  if (report.exitCode !== exitCode) return `the check's report says exit ${report.exitCode}, but it exited ${exitCode}`;
+  if (inventory === null) return "the check's sealed inventory can't be read";
+  if (inventory.sealed.deploy !== true || inventory.sealed.release !== true) return "the check wasn't sealed as a deploy check before it ran";
+  if (exitCode !== 0) return null;
+  const parts = new Map(report.parts.map(one => [one.part, one]));
+  if (parts.size !== report.parts.length) return "the report names a part twice";
+  const owed = new Set<ReportPart>(["build", DEPLOY_PART, ...inventory.sealed.parts]);
+  for (const part of owed) {
+    const one = parts.get(part);
+    if (one === undefined || one.selected !== true) return `the deploy check owed the ${part}, and the report doesn't say it ran`;
+  }
+  for (const part of report.parts) {
+    if (!part.selected) continue;
+    if (!part.ran || part.code === null) return `${part.part} has no result: it was selected and never ran`;
+    if (part.timedOut || part.stopped === true || part.signal != null) return `${part.part} has no result: it was stopped before it finished`;
+    if (part.code !== 0) return `${part.part} exited ${part.code}, yet the check exited 0`;
+  }
+  if (owed.has("upgrade")) {
+    const upgrades = report.upgrades;
+    if (upgrades === null || !upgrades.finished || upgrades.inventoried !== true) return "the upgrade path has no complete result";
+    if (upgrades.versions.length === 0 || upgrades.versions.some(one => one.state !== "passed")) return "the upgrade path didn't pass every version it listed";
+  }
+  return null;
+}
+
+/**
  * Why a Full release check has no result it can count — or null when it qualifies as one. The plane's own facts are the
  * exit it saw (`exitCode`, null when the check didn't exit on its own: timed out or stopped) and the inventory it sealed
  * before the check ran; the report must agree with both. A failed check (a nonzero exit) needs only a valid report: what
@@ -336,7 +383,9 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
   const parts = new Map(report.parts.map(one => [one.part, one]));
   if (parts.size !== report.parts.length || CHECK_PARTS.some(part => !parts.has(part))) return "the report doesn't account for every part of the check exactly once";
   // The obligations are the plane's, sealed before the run: the typecheck and build always, and every part it owed.
-  const owed = new Set<CheckPart>(["typecheck", "build", ...inventory.sealed.parts]);
+  // A full check never owes the deploy check's rehearsal (it is sealed only into a deploy check's inventory).
+  if (inventory.sealed.deploy === true) return "the check was sealed as a deploy check, not a full one";
+  const owed = new Set<CheckPart>(["typecheck", "build", ...inventory.sealed.parts.filter((part): part is CheckPart => (CHECK_PARTS as readonly string[]).includes(part))]);
   for (const part of CHECK_PARTS) if (owed.has(part) && parts.get(part)!.selected !== true) return `the report says the ${part} wasn't selected, but the check owed it`;
   for (const part of report.parts) {
     if (!part.selected) continue;

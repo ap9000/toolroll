@@ -44,6 +44,7 @@ export const DESTINATIONS: readonly (readonly [title: string, href: string, wher
   ["Show advanced features", "/settings/general?section=advanced", "Settings → General", "advanced features menus flows agents spend more pages"],
   ["Spend", "/spend", "Settings → Spend", "monthly limits budget cap cost usage"],
   ["Terminals", "/term", "Agents", "shell console"],
+  ["Direct Chats", "/direct-chats", "Agents", "direct chat claude codex gemini conversation review ship"],
 ];
 /** Old names people still type, and where each thing lives now. */
 export const LEGACY: readonly (readonly [title: string, href: string, now: string, also?: string])[] = [
