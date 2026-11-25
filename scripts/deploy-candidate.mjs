@@ -67,7 +67,7 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   // A deploy check (docs/plans/release-from-main.md, part C) deploys only a release from main whose approved commit the
   // release coordinator proved after the approval (src/release-main-proof.ts), read from the plane's own records.
   if (gate.coverage === 'deploy') {
-    const problem = mainReleaseProofProblem(store, ref.externalId, scope);
+    const problem = mainReleaseProofProblem(store, ref.externalId, scope, now);
     requireFact(problem === null, `This candidate passed only the deploy check, which deploys a release from main alone: ${problem}.`);
   }
   const live = store.liveVerifyCommand(ref.repo);
@@ -211,16 +211,20 @@ export function personApprovalFromRecords(store, taskId) {
 }
 
 /**
- * The same rule as src/release-main-proof.ts mainReleaseProofProblem, read here from the plane's records with the
+ * The same rule as src/release-main-proof.ts mainReleaseProofProblem (a failed re-proof refuses; a proof stands 30
+ * minutes), read here from the plane's records with the
  * installed runtime's store: why a deploy check can't deploy this task, or null. A scope that isn't a sealed release
  * from main (an installed runtime too old to read one reads none) refuses.
  */
-export function mainReleaseProofProblem(store, taskId, scope) {
+export function mainReleaseProofProblem(store, taskId, scope, now) {
   const purpose = scope?.releaseCheck ?? null;
   if (purpose === null || purpose.purpose !== 'main-release') return 'only a release from main deploys on the deploy check';
   if (typeof scope.approvedAt !== 'string') return "the release isn't approved";
-  const row = store.handle.prepare('SELECT at, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1').get(taskId, 'main release proved');
+  const row = store.handle.prepare('SELECT at, action, detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1').get(taskId, 'main release proved', 'main release proof failed');
   if (row === undefined) return "the release commit's proof isn't recorded: run `toolroll release` to prove it";
+  // A failed re-proof makes every earlier proof unusable; a proof stands 30 minutes (src/release-main-proof.ts).
+  if (row.action === 'main release proof failed') return `the release commit's last proof failed (${String(row.detail ?? 'no reason kept')})`;
+  if (!(now instanceof Date) || !(now.getTime() - Date.parse(String(row.at)) <= 30 * 60_000)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
   let facts;
   try { facts = JSON.parse(String(row.detail)); } catch { return "the release commit's proof can't be read"; }
   if (Date.parse(String(row.at)) < Date.parse(scope.approvedAt)) return "the release commit wasn't proven since it was approved: run `toolroll release` to prove it";

@@ -20,7 +20,7 @@ const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainAdapter, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
 import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
 import { bumpVersion, changelogHas, changelogWith, firstParentAfter, releaseBranchFor, type MainPull } from "./release-main.js";
-import { recordMainReleaseProof } from "./release-main-proof.js";
+import { recordMainReleaseProof, recordMainReleaseProofFailure } from "./release-main-proof.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, deployActionOf, stoppedWhereNothingChanged } from "./deploy-phase.js";
 import { gateOwner } from "./release-gate.js";
@@ -885,6 +885,7 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
     },
     // A release from main's proof, kept by the plane for its deploy gates (release-main-proof.ts).
     async proved(input) { withStore(store => { recordMainReleaseProof(store, { ...input, now: now() }); }); },
+    async proofFailed(input) { withStore(store => { recordMainReleaseProofFailure(store, { ...input, now: now() }); }); },
     // After a failed release check, and before a pass is taken: the plane's own classification (check-failure.ts).
     ...(auto === undefined ? {} : {
       async recheck(taskId: string) {

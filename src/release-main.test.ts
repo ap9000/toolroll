@@ -37,6 +37,7 @@ function world() {
     tags: new Map<string, string>(), published: false,
     brew: { kind: "missing" } as HomebrewState,
     proved: [] as string[],
+    proofFailed: [] as string[],
     filed: [] as unknown[],
     calls: [] as string[], said: [] as string[],
   };
@@ -54,6 +55,7 @@ function world() {
       lease: async () => ({ ok: false, why: "unused" }), renew: async () => false, carry: async () => ({ ok: false, message: "unused" }),
       reserve: async () => ({ ok: false, why: "unused" }), start: async () => false, finish: async () => false, needsApproval: async () => false, operations: async () => [],
       proved: async input => { s.proved.push(`${input.taskId}@${s.calls.length}`); },
+      proofFailed: async input => { s.proofFailed.push(input.why); },
     },
     repo: {
       github: async () => "ap9000/toolroll", sync: async () => {}, remoteHead: async () => null, deleteBranch: async () => { s.calls.push("deleteBranch"); },
@@ -152,6 +154,20 @@ describe("toolroll release <version>: a release from main", () => {
     expect(outcome).toMatchObject({ ok: false, reason: "proof", step: "deploy" });
     expect(outcome.ok === false && outcome.message).toMatch(/Nothing was deployed, tagged or published/);
     expect(s.calls).not.toContain("deploy");
+    // The plane is told, so the proof it kept from before the approval waited deploys nothing directly either.
+    expect(s.proofFailed).toEqual([expect.stringMatching(/node 24 · macos-latest/)]);
+  });
+
+  test("resuming an interrupted deploy proves the release commit again before recovering it", async () => {
+    const dir = stateDir();
+    const { s, adapters } = world();
+    const deploy = adapters.toolroll.deploy;
+    let lost = true;
+    adapters.toolroll.deploy = async input => { if (lost) { lost = false; s.calls.push("deploy-lost"); throw new Error("the coordinator was killed during the deploy"); } return deploy(input); };
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy" });
+    const before = s.calls.length;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(s.calls.slice(before, before + 2)).toEqual(["prove", "prove"]);
   });
 
   test("a resume binds to the same commit, tree, pull request and head: a different proof stops it", async () => {

@@ -11,6 +11,11 @@ import type { Scope } from "./scope.js";
 import type { MainProof } from "./release-main.js";
 
 export const MAIN_PROOF_ACTION = "main release proved";
+/** A re-proof that failed (Codex review, finding 3): it makes every earlier proof of the task unusable. */
+export const MAIN_PROOF_FAILED_ACTION = "main release proof failed";
+/** How long a proof stands for a deployment: the coordinator proves right before its deploy (whose own limit is 30
+ * minutes) and right before resuming an interrupted one, so a proof older than this deploys nothing. */
+export const MAIN_PROOF_VALID_MS = 30 * 60_000;
 const SHA = /^[0-9a-f]{40}$/;
 
 /** Keep the coordinator's proof of `proof.sha` for task `taskId`: one ledger row, its facts as compact JSON. */
@@ -23,16 +28,27 @@ export function recordMainReleaseProof(store: Store, input: { taskId: string; ve
     source: "work", detail: JSON.stringify({ sha: proof.sha, tree: proof.tree, pr: proof.pr, head: proof.head, branch: proof.branch }) });
 }
 
+/** A re-proof of the release commit failed: kept for the task, so no earlier proof of it deploys anything. */
+export function recordMainReleaseProofFailure(store: Store, input: { taskId: string; version: string; why: string; now: Date }): void {
+  const ref = store.lookupRef(input.taskId);
+  if (ref === null) throw new Error(`no task ${input.taskId}`);
+  store.recordAction({ at: input.now.toISOString(), actor: "toolroll release", repo: ref.repo, taskId: input.taskId, runId: null, action: MAIN_PROOF_FAILED_ACTION, outcome: input.version,
+    source: "work", detail: input.why });
+}
+
 /**
  * Why a main release task can't deploy on a deploy check, or null when it can: its scope is a sealed main release, and
- * the newest proof record for it came after the approval and names exactly what was approved. Read only.
+ * the newest proof record for it is a proof (never a failed re-proof), made after the approval and within
+ * MAIN_PROOF_VALID_MS of `now`, naming exactly what was approved. Read only.
  */
-export function mainReleaseProofProblem(store: Store, taskId: string, scope: Pick<Scope, "releaseCheck" | "candidate" | "approvedAt"> | null): string | null {
+export function mainReleaseProofProblem(store: Store, taskId: string, scope: Pick<Scope, "releaseCheck" | "candidate" | "approvedAt"> | null, now: Date): string | null {
   const purpose = scope?.releaseCheck ?? null;
   if (scope === null || purpose === null || purpose.purpose !== "main-release") return "only a release from main deploys on the deploy check";
   if (scope.approvedAt === null) return "the release isn't approved";
-  const row = store.handle.prepare("SELECT at, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1").get(taskId, MAIN_PROOF_ACTION);
+  const row = store.handle.prepare("SELECT at, action, detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1").get(taskId, MAIN_PROOF_ACTION, MAIN_PROOF_FAILED_ACTION);
   if (row === undefined) return "the release commit's proof isn't recorded: run `toolroll release` to prove it";
+  if (row["action"] === MAIN_PROOF_FAILED_ACTION) return `the release commit's last proof failed (${String(row["detail"] ?? "no reason kept")})`;
+  if (!(now.getTime() - Date.parse(String(row["at"])) <= MAIN_PROOF_VALID_MS)) return "the release commit's proof is older than 30 minutes: run `toolroll release` to prove it again";
   let facts: Record<string, unknown>;
   try { facts = JSON.parse(String(row["detail"])) as Record<string, unknown>; } catch { return "the release commit's proof can't be read"; }
   if (Date.parse(String(row["at"])) < Date.parse(scope.approvedAt)) return "the release commit wasn't proven since it was approved: run `toolroll release` to prove it";

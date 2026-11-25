@@ -28,8 +28,12 @@ homebrew. Gone: branch update, carry, ci, merge, tree.
   newest attempt on the tested head. The coordinator adds: the same commit, tree, pull request, head and branch the
   journal was bound to (every resume); M still on main's first-parent history (appends are harmless, a rewrite or
   removal stops); every other check reported on the tested head passing (`node 26 · SQLite`, say). It runs before
-  anything is filed, immediately before the deploy and immediately before the tag, and each proof after filing is kept
-  in the plane's action ledger for the task (`main release proved`).
+  anything is filed, immediately before the deploy (and before resuming an interrupted one) and immediately before the
+  tag, and each proof after filing is kept in the plane's action ledger for the task (`main release proved`). A proof
+  stands 30 minutes for a deployment, and a re-proof that fails is kept too (`main release proof failed`) and makes
+  every earlier proof unusable: a direct `deploy-browser.mjs` run can't stand on a stale or overtaken proof. Within
+  those 30 minutes a newer CI failure nobody re-proved is not seen by a direct deploy (the coordinator's own deploy
+  always re-proves first).
 - **The scope.** The task is filed with `task scope --release <v>:<pr>:<branch> --from-main [--full-check]`: a release
   check purpose `main-release` with the check it runs (`deploy` or `full`), sealed into the scope digest a person
   approves. Never release terms: nothing carries. A release from main always asks a person (no automatic approval).

@@ -12,7 +12,7 @@ import type { CheckReport } from "./contracts/release-check.js";
 import { deploymentGate } from "./deploy-gate.js";
 import { storeEvidence } from "./evidence.js";
 import { releaseCheckPurposeFor } from "./release-carry.js";
-import { mainReleaseProofProblem, recordMainReleaseProof } from "./release-main-proof.js";
+import { MAIN_PROOF_VALID_MS, mainReleaseProofProblem, recordMainReleaseProof, recordMainReleaseProofFailure } from "./release-main-proof.js";
 import { settleCoverage } from "./release-recheck.js";
 import { approve, propose } from "./scope.js";
 import { effectiveCheckFacts, sealVerificationReceipt, verificationEvidence } from "./verification-evidence.js";
@@ -86,25 +86,38 @@ describe("the deploy check's coverage", () => {
     const scope = () => f.store.getScope(f.taskId);
     // No proof recorded: refused, by both gates.
     expect(gate()).toMatchObject({ ok: false, message: expect.stringMatching(/deploys a release from main alone: the release commit's proof isn't recorded/) });
-    expect(candidateRule(f.store, f.taskId, scope())).toMatch(/proof isn't recorded/);
+    expect(candidateRule(f.store, f.taskId, scope(), LATER)).toMatch(/proof isn't recorded/);
     // A proof from before the approval, or of another commit: refused.
     recordMainReleaseProof(f.store, { taskId: f.taskId, version: VERSION, proof: proof(f.approved, purpose.approvedTree), now: EARLIER });
-    expect(mainReleaseProofProblem(f.store, f.taskId, scope())).toMatch(/wasn't proven since it was approved/);
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toMatch(/wasn't proven since it was approved/);
     recordMainReleaseProof(f.store, { taskId: f.taskId, version: VERSION, proof: proof("e".repeat(40), purpose.approvedTree), now: LATER });
-    expect(mainReleaseProofProblem(f.store, f.taskId, scope())).toMatch(/another release commit/);
-    expect(candidateRule(f.store, f.taskId, scope())).toMatch(/another release commit/);
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toMatch(/another release commit/);
+    expect(candidateRule(f.store, f.taskId, scope(), LATER)).toMatch(/another release commit/);
     // The approved commit, proven after the approval: the deploy check's coverage stands (the gate goes on to completion).
     recordMainReleaseProof(f.store, { taskId: f.taskId, version: VERSION, proof: proof(f.approved, purpose.approvedTree), now: LATER });
-    expect(mainReleaseProofProblem(f.store, f.taskId, scope())).toBeNull();
-    expect(candidateRule(f.store, f.taskId, scope())).toBeNull();
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toBeNull();
+    expect(candidateRule(f.store, f.taskId, scope(), LATER)).toBeNull();
     expect(gate()).toMatchObject({ ok: false, message: expect.stringMatching(/not marked this exact result complete/) });
+    // A proof stands 30 minutes; after that (a direct deploy later on) both gates refuse it.
+    const STALE = new Date(LATER.getTime() + MAIN_PROOF_VALID_MS + 1);
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), STALE)).toMatch(/older than 30 minutes/);
+    expect(candidateRule(f.store, f.taskId, scope(), STALE)).toMatch(/older than 30 minutes/);
+    expect(deploymentGate(f.store, { runId, evidenceRoot: EVIDENCE(f), now: STALE })).toMatchObject({ ok: false, message: expect.stringMatching(/older than 30 minutes/) });
+    // A failed re-proof (a newer CI attempt failed, M left main) makes the earlier proof unusable at once.
+    recordMainReleaseProofFailure(f.store, { taskId: f.taskId, version: VERSION, why: "node 24 · macos-latest: failure", now: LATER });
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toMatch(/last proof failed \(node 24/);
+    expect(candidateRule(f.store, f.taskId, scope(), LATER)).toMatch(/last proof failed/);
+    expect(gate()).toMatchObject({ ok: false, message: expect.stringMatching(/last proof failed/) });
+    // Only a fresh proof, after it, stands again.
+    recordMainReleaseProof(f.store, { taskId: f.taskId, version: VERSION, proof: proof(f.approved, purpose.approvedTree), now: LATER });
+    expect(mainReleaseProofProblem(f.store, f.taskId, scope(), LATER)).toBeNull();
   });
 
   test("a branch release never deploys on a deploy check's coverage", () => {
     mainRelease("branch");
     const f = fixture();
-    expect(mainReleaseProofProblem(f.store, f.taskId, f.store.getScope(f.taskId))).toMatch(/only a release from main/);
-    expect(candidateRule(f.store, f.taskId, f.store.getScope(f.taskId))).toMatch(/only a release from main/);
+    expect(mainReleaseProofProblem(f.store, f.taskId, f.store.getScope(f.taskId), LATER)).toMatch(/only a release from main/);
+    expect(candidateRule(f.store, f.taskId, f.store.getScope(f.taskId), LATER)).toMatch(/only a release from main/);
   });
 });
 

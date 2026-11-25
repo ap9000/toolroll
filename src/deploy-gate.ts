@@ -66,7 +66,7 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   // A deploy check (release-from-main.md, part C) deploys only a release from main whose approved commit was proven,
   // after the approval, by the release coordinator with publication's own proof (release-main-proof.ts).
   if (gate["coverage"] === "deploy") {
-    const problem = mainReleaseProofProblem(store, ref.externalId, scope);
+    const problem = mainReleaseProofProblem(store, ref.externalId, scope, input.now);
     if (problem !== null) return refuse(`This candidate passed only the deploy check, which deploys a release from main alone: ${problem}.`);
   }
   const command = gate["command"] as { command?: unknown } | undefined;

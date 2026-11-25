@@ -262,6 +262,8 @@ export type ReleaseAuthorityAdapter = {
    * now, for this task. The plane keeps it (its action ledger), and its deploy gates accept a deploy check's coverage
    * only for a main release whose approved commit has such a record. Absent on an older plane: nothing deploys. */
   proved?(input: { taskId: string; version: string; proof: MainProof }): Promise<void>;
+  /** A re-proof failed: the plane keeps that, and no earlier proof of the task deploys anything any more. */
+  proofFailed?(input: { taskId: string; version: string; why: string }): Promise<void>;
 };
 
 /** What the coordinator tells the plane for a person's release (release-approval.ts). Ids and its own readings only. */
@@ -921,6 +923,17 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      * happened when it fails.
      */
     const mainProof = async (nothing: string): Promise<string[]> => {
+      try { return await proveMain(nothing); }
+      catch (error) {
+        // A failed re-proof makes the plane's earlier proofs of this task unusable (Codex review, finding 3): a direct
+        // deployment can't stand on them. Failing to record that stops the release too.
+        if (error instanceof Stop && j.task.scopeDigest !== null && rel?.proofFailed !== undefined) {
+          await rel.proofFailed({ taskId: j.task.id, version: j.packageVersion, why: error.message.slice(0, 280) });
+        }
+        throw error;
+      }
+    };
+    const proveMain = async (nothing: string): Promise<string[]> => {
       const main = adapters.github.main;
       if (main === undefined) throw new Stop("usage", "This build of Toolroll can't release from main.");
       const short = j.candidate.sha.slice(0, 7);
@@ -1342,6 +1355,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "deploy": {
           const check = j.check!;
+          // A release from main resuming an interrupted deploy proves its commit again first: the recovery that finishes
+          // it forward is proven by the plane's deploy gate, which takes only a fresh proof.
+          if (isMain && j.intents.deploy !== undefined) await mainProof("The interrupted deploy wasn't finished; nothing was tagged or published");
           await recoverDeploy();
           await checked(await adapters.toolroll.gate(j.task.id), "deploy");
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
