@@ -261,11 +261,12 @@ async function placeOf(git: Git, project: { repo: string; common: string }, ref:
   return { kind: "folder" };
 }
 
-/** The handoff ref for a task's landing commit: refs/toolroll/land/<task>, the id made ref-safe. */
-export function handoffRefOf(taskId: string): string {
+/** Where a task's landing commit is kept: refs/toolroll/land/<task>/<commit>, the id made ref-safe. One ref per distinct
+ * commit, so a later handoff (other words, another destination) never displaces an earlier kept one. */
+export function handoffRefOf(taskId: string, commit: string): string {
   const safe = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(taskId) && !taskId.includes("..") && !taskId.endsWith(".lock") && !taskId.endsWith(".") ? taskId
     : createHash("sha256").update(taskId).digest("hex").slice(0, 16);
-  return `refs/toolroll/land/${safe}`;
+  return `refs/toolroll/land/${safe}/${oidOrThrow(commit)}`;
 }
 
 /** The project's main checkout, as Toolroll recorded it, with its repository folder. */
@@ -438,11 +439,16 @@ async function readUndo(store: Store, rootId: string, project: { repo: string; c
     reverts: { source: source.name, old: source.old, landed: source.commit }, bindings: checkBindingsOf(store, project.repo) });
 }
 
+/** The commits a task's landings already record as landed (an identical commit is never recorded twice). */
+function landedCommits(store: Store, rootId: string): Set<string> {
+  return new Set(intents(store, "task_id = ?", [rootId]).filter(one => one.kind === "land" && settledOf(store, one.id)?.outcome.startsWith("landed") === true).map(one => one.commit));
+}
+
 /** The newest kept handoff of this task whose commit its branch contains now and no landing records yet, or null. */
 async function broughtIn(store: Store, git: Git, repo: string, rootId: string): Promise<Handoff | null> {
-  const reconciled = new Set(intents(store, "task_id = ?", [rootId]).flatMap(one => one.fromHandoff === null ? [] : [one.fromHandoff]));
+  const landed = landedCommits(store, rootId);
   for (const one of handoffsOf(store, repo, rootId)) {
-    if (reconciled.has(one.id)) continue;
+    if (landed.has(one.commit)) continue;
     if ((await git(["merge-base", "--is-ancestor", one.commit, one.ref])).code === 0) return one;
   }
   return null;
@@ -580,12 +586,6 @@ export async function land(store: Store, taskId: string, input: { key: string; i
         warning: null, handoff: { ref: handedOff.keep, command: handoffCommand(repo, handedOff.commit) } };
     }
     await settleUnfinished(store, repo, now, options);
-    // A handed-off commit the person brought in becomes a landing record before an undo reads it (it never grants
-    // acceptance: it records only where the branch already is), so Undo reverts exactly that commit.
-    if (input.undo === true) {
-      const rootId = assignmentOf(store, taskId, now, { principal: "operator", repos: access.repos, includeUnplaced: false }, options.root)?.rootId ?? null;
-      if (rootId !== null) await reconcileHandoffs(store, gitFor(repo, options.git), repo, rootId, first.actor, now);
-    }
     const read = await readLanding(store, taskId, access, now, { ...options, ...(input.into === undefined ? {} : { into: input.into }), ...(input.undo === true ? { undo: true } : {}) });
     if (!read.ok) return read;
     if (!("plan" in read)) return refuse("nothing", ALREADY_MSG(read.landed.ref, read.landed.commit));
@@ -593,6 +593,13 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     if (plan.key !== input.key) return refuse("stale", "Something changed since you looked (the branch, the checks or the result). Look again, then land it.");
     const project = projectOf(store, plan.repo)!;
     const git = gitFor(plan.repo, options.git);
+    // An undo of a handed-off commit the person brought in: only now, the yes's key proved, exactly the handoff its
+    // preview named becomes a landing record (it records where the branch already is and grants nothing), so the
+    // undo reverts exactly that commit.
+    const handoffSource = plan.kind === "undo" ? /^handoff:(\d+)$/.exec(plan.reverts?.source ?? "") : null;
+    if (handoffSource !== null && !(await reconcileHandoff(store, git, plan.repo, plan.rootId, Number(handoffSource[1]), first.actor, now))) {
+      return refuse("stale", "That landing changed since you looked. Look again.");
+    }
     /** Everything the yes rests on, read again (inside the caller's transaction): the person's authority, the
      * pull-request policy, the exact receipt (or the landing an undo reverts) and the check bindings. */
     const stillStands = (): { ok: true; actor: string } | { ok: false; reason: LandRefusal; message: string } => {
@@ -618,7 +625,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     const made = plan.kind === "undo" ? await revertCommit(git, plan, options.scratch) : await squashCommit(git, plan, options.scratch);
     if (!made.ok) return made;
     const commit = made.commit;
-    const keep = handoffRefOf(plan.rootId);
+    const keep = handoffRefOf(plan.rootId, commit);
     // The squash is kept at its ref before anything moves (so a person's gc can't take it), the ref moved only from what
     // it was read as (a compare-and-swap; created when absent).
     if (plan.kind === "land") {
@@ -706,21 +713,23 @@ async function keepAt(git: Git, ref: string, commit: string, why: string): Promi
   return moved.code === 0;
 }
 
-/** Each kept handoff of `rootId` whose commit its branch now contains, and that no landing records yet, recorded as a
- * landing (settled landed in the same transaction, so it never holds the project's landing lock). Only `land` calls it,
- * after proving the caller may land in this project. It records where the branch already is; it grants nothing. */
-async function reconcileHandoffs(store: Store, git: Git, repo: string, rootId: string, actor: string, now: Date): Promise<void> {
-  for (;;) {
-    const one = await broughtIn(store, git, repo, rootId);
-    if (one === null) return;
-    store.transact(() => {
-      if (intents(store, "task_id = ?", [rootId]).some(intent => intent.fromHandoff === one.id)) return;
-      const id = recordActionWhole(store.handle, { at: now.toISOString(), actor, repo, taskId: rootId, runId: one.run, action: LAND_INTENT, outcome: "pending", source: "request" },
-        { v: 1, kind: "land", key: one.key, ref: one.ref, old: one.old, commit: one.commit, mode: "ref", policy: "squash", candidate: one.candidate, fromHandoff: one.id });
-      recordActionWhole(store.handle, { at: now.toISOString(), actor: "toolroll", repo, taskId: rootId, runId: one.run, action: LAND_SETTLED, outcome: `${id}:landed:brought-in`, source: "work" },
-        { v: 1, words: "The person brought in the landing commit Toolroll made; recorded as landed." });
-    });
-  }
+/** Record kept handoff `id` of `rootId` as a landing, when its branch contains its commit now (settled landed in the same
+ * transaction, so it never holds the project's landing lock), unless a landing of that task already records it (or
+ * that same commit). True when it stands recorded. Only `land` calls it, after the caller's standing and the yes's key
+ * are proved. It records where the branch already is; it grants nothing. */
+async function reconcileHandoff(store: Store, git: Git, repo: string, rootId: string, id: number, actor: string, now: Date): Promise<boolean> {
+  const one = handoffsOf(store, repo, rootId).find(row => row.id === id);
+  if (one === undefined || (await git(["merge-base", "--is-ancestor", one.commit, one.ref])).code !== 0) return false;
+  return store.transact(() => {
+    const recorded = intents(store, "task_id = ?", [rootId]).find(intent => intent.fromHandoff === one.id);
+    if (recorded !== undefined) return settledOf(store, recorded.id)?.outcome.startsWith("landed") === true;
+    if (landedCommits(store, rootId).has(one.commit)) return false;
+    const intent = recordActionWhole(store.handle, { at: now.toISOString(), actor, repo, taskId: rootId, runId: one.run, action: LAND_INTENT, outcome: "pending", source: "request" },
+      { v: 1, kind: "land", key: one.key, ref: one.ref, old: one.old, commit: one.commit, mode: "ref", policy: "squash", candidate: one.candidate, fromHandoff: one.id });
+    recordActionWhole(store.handle, { at: now.toISOString(), actor: "toolroll", repo, taskId: rootId, runId: one.run, action: LAND_SETTLED, outcome: `${intent}:landed:brought-in`, source: "work" },
+      { v: 1, words: "The person brought in the landing commit Toolroll made; recorded as landed." });
+    return true;
+  });
 }
 
 /** A git command a person can copy and paste, run in the recorded project folder: the folder exactly as recorded,
@@ -813,7 +822,9 @@ async function revertCommit(git: Git, plan: LandingPlan, scratch?: string): Prom
     const reverted = await git([...identity, "revert", "--no-edit", "--no-commit", `${reverts.old}..${reverts.landed}`], checkout);
     if (reverted.code !== 0) {
       await git(["revert", "--abort"], checkout);
-      return refuse("moved", `Undoing it conflicts with later changes on ${plan.branch}. To undo it yourself: git -C ${plan.repo} revert ${reverts.old}..${reverts.landed}`);
+      const range = `${oidOrThrow(reverts.old)}..${oidOrThrow(reverts.landed)}`;
+      const command = gitCommand(plan.repo, ["revert", range]);
+      return refuse("moved", `Undoing it conflicts with later changes on ${plan.branch}. ${command === null ? UNSAFE_FOLDER(`git revert ${range}`) : `To undo it yourself: ${command}`}`);
     }
     const committed = await git([...identity, "commit", "--no-verify", "--allow-empty", "-m", `Undo landing of ${plan.taskId} (${short(reverts.old)}..${short(reverts.landed)})`], checkout);
     const head = await git(["rev-parse", "--verify", "-q", "HEAD^{commit}"], checkout);
@@ -853,8 +864,8 @@ export function recognisedOnBranch(store: Store, repo: string, rootId: string, c
 }
 
 /** Whether a landing commit Toolroll handed the person is on its branch now (they brought it in) with no landing record
- * yet: the page offers Undo, whose yes records it as landed first (reconcileHandoffs). Display only. */
+ * yet: the page offers Undo, whose yes records it as landed first (reconcileHandoff). Display only. */
 export function broughtInOnBranch(store: Store, repo: string, rootId: string, read: (cwd: string, args: readonly string[]) => string | null): boolean {
-  const reconciled = new Set(intents(store, "task_id = ?", [rootId]).flatMap(one => one.fromHandoff === null ? [] : [one.fromHandoff]));
-  return handoffsOf(store, repo, rootId).some(one => !reconciled.has(one.id) && read(repo, ["merge-base", "--is-ancestor", one.commit, one.ref]) !== null);
+  const landed = landedCommits(store, rootId);
+  return handoffsOf(store, repo, rootId).some(one => !landed.has(one.commit) && read(repo, ["merge-base", "--is-ancestor", one.commit, one.ref]) !== null);
 }

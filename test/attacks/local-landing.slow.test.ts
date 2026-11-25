@@ -582,6 +582,76 @@ describe("checked-out main (everyday-9 A1): never touched; a kept commit and the
     expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${before}^{tree}`));
     expect(landingOf(store, "t")).toMatchObject({ undone: true, intent: { commit: landed.commit, fromHandoff: expect.any(Number) } });
   });
+
+  const intentCount = () => Number(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = ?").get(LAND_INTENT)!["n"]);
+
+  for (const [name, folder, safe] of [["a space, $(…), a quote and a backslash", "my proj $(touch PWNED) it's \\ x", true], ["a newline", "proj\nx", false]] as const) {
+    test(`an undo that conflicts, in a project folder named with ${name}: ${safe ? "the revert command's folder is exactly the recorded one" : "no command, only what to run"}`, async () => {
+      moveProjectTo(folder);
+      built("t", { "a.txt": "two\n" });
+      expect((await landNow("t")).landed).toMatchObject({ ok: true });
+      const later = join(scratch(), "later");
+      git(repo, "worktree", "add", "-q", later, "main");
+      write(join(later, "a.txt"), "three\n");
+      git(later, "commit", "-qam", "later");
+      git(repo, "worktree", "remove", later);
+      const { landed } = await landNow("t", { undo: true });
+      if (landed?.ok !== false) throw new Error(JSON.stringify(landed));
+      expect(landed.reason).toBe("moved");
+      const landedAt = landingOf(store, "t")!.intent;
+      if (safe) {
+        const command = landed.message.split("To undo it yourself: ")[1]!;
+        expect(asTheShellReadsIt(command)).toEqual(["-C", repo, "revert", `${landedAt.old}..${landedAt.commit}`]);
+        expect(existsSync(join(markers, "PWNED"))).toBe(false);
+      } else {
+        expect(landed.message).toContain(`Toolroll can't write a safe command for this folder's name; run git revert ${landedAt.old}..${landedAt.commit} in your project folder.`);
+      }
+    });
+  }
+
+  test("two handoffs keep both commits, each at its own ref; replaying the older never displaces the newer", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const first = await planOf();
+    const one = await land(store, "t", { key: first.key, into: "main" }, person, access(), NOW, options());
+    store.handle.prepare("UPDATE task SET title = ? WHERE id = 't'").run("Other words");
+    const second = await planOf();
+    const two = await land(store, "t", { key: second.key, into: "main" }, person, access(), NOW, options());
+    if (one.ok !== true || two.ok !== true || one.handoff === null || two.handoff === null) throw new Error(JSON.stringify([one, two]));
+    expect(one.commit).not.toBe(two.commit);
+    expect(one.handoff.ref).toBe(`refs/toolroll/land/t/${one.commit}`);
+    expect(git(repo, "rev-parse", one.handoff.ref)).toBe(one.commit);
+    expect(git(repo, "rev-parse", two.handoff.ref)).toBe(two.commit);
+    expect(await land(store, "t", { key: first.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true, commit: one.commit });
+    expect(git(repo, "rev-parse", two.handoff.ref)).toBe(two.commit);
+    expect(git(repo, "rev-parse", one.handoff.ref)).toBe(one.commit);
+  });
+
+  test("two handoffs of the same commit (destination recorded between), merged: Undo's preview and yes agree and revert exactly it, recorded once", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const before = at();
+    const first = await planOf();
+    const one = await land(store, "t", { key: first.key, into: "main" }, person, access(), NOW, options());
+    const second = await planOf();
+    expect(second.key).not.toBe(first.key);
+    const two = await land(store, "t", { key: second.key, into: "main" }, person, access(), NOW, options());
+    if (one.ok !== true || two.ok !== true) throw new Error(JSON.stringify([one, two]));
+    expect(two.commit).toBe(one.commit);
+    git(repo, "merge", "-q", "--ff-only", one.commit);
+    git(repo, "checkout", "-q", "work");
+    // A key that isn't the preview's records nothing.
+    const intentsBefore = intentCount();
+    expect(await land(store, "t", { key: "f".repeat(16), undo: true }, person, access(), NOW, options())).toMatchObject({ ok: false, reason: "stale" });
+    expect(intentCount()).toBe(intentsBefore);
+    const undone = await landNow("t", { undo: true });
+    expect(undone.landed).toMatchObject({ ok: true, kind: "undo" });
+    expect(git(repo, "rev-parse", "main^")).toBe(one.commit);
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${before}^{tree}`));
+    const reconciled = store.handle.prepare("SELECT detail FROM action_ledger WHERE action = ?").all(LAND_INTENT)
+      .map(row => JSON.parse(String(row["detail"])) as { kind: string; commit: string }).filter(d => d.kind === "land" && d.commit === one.commit);
+    expect(reconciled).toHaveLength(1);
+  });
 });
 
 describe("the landed commit is exactly what was read and checked (everyday-9 A1)", () => {
@@ -596,7 +666,7 @@ describe("the landed commit is exactly what was read and checked (everyday-9 A1)
     expect(landingWords(first.plan).join("\n")).toContain("Checks ran on these exact files");
     const { landed } = await landNow("t");
     expect(landed).toMatchObject({ ok: true, commit: first.plan.squash?.commit });
-    expect(git(repo, "rev-parse", "refs/toolroll/land/t")).toBe(first.plan.squash?.commit);
+    expect(git(repo, "rev-parse", `refs/toolroll/land/t/${first.plan.squash!.commit}`)).toBe(first.plan.squash?.commit);
   });
 
   test("a different squash after the yes (another parent, or other words) is refused: nothing lands", async () => {
