@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 export interface PageHeaderProps {
-  /** The screen's name, e.g. "Standing Orders" or "job-scraper". */
+  /** The screen's name, e.g. "Standing Orders" or "my-tool". */
   title: string;
   /** One quiet line under the title, e.g. "2 waiting · 1 running". */
   subtitle?: string;

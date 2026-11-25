@@ -100,8 +100,8 @@ public final class WorkbenchStore {
     public private(set) var activeProfile: ConnectionProfile {
         didSet {
             guard oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account else { return }
-            passwordMemory.forget()
             projectsRead = nil
+            refreshTouchIDState()
         }
     }
     public private(set) var isLocalSession: Bool = false
@@ -113,7 +113,6 @@ public final class WorkbenchStore {
     public var modelPickerTaskId: String?
     public var modelPickerSteps: StepCardsResponse?
     public var pendingModelPick: ModelPick?
-    public let passwordMemory = PasswordMemory()
 
     public var workspaceMode: WorkspaceMode = .workbench {
         didSet { UserDefaults.standard.set(workspaceMode.rawValue, forKey: "toolroll.workspaceMode") }
@@ -507,6 +506,11 @@ public final class WorkbenchStore {
         } else {
             canvasBaseURL = ""
         }
+    }
+
+    public func startPreviewServerAndHydrate() async {
+        guard previewServer.consentToPendingStart() else { return }
+        await wakePreviewServerAndHydrate(forceAll: false)
     }
 
     public func installPreviewDependenciesAndHydrate() async {
@@ -1868,7 +1872,7 @@ public final class WorkbenchStore {
             chatShipError = "Connect to your local Toolroll engine to ship."
             return false
         }
-        let pw = effectivePassword(password)
+        let pw = password
         do {
             let res = try await client.executeDirectChatShip(
                 threadId: threadId,
@@ -1988,7 +1992,6 @@ public final class WorkbenchStore {
     }
 
     public func approveProjectWorktreeSetup(repoPath: String, command: String, password: String) async -> Bool {
-        let password = effectivePassword(password)
         let cleanCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanCmd.isEmpty else {
             notice = WorkbenchNotice(kind: .refusal, message: "Enter a worktree setup command first.")
@@ -2323,13 +2326,11 @@ public final class WorkbenchStore {
     }
 
     public func retryPendingModelChange(password: String) async {
-        let password = effectivePassword(password)
         guard let fields = pendingModelFields else { return }
         await submitModelFields(fields, friendlyLabel: "model selection", password: password)
     }
 
     private func submitModelFields(_ fields: [String: String], friendlyLabel: String, password: String = "") async {
-        let password = effectivePassword(password)
         busyLabel = "Switching to \(friendlyLabel)…"
         modelChangeError = nil
         defer { busyLabel = nil }
@@ -2999,7 +3000,6 @@ public final class WorkbenchStore {
     }
 
     public func approveSelectedTask(password: String = "") async {
-        let password = effectivePassword(password)
         guard let rootTaskId = selectedTaskId else { return }
         let queryTaskId = stepCards?.task.id ?? rootTaskId
         busyLabel = "Approving plan…"
@@ -3908,7 +3908,7 @@ public final class WorkbenchStore {
         isTouchIDAvailable = TouchIDVault.isAuthenticationAvailable()
         touchIDLabel = TouchIDVault.biometryLabel()
         touchIDSystemImage = TouchIDVault.biometrySystemImage()
-        isTouchIDEnabled = isTouchIDAvailable && TouchIDVault.hasStoredPassword(account: activeProfile.account)
+        isTouchIDEnabled = isTouchIDAvailable && TouchIDVault.hasStoredPassword(account: activeProfile.account, origin: activeProfile.origin)
     }
 
     @discardableResult
@@ -3918,7 +3918,7 @@ public final class WorkbenchStore {
             return (false, "Enter your Toolroll password to enable \(touchIDLabel).")
         }
         do {
-            try TouchIDVault.savePassword(trimmed, account: activeProfile.account)
+            try TouchIDVault.savePassword(trimmed, account: activeProfile.account, origin: activeProfile.origin)
             refreshTouchIDState()
             return (true, "\(touchIDLabel) enabled for quick approvals.")
         } catch {
@@ -3927,26 +3927,19 @@ public final class WorkbenchStore {
     }
 
     public func disableTouchID() {
-        TouchIDVault.deletePassword(account: activeProfile.account)
+        TouchIDVault.deletePassword(account: activeProfile.account, origin: activeProfile.origin)
         refreshTouchIDState()
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
 
-    func effectivePassword(_ typed: String) -> String {
-        guard typed.isEmpty else {
-            passwordMemory.remember(typed, for: passwordOwner)
-            return typed
-        }
-        return passwordMemory.recall(for: passwordOwner) ?? ""
-    }
-
-    var passwordOwner: String { "\(activeProfile.account)|\(activeProfile.origin)" }
-
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
-        if let remembered = passwordMemory.recall(for: passwordOwner) { return remembered }
+        let bound = connectionBinding
         do {
-            let unlocked = try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
-            passwordMemory.remember(unlocked, for: passwordOwner)
+            let unlocked = try await TouchIDVault.unlockPassword(account: bound.account, origin: bound.origin, reason: reason)
+            guard connectionBinding == bound else {
+                notice = WorkbenchNotice(kind: .refusal, message: Self.reconnectedWords)
+                return nil
+            }
             return unlocked
         } catch TouchIDVaultError.cancelled {
             return nil
@@ -3955,6 +3948,17 @@ public final class WorkbenchStore {
             return nil
         }
     }
+
+    struct ConnectionBinding: Equatable {
+        let origin: String
+        let account: String
+    }
+
+    var connectionBinding: ConnectionBinding {
+        ConnectionBinding(origin: activeProfile.origin, account: activeProfile.account)
+    }
+
+    static let reconnectedWords = "Toolroll reconnected while you confirmed. Nothing was sent; try again."
 
     public func approveSelectedTaskWithTouchID() async {
         let title = selectedRow?.title ?? selectedTaskId ?? "this task"
@@ -3976,7 +3980,7 @@ public final class WorkbenchStore {
                         taskId: req.id,
                         title: "\(req.requester) · \(req.projectName)",
                         subtitle: "Approval requested",
-                        body: req.why.isEmpty ? req.summary : "\(req.summary) — \(req.why)"
+                        body: req.appliedWords ?? "Wants to change what builds may reach"
                     )
                 }
             }
@@ -4002,11 +4006,25 @@ public final class WorkbenchStore {
         }
     }
 
-    public func approveAgentRequest(_ request: AgentRequest, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
-        let typedPassword: String? = { let pw = effectivePassword(typedPassword ?? ""); return pw.isEmpty ? nil : pw }()
+    public func networkRequestTerms(for request: AgentRequest) async -> AgentNetworkRequestTerms? {
+        guard request.kind == .network, let client, !activeProfile.isDemo else { return nil }
+        guard let snap = try? await client.fetchProjectSettings(repo: request.repo) else { return nil }
+        return snap.networkRequests.first { $0.id == request.id && $0.repo == request.repo }
+    }
+
+    public func approveAgentRequest(_ request: AgentRequest, terms: AgentNetworkRequestTerms?, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
         guard let dbPath = resolvedLocalDatabasePath else {
             return (false, "No local Toolroll database connected.")
         }
+        if request.kind == .network {
+            guard let terms, terms.id == request.id, terms.repo == request.repo else {
+                return (false, "Update Toolroll to review this request.")
+            }
+        } else if request.appliedWords == nil {
+            return (false, "This request names nothing to approve.")
+        }
+        let bound = connectionBinding
+        guard let boundClient = client else { return (false, "Not connected.") }
         resolvingAgentRequestId = request.id
         defer { resolvingAgentRequestId = nil }
 
@@ -4015,54 +4033,57 @@ public final class WorkbenchStore {
             password = typed
         } else {
             guard let unlocked = await unlockPasswordWithTouchID(
-                reason: "Approve \(request.requester)'s request for \(request.projectName): \(request.summary)"
+                reason: "Approve a \(request.kind == .network ? "network" : "settings") change for \(request.projectName)"
             ) else {
                 return (false, "Cancelled.")
             }
             password = unlocked
         }
+        guard connectionBinding == bound, client === boundClient else { return (false, Self.reconnectedWords) }
 
         let outcome: (ok: Bool, message: String)
         switch request.kind {
         case .network:
-            let open = request.params.mode == "open"
-            let localAny = request.params.local == "any"
-            let hosts = (request.params.hosts ?? []).joined(separator: ", ")
-            outcome = await updateProjectNetwork(
-                repoPath: request.repo,
-                open: open,
-                localAny: localAny,
-                hosts: hosts,
-                password: password
-            )
+            guard let terms else { return (false, "Update Toolroll to review this request.") }
+            do {
+                let reply = try await boundClient.approveNetworkRequest(repo: terms.repo, id: terms.id, digest: terms.digest, password: password)
+                outcome = (true, reply)
+            } catch {
+                handleSignInRefusal(error)
+                return (false, error.localizedDescription)
+            }
         case .worktreeSetup:
             let cmd = request.params.command ?? ""
             let ok = await approveProjectWorktreeSetup(repoPath: request.repo, command: cmd, password: password)
             outcome = (ok, notice?.message ?? (ok ? "Approved worktree setup." : "Could not approve worktree setup."))
         case .liveView:
             let show = request.params.showCommands ?? true
-            let snap = await loadProjectSettings(repoPath: request.repo)
-            outcome = await updateProjectLiveCommands(
-                repoPath: request.repo,
-                show: show,
-                nonce: snap?.liveViewNonce,
-                password: password
-            )
+            do {
+                let snap = try await boundClient.fetchProjectSettings(repo: request.repo)
+                let reply = try await boundClient.setProjectLiveCommands(repo: request.repo, show: show, nonce: snap.liveViewNonce, password: password)
+                notice = WorkbenchNotice(kind: .info, message: reply)
+                outcome = (true, reply)
+            } catch {
+                handleSignInRefusal(error)
+                return (false, error.localizedDescription)
+            }
         }
 
         guard outcome.ok else {
             return outcome
         }
 
-        AgentRequestStore.resolve(
-            databasePath: dbPath,
-            id: request.id,
-            status: .approved,
-            note: outcome.message
-        )
+        if request.kind != .network {
+            AgentRequestStore.resolve(
+                databasePath: dbPath,
+                id: request.id,
+                status: .approved,
+                note: outcome.message
+            )
+        }
         refreshAgentRequests(notifyNew: false)
         await refreshAll()
-        notice = WorkbenchNotice(kind: .info, message: "Approved \(request.requester) request: \(request.summary)")
+        notice = WorkbenchNotice(kind: .info, message: outcome.message)
         return (true, outcome.message)
     }
 

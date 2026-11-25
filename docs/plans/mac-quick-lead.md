@@ -9,7 +9,7 @@ Lead send/approval acts the drawer already uses, through the one `WorkbenchStore
 after #488 merges. Notch pill / Live Activity is a later follow-up (needs a widget extension the SPM build can't make).
 
 ## Behaviour
-1. **Summon**: a global shortcut, default ⌃⌥L (free on this Mac; ⌥Space/⌃Space/⌘Space are taken), changeable in
+1. **Summon**: a global shortcut, default ⌃⌥L (⌥Space/⌃Space/⌘Space are usually taken), changeable in
    Settings; the same shortcut hides it. Also: menu bar icon → "Ask the Lead" (the icon already shows a needs count),
    and Work menu ▸ Quick Lead. No Accessibility permission (Carbon hot key via sindresorhus/KeyboardShortcuts, or a
    ~60-line RegisterEventHotKey wrapper if we'd rather not add a dependency).
@@ -29,7 +29,7 @@ after #488 merges. Notch pill / Live Activity is a later follow-up (needs a widg
    (plain ↵ never approves); ⌘⌫ rejects; ⌘O opens the item in the main window; ⌘J "Open in Toolroll" — main window
    forward on the Lead drawer at the same message, draft carried over; ⌘. stops a reply; Esc steps back one layer, then
    hides (never discards the draft).
-6. **After an act**: the card collapses to one line ("Approved · Queue fix in oddcircle") with Undo only where the
+6. **After an act**: the card collapses to one line ("Approved · Queue fix in my-site") with Undo only where the
    server already offers an undo; otherwise just the line.
 
 ## Safety

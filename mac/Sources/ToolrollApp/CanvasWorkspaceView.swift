@@ -292,6 +292,10 @@ public struct CanvasWorkspaceView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.ink)
 
+            case .needsStart(let cmd, let folder):
+                Circle().fill(ToolrollPalette.muted).frame(width: 6, height: 6)
+                StartDevServerButton(store: store, command: cmd, folder: folder, compact: true)
+
             case .starting(let cmd):
                 Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
                 Text("Starting \(cmd)…")
@@ -494,8 +498,9 @@ public struct CanvasWorkspaceView: View {
                     let logH = store.canvasViewport.logicalHeight
                     let scale = scaledW / logW
 
+                    let liveURL = resolvedURL(for: board.path)
                     ScaledLiveArtboardWebView(
-                        urlString: resolvedURL(for: board.path),
+                        urlString: liveURL,
                         logicalWidth: logW,
                         logicalHeight: logH,
                         sessionCookie: store.localSessionCookie,
@@ -521,6 +526,7 @@ public struct CanvasWorkspaceView: View {
                             selectedPinId = nil
                         }
                     )
+                    .id(SessionWebViews.consoleOrigin(for: liveURL, cookie: store.localSessionCookie) ?? "preview")
                     .frame(width: logW, height: logH)
                     .scaleEffect(scale, anchor: .topLeading)
                     .frame(width: scaledW, height: scaledH, alignment: .topLeading)
@@ -545,6 +551,8 @@ public struct CanvasWorkspaceView: View {
                                 Task { await store.installPreviewDependenciesAndHydrate() }
                             }
                             .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        } else if case .needsStart(let cmd, let folder) = store.previewServer.status {
+                            StartDevServerButton(store: store, command: cmd, folder: folder, compact: false)
                         } else if case .installing(let cmd) = store.previewServer.status {
                             Text("Running \(cmd)…")
                                 .font(.system(size: 11, design: .monospaced))
@@ -1105,6 +1113,32 @@ private struct DOMInspectHit {
     let yFrac: Double
 }
 
+struct StartDevServerButton: View {
+    let store: WorkbenchStore
+    let command: String
+    let folder: String
+    let compact: Bool
+
+    var body: some View {
+        let place = (folder as NSString).abbreviatingWithTildeInPath
+        let layout = compact ? AnyLayout(HStackLayout(spacing: 6)) : AnyLayout(VStackLayout(spacing: 6))
+        layout {
+            Text("\(command) in \(place)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(compact ? 1 : 3)
+                .truncationMode(.middle)
+                .multilineTextAlignment(compact ? .leading : .center)
+                .textSelection(.enabled)
+                .help("Runs \(command) in \(folder)")
+            Button("Start dev server") {
+                Task { await store.startPreviewServerAndHydrate() }
+            }
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
+        }
+    }
+}
+
 private struct ScaledLiveArtboardWebView: NSViewRepresentable {
     let urlString: String
     let logicalWidth: Double
@@ -1168,7 +1202,8 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
+        let config = SessionWebViews.configuration()
+        context.coordinator.consoleOrigin = SessionWebViews.consoleOrigin(for: urlString, cookie: sessionCookie)
         config.userContentController.add(context.coordinator, name: "toolrollInspect")
         config.userContentController.addUserScript(WKUserScript(
             source: Self.inspectorScript,
@@ -1178,7 +1213,7 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight), configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
+        context.coordinator.load(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         return webView
     }
 
@@ -1187,7 +1222,7 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
         context.coordinator.onSnapshotPNG = onSnapshotPNG
         context.coordinator.onInspectClick = onInspectClick
         if context.coordinator.loadedURL != urlString {
-            context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
+            context.coordinator.load(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         }
         let flag = inspectorEnabled ? "true" : "false"
         webView.evaluateJavaScript("window.__toolrollInspectOn = \(flag);", completionHandler: nil)
@@ -1206,25 +1241,19 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
             self.onInspectClick = onInspectClick
         }
 
-        func loadWithCookie(webView: WKWebView, urlString: String, sessionCookie: (name: String, value: String, origin: String)?) {
-            guard let targetURL = URL(string: urlString) else { return }
+        var consoleOrigin: String?
+
+        func load(webView: WKWebView, urlString: String, sessionCookie: SessionWebViews.Cookie?) {
             loadedURL = urlString
-            if let sc = sessionCookie,
-               let cookieOrigin = URL(string: sc.origin),
-               cookieOrigin.host == targetURL.host,
-               cookieOrigin.port == targetURL.port,
-               let cookie = HTTPCookie(properties: [
-                   .domain: targetURL.host ?? "127.0.0.1",
-                   .path: "/",
-                   .name: sc.name,
-                   .value: sc.value,
-               ]) {
-                webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
-                    webView.load(URLRequest(url: targetURL))
-                }
-            } else {
-                webView.load(URLRequest(url: targetURL))
-            }
+            SessionWebViews.load(webView, urlString: urlString, consoleOrigin: consoleOrigin, cookie: sessionCookie)
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(SessionWebViews.decide(navigationAction, consoleOrigin: consoleOrigin))
+        }
+
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            SessionWebViews.checkRedirect(webView, consoleOrigin: consoleOrigin)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

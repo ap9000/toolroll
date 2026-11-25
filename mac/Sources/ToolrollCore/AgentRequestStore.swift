@@ -155,3 +155,17 @@ public enum AgentRequestStore {
         _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path), withItemAt: URL(fileURLWithPath: tmp))
     }
 }
+
+extension AgentRequest {
+    public var appliedWords: String? {
+        switch kind {
+        case .network:
+            return nil
+        case .worktreeSetup:
+            let command = (params.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : "Run \(command) in \(repo) before each build"
+        case .liveView:
+            return (params.showCommands ?? true) ? "Show commands in the live view" : "Hide commands in the live view"
+        }
+    }
+}

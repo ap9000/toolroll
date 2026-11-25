@@ -64,7 +64,7 @@ struct AutomationsView: View {
             Text("Nothing runs on its own yet")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ToolrollPalette.ink)
-            Text("Describe what should happen and when, like “every weekday at 9, check oddcircle's failing checks”.")
+            Text("Describe what should happen and when, like “every weekday at 9, check my-site's failing checks”.")
                 .font(.system(size: 13))
                 .foregroundStyle(ToolrollPalette.muted)
             Button("New automation") { store.startAutomationWithLead() }

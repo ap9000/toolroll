@@ -149,8 +149,9 @@ final class FakeConsoleRedeemProtocol: StubURLProtocol {
 }
 
 extension LocalSessionCredentials {
-    static func stub(port: Int, key: String = "key-1", csrf: String = "csrf-1", cookie: String = "tr_s=old") -> LocalSessionCredentials {
-        LocalSessionCredentials(origin: "http://127.0.0.1:\(port)", account: "alice", cookieHeader: cookie, csrf: csrf,
-                                key: key, epoch: "e1", databasePath: "/nonexistent/orders.db")
+    static func stub(port: Int, key: String = "key-1", csrf: String = "csrf-1", cookie: String = "tr_s=old",
+                     account: String = "alice", databasePath: String = "/nonexistent/orders.db") -> LocalSessionCredentials {
+        LocalSessionCredentials(origin: "http://127.0.0.1:\(port)", account: account, cookieHeader: cookie, csrf: csrf,
+                                key: key, epoch: "e1", databasePath: databasePath)
     }
 }

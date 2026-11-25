@@ -27,7 +27,7 @@
     "messages": [
       "I’ll verify the worktree and baseline, inspect the settlement flows, then make the repairs and run the DB, UI, and TypeScript checks. I’ll leave changes uncommitted and submit the finished build for independent Astra review.\n",
       "The worktree is on the required branch, but HEAD is `d6cfcdad4a1eab6ea80dbf5f997521c32df9eb0a`, and the required starting commit `78b9a5658bacb6303447f3a7a3a15d761736bbf4` is unavailable locally. The settlement and Money source files are also absent. I’ll record a blocking park file because repairing this setup would require changing HEAD or leaving this worktree, both prohibited by your rules.\n",
-      "Parked: this is a smoke fixture, not OddCircle. HEAD is `d6cfcdad…`; required commit `78b9a565…` and settlement sources are absent.\n\nCreated and validated `STANDING-ORDERS-PARK-6deb5cc4c3596c29.json`, recommending reprovisioning the correct worktree. No source changes, commits, tests, or independent review occurred."
+      "Parked: this is a smoke fixture, not my-site. HEAD is `d6cfcdad…`; required commit `78b9a565…` and settlement sources are absent.\n\nCreated and validated `STANDING-ORDERS-PARK-6deb5cc4c3596c29.json`, recommending reprovisioning the correct worktree. No source changes, commits, tests, or independent review occurred."
     ]
   },
   "protocolFiles": {
@@ -40,8 +40,8 @@
       "bytes": 1569,
       "parsed": {
         "urgency": "blocking",
-        "recap": "The required branch is checked out, but HEAD is d6cfcdad4a1eab6ea80dbf5f997521c32df9eb0a. The required starting commit 78b9a5658bacb6303447f3a7a3a15d761736bbf4 is absent locally (git cat-file -t exited 128). This repository identifies itself as a disposable smoke fixture, not OddCircle, and contains no Money UI, settlement migrations, or original review evidence. The scope requirement \"The new worktree must start at commit 78b9a5658bacb6303447f3a7a3a15d761736bbf4\" cannot be satisfied here under the rules \"Stay inside this worktree\" and \"Do NOT commit, and do not touch git history\". No implementation or verification can proceed on the required baseline; no source files or git history were changed.",
-        "question": "Should the operator reprovision this task in an isolated OddCircle worktree at the required commit, or defer the repair until that baseline is available?",
+        "recap": "The required branch is checked out, but HEAD is d6cfcdad4a1eab6ea80dbf5f997521c32df9eb0a. The required starting commit 78b9a5658bacb6303447f3a7a3a15d761736bbf4 is absent locally (git cat-file -t exited 128). This repository identifies itself as a disposable smoke fixture, not my-site, and contains no Money UI, settlement migrations, or original review evidence. The scope requirement \"The new worktree must start at commit 78b9a5658bacb6303447f3a7a3a15d761736bbf4\" cannot be satisfied here under the rules \"Stay inside this worktree\" and \"Do NOT commit, and do not touch git history\". No implementation or verification can proceed on the required baseline; no source files or git history were changed.",
+        "question": "Should the operator reprovision this task in an isolated my-site worktree at the required commit, or defer the repair until that baseline is available?",
         "options": [
           {
             "id": "reprovision",
@@ -52,7 +52,7 @@
           {
             "id": "defer",
             "label": "Defer the repair",
-            "consequence": "Keep this attempt parked without source changes until the required OddCircle baseline and review evidence can be supplied in a correctly initialized worktree.",
+            "consequence": "Keep this attempt parked without source changes until the required my-site baseline and review evidence can be supplied in a correctly initialized worktree.",
             "reversible": true
           }
         ],
@@ -68,7 +68,7 @@
     "baseline": "d6cfcdad4a1eab6ea80dbf5f997521c32df9eb0a",
     "head": "d6cfcdad4a1eab6ea80dbf5f997521c32df9eb0a",
     "headMoved": false,
-    "branch": "standing-orders/oddcircle-s1-astra-settlement-repair",
+    "branch": "standing-orders/my-site-s1-astra-settlement-repair",
     "status": "?? STANDING-ORDERS-PARK-6deb5cc4c3596c29.json\n?? STANDING-ORDERS-RUBRIC-d781c125525f6641.json"
   },
   "verdict": {

@@ -5,27 +5,34 @@ public enum PreviewServerStatus: Sendable, Equatable {
     case asleep
     case needsInstall(packageManager: String, command: String)
     case installing(command: String)
+    case needsStart(command: String, folder: String)
     case external(url: String)
     case starting(command: String)
     case running(url: String, command: String)
     case failed(String)
 }
 
-public struct DetectedDevCommand: Sendable, Equatable {
+public struct DetectedDevCommand: Sendable, Hashable {
     public let packageManager: String
     public let executable: String
     public let arguments: [String]
     public let displayCommand: String
+    public let scriptBody: String
     public let expectedPort: Int
     public let expectedURL: String
 
-    public init(packageManager: String = "npm", executable: String, arguments: [String], displayCommand: String, expectedPort: Int) {
+    public init(packageManager: String = "npm", executable: String, arguments: [String], displayCommand: String, scriptBody: String = "", expectedPort: Int) {
         self.packageManager = packageManager
         self.executable = executable
         self.arguments = arguments
         self.displayCommand = displayCommand
+        self.scriptBody = scriptBody
         self.expectedPort = expectedPort
         self.expectedURL = "http://localhost:\(expectedPort)"
+    }
+
+    public var startWords: String {
+        scriptBody.isEmpty ? displayCommand : "\(displayCommand) (\(scriptBody))"
     }
 }
 
@@ -38,6 +45,14 @@ public final class PreviewServerManager {
 
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
+    private var startConsent: StartConsent?
+    private var startEpoch = 0
+    public private(set) var pendingStart: (projectRoot: String, command: DetectedDevCommand)?
+
+    private struct StartConsent: Hashable {
+        let projectRoot: String
+        let command: DetectedDevCommand
+    }
     private let idleTimeoutSeconds: UInt64 = 300
 
     public init() {}
@@ -88,6 +103,7 @@ public final class PreviewServerManager {
             executable: exe,
             arguments: args,
             displayCommand: "\(pm) \(scriptName)",
+            scriptBody: scriptBody,
             expectedPort: port
         )
     }
@@ -98,13 +114,18 @@ public final class PreviewServerManager {
     }
 
     public func ensureRunning(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
+        let consent = startConsent
+        startConsent = nil
+        startEpoch &+= 1
+        let epoch = startEpoch
         if activeProjectRoot == projectRoot, let url = activeURL {
             touchActivity()
             return url
         }
 
         if let preferred = preferredOrigin, await isReachable(urlString: preferred) {
-            stopManagedServer()
+            guard epoch == startEpoch else { return nil }
+            stopServerProcess()
             activeProjectRoot = projectRoot
             managedByToolroll = false
             status = .external(url: preferred)
@@ -112,8 +133,9 @@ public final class PreviewServerManager {
         }
 
         let detectedCommand = await Task.detached(priority: .userInitiated) { Self.detectDevCommand(projectRoot: projectRoot) }.value
+        guard epoch == startEpoch else { return nil }
         guard let detected = detectedCommand else {
-            stopManagedServer()
+            stopServerProcess()
             activeProjectRoot = projectRoot
             status = .asleep
             return nil
@@ -122,20 +144,22 @@ public final class PreviewServerManager {
         if await isReachable(urlString: detected.expectedURL) {
             let port = detected.expectedPort
             let listener = await Task.detached(priority: .userInitiated) { Self.listenerDirectory(port: port) }.value
+            guard epoch == startEpoch else { return nil }
             if let owner = listener, !Self.isInside(owner, root: projectRoot) {
-                stopManagedServer()
+                stopServerProcess()
                 activeProjectRoot = projectRoot
                 status = .failed("Port \(detected.expectedPort) is in use by another project (\((owner as NSString).lastPathComponent)). Stop it, or start this project's dev server on another port.")
                 return nil
             }
-            stopManagedServer()
+            stopServerProcess()
             activeProjectRoot = projectRoot
             managedByToolroll = false
             status = .external(url: detected.expectedURL)
             return detected.expectedURL
         }
 
-        stopManagedServer()
+        guard epoch == startEpoch else { return nil }
+        stopServerProcess()
         activeProjectRoot = projectRoot
 
         let nodeModulesPath = "\(projectRoot)/node_modules"
@@ -144,6 +168,12 @@ public final class PreviewServerManager {
             return nil
         }
 
+        guard consent == StartConsent(projectRoot: projectRoot, command: detected) else {
+            pendingStart = (projectRoot, detected)
+            status = .needsStart(command: detected.startWords, folder: projectRoot)
+            return nil
+        }
+        pendingStart = nil
         status = .starting(command: detected.displayCommand)
 
         do {
@@ -176,12 +206,19 @@ public final class PreviewServerManager {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
             status = .failed("Timed out waiting for \(detected.displayCommand) on :\(detected.expectedPort).")
-            stopManagedServer()
+            stopServerProcess()
             return nil
         } catch {
             status = .failed("Could not start \(detected.displayCommand): \(error.localizedDescription)")
             return nil
         }
+    }
+
+    @discardableResult
+    public func consentToPendingStart() -> Bool {
+        guard let pending = pendingStart else { return false }
+        startConsent = StartConsent(projectRoot: pending.projectRoot, command: pending.command)
+        return true
     }
 
     public func installDependenciesAndRun(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
@@ -226,8 +263,10 @@ public final class PreviewServerManager {
     }
 
     nonisolated private static func buildSubprocessEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        minimalEnvironment(inherited: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser.path)
+    }
+
+    nonisolated static func minimalEnvironment(inherited: [String: String], home: String) -> [String: String] {
         let extraPaths = [
             "/opt/homebrew/bin",
             "/usr/local/bin",
@@ -236,9 +275,13 @@ public final class PreviewServerManager {
             "\(home)/.local/share/pnpm",
             "\(home)/.local/bin",
         ].joined(separator: ":")
-        env["PATH"] = "\(extraPaths):\(env["PATH"] ?? "/usr/bin:/bin")"
-        env["BROWSER"] = "none"
-        return env
+        return [
+            "PATH": "\(extraPaths):\(inherited["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")",
+            "HOME": home,
+            "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+            "TERM": inherited["TERM"] ?? "dumb",
+            "BROWSER": "none",
+        ]
     }
 
     nonisolated private static func extractLastMeaningfulLine(from data: Data) -> String? {
@@ -251,6 +294,12 @@ public final class PreviewServerManager {
     }
 
     public func stopManagedServer() {
+        startEpoch &+= 1
+        stopServerProcess()
+    }
+
+    private func stopServerProcess() {
+        startConsent = nil
         idleSleepTask?.cancel()
         idleSleepTask = nil
         if let proc = process {

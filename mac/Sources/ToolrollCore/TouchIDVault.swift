@@ -28,9 +28,11 @@ public enum TouchIDVaultError: LocalizedError, Sendable {
 public enum TouchIDVault {
     private static let service = "com.toolroll.operator-password"
 
-    private static func normalizedAccount(_ account: String) -> String {
+    static func itemAccount(account: String, origin: String) -> String {
         let trimmed = account.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "local-owner" : trimmed
+        let name = trimmed.isEmpty ? "local-owner" : trimmed
+        let place = origin.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(name)|\(place)"
     }
 
     public static func isAuthenticationAvailable() -> Bool {
@@ -71,11 +73,11 @@ public enum TouchIDVault {
         }
     }
 
-    public static func hasStoredPassword(account: String) -> Bool {
+    public static func hasStoredPassword(account: String, origin: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: normalizedAccount(account),
+            kSecAttrAccount as String: itemAccount(account: account, origin: origin),
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -84,8 +86,8 @@ public enum TouchIDVault {
         return status == errSecSuccess
     }
 
-    public static func savePassword(_ password: String, account: String) throws {
-        let acct = normalizedAccount(account)
+    public static func savePassword(_ password: String, account: String, origin: String) throws {
+        let acct = itemAccount(account: account, origin: origin)
         guard let data = password.data(using: .utf8), !data.isEmpty else {
             throw TouchIDVaultError.authenticationFailed("Password is empty.")
         }
@@ -96,6 +98,7 @@ public enum TouchIDVault {
             kSecAttrAccount as String: acct,
         ]
         SecItemDelete(deleteQuery as CFDictionary)
+        deleteLegacyItem(account: account)
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -111,17 +114,28 @@ public enum TouchIDVault {
         }
     }
 
-    public static func deletePassword(account: String) {
+    public static func deletePassword(account: String, origin: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: normalizedAccount(account),
+            kSecAttrAccount as String: itemAccount(account: account, origin: origin),
+        ]
+        SecItemDelete(query as CFDictionary)
+        deleteLegacyItem(account: account)
+    }
+
+    private static func deleteLegacyItem(account: String) {
+        let trimmed = account.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: trimmed.isEmpty ? "local-owner" : trimmed,
         ]
         SecItemDelete(query as CFDictionary)
     }
 
-    public static func unlockPassword(account: String, reason: String) async throws -> String {
-        guard hasStoredPassword(account: account) else {
+    public static func unlockPassword(account: String, origin: String, reason: String) async throws -> String {
+        guard hasStoredPassword(account: account, origin: origin) else {
             throw TouchIDVaultError.notStored
         }
         let context = LAContext()
@@ -145,7 +159,7 @@ public enum TouchIDVault {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: normalizedAccount(account),
+            kSecAttrAccount as String: itemAccount(account: account, origin: origin),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]

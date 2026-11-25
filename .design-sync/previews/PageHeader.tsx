@@ -12,7 +12,7 @@ export function WithActions() {
   return (
     <div style={{ maxWidth: 420, background: "var(--background, #0c0e12)", padding: 16, borderRadius: 8 }}>
       <PageHeader
-        title="job-scraper"
+        title="my-tool"
         subtitle="main · clean"
         actions={
           <Button variant="secondary" size="sm">

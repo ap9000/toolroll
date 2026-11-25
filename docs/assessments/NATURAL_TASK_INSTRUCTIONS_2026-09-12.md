@@ -8,7 +8,7 @@ still needs the gated desktop upgrade.
 
 ## The regression
 
-OddCircle run 1527 (task `oddcircle-s1-astra-settlement-repair`, codex ·
+my-site run 1527 (task `my-site-s1-astra-settlement-repair`, codex ·
 gpt-6-astra, started 2026-09-12T19:34:21Z) failed after 44 seconds with no
 implementation work:
 
@@ -139,7 +139,7 @@ wrote, repository state, and a verdict block).
 | Case | Brief | Model outcome | Cited wording as reason to stop | Time | Tokens in/out |
 |---|---|---|---|---|---|
 | run 1527 scope | before | **Parked before any work**: "the scope contains direct instructions, including 'Do not edit the primary checkout or other worker checkouts' and 'Run settlement DB tests'"; recommended reissuing a declarative scope | **yes** | 40 s | 59,781 / 1,025 |
-| run 1527 scope | after | Began the task ("inspect the settlement flows, then make the repairs and run the DB, UI, and TypeScript checks"), found the fixture is not OddCircle and the required commit `78b9a565…` is absent, and parked naming the exact requirement and the exact rules ("Stay inside this worktree", "Do NOT commit") that conflict | no | 69 s | 142,978 / 1,896 |
+| run 1527 scope | after | Began the task ("inspect the settlement flows, then make the repairs and run the DB, UI, and TypeScript checks"), found the fixture is not my-site and the required commit `78b9a565…` is absent, and parked naming the exact requirement and the exact rules ("Stay inside this worktree", "Do NOT commit") that conflict | no | 69 s | 142,978 / 1,896 |
 | small imperative scope (greet + `node --test`, do not edit README/package.json, do not publish) | before | Completed: wrote `greet`, 3 tests passing, DONE + PROOF files, README/package.json unchanged | no | 160 s | 122,227 / 4,777 |
 | small imperative scope | after | Completed: wrote `greet`, 3 tests passing, DONE + PROOF files, README/package.json unchanged, HEAD unmoved | no | 133 s | 147,163 / 3,920 |
 
@@ -155,7 +155,7 @@ inside the rules.
   brief did **not** trip on the small imperative scope in its single run,
   so the regression depended on the scope's density of imperatives, not on
   imperative wording alone. The 1527 text reproduced it on the first try.
-- The 1527 fixture repository is not OddCircle, so the after-brief run could
+- The 1527 fixture repository is not my-site, so the after-brief run could
   never complete the work; what it proves is the absence of a wording refusal
   and the presence of a specific conflict report, not a finished repair.
 - The smoke invokes `codex` as the provider does for a build (no
@@ -182,7 +182,7 @@ Everything above ran from this worktree's source and its own `dist` build.
 Nothing was deployed:
 
 - The live controller is `~/Applications/Standing Orders.app` (its
-  `Contents/Resources/dist/bin.js` is the process serving OddCircle on port
+  `Contents/Resources/dist/bin.js` is the process serving my-site on port
   4181) and the live database `~/.config/standing-orders/orders.db` is at
   schema 52. This worktree's source is schema 55. No source-built CLI or test
   opened the live database: the tests and the smoke use fresh files in

@@ -7,7 +7,7 @@ export function ScopeFacts() {
       <KeyValueRow label="auth" value="your subscription" />
       <KeyValueRow label="falls back to" value="gemini · gemini-2.5-pro" mono />
       <KeyValueRow label="budget" value="$5.00 per run" mono />
-      <KeyValueRow label="repository" value="~/Documents/job-scraper" mono />
+      <KeyValueRow label="repository" value="~/Documents/my-tool" mono />
     </div>
   );
 }
