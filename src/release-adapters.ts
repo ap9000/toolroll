@@ -159,7 +159,7 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
     result: resultRun === null || textOr(result["digest"]) === null ? null : {
       run: resultRun, head: textOr(result["head"]), receipt: String(result["digest"]), worktree: textOr(worktree),
       level: textOr(checks["level"]),
-      coverage: textOr(checks["coverage"]),
+      ...(textOr(checks["coverage"]) === null ? {} : { coverage: textOr(checks["coverage"]) }),
       check: textOr(checks["running"]) !== null ? "running"
         : checks["status"] === "passed" && checks["level"] !== "full" ? "not-full" : String(checks["status"] ?? "not-run"),
     },

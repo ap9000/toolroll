@@ -6,6 +6,7 @@ import { journalFile, readJournal, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFL
 import { DatabaseSync } from "node:sqlite";
 import { purposeCheckMode, readReleaseCheckPurpose } from "./contracts/release-terms.js";
 import { liveSchemaProblem } from "./release-cli.js";
+import { githubJson, mainReads, type Exec } from "./release-adapters.js";
 import { openStore, SCHEMA_VERSION } from "./store.js";
 import { bumpVersion, changelogWith, firstParentAfter, harnessChanges, mainJournalFile, sameRelease } from "./release-main.js";
 
@@ -274,5 +275,53 @@ describe("the coordinator's own build", () => {
     db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION - 8}`);
     db.close();
     expect(liveSchemaProblem(file)).toMatch(/upgrade the live database under the running services\. Nothing was changed/);
+  });
+});
+
+describe("GitHub as a release from main reads it (release-adapters.ts mainReads)", () => {
+  const REPO = "ap9000/toolroll";
+  /** gh api answers by path; anything else fails, as a missing read would. */
+  const ghWith = (answers: Record<string, unknown>, calls: string[] = []): Exec => async (_gh, args) => {
+    if (args.includes("--jq")) {
+      const path = args.find(one => one.startsWith("repos/"))!;
+      calls.push(path);
+      if (path.endsWith("git/ref/heads/main")) return { code: 0, stdout: `commit ${LATER}\n`, stderr: "" };
+      return { code: 1, stdout: "", stderr: "HTTP 404" };
+    }
+    const path = args.at(-1)!;
+    calls.push(path);
+    return path in answers ? { code: 0, stdout: JSON.stringify(answers[path]), stderr: "" } : { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
+  };
+  const pr = (number: number, fields: Record<string, unknown>, own = true) => ({ number, state: "closed", merged_at: null, merge_commit_sha: null,
+    base: { ref: "main", repo: { full_name: REPO } }, head: { ref: "release-0.9.119", sha: HEAD, repo: { full_name: own ? REPO : "someone/toolroll" } }, ...fields });
+
+  test("the release pull request: this repository's own branch into main, the newest merged one; a fork's never counts", async () => {
+    const pulls = `repos/${REPO}/pulls?state=all&head=${encodeURIComponent("ap9000:release-0.9.119")}&per_page=100`;
+    const reads = mainReads(ghWith({ [pulls]: [pr(9, { merged_at: "2026-11-25T10:00:00Z", merge_commit_sha: OTHER }, false), pr(520, { merged_at: "2026-11-25T09:00:00Z", merge_commit_sha: M })] }), "/usr/bin/gh");
+    expect(await reads.pull(REPO, "0.9.119")).toEqual({ kind: "merged", pr: 520, sha: M });
+    const open = mainReads(ghWith({ [pulls]: [pr(521, { state: "open" })] }), "/usr/bin/gh");
+    expect(await open.pull(REPO, "0.9.119")).toEqual({ kind: "open", pr: 521, head: HEAD });
+    expect(await mainReads(ghWith({ [pulls]: [] }), "/usr/bin/gh").pull(REPO, "0.9.119")).toEqual({ kind: "none" });
+  });
+
+  test("first-parent membership from main's head as GitHub has it; a commit only a second parent reaches, or none, isn't on main", async () => {
+    const list = `repos/${REPO}/commits?sha=${LATER}&per_page=100&page=1`;
+    const commits = [{ sha: LATER, parents: [{ sha: M }, { sha: OTHER }] }, { sha: OTHER, parents: [{ sha: PARENT }] }, { sha: M, parents: [{ sha: PARENT }] }, { sha: PARENT, parents: [] }];
+    const reads = mainReads(ghWith({ [list]: commits }), "/usr/bin/gh");
+    expect(await reads.firstParent(REPO, M)).toEqual({ ok: true, after: [LATER] });
+    expect(await reads.firstParent(REPO, OTHER)).toMatchObject({ ok: false });
+  });
+
+  test("the proof is publish.yml's own function, with every required check and its workflow", async () => {
+    const asked: unknown[] = [];
+    const reads = mainReads(ghWith({}), "/usr/bin/gh", async () => ({ proveRelease: async input => { asked.push(input); return { ok: true, pr: 520, head: HEAD, branch: "release-0.9.119", tree: TREE }; } }));
+    expect(await reads.prove(REPO, M)).toEqual({ ok: true, sha: M, tree: TREE, pr: 520, head: HEAD, branch: "release-0.9.119" });
+    expect(asked).toEqual([{ repo: REPO, sha: M, required: { ...REQUIRED_PR_CHECKS_WORKFLOW } }]);
+  });
+
+  test("its GitHub reader reads only repos/<owner>/<name>/… paths", async () => {
+    const read = githubJson(ghWith({}), "/usr/bin/gh");
+    await expect(read("user/repos")).rejects.toThrow(/not a GitHub read/);
+    await expect(read(`repos/${REPO}/../x`)).rejects.toThrow(/not a GitHub read/);
   });
 });
