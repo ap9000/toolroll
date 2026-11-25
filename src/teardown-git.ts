@@ -997,10 +997,16 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
  * that changed while git ran, still throws): for reads whose "no" is an exit code (`merge-base --is-ancestor`), and,
  * with `buffer`, for blobs read as bytes (their output is never rewritten).
  */
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; write?: true }): { status: number | null; stdout: string; stderr: string };
 export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string; write?: true } = {}): { status: number | null; stdout: string | Buffer; stderr?: string } {
   const gitFile = options.git ?? "git";
+  // `write`: a command that writes only objects and refs (SYNC_WRITE_COMMANDS), through a write view (gitView "write",
+  // settled after: its worktree state carried back) and the write flags. It takes no checkout lock (that lock is
+  // async): such a command changes no HEAD or index another plane command's carry-back could undo.
+  const write = options.write === true;
+  const writeArgv = write && options.buffer !== true ? syncWriteArgv(args) : null;
+  if (write && writeArgv === null) throw new Error(`git ${args[0] ?? ""} can't run as a synchronous write in that form`);
   // `deadline` (absolute, wall-clock ms): every subprocess here, setup included, gets only what is left of it, and an
   // expired deadline throws before the next one starts or after the last one ran.
   const deadline = options.deadline;
@@ -1014,7 +1020,7 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   if (lfsExtensionIn(cwd, gitFile, limit)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
   expire();
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
-  const view = gitView(cwd, "read", options.binding, gitFile, limit);
+  const view = gitView(cwd, write ? "write" : "read", options.binding, gitFile, limit, write ? "updating a repository" : undefined);
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
     const timeoutNow = () => { expire(); return limit === undefined ? options.timeoutMs ?? 60_000 : Math.max(1, Math.min(options.timeoutMs ?? 60_000, limit())); };
@@ -1027,14 +1033,15 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
     // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
     if (!lazyFetchSupported(gitFile) && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
-    const safeArgs = withoutUnsupportedFlags(args, gitFile);
+    const safeArgs = writeArgv ?? withoutUnsupportedFlags(args, gitFile);
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     // An external diff program is named by config, which may change after it was read: never used here.
     if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
     // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
     const carried = withoutFilters(carriedSettings(own.stdout));
-    const argv = [...TEARDOWN_FLAGS, ...readFlags(gitFile), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
+    const flags = write ? [...WRITE_VIEW_FLAGS, ...(lazyFetchSupported(gitFile) ? ["--no-lazy-fetch"] : [])] : readFlags(gitFile);
+    const argv = [...TEARDOWN_FLAGS, ...flags, "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
     if (options.buffer === true) {
       // stdin is the caller's own bytes when given (cat-file --batch), else closed.
       const ran = spawnSync(gitFile, argv, { ...fixed, timeout: timeoutNow(), encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
@@ -1047,8 +1054,34 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     const why = view.settle();
     if (why !== null) throw new Error(why);
     expire();
-    return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args) };
+    return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args), stderr: view.restore(ran.stderr ?? "", args) };
   } finally { view.dispose(); }
+}
+
+/** A branch name as a synchronous write may name it: plain characters only, never HEAD, an option, `..`, `@{`, a
+ * `.lock` or a dot-led component (stricter than git's check-ref-format, never looser). */
+function plainBranch(name: string): boolean {
+  if (name === "" || name === "HEAD" || name.startsWith("-") || name.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  return name.split("/").every(part => part !== "" && !part.startsWith(".") && !part.endsWith(".lock") && !part.endsWith(".")) && !name.includes("..");
+}
+
+/**
+ * The exact argv viewedGitSync runs for a synchronous write, or null: only these shapes, with no option or global
+ * setting of the caller's (each setting below is Toolroll's own).
+ * - `fetch --no-tags --no-write-fetch-head <path> <sha>:refs/heads/<branch>`: a fetch of one commit from a local
+ *   repository, `<path>` an absolute real folder (no link on the way, no transport prefix), into a new branch. File
+ *   transport is allowed for that one fetch; every other protocol stays refused (WRITE_VIEW_FLAGS protocol.allow=never).
+ * - `branch -D <branch>`.
+ */
+export function syncWriteArgv(args: readonly string[]): string[] | null {
+  if (args.length === 3 && args[0] === "branch" && args[1] === "-D" && plainBranch(args[2]!)) return ["branch", "-D", args[2]!];
+  if (args.length !== 5 || args[0] !== "fetch" || args[1] !== "--no-tags" || args[2] !== "--no-write-fetch-head") return null;
+  const path = args[3]!, refspec = args[4]!;
+  if (!path.startsWith("/") || path.includes("::") || /[\0\n\r]/.test(path)) return null;
+  try { if (realpathSync(path) !== path || !lstatSync(path).isDirectory()) return null; } catch { return null; }
+  const spec = /^([0-9a-f]{40}|[0-9a-f]{64}):refs\/heads\/(.+)$/.exec(refspec);
+  if (spec === null || !plainBranch(spec[2]!)) return null;
+  return ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head", "--", path, refspec];
 }
 
 /**

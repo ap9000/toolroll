@@ -117,7 +117,7 @@
     "project-limited viewer · Engine · work rows | bytes": 27559,
     "project-limited viewer · Engine · work rows | SQL statements": 393,
     "project-limited viewer · Engine · work rows | projection calls": 8,
-    "operator · Engine · step cards | bytes": 1963,
+    "operator · Engine · step cards | bytes": 2450,
     "operator · Engine · step cards | SQL statements": 216,
     "operator · Engine · step cards | projection calls": 3,
     "operator · Engine · result files | bytes": 3743,

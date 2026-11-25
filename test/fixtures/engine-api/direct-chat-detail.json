@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "room": "direct-chat:0123456789abcdef0123456789abcdef",
+  "thread": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "title": "Fix navbar spacing",
+    "project": "payments-api",
+    "branch": "toolroll/chat-01234567",
+    "provider": "claude",
+    "modelId": "claude-sonnet-4-6",
+    "effort": "high",
+    "posture": {
+      "summary": "Runs commands without asking",
+      "detail": "Claude runs inside this chat's isolated local clone with auto-approved tools and no remote configured.",
+      "sandboxed": false
+    },
+    "running": false,
+    "lastStatus": "completed",
+    "changedFilesCount": 1,
+    "mainDirtyFiles": ["README.md"],
+    "usage": {
+      "inputTokens": 420,
+      "outputTokens": 1280,
+      "cacheReadTokens": 18400,
+      "cacheCreationTokens": 2100,
+      "thinkingTokens": 320,
+      "contextTokens": 20920,
+      "contextWindow": 1000000,
+      "costUsd": 0.14
+    },
+    "createdAt": "2026-10-20T10:00:00.000Z",
+    "updatedAt": "2026-10-20T10:01:30.000Z"
+  },
+  "turns": [
+    {
+      "id": "abcdef0123456789abcdef0123456789",
+      "seq": 1,
+      "userPrompt": "Tighten the navbar horizontal padding.",
+      "switchedFromProvider": null,
+      "status": "completed",
+      "assistantText": "Updated the navbar spacing in src/nav.tsx.",
+      "errorText": null,
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "finishedAt": "2026-10-20T10:01:30.000Z",
+      "usage": {
+        "inputTokens": 420,
+        "outputTokens": 1280,
+        "cacheReadTokens": 18400,
+        "cacheCreationTokens": 2100,
+        "thinkingTokens": 320,
+        "contextTokens": 20920,
+        "contextWindow": 1000000,
+        "costUsd": 0.14
+      },
+      "tools": [
+        {
+          "id": "tool-1",
+          "ordinal": 1,
+          "name": "Edit",
+          "detail": "src/nav.tsx",
+          "status": "done",
+          "updatedAt": "2026-10-20T10:00:45.000Z"
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "11111111111111111111111111111111",
+          "kind": "output",
+          "filename": "navbar-after.png",
+          "mimeType": "image/png",
+          "byteSize": 4210,
+          "url": "/engine/direct-chats/0123456789abcdef0123456789abcdef/artifacts/11111111111111111111111111111111",
+          "sourcePath": "screenshots/navbar-after.png",
+          "createdAt": "2026-10-20T10:01:20.000Z"
+        }
+      ]
+    }
+  ],
+  "attachments": [
+    {
+      "id": "22222222222222222222222222222222",
+      "kind": "attachment",
+      "filename": "mockup.png",
+      "mimeType": "image/png",
+      "byteSize": 8192,
+      "url": "/engine/direct-chats/0123456789abcdef0123456789abcdef/artifacts/22222222222222222222222222222222",
+      "sourcePath": ".toolroll-attachments/22222222-mockup.png",
+      "createdAt": "2026-10-20T09:59:50.000Z"
+    }
+  ],
+  "ships": [
+    {
+      "id": "33333333333333333333333333333333",
+      "seq": 1,
+      "mode": "keep-branch",
+      "branch": "toolroll/chat-01234567",
+      "candidateSha": "9999999999999999999999999999999999999999",
+      "state": "kept",
+      "taskId": null,
+      "prUrl": null,
+      "detail": null,
+      "createdAt": "2026-10-20T10:02:00.000Z",
+      "stateAt": "2026-10-20T10:02:00.000Z"
+    }
+  ],
+  "diff": {
+    "changedFiles": ["src/nav.tsx"],
+    "diffText": "diff --git a/src/nav.tsx b/src/nav.tsx\n--- a/src/nav.tsx\n+++ b/src/nav.tsx\n@@ -1 +1 @@\n-gap: 16px;\n+gap: 12px;\n",
+    "dirty": true
+  }
+}

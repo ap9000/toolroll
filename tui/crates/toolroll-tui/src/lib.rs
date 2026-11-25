@@ -2,6 +2,9 @@
 //! the browser's own form POST through toolroll-api, and the session lives in memory only.
 pub mod agents;
 pub mod app;
+pub mod bootstrap;
+pub mod chat;
+pub mod chat_providers;
 pub mod editor;
 pub mod guard;
 pub mod keys;

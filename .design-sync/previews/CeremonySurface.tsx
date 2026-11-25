@@ -8,7 +8,7 @@ export function ApproveScope() {
       terms={
         <>
           <span>
-            Tasks in <strong>job-scraper</strong> run on claude (sonnet) under your subscription.
+            Tasks in <strong>my-tool</strong> run on claude (sonnet) under your subscription.
           </span>
           <span>If that runs out, work falls back to gemini on your API key — spend moves to that account.</span>
         </>

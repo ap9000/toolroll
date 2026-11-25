@@ -207,7 +207,7 @@ describe("proposeGrant", () => {
     const proposed = await proposeGrant({
       repo: "/code/thing",
       backend: "github-issues",
-      paths: ["ap9000/vamarketplacenew"],
+      paths: ["example-org/my-shop"],
       now: T0,
       runner: async () => {
         asked = true;

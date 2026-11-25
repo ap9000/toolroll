@@ -114,6 +114,31 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "flexible-sign-in-check",
   "flexible-sign-in-clear",
   "project-flexible",
+  // The Mac app's Project Settings (codex-os-fence.md, 2026-11-22): what a project's builds may reach (local services,
+  // hosts, open or not) and whether its builds' shell commands show live. Each takes the password typed into the sheet
+  // now (LOCAL_PASSWORD_ACTS); the handlers' own credential checks are unchanged.
+  "project-network",
+  "project-live-view",
+  // The Mac app's per-task Change Models (docs/plans/mac-change-models.md, the owner's decisions of 2026-11-22): the
+  // planner or builder of one task, to an agent configured for that role, with no password. On an approved task the pick
+  // is the owner's yes to the new agent only (approve()'s narrow branch re-proves that nothing else changed); a running
+  // task keeps the pick until its run ends or stops. The writer (local-owner-acts.ts localOwnerChangeAgents) checks this
+  // exact act. Not Settings → Models (`change-models`): this changes no default.
+  "change-task-agents",
+  // The Mac app's Automations screen (docs/plans/mac-automations.md, the owner's decision of 2026-11-22: surfacing
+  // existing automations is Work-screen work): pause, resume and run now of a flow's EXISTING trigger, with no password.
+  // Pause only lowers; resume and run now cause work only under the flow's already-approved terms (a run now is never
+  // the clock's own firing, so it never runs on its own under a grant). Never share, renew, a secret, set-up, sender,
+  // scope, remove, unshare or creating or editing a flow. The handler (server/flows.ts triggerAct) checks this exact act;
+  // never reuse pause-run or resume-run (those are a task's).
+  "trigger-pause",
+  "trigger-resume",
+  "trigger-run",
+  "direct-chat-start",
+  "direct-chat-send",
+  "direct-chat-stop",
+  "direct-chat-manage",
+  "direct-chat-ship",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 /**
@@ -123,7 +148,7 @@ export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
  * local owner's own act; nothing it proves stamps a remembered password, stands in for a later step-up, or upgrades the
  * session (its authority stays local-owner).
  */
-export const LOCAL_PASSWORD_ACTS: ReadonlySet<LocalOwnerAct> = new Set<LocalOwnerAct>(["flexible-switch", "flexible-sign-in-save", "flexible-sign-in-check", "project-flexible"]);
+export const LOCAL_PASSWORD_ACTS: ReadonlySet<LocalOwnerAct> = new Set<LocalOwnerAct>(["flexible-switch", "flexible-sign-in-save", "flexible-sign-in-check", "project-flexible", "project-network", "project-live-view"]);
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
 /** Whether a runtime string names an act a local owner may do. */
 export function localOwnerAct(value: unknown): value is LocalOwnerAct {
@@ -293,6 +318,10 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   task_resume: "resume-run",
   // A Start card: the fast start's own act (approve() allows it only with a fast marker).
   task_start: "build-now",
+  direct_chat_start: "direct-chat-start",
+  direct_chat_reply: "direct-chat-send",
+  direct_chat_promote: "file-task",
+  direct_chat_ship: "direct-chat-ship",
 });
 
 /** Every task card operation (chat-task-actions.ts), decided for the local owner. */

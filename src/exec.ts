@@ -1568,6 +1568,8 @@ export type AcpRun = {
   model: string;
   /** The agent's name and version as its attestation recorded them; the handshake must say the same. */
   expect: { name: string; version: string } | null;
+  /** Optional ACP `authenticate` methodId to run after `initialize` (e.g. `"oauth-personal"` for Antigravity). */
+  authMethod?: string | null;
   /** Handed the conversation's controls once it starts (the conformance probe cancels with it). */
   onControl?: (control: AcpControl) => void;
   /** Each handshake step's deadline (ACP_HANDSHAKE_MS unless a test shortens it). */
@@ -1703,7 +1705,7 @@ export function runAcpSession(
     registerOwned(options.owner, child);
     if (options.processGroup === true && container === null) observeProcessTree(child, options);
 
-    const conversation = createAcpConversation({ cwd: options.cwd ?? process.cwd(), prompt: acp.prompt, model: acp.model, expect: acp.expect });
+    const conversation = createAcpConversation({ cwd: options.cwd ?? process.cwd(), prompt: acp.prompt, model: acp.model, expect: acp.expect, authMethod: acp.authMethod ?? null });
     // The agent's own process, as a listing names it: the launched file, or the script a pinned interpreter runs.
     const agentNames = [...new Set([file, ...args.slice(0, 2)].filter(one => one.startsWith("/")).map(one => one.split("/").pop()!).filter(one => one !== ""))];
     let stderr = "";
@@ -1736,12 +1738,13 @@ export function runAcpSession(
     let handshakePhase: string | null = null;
     const armHandshake = (): void => {
       const phase = conversation.phase();
-      if (phase === handshakePhase || (phase !== "initialize" && phase !== "session" && phase !== "model")) return;
+      if (phase === handshakePhase || (phase !== "initialize" && phase !== "authenticate" && phase !== "session" && phase !== "model")) return;
       handshakePhase = phase;
       const limit = acp.handshakeMs ?? ACP_HANDSHAKE_MS;
       later(limit, () => {
         if (settled || conversation.phase() !== phase) return;
-        conversation.refuse(`the agent took more than ${limit / 1000} s to answer ${phase === "initialize" ? "initialize" : phase === "session" ? "session/new" : "the model choice"}`);
+        const stepName = phase === "initialize" ? "initialize" : phase === "authenticate" ? "authenticate" : phase === "session" ? "session/new" : "the model choice";
+        conversation.refuse(`the agent took more than ${limit / 1000} s to answer ${stepName}`);
         forceKill();
       });
     };

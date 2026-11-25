@@ -653,7 +653,7 @@ describe("toolroll up", () => {
       return realpathSync(path);
     };
     // Taskless, outside the folders this `up` was started with.
-    const market = made("vamarketplacenew"), leadAdded = made("lead-added"), plain = join(base, "plain-folder");
+    const market = made("my-shop"), leadAdded = made("lead-added"), plain = join(base, "plain-folder");
     execFileSync("mkdir", ["-p", plain]);
 
     let ready: () => void = () => {};
@@ -699,8 +699,8 @@ describe("toolroll up", () => {
       await Promise.race([marketAdopted, stoppedEarly]);
       const tools = await read(`/settings/tools?repo=${encodeURIComponent(market)}`);
       expect(tools.status).toBe(200);
-      expect(tools.html).toContain("vamarketplacenew");
-      for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).toContain("vamarketplacenew");
+      expect(tools.html).toContain("my-shop");
+      for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).toContain("my-shop");
       expect((await read(`/settings/project?repo=${encodeURIComponent(market)}`)).status).toBe(200);
 
       // The lead adds with its token alone.
@@ -724,14 +724,14 @@ describe("toolroll up", () => {
         ]));
         const robinCookie = await signIn("robin", robin.token);
         expect((await read(`/settings/tools?repo=${encodeURIComponent(market)}`, robinCookie)).status).toBe(403);
-        expect((await read("/projects", robinCookie)).html).not.toContain("vamarketplacenew");
+        expect((await read("/projects", robinCookie)).html).not.toContain("my-shop");
 
         // Remove: gone from the lists and the builder, without a restart; its record stays in the ledger.
         said.length = 0;
         expect(await main(["repos", "remove", market], line => said.push(line))).toBe(0);
         await Promise.race([marketReleased, stoppedEarly]);
         expect((await read(`/settings/tools?repo=${encodeURIComponent(market)}`)).status).toBe(403);
-        for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).not.toContain("vamarketplacenew");
+        for (const page of ["/projects", "/settings/project", "/flows"]) expect((await read(page)).html, page).not.toContain("my-shop");
         expect(check.actionLedger({ repos: null, instance: true }).some(one => one.action === "project removed" && one.repo === market && one.detail === "from cli")).toBe(true);
       } finally {
         check.close();

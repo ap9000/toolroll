@@ -1,0 +1,1926 @@
+import Foundation
+
+public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
+    case invalidOrigin(String)
+    case unauthenticated
+    case refused(String)
+    case passwordRequired(String)
+    case passwordNotSet(String)
+    case fullSignInNeeded(String)
+    case httpStatus(Int, String)
+    case unreachable(String)
+    case decoding(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidOrigin(let o): return "Invalid workspace origin: \(o)"
+        case .unauthenticated: return "Session ended or access changed — reconnect in Workspace Settings."
+        case .refused(let m): return m
+        case .passwordRequired(let m): return m
+        case .passwordNotSet: return "Set a password to do this."
+        case .fullSignInNeeded: return "Sign in with your password to do this."
+        case .httpStatus(let code, let m): return m.isEmpty ? "Server answered HTTP \(code)." : m
+        case .unreachable(let m): return "Could not reach Toolroll: \(m)"
+        case .decoding(let m): return "Unexpected response shape: \(m)"
+        }
+    }
+}
+
+public enum ClientTransport: Sendable, Equatable {
+    case localSession(LocalSessionCredentials)
+    case remoteBearer(ConnectionProfile)
+
+    public var origin: String {
+        switch self {
+        case .localSession(let s): return s.origin
+        case .remoteBearer(let p): return p.origin
+        }
+    }
+
+    public var account: String {
+        switch self {
+        case .localSession(let s): return s.account
+        case .remoteBearer(let p): return p.account
+        }
+    }
+
+    public var isLocalSession: Bool {
+        if case .localSession = self { return true }
+        return false
+    }
+
+    public var localSessionCookie: (name: String, value: String, origin: String)? {
+        guard case .localSession(let s) = self,
+              let eq = s.cookieHeader.firstIndex(of: "=")
+        else { return nil }
+        let name = String(s.cookieHeader[..<eq])
+        let value = String(s.cookieHeader[s.cookieHeader.index(after: eq)...])
+        return (name, value, s.origin)
+    }
+}
+
+public actor ToolrollClient {
+    public private(set) var transport: ClientTransport
+    private var pinnedInstall: String?
+    public var profile: ConnectionProfile {
+        switch transport {
+        case .remoteBearer(let p): return p
+        case .localSession(let s):
+            return ConnectionProfile(name: "local", origin: s.origin, account: s.account, token: "", label: "Local Toolroll")
+        }
+    }
+
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    public init(profile: ConnectionProfile, session: URLSession = .shared) {
+        self.transport = .remoteBearer(profile)
+        self.session = session
+        self.decoder = JSONDecoder()
+    }
+
+    public init(localSession: LocalSessionCredentials, session: URLSession = .shared) {
+        self.transport = .localSession(localSession)
+        self.pinnedInstall = Self.installPath(localSession.databasePath)
+        self.session = session
+        self.decoder = JSONDecoder()
+    }
+
+    public static func normalizedOrigin(_ raw: String) throws -> URL {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased()
+        else {
+            throw ToolrollClientError.invalidOrigin(raw)
+        }
+        let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
+        guard scheme == "https" || (scheme == "http" && loopback) else {
+            throw ToolrollClientError.invalidOrigin("Origin must use HTTPS (or loopback HTTP).")
+        }
+        return url
+    }
+
+    private func makeRequest(
+        path: String,
+        method: String = "GET",
+        body: Data? = nil,
+        contentType: String = "application/json",
+        accept: String = "application/json",
+        includeMutationKey: Bool = false
+    ) throws -> URLRequest {
+        let base = try Self.normalizedOrigin(transport.origin)
+        guard let url = URL(string: path, relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(path)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 25)
+        req.httpMethod = method
+        req.httpShouldHandleCookies = false
+        req.setValue(accept, forHTTPHeaderField: "Accept")
+
+        switch transport {
+        case .localSession(let s):
+            req.setValue("terminal", forHTTPHeaderField: "x-toolroll-client")
+            req.setValue(s.cookieHeader, forHTTPHeaderField: "Cookie")
+            req.setValue(s.origin, forHTTPHeaderField: "Origin")
+            req.setValue(s.csrf, forHTTPHeaderField: "x-csrf-token")
+            if includeMutationKey || method == "POST" {
+                req.setValue(s.key, forHTTPHeaderField: "x-toolroll-key")
+                req.setValue("in-place", forHTTPHeaderField: "x-toolroll-act")
+            }
+
+        case .remoteBearer(let p):
+            req.setValue("terminal-remote", forHTTPHeaderField: "x-toolroll-client")
+            if !p.token.isEmpty {
+                req.setValue("Bearer \(p.token)", forHTTPHeaderField: "Authorization")
+            }
+            if let ws = p.workspaceId, !ws.isEmpty {
+                req.setValue(ws, forHTTPHeaderField: "x-toolroll-workspace")
+            }
+            if let rec = p.recoveryGeneration, !rec.isEmpty {
+                req.setValue(rec, forHTTPHeaderField: "x-toolroll-recovery")
+            }
+        }
+
+        if let body {
+            req.httpBody = body
+            req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+        return req
+    }
+
+    private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ToolrollClientError.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ToolrollClientError.unreachable("No HTTP response")
+        }
+        if http.statusCode == 401 {
+            throw ToolrollClientError.unauthenticated
+        }
+        if !(200...299).contains(http.statusCode) {
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let msg = (obj?["words"] as? String)
+                ?? (obj?["message"] as? String)
+                ?? (obj?["error"] as? String)
+                ?? (obj?["said"] as? String)
+                ?? ""
+            if http.statusCode == 403 || http.statusCode == 409 {
+                throw ToolrollClientError.refused(msg.isEmpty ? "Action refused (\(http.statusCode))." : msg)
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, msg)
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            let preview = String(data: data.prefix(240), encoding: .utf8) ?? "<binary>"
+            throw ToolrollClientError.decoding("\(String(describing: error)) | body: \(preview)")
+        }
+    }
+
+    public static func formEncoded(_ fields: [(String, String)]) -> String {
+        var allowed = CharacterSet.alphanumerics.intersection(CharacterSet(charactersIn: Unicode.Scalar(0)...Unicode.Scalar(127)))
+        allowed.insert(charactersIn: "-._*")
+        let encode = { (text: String) in text.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
+        return fields.map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&")
+    }
+
+    public static func refusal(_ words: String) -> ToolrollClientError {
+        let said = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        if said == "Set a password to do this." { return .passwordNotSet(said) }
+        if said == "Sign in with your password to do this." { return .fullSignInNeeded(said) }
+        let lower = said.lowercased()
+        if lower.contains("password") || lower.contains("step-up") { return .passwordRequired(said) }
+        return .refused(said)
+    }
+
+    public func setFirstPassword(_ password: String) async throws {
+        guard case .localSession(let s) = transport else {
+            throw ToolrollClientError.refused("Set a password from Toolroll on this Mac.")
+        }
+        let body = Self.formEncoded([("csrf", s.csrf), ("password", password), ("again", password)])
+        let req = try makeRequest(path: "/password/set", method: "POST", body: Data(body.utf8),
+                                  contentType: "application/x-www-form-urlencoded", accept: "text/html", includeMutationKey: true)
+        do { _ = try await session.data(for: req) } catch { throw ToolrollClientError.unreachable(error.localizedDescription) }
+    }
+
+    private struct LocalLoginPayload: Decodable {
+        struct CookieObj: Decodable {
+            let name: String
+            let value: String
+        }
+        let version: Int
+        let account: String
+        let cookie: CookieObj
+        let csrf: String
+        let key: String
+        let epoch: String
+        let passwordSet: Bool?
+    }
+
+    public func signInWithPassword(account: String, password: String) async throws -> LocalSessionCredentials {
+        guard case .localSession(let current) = transport else {
+            throw ToolrollClientError.refused("Sign in with your password on a local workspace.")
+        }
+        let body = Self.formEncoded([("name", account), ("token", password)])
+        var req = try makeRequest(
+            path: "/login",
+            method: "POST",
+            body: Data(body.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json"
+        )
+        req.setValue("terminal", forHTTPHeaderField: "X-Toolroll-Client")
+        req.setValue(nil, forHTTPHeaderField: "Cookie")
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw ToolrollClientError.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ToolrollClientError.unreachable("No HTTP response from Toolroll.")
+        }
+        if http.statusCode != 200 {
+            struct ErrorPayload: Decodable { let error: String }
+            if let ref = try? decoder.decode(ErrorPayload.self, from: data), !ref.error.isEmpty {
+                throw ToolrollClientError.refused(ref.error)
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, "Sign-in failed (HTTP \(http.statusCode)).")
+        }
+        let parsed: LocalLoginPayload
+        do {
+            parsed = try decoder.decode(LocalLoginPayload.self, from: data)
+        } catch {
+            throw ToolrollClientError.decoding(error.localizedDescription)
+        }
+        let upgraded = LocalSessionCredentials(
+            origin: current.origin,
+            account: parsed.account,
+            cookieHeader: "\(parsed.cookie.name)=\(parsed.cookie.value)",
+            csrf: parsed.csrf,
+            key: parsed.key,
+            epoch: parsed.epoch,
+            databasePath: current.databasePath,
+            passwordSet: parsed.passwordSet ?? true
+        )
+        transport = .localSession(upgraded)
+        sessionRenewed?(upgraded)
+        return upgraded
+    }
+
+    static let staleSessionWords = ["Toolroll restarted", "isn't connected to Toolroll"]
+
+    static func isStaleSession(_ error: Error) -> Bool {
+        let words = error.localizedDescription
+        return staleSessionWords.contains { words.contains($0) }
+    }
+
+    private func reconnectLocalSession() async -> Bool {
+        guard case .localSession(let current) = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
+        guard Self.renewalAllowed(pinned: pinnedInstall, current: current, fresh: fresh) else { return false }
+        transport = .localSession(fresh)
+        sessionRenewed?(fresh)
+        return true
+    }
+
+    static func installPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func renewalAllowed(pinned: String?, current: LocalSessionCredentials, fresh: LocalSessionCredentials) -> Bool {
+        guard let pinned else { return false }
+        return sameInstall(current, fresh) && installPath(fresh.databasePath) == pinned
+    }
+
+    static func sameInstall(_ a: LocalSessionCredentials, _ b: LocalSessionCredentials) -> Bool {
+        a.account == b.account && installPath(a.databasePath) == installPath(b.databasePath)
+    }
+
+    private var sessionRenewed: (@Sendable (LocalSessionCredentials) -> Void)?
+
+    public func onSessionRenewed(_ handler: @escaping @Sendable (LocalSessionCredentials) -> Void) {
+        sessionRenewed = handler
+    }
+
+    private func renewingStaleSession<T>(_ op: () async throws -> T) async throws -> T {
+        do {
+            return try await op()
+        } catch where Self.isStaleSession(error) {
+            guard await reconnectLocalSession() else { throw error }
+            return try await op()
+        }
+    }
+
+    private func sendFormAct(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+        try await renewingStaleSession { try await sendFormActOnce(path: path, fields: fields, defaultDone: defaultDone) }
+    }
+
+    private func sendFormActOnce(path: String, fields: [(String, String)], defaultDone: String) async throws -> String {
+        guard case .localSession(let s) = transport else {
+            throw ToolrollClientError.refused("This action requires a local or signed-in session.")
+        }
+        let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
+        let req = try makeRequest(
+            path: path,
+            method: "POST",
+            body: Data(formBody.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw ToolrollClientError.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ToolrollClientError.unreachable("No HTTP response")
+        }
+        if http.statusCode == 401 {
+            throw ToolrollClientError.unauthenticated
+        }
+
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let words = (obj["words"] as? String)
+                ?? (obj["error"] as? String)
+                ?? (obj["said"] as? String)
+                ?? (obj["message"] as? String)
+                ?? ""
+            let outcome = obj["outcome"] as? String
+            if outcome == "refused" || http.statusCode >= 400 {
+                throw Self.refusal(words.isEmpty ? "Action refused (\(http.statusCode))." : words)
+            }
+            return words.isEmpty ? defaultDone : words
+        }
+
+        let redirectOutcome = Self.parseRedirectFeedback(
+            finalURL: http.url,
+            locationHeader: http.value(forHTTPHeaderField: "Location")
+        )
+        if let problem = redirectOutcome.problem {
+            throw Self.refusal(problem)
+        }
+        if let said = redirectOutcome.said {
+            return said
+        }
+
+        if (200...399).contains(http.statusCode) {
+            return defaultDone
+        }
+        throw ToolrollClientError.httpStatus(http.statusCode, "Action failed (HTTP \(http.statusCode)).")
+    }
+
+    public static func parseRedirectFeedback(finalURL: URL?, locationHeader: String?) -> (said: String?, problem: String?) {
+        let candidates: [URL] = [
+            locationHeader.flatMap { URL(string: $0, relativeTo: finalURL) },
+            finalURL,
+        ].compactMap { $0 }
+
+        for url in candidates {
+            guard let items = URLComponents(url: url, resolvingAgainstBaseURL: true)?.queryItems else { continue }
+            if let problem = items.first(where: { $0.name == "problem" })?.value, !problem.isEmpty {
+                return (nil, problem)
+            }
+            if let said = items.first(where: { $0.name == "said" })?.value, !said.isEmpty {
+                return (said, nil)
+            }
+        }
+        return (nil, nil)
+    }
+
+    public func fetchWorkRows(view: String? = nil) async throws -> WorkRowsResponse {
+        try await send(try makeRequest(path: view.map { "/work/rows?view=\($0)" } ?? "/work/rows"), as: WorkRowsResponse.self)
+    }
+
+    public func fetchSteps(taskId: String, withChoices: Bool = false) async throws -> StepCardsResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await send(try makeRequest(path: "/t/\(enc)/steps\(withChoices ? "?choices=1" : "")"), as: StepCardsResponse.self)
+    }
+
+    public func fetchApprovalCard(taskId: String) async throws -> ApprovalCard {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await send(
+            try makeRequest(path: "/t/\(enc)/approval?stepup=1", includeMutationKey: true),
+            as: ApprovalCard.self
+        )
+    }
+
+    public func fetchDiff(taskId: String, runId: Int? = nil) async throws -> ResultDiffResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let q = runId.map { "?run=\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/diff\(q)"), as: ResultDiffResponse.self)
+    }
+
+    public func fetchTaskResult(taskId: String, runId: Int? = nil) async throws -> TaskResultResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let q = runId.map { "?run=\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/result\(q)"), as: TaskResultResponse.self)
+    }
+
+    public func fetchAuthenticatedBytes(path: String) async throws -> Data {
+        let req = try makeRequest(path: path, accept: "*/*")
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(status, "Could not load evidence (\(status)).")
+        }
+        return data
+    }
+
+    public func fetchDiffFile(taskId: String, fileIndex: Int, runId: Int? = nil) async throws -> ResultDiffFileResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        var comps = URLComponents()
+        comps.queryItems = [URLQueryItem(name: "file", value: String(fileIndex))]
+        if let runId { comps.queryItems?.append(URLQueryItem(name: "run", value: String(runId))) }
+        let query = comps.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/diff\(query)"), as: ResultDiffFileResponse.self)
+    }
+
+    public func fetchPresence() async throws -> PresenceSnapshot {
+        try await send(try makeRequest(path: "/api/presence"), as: PresenceSnapshot.self)
+    }
+
+    public func fetchCandidates(taskId: String) async throws -> CandidatesListResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await send(try makeRequest(path: "/api/handoff/task/\(enc)/candidates"), as: CandidatesListResponse.self)
+    }
+
+    public func fetchTerminals() async throws -> TermStateResponse {
+        if transport.isLocalSession {
+            if let local = try? await send(try makeRequest(path: "/term/state"), as: TermStateResponse.self) {
+                return local
+            }
+            return TermStateResponse(available: true, problem: nil, programs: ["shell", "claude", "codex", "antigravity"], sessions: [])
+        }
+        return try await send(try makeRequest(path: "/api/handoff/terminals"), as: TermStateResponse.self)
+    }
+
+    public func fetchLeadChat(project: String? = nil) async throws -> LeadChatResponse {
+        let path: String
+        if let project, !project.isEmpty,
+           let enc = project.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path = "/engine/chat?project=\(enc)"
+        } else {
+            path = "/engine/chat"
+        }
+        return try await send(try makeRequest(path: path), as: LeadChatResponse.self)
+    }
+
+    private func sendDirectChatForm<T: Decodable>(
+        path: String,
+        fields: [(String, String)],
+        as type: T.Type,
+        timeoutInterval: TimeInterval = 30
+    ) async throws -> T {
+        try await renewingStaleSession {
+            guard case .localSession(let s) = transport else {
+                throw ToolrollClientError.refused("Direct chat is only available on your local Toolroll install.")
+            }
+            let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
+            var req = try makeRequest(
+                path: path,
+                method: "POST",
+                body: Data(formBody.utf8),
+                contentType: "application/x-www-form-urlencoded",
+                accept: "application/json",
+                includeMutationKey: true
+            )
+            req.timeoutInterval = timeoutInterval
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 {
+                throw ToolrollClientError.unauthenticated
+            }
+            if let decoded = try? decoder.decode(T.self, from: data) {
+                return decoded
+            }
+            if !(200...299).contains(http.statusCode) {
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let msg = (obj?["error"] as? String)
+                    ?? (obj?["words"] as? String)
+                    ?? (obj?["message"] as? String)
+                    ?? ""
+                if http.statusCode == 403 || http.statusCode == 409 {
+                    throw Self.refusal(msg.isEmpty ? "Action refused (\(http.statusCode))." : msg)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, msg)
+            }
+            do {
+                return try decoder.decode(T.self, from: data)
+            } catch {
+                let preview = String(data: data.prefix(240), encoding: .utf8) ?? "<binary>"
+                throw ToolrollClientError.decoding("\(String(describing: error)) | body: \(preview)")
+            }
+        }
+    }
+
+    public func fetchDirectChats(project: String? = nil) async throws -> DirectChatsListResponse {
+        try await renewingStaleSession {
+            let path: String
+            if let project, !project.isEmpty,
+               let enc = project.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                path = "/engine/direct-chats?project=\(enc)"
+            } else {
+                path = "/engine/direct-chats"
+            }
+            let req = try makeRequest(path: path)
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            if let decoded = try? decoder.decode(DirectChatsListResponse.self, from: data) {
+                return decoded
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, "Could not load direct chats.")
+        }
+    }
+
+    public func fetchDirectChatDetail(
+        threadId: String,
+        diffScope: DiffScopeMode = .branch,
+        turnId: String? = nil
+    ) async throws -> DirectChatDetailResponse {
+        try await renewingStaleSession {
+            let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+            var query: [String] = []
+            if diffScope == .turn {
+                query.append("scope=turn")
+            }
+            if let turnId, !turnId.isEmpty {
+                let encTurn = turnId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? turnId
+                query.append("turn=\(encTurn)")
+            }
+            let suffix = query.isEmpty ? "" : "?\(query.joined(separator: "&"))"
+            return try await send(try makeRequest(path: "/engine/direct-chats/\(enc)\(suffix)"), as: DirectChatDetailResponse.self)
+        }
+    }
+
+    public func startDirectChat(
+        project: String,
+        prompt: String,
+        provider: AgentChatProvider,
+        modelId: String,
+        effort: String? = nil,
+        requestId: String = DirectChatDateParser.makeHex32RequestId()
+    ) async throws -> DirectChatStartedResponse {
+        var fields: [(String, String)] = [
+            ("project", project),
+            ("prompt", prompt),
+            ("provider", provider.rawValue),
+            ("model", modelId),
+            ("request", requestId),
+        ]
+        if let effort, !effort.isEmpty {
+            fields.append(("effort", effort))
+        }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats",
+            fields: fields,
+            as: DirectChatStartedResponse.self,
+            timeoutInterval: 60
+        )
+    }
+
+    public func sendDirectChatMessage(
+        threadId: String,
+        prompt: String,
+        requestId: String = DirectChatDateParser.makeHex32RequestId()
+    ) async throws -> DirectChatStartedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/messages",
+            fields: [("prompt", prompt), ("request", requestId)],
+            as: DirectChatStartedResponse.self
+        )
+    }
+
+    public func stopDirectChat(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/stop",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func updateDirectChatModel(
+        threadId: String,
+        provider: AgentChatProvider,
+        modelId: String,
+        effort: String? = nil
+    ) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [("provider", provider.rawValue), ("model", modelId)]
+        if let effort {
+            fields.append(("effort", effort))
+        }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/model",
+            fields: fields,
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func deleteDirectChat(
+        threadId: String,
+        discard: Bool = false,
+        keepBranch: Bool = false
+    ) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = []
+        if discard { fields.append(("discard", "1")) }
+        if keepBranch { fields.append(("keepBranch", "1")) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/delete",
+            fields: fields,
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func attachDirectChatFile(
+        threadId: String,
+        filename: String,
+        mimeType: String?,
+        data: Data
+    ) async throws -> DirectChatAttachedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [
+            ("filename", filename),
+            ("dataBase64", data.base64EncodedString()),
+        ]
+        if let mimeType, !mimeType.isEmpty {
+            fields.append(("mimeType", mimeType))
+        }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/attachments",
+            fields: fields,
+            as: DirectChatAttachedResponse.self,
+            timeoutInterval: 45
+        )
+    }
+
+    public func applyMainEditsToDirectChat(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/apply-main-edits",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func repairDirectChatGit(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/repair",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func previewDirectChatShip(
+        threadId: String,
+        mode: String? = nil,
+        title: String? = nil,
+        goal: String? = nil
+    ) async throws -> DirectChatShipPreview {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = []
+        if let mode, !mode.isEmpty { fields.append(("mode", mode)) }
+        if let title, !title.isEmpty { fields.append(("title", title)) }
+        if let goal, !goal.isEmpty { fields.append(("goal", goal)) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship-preview",
+            fields: fields,
+            as: DirectChatShipPreview.self
+        )
+    }
+
+    public func executeDirectChatShip(
+        threadId: String,
+        mode: String,
+        termsDigest: String,
+        title: String? = nil,
+        goal: String? = nil,
+        password: String? = nil
+    ) async throws -> DirectChatShippedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [
+            ("mode", mode),
+            ("termsDigest", termsDigest),
+        ]
+        if let title, !title.isEmpty { fields.append(("title", title)) }
+        if let goal, !goal.isEmpty { fields.append(("goal", goal)) }
+        if let password, !password.isEmpty { fields.append(("password", password)) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship",
+            fields: fields,
+            as: DirectChatShippedResponse.self,
+            timeoutInterval: 45
+        )
+    }
+
+    public func cancelDirectChatShip(threadId: String, shipId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship-cancel",
+            fields: [("shipId", shipId)],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func fetchDirectChatArtifactData(urlPath: String) async throws -> Data {
+        try await renewingStaleSession {
+            let req = try makeRequest(path: urlPath, accept: "*/*")
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            guard (200...299).contains(http.statusCode) else {
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not load artifact.")
+            }
+            return data
+        }
+    }
+
+    public func fetchAgents() async throws -> AgentsReadResponse {
+        try await send(try makeRequest(path: "/engine/agents"), as: AgentsReadResponse.self)
+    }
+
+    public func checkAgents() async throws -> AgentsReadResponse {
+        guard case .localSession(let s) = transport else {
+            return try await fetchAgents()
+        }
+        let body = "csrf=\(s.csrf.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s.csrf)"
+        let req = try makeRequest(
+            path: "/engine/agents/check",
+            method: "POST",
+            body: Data(body.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+        return try await send(req, as: AgentsReadResponse.self)
+    }
+
+    public func startAgentTerminal(kind: String, agentId: String, confirmCommand: String? = nil) async throws -> String {
+        try await renewingStaleSession { try await startAgentTerminalOnce(kind: kind, agentId: agentId, confirmCommand: confirmCommand) }
+    }
+
+    private func startAgentTerminalOnce(kind: String, agentId: String, confirmCommand: String?) async throws -> String {
+        struct TermStartReply: Decodable {
+            let ok: Bool?
+            let id: String?
+            let error: String?
+        }
+        guard case .localSession(let s) = transport else {
+            throw ToolrollClientError.refused("Agent setup requires a local Toolroll session on this Mac.")
+        }
+        var items = [
+            URLQueryItem(name: "csrf", value: s.csrf),
+            URLQueryItem(name: "agent", value: agentId),
+        ]
+        if let confirmCommand {
+            items.append(URLQueryItem(name: "confirm", value: confirmCommand))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let form = comps.percentEncodedQuery ?? ""
+        let req = try makeRequest(
+            path: "/term/agent/\(kind)",
+            method: "POST",
+            body: Data(form.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+        let reply = try await send(req, as: TermStartReply.self)
+        if let id = reply.id, !id.isEmpty {
+            return id
+        }
+        throw ToolrollClientError.refused(reply.error ?? "Could not start agent \(kind).")
+    }
+
+    public func fetchModels() async throws -> ModelsReadResponse {
+        try await send(try makeRequest(path: "/engine/models"), as: ModelsReadResponse.self)
+    }
+
+    public func updateModels(digest: String, fields: [String: String], password: String = "") async throws -> String {
+        var formFields: [(String, String)] = [
+            ("digest", digest),
+            ("scope", "installation"),
+            ("password", password),
+        ]
+        for (k, v) in fields.sorted(by: { $0.key < $1.key }) {
+            formFields.append((k, v))
+        }
+        return try await sendFormAct(
+            path: "/settings/models/agent",
+            fields: formFields,
+            defaultDone: "Updated model selection."
+        )
+    }
+
+    public func checkModelCatalog() async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/models/check",
+            fields: [],
+            defaultDone: "Checked for installed agents & new models."
+        )
+    }
+
+    public func fetchLiveRunWindow(runId: Int, cursor: String? = nil) async throws -> LiveRunWindowResponse {
+        var path = "/agents/live/run/\(runId)?file=main"
+        if let cursor, !cursor.isEmpty,
+           let enc = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&cursor=\(enc)"
+        }
+        return try await send(try makeRequest(path: path), as: LiveRunWindowResponse.self)
+    }
+
+    public func saveRunComment(runId: Int, note: String, path filePath: String = "", line: Int? = nil) async throws -> String {
+        return try await sendFormAct(
+            path: "/r/\(runId)/comment",
+            fields: [
+                ("note", note),
+                ("request", UUID().uuidString.lowercased()),
+                ("path", filePath),
+                ("line", line.map(String.init) ?? ""),
+            ],
+            defaultDone: "Review note saved."
+        )
+    }
+
+    public func openLocalProject(path folderPath: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/projects/open",
+            fields: [
+                ("path", folderPath),
+                ("via", "path"),
+                ("return", "/work"),
+            ],
+            defaultDone: "Added project \((folderPath as NSString).lastPathComponent)."
+        )
+    }
+
+    public func approveProjectWorktreeSetup(
+        repo: String,
+        provider: String,
+        model: String,
+        command: String,
+        timeoutSeconds: Int = 300,
+        password: String
+    ) async throws -> String {
+        guard case .localSession(let creds) = transport else {
+            throw ToolrollClientError.refused("Project worktree setup requires a local Toolroll session.")
+        }
+        let previewFields: [(String, String)] = [
+            ("csrf", creds.csrf),
+            ("repo", repo),
+            ("provider", provider),
+            ("model", model),
+            ("command", command),
+            ("seconds", String(timeoutSeconds)),
+        ]
+        var comps = URLComponents()
+        comps.queryItems = previewFields.map { URLQueryItem(name: $0.0, value: $0.1) }
+        let formBody = comps.percentEncodedQuery ?? ""
+        let previewReq = try makeRequest(
+            path: "/control/setup-preview",
+            method: "POST",
+            body: Data(formBody.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "text/html",
+            includeMutationKey: true
+        )
+        let (previewData, previewResp) = try await session.data(for: previewReq)
+        let previewHTML = String(data: previewData, encoding: .utf8) ?? ""
+        let status = (previewResp as? HTTPURLResponse)?.statusCode ?? 0
+        guard status >= 200 && status < 300 else {
+            throw ToolrollClientError.refused("Could not preview worktree setup (HTTP \(status)).")
+        }
+
+        func extractHidden(_ name: String) -> String? {
+            let pattern1 = #"name=""# + name + #""[^>]*value="([^"]+)""#
+            let pattern2 = #"value="([^"]+)"[^>]*name=""# + name + #"""#
+            for pat in [pattern1, pattern2] {
+                if let re = try? NSRegularExpression(pattern: pat),
+                   let m = re.firstMatch(in: previewHTML, range: NSRange(previewHTML.startIndex..., in: previewHTML)),
+                   m.numberOfRanges > 1,
+                   let r = Range(m.range(at: 1), in: previewHTML) {
+                    return String(previewHTML[r])
+                }
+            }
+            return nil
+        }
+
+        guard let nonce = extractHidden("nonce"), let fingerprint = extractHidden("fingerprint") else {
+            throw ToolrollClientError.refused("Setup preview did not return an approval nonce — check your model selection and try again.")
+        }
+
+        return try await sendFormAct(
+            path: "/control/setup-approve",
+            fields: [
+                ("repo", repo),
+                ("nonce", nonce),
+                ("fingerprint", fingerprint),
+                ("provider", provider),
+                ("model", model),
+                ("command", command),
+                ("seconds", String(timeoutSeconds)),
+                ("token", password),
+            ],
+            defaultDone: "Approved worktree setup (`\(command)`) for \((repo as NSString).lastPathComponent)."
+        )
+    }
+
+    // MARK: - Native In-App Project Settings (Live View, Network, Concurrency)
+
+    public struct ProjectSettingsSnapshot: Sendable, Equatable {
+        public let repoPath: String
+        public let projectName: String
+        public let liveCommandsShown: Bool
+        public let liveViewNonce: String?
+        public let networkOpen: Bool
+        public let networkLocalAny: Bool
+        public let networkHosts: String
+        public let concurrency: Int
+        public let suggestedSetupCommand: String
+        /// Pending agent network requests with the server's own terms (never the request file's words).
+        public let networkRequests: [AgentNetworkRequestTerms]
+
+        public init(
+            repoPath: String,
+            projectName: String,
+            liveCommandsShown: Bool,
+            liveViewNonce: String?,
+            networkOpen: Bool,
+            networkLocalAny: Bool,
+            networkHosts: String,
+            concurrency: Int,
+            suggestedSetupCommand: String,
+            networkRequests: [AgentNetworkRequestTerms] = []
+        ) {
+            self.repoPath = repoPath
+            self.projectName = projectName
+            self.liveCommandsShown = liveCommandsShown
+            self.liveViewNonce = liveViewNonce
+            self.networkOpen = networkOpen
+            self.networkLocalAny = networkLocalAny
+            self.networkHosts = networkHosts
+            self.concurrency = concurrency
+            self.suggestedSetupCommand = suggestedSetupCommand
+            self.networkRequests = networkRequests
+        }
+    }
+
+    public func fetchProjectSettings(repo: String) async throws -> ProjectSettingsSnapshot {
+        let encoded = repo.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? repo
+        let req = try makeRequest(path: "/settings/project?repo=\(encoded)", method: "GET", accept: "text/html")
+        let (data, resp) = try await session.data(for: req)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard status >= 200 && status < 300 else {
+            throw ToolrollClientError.refused("Could not load project settings (HTTP \(status)).")
+        }
+        let html = String(data: data, encoding: .utf8) ?? ""
+        return Self.parseProjectSettingsHTML(html, repo: repo)
+    }
+
+    public static func parseProjectSettingsHTML(_ html: String, repo: String) -> ProjectSettingsSnapshot {
+        let liveCommandsShown = html.contains(#"data-live-view-setting="commands""#)
+
+        // Extract single-use nonce scoped to the live-view form
+        var liveViewNonce: String? = nil
+        if let formRange = html.range(of: #"id="live-view-form""#) {
+            let tail = String(html[formRange.lowerBound...].prefix(2400))
+            let patterns = [
+                #"name="nonce"[^>]*value="([^"]+)""#,
+                #"value="([^"]+)"[^>]*name="nonce""#,
+            ]
+            for pat in patterns {
+                if let re = try? NSRegularExpression(pattern: pat),
+                   let m = re.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)),
+                   m.numberOfRanges > 1,
+                   let r = Range(m.range(at: 1), in: tail) {
+                    liveViewNonce = String(tail[r])
+                    break
+                }
+            }
+        }
+
+        func inputIsChecked(id: String) -> Bool {
+            let pat = #"<input[^>]*id=""# + id + #""[^>]*>"#
+            guard let re = try? NSRegularExpression(pattern: pat),
+                  let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                  let r = Range(m.range(at: 0), in: html) else {
+                return false
+            }
+            let tag = String(html[r]).lowercased()
+            return tag.contains(" checked") || tag.contains("checked=")
+        }
+
+        let networkLocalAny = inputIsChecked(id: "network-local")
+        let networkOpen = inputIsChecked(id: "network-open")
+
+        var networkHosts = ""
+        if let re = try? NSRegularExpression(pattern: #"<textarea[^>]*id="network-hosts"[^>]*>([\s\S]*?)</textarea>"#),
+           let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           m.numberOfRanges > 1,
+           let r = Range(m.range(at: 1), in: html) {
+            networkHosts = String(html[r])
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var concurrency = 1
+        if let re = try? NSRegularExpression(pattern: #"<input[^>]*id="builds-at-once-n"[^>]*value="(\d+)""#),
+           let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           m.numberOfRanges > 1,
+           let r = Range(m.range(at: 1), in: html),
+           let val = Int(html[r]) {
+            concurrency = val
+        }
+
+        let projName = (repo as NSString).lastPathComponent
+        let suggested = LocalWorkspaceDiscovery.suggestSetupCommand(forRepoPath: repo) ?? "pnpm install --frozen-lockfile"
+        return ProjectSettingsSnapshot(
+            repoPath: repo,
+            projectName: projName,
+            liveCommandsShown: liveCommandsShown,
+            liveViewNonce: liveViewNonce,
+            networkOpen: networkOpen,
+            networkLocalAny: networkLocalAny,
+            networkHosts: networkHosts,
+            concurrency: concurrency,
+            suggestedSetupCommand: suggested,
+            networkRequests: AgentNetworkRequestTerms.parse(projectSettingsHTML: html)
+        )
+    }
+
+    public func setProjectLiveCommands(
+        repo: String,
+        show: Bool,
+        nonce: String?,
+        password: String
+    ) async throws -> String {
+        var fields: [(String, String)] = [
+            ("repo", repo),
+            ("act", show ? "on" : "off"),
+        ]
+        if show {
+            fields.append(("nonce", nonce ?? ""))
+            fields.append(("password", password))
+        }
+        return try await sendFormAct(
+            path: "/settings/project/live-view",
+            fields: fields,
+            defaultDone: show ? "Commands will show in the live view from the next run." : "Commands are now hidden in the live view."
+        )
+    }
+
+    public func setProjectNetwork(
+        repo: String,
+        open: Bool,
+        localAny: Bool,
+        hosts: String,
+        password: String
+    ) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/network",
+            fields: [
+                ("repo", repo),
+                ("mode", open ? "open" : "allowlist"),
+                ("local", localAny ? "any" : "proxy-only"),
+                ("hosts", hosts),
+                ("password", password),
+            ],
+            defaultDone: "Saved project network settings."
+        )
+    }
+
+    /// Approves an agent's network request exactly as the server showed it: only its id and the digest of the terms the
+    /// person saw are sent; the server re-derives the terms and refuses when they no longer match.
+    public func approveNetworkRequest(repo: String, id: String, digest: String, password: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/network",
+            fields: [
+                ("repo", repo),
+                ("request", id),
+                ("digest", digest),
+                ("password", password),
+            ],
+            defaultDone: "Approved the agent's request."
+        )
+    }
+
+    public func setProjectConcurrency(repo: String, concurrency: Int) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/concurrency",
+            fields: [
+                ("repo", repo),
+                ("concurrency", String(max(1, min(64, concurrency)))),
+            ],
+            defaultDone: "Saved. Up to \(concurrency) at once."
+        )
+    }
+
+    /// The server takes a request id of exactly 32 hex characters (a retry of the same id never sends twice).
+    static func leadRequestId() -> String {
+        UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+    }
+
+    /// Sends to the Lead. `session` is the conversation the person was looking at (as the web's form sends it), so a
+    /// message never lands in a conversation that changed underneath; nil when none had started.
+    public struct LeadImageUpload: Encodable, Sendable, Equatable {
+        public let filename: String
+        public let mediaType: String
+        public let dataBase64: String
+
+        public init(filename: String, mediaType: String, dataBase64: String) {
+            self.filename = filename
+            self.mediaType = mediaType
+            self.dataBase64 = dataBase64
+        }
+    }
+
+    public func sendLeadMessage(
+        message: String,
+        project: String? = nil,
+        session: Int? = nil,
+        images: [LeadImageUpload] = []
+    ) async throws -> String {
+        let imagesJson: String? = {
+            guard !images.isEmpty, let data = try? JSONEncoder().encode(images) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }()
+        if case .localSession(let s) = transport {
+            var fields = [
+                ("message", message),
+                ("request", Self.leadRequestId()),
+                ("instant", "1"),
+            ]
+            if let session { fields.append(("request-session", String(session))) }
+            if let project, !project.isEmpty { fields.append(("project", project)) }
+            if let imagesJson { fields.append(("images", imagesJson)) }
+            _ = s
+            return try await sendFormAct(path: "/chat", fields: fields, defaultDone: "Sent to Lead.")
+        }
+        struct ChatReply: Codable { let ok: Bool?; let message: String?; let problem: String?; let error: String? }
+        var items = [
+            URLQueryItem(name: "message", value: message),
+            URLQueryItem(name: "request", value: Self.leadRequestId()),
+        ]
+        if let session { items.append(URLQueryItem(name: "request-session", value: String(session))) }
+        if let project, !project.isEmpty {
+            items.append(URLQueryItem(name: "project", value: project))
+        }
+        if let imagesJson {
+            items.append(URLQueryItem(name: "images", value: imagesJson))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let form = comps.percentEncodedQuery ?? ""
+        let req = try makeRequest(path: "/chat", method: "POST", body: Data(form.utf8), contentType: "application/x-www-form-urlencoded")
+        let reply = try await send(req, as: ChatReply.self)
+        if let problem = reply.problem ?? reply.error, !problem.isEmpty {
+            throw ToolrollClientError.refused(problem)
+        }
+        return reply.message ?? "Sent to Lead."
+    }
+
+    public func confirmLeadProposal(id: Int, irreversible: Bool = false) async throws -> String {
+        var fields: [(String, String)] = [("return", "/chat")]
+        if irreversible {
+            fields.append(("confirm", "yes"))
+        }
+        return try await sendFormAct(
+            path: "/chat/proposal/\(id)/confirm",
+            fields: fields,
+            defaultDone: "Confirmed."
+        )
+    }
+
+    public func dismissLeadProposal(id: Int) async throws -> String {
+        return try await sendFormAct(
+            path: "/chat/proposal/\(id)/dismiss",
+            fields: [("return", "/chat")],
+            defaultDone: "Dismissed."
+        )
+    }
+
+    // MARK: - Native In-App Approvals, Reviews, Questions & Task Lifecycle
+
+    public func approveTask(taskId: String, digest: String, nonce: String, password: String = "") async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(
+            path: "/t/\(enc)/approve",
+            fields: [
+                ("digest", digest),
+                ("nonce", nonce),
+                ("token", password),
+            ],
+            defaultDone: "Approved. Build queued next."
+        )
+    }
+
+    public func acceptResult(taskId: String, runId: Int, receipt: String) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "complete", taskId], defaultDone: "Accepted. Task complete.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/complete",
+            fields: [
+                ("receipt", receipt),
+                ("run", String(runId)),
+            ],
+            defaultDone: "Accepted. Task complete."
+        )
+    }
+
+    public func sendBackResult(taskId: String, runId: Int, source: String, note: String) async throws -> String {
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "revise", taskId, note], defaultDone: "Sent back for revision.")
+        }
+        return try await sendFormAct(
+            path: "/r/\(runId)/comment",
+            fields: [
+                ("intent", "revise"),
+                ("note", note),
+                ("request", UUID().uuidString.lowercased()),
+                ("batch", ""),
+                ("source", source),
+            ],
+            defaultDone: "Sent back. Revision filed."
+        )
+    }
+
+    public func answerQuestion(questionId: Int, optionId: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/d/\(questionId)/answer",
+            fields: [
+                ("choice", optionId),
+                ("confirm", "yes"),
+                ("return", "next"),
+            ],
+            defaultDone: "Answer recorded."
+        )
+    }
+
+    public func planTask(taskId: String, source: String, incident: Int? = nil) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        var fields = [("source", source)]
+        if let incident {
+            fields.append(("incident", String(incident)))
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/plan",
+            fields: fields,
+            defaultDone: "Planning started. You'll approve the plan in-app before it builds."
+        )
+    }
+
+    public func retryTask(taskId: String, runId: Int, digest: String) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "requeue", taskId], defaultDone: "Queued retry.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/requeue",
+            fields: [
+                ("run", String(runId)),
+                ("digest", digest),
+                ("return", "task"),
+            ],
+            defaultDone: "Retrying — new attempt queued."
+        )
+    }
+
+    public func holdTask(taskId: String) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "hold", taskId], defaultDone: "Task paused.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/hold",
+            fields: [("reason", "Paused from Toolroll Mac")],
+            defaultDone: "Paused until you resume it."
+        )
+    }
+
+    public func resumeHold(taskId: String, holdId: Int) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "unhold", taskId], defaultDone: "Task resumed.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/unhold",
+            fields: [("hold", String(holdId))],
+            defaultDone: "Resumed."
+        )
+    }
+
+    public func stopTask(taskId: String, runId: Int) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        if !transport.isLocalSession {
+            return try await runRemoteCli(argv: ["task", "stop", taskId], defaultDone: "Stop requested.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/stop",
+            fields: [("run", String(runId)), ("return", "task")],
+            defaultDone: "Stopping active run."
+        )
+    }
+
+    public func cancelTask(taskId: String, state: String, runId: Int?) async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        // The remote CLI has no cancel (and `task stop` there needs a run and a password): never pretend.
+        guard transport.isLocalSession else {
+            throw ToolrollClientError.refused("Cancel this task from the web view on a remote workspace.")
+        }
+        return try await sendFormAct(
+            path: "/t/\(enc)/cancel",
+            fields: [
+                ("state", state),
+                ("run", runId.map(String.init) ?? "none"),
+            ],
+            defaultDone: "Task cancelled."
+        )
+    }
+
+    /// Every automation the person can see, as the web /flows list shows them.
+    public func fetchProjects() async throws -> ProjectsResponse {
+        try await send(try makeRequest(path: "/engine/projects"), as: ProjectsResponse.self)
+    }
+
+    public func fetchAutomations() async throws -> AutomationsResponse {
+        try await send(try makeRequest(path: "/engine/automations"), as: AutomationsResponse.self)
+    }
+
+    /// One trigger act on an automation: "pause", "resume", "check" (run a scheduled or polled trigger now) or "press"
+    /// (start a button trigger). The server keeps every rule the web form has.
+    public func automationTrigger(flowId: Int, triggerId: Int, act: String) async throws -> String {
+        guard ["pause", "resume", "check", "press"].contains(act) else { throw ToolrollClientError.refused("Unknown automation action.") }
+        return try await sendFormAct(path: "/flows/\(flowId)/triggers/\(triggerId)/\(act)", fields: [], defaultDone: "Done.")
+    }
+
+    /// Whether archive and restore can run here: they are a signed-in person's act, which a remote CLI bridge can't make.
+    public var canArchive: Bool { transport.isLocalSession }
+
+    public func archiveTask(taskId: String, reason: String) async throws -> String {
+        guard canArchive else { throw ToolrollClientError.refused("Archive this task from the web view on a remote workspace.") }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(path: "/t/\(enc)/archive", fields: [("reason", reason), ("return", "/")], defaultDone: "Archived.")
+    }
+
+    /// Sets one step's agent for this task only (POST /t/<id>/route). `agent` is `provider|model`. If the task's plan
+    /// was approved, the server marks that approval out of date and the task asks for approval again.
+    /// `when`: "now" (no run going), "next-run" (the server keeps it until the live run ends) or "restart" (the server
+    /// stops the run, applies it, and starts the task again). `sawDigest` binds it to the scope the person was shown.
+    public func routeTask(taskId: String, phase: String, agent: String, sawDigest: String, when: String = "now") async throws -> String {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(
+            path: "/t/\(enc)/route",
+            fields: [("phase", phase), ("agent", agent), ("sawDigest", sawDigest), ("when", when)],
+            defaultDone: "Models changed for this task."
+        )
+    }
+
+    public func restoreTask(taskId: String) async throws -> String {
+        guard canArchive else { throw ToolrollClientError.refused("Restore this task from the web view on a remote workspace.") }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        return try await sendFormAct(path: "/t/\(enc)/restore", fields: [("return", "/")], defaultDone: "Restored.")
+    }
+
+    public func createTask(title: String, project: String?, body: String, planFirst: Bool) async throws -> String {
+        if !transport.isLocalSession {
+            var argv = ["task", "add", title]
+            if let project, !project.isEmpty { argv += ["--repo", project] }
+            if !body.isEmpty { argv += ["--body", body] }
+            return try await runRemoteCli(argv: argv, defaultDone: "Task filed.")
+        }
+        var fields = [
+            ("title", title),
+            ("planning-policy", "choice"),
+        ]
+        if planFirst {
+            fields.append(("plain", "1"))
+            fields.append(("plan-first", "1"))
+        }
+        if let project, !project.isEmpty {
+            fields.append(("repo", project))
+        }
+        if !body.isEmpty {
+            fields.append(("goal", body))
+        }
+        return try await sendFormAct(
+            path: "/tasks/add",
+            fields: fields,
+            defaultDone: planFirst ? "Filed. A plan comes first." : "Filed."
+        )
+    }
+
+    public func steerTask(taskId: String, note: String, liveRun: Int? = nil) async throws -> String {
+        if transport.isLocalSession, let runId = liveRun {
+            let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+            return try await sendFormAct(
+                path: "/t/\(enc)/steer",
+                fields: [
+                    ("note", note),
+                    ("return", "task"),
+                    ("run", String(runId)),
+                    ("key", UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24).description),
+                ],
+                defaultDone: "Steering note delivered."
+            )
+        }
+        return try await runRemoteCli(argv: ["task", "steer", taskId, note], defaultDone: "Steering note delivered.")
+    }
+
+    private func runRemoteCli(argv: [String], defaultDone: String) async throws -> String {
+        struct CliReply: Codable { let ok: Bool?; let message: String?; let stdout: String?; let stderr: String?; let error: String?; let exit: Int? }
+        let payload = try JSONSerialization.data(withJSONObject: ["argv": argv, "files": []])
+        let res = try await send(try makeRequest(path: "/api/cli", method: "POST", body: payload), as: CliReply.self)
+        if let code = res.exit, code != 0 {
+            throw ToolrollClientError.refused(res.stderr ?? res.error ?? res.message ?? "Command failed.")
+        }
+        return res.message ?? res.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) ?? defaultDone
+    }
+
+    // MARK: - Multiplayer & Candidate Mutations
+
+    public func assignTaskPerson(taskId: String, person: String, why: String = "") async throws -> AssignPersonResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let payload = try JSONSerialization.data(withJSONObject: ["person": person, "why": why])
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(enc)/assign-person", method: "POST", body: payload),
+            as: AssignPersonResponse.self
+        )
+    }
+
+    public func promoteCandidate(taskId: String, candidateId: String) async throws -> PromoteCandidateResponse {
+        let encT = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let encC = candidateId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? candidateId
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(encT)/candidate/\(encC)/promote", method: "POST", body: Data("{}".utf8)),
+            as: PromoteCandidateResponse.self
+        )
+    }
+
+    public func openCandidatePr(taskId: String, candidateId: String) async throws -> OpenCandidatePrResponse {
+        let encT = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let encC = candidateId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? candidateId
+        return try await send(
+            try makeRequest(path: "/api/handoff/task/\(encT)/candidate/\(encC)/open-pr", method: "POST", body: Data("{}".utf8)),
+            as: OpenCandidatePrResponse.self
+        )
+    }
+
+    public func startOrReuseTerminal(
+        taskId: String,
+        project: String? = nil,
+        runId: Int? = nil,
+        program: String = "shell"
+    ) async throws -> StartRemoteTerminalResponse {
+        try await renewingStaleSession {
+            try await startOrReuseTerminalOnce(taskId: taskId, project: project, runId: runId, program: program)
+        }
+    }
+
+    private func startOrReuseTerminalOnce(
+        taskId: String,
+        project: String?,
+        runId: Int?,
+        program: String
+    ) async throws -> StartRemoteTerminalResponse {
+        switch transport {
+        case .localSession(let s):
+            // 1. Check /term/state for an existing live session bound specifically to THIS task
+            let state = try? await fetchTerminals()
+            if let existingForTask = state?.sessions.first(where: {
+                $0.endedAt == nil && $0.program == program && $0.task == taskId
+                    && (runId == nil || $0.run == nil || $0.run == runId)
+            }) {
+                return StartRemoteTerminalResponse(
+                    ok: true,
+                    id: existingForTask.id,
+                    branch: existingForTask.branch,
+                    program: existingForTask.program,
+                    reused: true,
+                    scratch: existingForTask.run == nil
+                )
+            }
+
+            let resolvedRepo: String? = {
+                guard let projects = state?.projects else { return nil }
+                if let p = project, !p.isEmpty,
+                   let match = projects.first(where: { $0.name.lowercased() == p.lowercased() || $0.path.hasSuffix("/\(p)") }) {
+                    return match.path
+                }
+                return projects.first?.path
+            }()
+
+            // 2. Always try task+run take-over FIRST when a build run exists so Shell opens on the agent's exact build commit!
+            // A refusal (no committed build yet, a plan or review run) is kept in the server's words, never swallowed.
+            var takeOverRefusal: String?
+            if let runId {
+                do {
+                    let started = try await postLocalTermStart(csrf: s.csrf, program: program, taskId: taskId, runId: runId, repo: nil)
+                    let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == started })?.branch) ?? "tr/\(taskId)"
+                    return StartRemoteTerminalResponse(ok: true, id: started, branch: branch, program: program, reused: false, scratch: false)
+                } catch {
+                    takeOverRefusal = error.localizedDescription
+                }
+            }
+
+            // 3. No committed build available to take over yet: reuse or start a repo-level scratch shell
+            if let existingForProject = state?.sessions.first(where: {
+                $0.endedAt == nil && $0.program == program && $0.task == nil && project != nil && $0.project == project
+            }) {
+                return StartRemoteTerminalResponse(
+                    ok: true,
+                    id: existingForProject.id,
+                    branch: existingForProject.branch,
+                    program: existingForProject.program,
+                    reused: true,
+                    scratch: true,
+                    note: takeOverRefusal
+                )
+            }
+
+            guard let repo = resolvedRepo else {
+                throw ToolrollClientError.refused("No project repository is registered with the local Toolroll engine yet.")
+            }
+            let startedId = try await postLocalTermStart(csrf: s.csrf, program: program, taskId: nil, runId: nil, repo: repo)
+            let branch = (try? await fetchTerminals().sessions.first(where: { $0.id == startedId })?.branch) ?? "main"
+            return StartRemoteTerminalResponse(ok: true, id: startedId, branch: branch, program: program, reused: false, scratch: true, note: takeOverRefusal)
+
+        case .remoteBearer:
+            let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+            let payload = try JSONSerialization.data(withJSONObject: ["program": program])
+            return try await send(
+                try makeRequest(path: "/api/handoff/task/\(enc)/terminal", method: "POST", body: payload),
+                as: StartRemoteTerminalResponse.self
+            )
+        }
+    }
+
+    private func postLocalTermStart(
+        csrf: String,
+        program: String,
+        taskId: String?,
+        runId: Int?,
+        repo: String?
+    ) async throws -> String {
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "csrf", value: csrf),
+            URLQueryItem(name: "program", value: program),
+            URLQueryItem(name: "password", value: ""),
+        ]
+        if let taskId, let runId {
+            items.append(URLQueryItem(name: "task", value: taskId))
+            items.append(URLQueryItem(name: "run", value: String(runId)))
+        } else if let repo {
+            items.append(URLQueryItem(name: "repo", value: repo))
+        }
+        var comps = URLComponents()
+        comps.queryItems = items
+        let formBody = comps.percentEncodedQuery ?? ""
+        let req = try makeRequest(
+            path: "/term/start",
+            method: "POST",
+            body: Data(formBody.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json",
+            includeMutationKey: true
+        )
+        let (data, response) = try await session.data(for: req)
+        struct LocalTermReply: Codable {
+            let ok: Bool?
+            let id: String?
+            let error: String?
+        }
+        let reply = try? JSONDecoder().decode(LocalTermReply.self, from: data)
+        if let id = reply?.id, !id.isEmpty {
+            return id
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        throw ToolrollClientError.refused(reply?.error ?? "Could not start \(program) terminal (HTTP \(status)).")
+    }
+
+    public func pingApproval(taskId: String) async throws -> String {
+        struct PingReply: Codable { let ok: Bool; let channels: [String]?; let url: String?; let path: String? }
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let res = try await send(
+            try makeRequest(path: "/api/handoff/task/\(enc)/approval-ping", method: "POST", body: Data("{}".utf8)),
+            as: PingReply.self
+        )
+        let ch = (res.channels ?? []).joined(separator: ", ")
+        return ch.isEmpty ? "Approval link ready (\(res.url ?? res.path ?? "/t/\(taskId)"))." : "Sent approval ping via \(ch)."
+    }
+
+    // MARK: - Browser-Assisted Device Pairing (Static, Pre-Auth)
+
+    public static func startDevicePairing(origin rawOrigin: String, label: String = "Toolroll Mac", session: URLSession = .shared) async throws -> DevicePairStartResponse {
+        let base = try normalizedOrigin(rawOrigin)
+        guard let url = URL(string: "/api/connect/pair/start", relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(rawOrigin)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["label": label])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(code, "Could not start browser pairing.")
+        }
+        return try JSONDecoder().decode(DevicePairStartResponse.self, from: data)
+    }
+
+    public static func pollDevicePairing(origin rawOrigin: String, pairId: String, pollSecret: String, session: URLSession = .shared) async throws -> DevicePairPollResponse {
+        let base = try normalizedOrigin(rawOrigin)
+        guard let url = URL(string: "/api/connect/pair/poll", relativeTo: base) else {
+            throw ToolrollClientError.invalidOrigin(rawOrigin)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["pairId": pairId, "pollSecret": pollSecret])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(code, "Pairing poll failed.")
+        }
+        return try JSONDecoder().decode(DevicePairPollResponse.self, from: data)
+    }
+
+    // MARK: - Real-Time SSE Stream (GET /live?room=...)
+
+    public func streamLive(rooms: [String]) -> AsyncStream<LiveSignal> {
+        let reqResult = Result { () throws -> URLRequest in
+            var comps = URLComponents()
+            comps.queryItems = rooms.map { URLQueryItem(name: "room", value: $0) }
+            let query = comps.percentEncodedQuery.map { "?\($0)" } ?? ""
+            var r = try makeRequest(path: "/live\(query)", accept: "text/event-stream")
+            r.timeoutInterval = 3600
+            return r
+        }
+        let urlSession = self.session
+        return AsyncStream { continuation in
+            let task = Task {
+                guard case .success(let request) = reqResult else {
+                    continuation.yield(.ended)
+                    continuation.finish()
+                    return
+                }
+                do {
+                    let (bytes, response) = try await urlSession.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        continuation.yield(.ended)
+                        continuation.finish()
+                        return
+                    }
+                    var eventName = ""
+                    var dataLines: [String] = []
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        if line.isEmpty {
+                            if let sig = SSEParser.parseFrame(event: eventName, data: dataLines.joined(separator: "\n")) {
+                                continuation.yield(sig)
+                            }
+                            eventName = ""
+                            dataLines.removeAll(keepingCapacity: true)
+                        } else if line.hasPrefix("event:") {
+                            eventName = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                        } else if line.hasPrefix("data:") {
+                            dataLines.append(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
+                        }
+                    }
+                } catch {
+                    // Network drop ends this stream; WorkbenchStore reconnects cleanly.
+                }
+                continuation.yield(.ended)
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func webSocketRequest(terminalId: String) throws -> URLRequest {
+        let base = try Self.normalizedOrigin(transport.origin)
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        comps.scheme = (base.scheme == "https") ? "wss" : "ws"
+        comps.path = "/term/\(terminalId)/socket"
+        guard let url = comps.url else {
+            throw ToolrollClientError.invalidOrigin(terminalId)
+        }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        switch transport {
+        case .localSession(let s):
+            if s.key.isEmpty {
+                req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+            } else {
+                req.setValue("toolroll, toolroll.key.\(s.key)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+                req.setValue(s.key, forHTTPHeaderField: "x-toolroll-key")
+            }
+            req.setValue("terminal", forHTTPHeaderField: "x-toolroll-client")
+            req.setValue(s.cookieHeader, forHTTPHeaderField: "Cookie")
+            req.setValue(s.origin, forHTTPHeaderField: "Origin")
+        case .remoteBearer(let p):
+            req.setValue("toolroll", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+            req.setValue("terminal-remote", forHTTPHeaderField: "x-toolroll-client")
+            if !p.token.isEmpty {
+                req.setValue("Bearer \(p.token)", forHTTPHeaderField: "Authorization")
+            }
+            if let ws = p.workspaceId, !ws.isEmpty {
+                req.setValue(ws, forHTTPHeaderField: "x-toolroll-workspace")
+            }
+            if let rec = p.recoveryGeneration, !rec.isEmpty {
+                req.setValue(rec, forHTTPHeaderField: "x-toolroll-recovery")
+            }
+        }
+        return req
+    }
+
+    public func fetchPhoneChannelStatus(channel: PhoneChannel) async throws -> PhoneChannelStatus {
+        guard let path = channel.settingsPath else {
+            return PhoneChannelStatus(channel: channel, botConnected: true, isPaired: false)
+        }
+        return try await renewingStaleSession {
+            let req = try makeRequest(path: path, accept: "text/html")
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode >= 400 {
+                let parsed = PhonePairingParser.parse(html: html, channel: channel)
+                if let problem = parsed.problem {
+                    throw Self.refusal(problem)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not load \(channel.title) settings.")
+            }
+            return PhonePairingParser.parse(html: html, channel: channel)
+        }
+    }
+
+    private func postPhoneSettingsForm(
+        path: String,
+        fields: [(String, String)],
+        channel: PhoneChannel
+    ) async throws -> PhoneChannelStatus {
+        try await renewingStaleSession {
+            guard case .localSession(let s) = transport else {
+                throw ToolrollClientError.refused("Sign in locally to change \(channel.title) phone pairing.")
+            }
+            let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
+            let req = try makeRequest(
+                path: path,
+                method: "POST",
+                body: Data(formBody.utf8),
+                contentType: "application/x-www-form-urlencoded",
+                accept: "text/html",
+                includeMutationKey: true
+            )
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            let redirectOutcome = Self.parseRedirectFeedback(
+                finalURL: http.url,
+                locationHeader: http.value(forHTTPHeaderField: "Location")
+            )
+            if let problem = redirectOutcome.problem {
+                throw Self.refusal(problem)
+            }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode >= 400 {
+                let parsed = PhonePairingParser.parse(html: html, channel: channel)
+                if let problem = parsed.problem {
+                    throw Self.refusal(problem)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not update \(channel.title) pairing.")
+            }
+            let parsed = PhonePairingParser.parse(html: html, channel: channel)
+            if let problem = parsed.problem {
+                throw Self.refusal(problem)
+            }
+            if parsed.pairingCode != nil {
+                return parsed
+            }
+            return try await fetchPhoneChannelStatus(channel: channel)
+        }
+    }
+
+    public func saveTelegramBotToken(token: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/telegram-token",
+            fields: [("token", token), ("password", password)],
+            channel: .telegram
+        )
+    }
+
+    public func connectSlackApp(appToken: String, botToken: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/slack/connect",
+            fields: [("app-token", appToken), ("bot-token", botToken), ("password", password)],
+            channel: .slack
+        )
+    }
+
+    public func connectDiscordBot(botToken: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/discord/connect",
+            fields: [("bot-token", botToken), ("password", password)],
+            channel: .discord
+        )
+    }
+
+    public func connectTeamsApp(appId: String, tenant: String, secret: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/teams/connect",
+            fields: [("app-id", appId), ("tenant", tenant), ("secret", secret), ("password", password)],
+            channel: .teams
+        )
+    }
+
+    public func mintPhonePairingCode(channel: PhoneChannel, password: String) async throws -> PhoneChannelStatus {
+        guard let endpoint = channel.pairEndpoint else {
+            throw ToolrollClientError.refused("\(channel.title) does not use a pairing code.")
+        }
+        return try await postPhoneSettingsForm(
+            path: endpoint,
+            fields: [("password", password)],
+            channel: channel
+        )
+    }
+
+    public func unpairPhoneChannel(channel: PhoneChannel, password: String) async throws -> PhoneChannelStatus {
+        guard let endpoint = channel.unpairEndpoint else {
+            throw ToolrollClientError.refused("\(channel.title) cannot be unpaired here.")
+        }
+        return try await postPhoneSettingsForm(
+            path: endpoint,
+            fields: [("password", password)],
+            channel: channel
+        )
+    }
+}
+
+public enum SSEParser {
+    public static func parseFrame(event: String, data: String) -> LiveSignal? {
+        if event == "reload" { return .reload }
+        guard let jsonData = data.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+        else {
+            return nil
+        }
+        let room = obj["room"] as? String ?? "home"
+        if event == "change" { return .change(room: room) }
+        if event == "turn" { return .turn(room: room) }
+        return nil
+    }
+}

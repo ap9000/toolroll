@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "threadId": "0123456789abcdef0123456789abcdef",
+  "mode": "ship",
+  "canAutoMerge": true,
+  "autoMergeReason": null,
+  "termsDigest": "33333333333333333333333333333333",
+  "title": "Fix navbar spacing",
+  "goal": "Ship verified changes from Direct Chat (Fix navbar spacing).",
+  "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "branch": "toolroll/chat-01234567",
+  "changedFiles": ["src/nav.tsx"],
+  "checkCommand": "npm test",
+  "githubRepo": "acme/payments-api",
+  "githubBase": "main",
+  "mergeSummary": "Freezes a snapshot commit, runs npm test, opens a PR into acme/payments-api (main), and merges automatically once checks pass on this exact commit."
+}

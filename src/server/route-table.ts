@@ -193,6 +193,16 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.plan": "request-plan",
   // Local-owner slice 3: Retry, on its own road (tasks.ts localOwnerRetry; the writer checks this exact act).
   "task.act.requeue": "retry-build",
+  // The Mac app's Change Models for one task, on its own road (tasks.ts localOwnerRoute; the writer checks this exact act).
+  // A password session's route edit is unchanged.
+  "task.act.route": "change-task-agents",
+  // The Mac app's Automations screen: pause, resume and run now (check or press) of an existing trigger, each its own
+  // act (flows.ts triggerAct checks it). Every other trigger act (share, renew, secret, setup, sender, scope, remove,
+  // unshare, dropped) stays refused to a local owner.
+  "flow.trigger.pause": "trigger-pause",
+  "flow.trigger.resume": "trigger-resume",
+  "flow.trigger.check": "trigger-run",
+  "flow.trigger.press": "trigger-run",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",
@@ -200,6 +210,17 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "term.start": "take-over",
   "term.close": "take-over",
   "term.remove": "take-over",
+  "direct-chat.start": "direct-chat-start",
+  "direct-chat.send": "direct-chat-send",
+  "direct-chat.stop": "direct-chat-stop",
+  "direct-chat.model": "direct-chat-manage",
+  "direct-chat.delete": "direct-chat-manage",
+  "direct-chat.attach": "direct-chat-send",
+  "direct-chat.apply-main": "direct-chat-manage",
+  "direct-chat.repair": "direct-chat-manage",
+  "direct-chat.ship-preview": "read",
+  "direct-chat.ship": "direct-chat-ship",
+  "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
   "term.agent-sign-in": "agent-sign-in",
@@ -243,6 +264,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.flexible-sign-in-check": "flexible-sign-in-check",
   "settings.flexible-sign-in-clear": "flexible-sign-in-clear",
   "settings.project-flexible": "project-flexible",
+  // The Mac app's Project Settings sheet: each takes a password typed into it (scope.ts LOCAL_PASSWORD_ACTS).
+  "settings.project-network": "project-network",
+  "settings.project-live-view": "project-live-view",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -269,6 +293,21 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.team-read": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
   "edge.team-send": { local: "deny", why: "team conversations are a remote feature: authenticate refuses a local owner" },
   "edge.cli": { local: "deny", why: "bearer only" },
+  "edge.terminal-connection": { local: "deny", why: "ordinary person API token only; never a local-owner cookie or credential conversion" },
+  "edge.handoff-pull": { local: "deny", why: "ordinary person API token only for local code handoff export" },
+  "edge.handoff-push": { local: "deny", why: "ordinary person API token only for local code handoff candidate upload" },
+  "edge.presence": { local: "allow", why: "observational read of active task viewers, terminal controllers, and task owners within the caller's visible projects" },
+  "edge.approval-ping": { local: "deny", why: "ordinary person API token only for remote out-of-band approval ping" },
+  "edge.remote-terminals": { local: "deny", why: "ordinary person act API token only for remote terminal relay discovery" },
+  "edge.remote-terminal-start": { local: "deny", why: "ordinary person act API token only to start or reuse a central live terminal on a visible task" },
+  "edge.task-handoff-person": { local: "allow", why: "hand a visible task to a project-authorized teammate (CSRF/key or pinned remote act token)" },
+  "edge.handoff-candidates": { local: "allow", why: "observational read of uploaded local code candidates for a visible task" },
+  "edge.handoff-promote": { local: "allow", why: "queue a SHA-256 verified local code candidate for central worker checks (approver CSRF/key or remote act token)" },
+  "edge.handoff-open-pr": { local: "deny", why: "opening a pull request publishes outside this computer; requires a password-authenticated approver session or remote act token" },
+  "edge.connect-pair-start": { local: "deny", why: "CLI device pairing initiation; never uses a cookie" },
+  "edge.connect-pair-poll": { local: "deny", why: "CLI device pairing one-time token pickup; never uses a cookie" },
+  "edge.connect-pair-page": { local: "deny", why: "browser pairing confirmation requires a full password-authenticated session" },
+  "edge.connect-pair-confirm": { local: "deny", why: "minting an API token is a credential step-up act; refuses local-owner sessions" },
   "edge.teams": { local: "deny", why: "signed service only" },
   "edge.browser-asset": { local: "allow", why: "public asset" },
   "edge.workspace-style": { local: "allow", why: "public asset" },
@@ -348,6 +387,21 @@ edge("settings", "edge.connect-callback", "GET", "/settings/tools/connected", { 
 edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.terminal-connection", "GET", "/engine/connection", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.handoff-pull", "GET", `^\\/api\\/handoff\\/task\\/${TASK}$`, { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one" });
+edge("remote", "edge.handoff-push", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidate" });
+edge("remote", "edge.task-handoff-person", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/assign-person$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/assign-person" });
+edge("remote", "edge.handoff-candidates", "GET", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidates$`, { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/candidates" });
+edge("remote", "edge.handoff-promote", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate\\/cand-[a-f0-9]{16}\\/promote$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: `/api/handoff/task/one/candidate/cand-${"a".repeat(16)}/promote` });
+edge("remote", "edge.handoff-open-pr", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/candidate\\/cand-[a-f0-9]{16}\\/open-pr$`, { callers: ["cookie", "bearer"], scope: "act", project: "adapter", proof: "adapter", sample: `/api/handoff/task/one/candidate/cand-${"a".repeat(16)}/open-pr` });
+edge("remote", "edge.approval-ping", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/approval-ping$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/approval-ping" });
+edge("remote", "edge.remote-terminals", "GET", "/api/handoff/terminals", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.remote-terminal-start", "POST", `^\\/api\\/handoff\\/task\\/${TASK}\\/terminal$`, { callers: ["bearer"], scope: "act", project: "adapter", proof: "adapter", sample: "/api/handoff/task/one/terminal" });
+edge("remote", "edge.presence", "GET", "/api/presence", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
+edge("remote", "edge.connect-pair-start", "POST", "/api/connect/pair/start");
+edge("remote", "edge.connect-pair-poll", "POST", "/api/connect/pair/poll");
+edge("remote", "edge.connect-pair-page", "GET", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { sample: "/connect/pair/ABCD-EFGH" });
+edge("remote", "edge.connect-pair-confirm", "POST", "^\\/connect\\/pair\\/[A-Z2-9]{4}-[A-Z2-9]{4}$", { callers: ["cookie"], scope: "step-up", viewer: true, proof: "adapter", sample: "/connect/pair/ABCD-EFGH" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });
@@ -391,6 +445,10 @@ get("tasks", "term.page", "/term", TERM);
 get("tasks", "term.state", "/term/state", TERM);
 get("tasks", "term.session", `^\\/term\\/${TERMINAL}$`, { ...TERM, sample: `/term/${"a".repeat(32)}` });
 get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sample: `/term/${"a".repeat(32)}/socket` });
+const DIRECT_CHAT = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Direct chat is for local solo operators.", "/") } as const;
+get("tasks", "direct-chat.list", "/engine/direct-chats", DIRECT_CHAT);
+get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}` });
+get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
 // approver's read from a browser; a GET that writes nothing.
@@ -418,6 +476,13 @@ get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
 get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: ["cookie"], ...free });
 // The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
 get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
+// The engine API's Lead chat read: the person's central Lead conversation as structured data (no HTML), admitted as /chat is.
+// The engine API's Automations read: the flows the web /flows list shows, as data, admitted as /flows is.
+get("flows", "engine.automations", "/engine/automations", { limited: "resource", ...free });
+// The engine API's Projects read: the projects the person can see (as /projects lists them) and, for an approver from a
+// browser or this computer's session, the repositories the picker's own look finds that they could add. Writes nothing.
+get("pages", "engine.projects", "/engine/projects", { limited: "unscoped", ...free });
+get("pages", "engine.chat", "/engine/chat", { project: "conversation", limited: "conversation", callers: ["cookie", "bearer"], ...free });
 // Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
 post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
@@ -457,9 +522,9 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
-// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted exactly as the Live grid's reads.
+// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted as the Live grid's reads (and terminal-remote API tokens).
 // A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
-get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
+get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie", "bearer"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
 // Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.
@@ -487,6 +552,7 @@ get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", 
 // The engine API: a task's step cards and its result's diff file by file, admitted as the task page is.
 get("tasks", "task.steps", `^\\/t\\/${TASK}\\/steps$`, { project: "task", limited: "resource", ...free, sample: "/t/one/steps" });
 get("tasks", "task.diff", `^\\/t\\/${TASK}\\/diff$`, { project: "task", limited: "resource", ...free, sample: "/t/one/diff" });
+get("tasks", "task.result", `^\\/t\\/${TASK}\\/result$`, { project: "task", limited: "resource", ...free, sample: "/t/one/result" });
 // The approval waiting on a task, as its page's approval form carries it (a nonce minted as the page mints one): a
 // browser or terminal session only; the yes is the page's own POST /t/<task>/approve.
 get("tasks", "task.approval", `^\\/t\\/${TASK}\\/approval$`, { project: "task", limited: "resource", callers: ["cookie"], ...free, sample: "/t/one/approval" });
@@ -598,6 +664,18 @@ post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
 // An agent's own sign-in or install in a pane (the Agents screen): the same admission as a terminal, no project.
 for (const one of ["sign-in", "install"]) post("tasks", `term.agent-${one}`, `/term/agent/${one}`, { ...TERM, scope: "step-up" });
 for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
+post("tasks", "direct-chat.start", "/engine/direct-chats", { ...DIRECT_CHAT, scope: "step-up" });
+post("tasks", "direct-chat.send", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/messages$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/messages` });
+post("tasks", "direct-chat.stop", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/stop$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/stop` });
+post("tasks", "direct-chat.model", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/model$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/model` });
+post("tasks", "direct-chat.delete", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/delete$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/delete` });
+post("tasks", "direct-chat.attach", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/attachments$`, { ...DIRECT_CHAT, bodyCap: 16 * 1024 * 1024, sample: `/engine/direct-chats/${"a".repeat(32)}/attachments` });
+post("tasks", "direct-chat.apply-main", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/apply-main-edits$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/apply-main-edits` });
+post("tasks", "direct-chat.repair", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/repair$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/repair` });
+// Reading a chat clone's git diff for Ship preview runs git in an agent-writable workspace, so it is a POST (never a GET).
+post("tasks", "direct-chat.ship-preview", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-preview$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-preview` });
+post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/ship` });
+post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
 // visit (docs/plans/get-side-effects.md): the session's changes, and the review-for-shipping preview.
@@ -839,7 +917,7 @@ post("chat", "chat.queued-remove", "^\\/chat\\/queued\\/[1-9][0-9]{0,14}\\/remov
 // /t/:id/approve (chat-actions.ts scopes it); every other operation it confirms still needs a password typed now.
 for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}`, ...(one === "confirm" ? { freshness: "allowlist" as const } : {}) });
 for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
-post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist" });
+post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist", bodyCap: 16 * 1024 * 1024 });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });

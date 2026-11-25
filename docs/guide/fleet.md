@@ -13,12 +13,12 @@ It walks the filesystem for `.git` and reads every repo through the `git` creden
 ```
 10 branches in flight across 24 repositories
 
-vamarketplacenew                   main
-  feat/wise-payouts                upstream gone       4d ago
+my-shop                            main
+  feat/payouts                     upstream gone       4d ago
   feature/public-api-v1            ahead 17            1mo ago
   api-pricing-impl                 behind 84           2mo ago
 
-oddcircle                          redesign/instrumentation-cash-flag
+my-site                            redesign/settings-page
   main                             ahead 3, behind 56  23d ago
 ```
 

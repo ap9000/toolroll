@@ -1,7 +1,7 @@
 //! The command palette (`:` or Ctrl-K): fuzzy search over every action (with its key), task, project and setting.
 //! Enter runs what is picked through exactly the code its key runs (app.rs `run_pick` → `run_action`), so a palette
 //! act keeps every pin and confirm its key has: it is just another way to press the key.
-use crate::app::{App, Section, Tab};
+use crate::app::{App, Focus, Section, Tab};
 use crate::keys::{Action, Group, Scope, SPECS};
 use crate::text::clean;
 
@@ -13,6 +13,12 @@ pub enum Pick {
     Answer(usize),
     Task(String),
     Project(String),
+    /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
+    HandOff(String),
+    /// Promote an unverified Local Checkout Candidate into a central Run + queued checks.
+    PromoteCandidate(String),
+    /// Queue a Git push & GitHub Pull Request for a promoted Candidate's central Run.
+    OpenCandidatePr(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,16 +38,90 @@ pub struct Palette {
     pub selected: usize,
 }
 
-/// Whether an action can be run from where the person is: Diff actions in the Diff tab of a task's result only.
+/// Whether an action can be run from where the person is: Diff actions only when the Diff tab is focused.
 fn applies(app: &App, action: Action) -> bool {
     let thread = app.selected_item().is_some_and(|i| i.thread);
     match action.scope() {
-        Scope::Diff => app.tab == Tab::Diff && !thread,
+        Scope::Diff => app.effective_focus() == Focus::Detail && app.tab == Tab::Diff && !thread,
         Scope::Global => match action {
             Action::Palette => false,
             Action::FilterThisProject => app.project.is_some(),
+            Action::FilterMine | Action::FilterWaitingOnTeam | Action::FilterUnassigned => {
+                app.presence.accounts.len() > 1 || !app.presence.owners.is_empty()
+            }
+            Action::PingApproval | Action::HandoffLocal => {
+                app.remote_badge.is_some() && app.selected_item().is_some_and(|i| i.is_task)
+            }
+            Action::SwitchWorkspace => app.remote_badge.is_some(),
+            Action::ReleaseTerminal => app
+                .pane_here()
+                .is_some_and(|p| p.link == crate::term::Link::Live && !p.is_observer),
             _ => true,
         },
+    }
+}
+
+/// Contextual priority for an entry on the current task (Hick's Law: actions valid for the selected task's state
+/// surface first when the palette opens, while inapplicable ones stay searchable below).
+fn context_rank(app: &App, pick: &Pick) -> i64 {
+    match pick {
+        Pick::Answer(_) => 400,
+        Pick::Action(a) => {
+            let thread = app.thread_selected().is_some();
+            let review = app.review_waiting();
+            let approval = app.approval_waiting();
+            let live = app.live_run().is_some();
+            let retry = !review && (app.retry_pins().is_some() || app.plan_again_pins().is_some());
+            let held = !live && app.held_here().is_some();
+            let queued = !live && app.queued_here();
+            match a {
+                Action::TaskBuilder if held && app.builder_task().is_some() => 315,
+                Action::Accept if review || approval => 320,
+                Action::SendBack if review || retry => 310,
+                Action::Retry if retry => 310,
+                Action::Steer if live => 320,
+                Action::TakeOverAgent if !thread && (live || retry || review) => 285,
+                Action::TakeOver if !thread && (retry || review) => 280,
+                Action::Pause if live || app.plan_pins().is_some() => 300,
+                Action::Stop if live || held || queued => 290,
+                Action::Resume if held => 300,
+                Action::ThreadReply
+                | Action::ThreadShip
+                | Action::ThreadStop
+                | Action::ThreadEnd
+                    if thread =>
+                {
+                    310
+                }
+                // Inapplicable state-bound actions sink below everyday navigation/layout actions,
+                // while remaining searchable and runnable via the exact same path as their keys.
+                Action::Accept
+                | Action::SendBack
+                | Action::Retry
+                | Action::Steer
+                | Action::Pause
+                | Action::Stop
+                | Action::Resume
+                | Action::ThreadReply
+                | Action::ThreadShip
+                | Action::ThreadStop
+                | Action::ThreadEnd => -100,
+                Action::Open
+                | Action::LeadChat
+                | Action::DockChat
+                | Action::NewTask
+                | Action::NextNeedsYou
+                | Action::Search
+                | Action::FocusList
+                | Action::FocusDetail => 120,
+                _ => 0,
+            }
+        }
+        Pick::Task(_) => -20,
+        Pick::Project(_) => -40,
+        Pick::HandOff(_) => 60,
+        Pick::PromoteCandidate(_) => 65,
+        Pick::OpenCandidatePr(_) => 66,
     }
 }
 
@@ -66,7 +146,10 @@ pub fn entries(app: &App) -> Vec<Entry> {
             | Action::FilterToday
             | Action::FilterWorking
             | Action::FilterFailed
-            | Action::FilterDone => {
+            | Action::FilterDone
+            | Action::FilterMine
+            | Action::FilterWaitingOnTeam
+            | Action::FilterUnassigned => {
                 let on = app.filter.action() == Some(spec.action);
                 format!("{}{}", spec.label, if on { " (on)" } else { "" })
             }
@@ -104,6 +187,48 @@ pub fn entries(app: &App) -> Vec<Entry> {
             key: String::new(),
             pick: Pick::Task(item.id.clone()),
         });
+    }
+    if let Some(item) = app.selected_item().filter(|i| i.is_task) {
+        if let Some(candidates) = app.candidates.get(&item.id) {
+            for cand in candidates {
+                if cand.promoted_at.is_some() {
+                    if cand.can_open_pr && cand.publication.is_none() {
+                        out.push(Entry {
+                            kind: "Candidate",
+                            label: format!("Open PR for promoted {} by {}", cand.id, cand.author),
+                            key: String::new(),
+                            pick: Pick::OpenCandidatePr(cand.id.clone()),
+                        });
+                    }
+                    continue;
+                }
+                let count = cand.files.len();
+                let s = if count == 1 { "" } else { "s" };
+                let stale = if cand.stale { " [STALE]" } else { "" };
+                out.push(Entry {
+                    kind: "Candidate",
+                    label: format!(
+                        "Promote {} by {} ({} file{}){}",
+                        cand.id, cand.author, count, s, stale
+                    ),
+                    key: String::new(),
+                    pick: Pick::PromoteCandidate(cand.id.clone()),
+                });
+            }
+        }
+    }
+    if app.selected_item().is_some_and(|i| i.is_task) && app.presence.accounts.len() > 1 {
+        for person in &app.presence.accounts {
+            if person == &app.presence.me {
+                continue;
+            }
+            out.push(Entry {
+                kind: "Team",
+                label: format!("Hand off task to {person}"),
+                key: String::new(),
+                pick: Pick::HandOff(person.clone()),
+            });
+        }
     }
     let mut projects: Vec<String> = app
         .all_items
@@ -163,18 +288,18 @@ pub fn score(query: &str, text: &str) -> Option<i64> {
     Some(tier - first.min(999) as i64)
 }
 
-/// The lines matching what is typed, best first (ties keep the palette's order).
+/// The lines matching what is typed, best first (ties favor actions relevant to the current task, then palette order).
 pub fn matches(app: &App, query: &str) -> Vec<Entry> {
-    let mut scored: Vec<(i64, usize, Entry)> = entries(app)
+    let mut scored: Vec<(i64, i64, usize, Entry)> = entries(app)
         .into_iter()
         .enumerate()
         .filter_map(|(i, e)| {
             let hay = format!("{} {}", e.label, e.kind);
-            score(query, &hay).map(|s| (s, i, e))
+            score(query, &hay).map(|s| (s, context_rank(app, &e.pick), i, e))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, _, e)| e).collect()
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    scored.into_iter().map(|(_, _, _, e)| e).collect()
 }
 
 #[cfg(test)]

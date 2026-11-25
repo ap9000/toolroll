@@ -71,7 +71,8 @@ fn taken_over() -> App {
         fx,
         vec![Effect::TermOpen {
             task: "t-done".into(),
-            run: fake::RESULT_RUN
+            run: fake::RESULT_RUN,
+            program: "shell".into(),
         }]
     );
     assert_eq!(app.tab, Tab::Terminal);
@@ -216,6 +217,7 @@ fn keys_reach_only_the_terminal_on_screen() {
     let mut app = taken_over();
     // Another task: its socket is let go of (the program runs on), and no key reaches it any more.
     app.key(ctrl(']'));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let fx = app.key(key('k'));
     assert!(fx.contains(&Effect::TermDetach(ID.into())), "{fx:?}");
     assert!(app.term.is_none());
@@ -662,6 +664,7 @@ fn t_pressed_before_the_steps_are_read_goes_on_once_they_are() {
         away.key(key('j'));
     }
     away.key(key('t'));
+    away.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     away.key(key('k'));
     away.update(Msg::Steps(
         "t-done".into(),
@@ -889,4 +892,347 @@ fn leaving_or_losing_an_opening_shell_sends_nothing_anywhere() {
     assert!(sent(&fx).is_empty(), "{fx:?}");
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.status.as_ref().unwrap().1, SHELL_NOT_OPEN);
+}
+
+#[test]
+fn live_build_terminal_tab_shows_worker_console_and_allows_live_agent_take_over() {
+    let mut app = app_on("t-live");
+    app.tab = Tab::Terminal;
+    let shown = screen(&mut app, 120, 30);
+    // Layer 1: framed live worker console with steering composer instead of a dead-end message.
+    assert!(shown.contains("Live worker"), "{shown}");
+    assert!(shown.contains("i live agent"), "{shown}");
+    assert!(shown.contains("Message the agent"), "{shown}");
+    // Layer 2/3: `i` opens the interactive agent confirm dialog even while the build runs.
+    assert_eq!(app.key(key('i')), vec![]);
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver {
+            ref task,
+            ref program,
+            ..
+        } if task == "t-live" && program == "claude"
+    ));
+    let dialog = screen(&mut app, 120, 30);
+    assert!(dialog.contains("Open Claude Code"), "{dialog}");
+    assert!(dialog.contains("2 Claude Code"), "{dialog}");
+    assert!(dialog.contains("3 Codex"), "{dialog}");
+    // `3` switches to Codex; after the updated dialog is drawn, Enter launches `Effect::TermOpen { program: "codex" }`.
+    assert_eq!(app.key(key('3')), vec![]);
+    let codex_dialog = screen(&mut app, 120, 30);
+    assert!(codex_dialog.contains("Open Codex"), "{codex_dialog}");
+    let fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        matches!(
+            fx.as_slice(),
+            [Effect::TermOpen { task, program, .. }] if task == "t-live" && program == "codex"
+        ),
+        "{fx:?}"
+    );
+    assert_eq!(app.term.as_ref().unwrap().program, "codex");
+}
+
+#[test]
+fn confirm_take_over_cycles_programs_and_tags_opened_agent_pane() {
+    let mut app = app_on("t-done");
+    // `i` opens ConfirmTakeOver defaulting to the task's agent (claude).
+    assert_eq!(app.key(key('i')), vec![]);
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "claude"
+    ));
+    screen(&mut app, 120, 30);
+    // Tab cycles claude -> codex -> antigravity -> shell.
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "codex"
+    ));
+    screen(&mut app, 120, 30);
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    let agy_dialog = screen(&mut app, 120, 30);
+    assert!(agy_dialog.contains("Open Antigravity"), "{agy_dialog}");
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "shell"
+    ));
+    screen(&mut app, 120, 30);
+    // `4` selects Antigravity directly; `2` selects Claude Code, then after drawing `i` confirms.
+    app.key(key('4'));
+    assert!(matches!(
+        app.mode,
+        Mode::ConfirmTakeOver { ref program, .. } if program == "antigravity"
+    ));
+    screen(&mut app, 120, 30);
+    app.key(key('2'));
+    screen(&mut app, 120, 30);
+    let fx = app.key(key('i'));
+    assert_eq!(
+        fx,
+        vec![Effect::TermOpen {
+            task: "t-done".into(),
+            run: fake::RESULT_RUN,
+            program: "claude".into(),
+        }]
+    );
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: fake::RESULT_RUN,
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
+    });
+    hello(&mut app);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Claude Code"), "{shown}");
+    assert!(shown.contains("Typing"), "{shown}");
+}
+
+#[test]
+fn remote_live_terminal_attaches_requires_takeover_confirm_and_releases_control() {
+    let mut app = app_on("t-done");
+    app.remote_badge = Some("acme · sam".into());
+    app.tab = Tab::Terminal;
+
+    // Remote mode launcher prompts to attach to the central Live Terminal without local confirm modal.
+    let launcher = screen(&mut app, 120, 30);
+    assert!(launcher.contains("Central Live Terminal"), "{launcher}");
+    let fx = app.key(key('i'));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(
+        matches!(
+            fx.as_slice(),
+            [Effect::TermOpen { task, .. }] if task == "t-done"
+        ),
+        "{fx:?}"
+    );
+    let run = match fx.as_slice() {
+        [Effect::TermOpen { run, .. }] => *run,
+        _ => unreachable!(),
+    };
+
+    // Opened + Hello + Control frame with another active human Controller ("alex") puts TUI into Observing.
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run,
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
+    });
+    hello(&mut app);
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Control {
+            is_controller: false,
+            controller: Some("alex".into()),
+            viewers: vec!["alex".into(), "sam".into()],
+            epoch: 1,
+        },
+    ));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.as_ref().unwrap().is_observer);
+    let observing = screen(&mut app, 120, 30);
+    assert!(
+        observing.contains("Observing · alex controlling"),
+        "{observing}"
+    );
+
+    // First press of `i` arms inline takeover confirmation without sending TakeControl yet.
+    assert_eq!(app.key(key('i')), vec![]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.as_ref().unwrap().takeover_armed);
+    let armed = screen(&mut app, 120, 30);
+    assert!(armed.contains("Confirm takeover"), "{armed}");
+
+    // Second press of `i` confirms takeover, sends TermSend::TakeControl, and enters Mode::TakeOver.
+    let take_fx = app.key(key('i'));
+    assert_eq!(
+        take_fx,
+        vec![Effect::TermSend {
+            id: ID.into(),
+            send: TermSend::TakeControl,
+        }]
+    );
+    assert_eq!(app.mode, Mode::TakeOver);
+    assert!(!app.term.as_ref().unwrap().takeover_armed);
+
+    // Server grants control with 1 other observer watching.
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Control {
+            is_controller: true,
+            controller: Some("sam".into()),
+            viewers: vec!["alex".into(), "sam".into()],
+            epoch: 2,
+        },
+    ));
+    let controlling = screen(&mut app, 120, 30);
+    assert!(
+        controlling.contains("Controlling · 1 observing"),
+        "{controlling}"
+    );
+
+    // Releasing control via command palette (: → Release live terminal control) emits TermSend::ReleaseControl.
+    app.key(ctrl(']'));
+    assert_eq!(app.mode, Mode::Normal);
+    app.key(key(':'));
+    for ch in "release live".chars() {
+        app.key(key(ch));
+    }
+    let rel_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        rel_fx,
+        vec![Effect::TermSend {
+            id: ID.into(),
+            send: TermSend::ReleaseControl,
+        }]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn tui_surfaces_candidates_refuses_stale_and_promotes_fresh_via_palette() {
+    let mut app = app_on("t-done");
+    app.remote_badge = Some("acme · sam".into());
+
+    let stale_cand = toolroll_api::HandoffCandidate {
+        id: "cand-1111111111111111".into(),
+        author: "alex".into(),
+        created_at: "2026-11-20T18:00:00Z".into(),
+        files: vec!["src/a.ts".into()],
+        note: "old edit".into(),
+        stale: true,
+        promoted_at: None,
+        promoted_by: None,
+        run_id: None,
+        branch: None,
+        head_commit: None,
+        check_status: None,
+        live_check_state: None,
+        publication: None,
+        can_open_pr: false,
+    };
+    let fresh_cand = toolroll_api::HandoffCandidate {
+        id: "cand-2222222222222222".into(),
+        author: "alex".into(),
+        created_at: "2026-11-20T18:05:00Z".into(),
+        files: vec!["src/a.ts".into(), "src/b.ts".into()],
+        note: "rebased edit".into(),
+        stale: false,
+        promoted_at: None,
+        promoted_by: None,
+        run_id: None,
+        branch: None,
+        head_commit: None,
+        check_status: None,
+        live_check_state: None,
+        publication: None,
+        can_open_pr: false,
+    };
+
+    app.update(Msg::Candidates(
+        "t-done".into(),
+        vec![stale_cand.clone(), fresh_cand.clone()],
+    ));
+    let shown = screen(&mut app, 140, 30);
+    assert!(shown.contains("2 candidates · : promote"), "{shown}");
+
+    // Picking the stale candidate in the palette refuses inline with recovery instructions.
+    app.key(key(':'));
+    for ch in "cand-1111".chars() {
+        app.key(key(ch));
+    }
+    let stale_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(stale_fx.is_empty(), "{stale_fx:?}");
+    let msg = app.status.as_ref().unwrap().1.clone();
+    assert!(
+        msg.contains("stale") && msg.contains("toolroll handoff rebase t-done"),
+        "{msg}"
+    );
+
+    // Picking the fresh candidate emits Effect::PromoteCandidate.
+    app.key(key(':'));
+    for ch in "cand-2222".chars() {
+        app.key(key(ch));
+    }
+    let promote_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        promote_fx,
+        vec![Effect::PromoteCandidate {
+            task: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+        }]
+    );
+
+    // Promotion outcome announces central Run + triggers refresh.
+    let done_fx = app.update(Msg::CandidatePromoted(Ok(
+        toolroll_api::PromoteCandidateOutcome {
+            task_id: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+            run_id: Some(9),
+            branch: Some("toolroll/candidate/cand-2222222222222222".into()),
+            head_commit: Some("a".repeat(40)),
+        },
+    )));
+    assert!(done_fx.contains(&Effect::FetchSteps("t-done".into())));
+    assert!(done_fx.contains(&Effect::FetchWork));
+    assert!(app.status.as_ref().unwrap().1.contains("central Run #9"));
+
+    // Once central checks pass and publishing is enabled, header shows ": open PR" and palette queues it.
+    let mut passed = fresh_cand;
+    passed.promoted_at = Some("2026-11-20T18:06:00Z".into());
+    passed.run_id = Some(9);
+    passed.live_check_state = Some("passed".into());
+    passed.can_open_pr = true;
+    app.update(Msg::Candidates("t-done".into(), vec![passed.clone()]));
+    let after = screen(&mut app, 150, 30);
+    assert!(
+        after.contains("candidate checks passed · : open PR"),
+        "{after}"
+    );
+
+    app.key(key(':'));
+    for ch in "open pr".chars() {
+        app.key(key(ch));
+    }
+    let pr_fx = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        pr_fx,
+        vec![Effect::OpenCandidatePr {
+            task: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+        }]
+    );
+    let opened_fx = app.update(Msg::CandidatePrOpened(Ok(
+        toolroll_api::OpenCandidatePrOutcome {
+            task_id: "t-done".into(),
+            candidate_id: "cand-2222222222222222".into(),
+            run_id: 9,
+            publication: toolroll_api::CandidatePublication {
+                id: 3,
+                state: "pending".into(),
+                pr_number: None,
+                pr_url: None,
+            },
+        },
+    )));
+    assert!(opened_fx.contains(&Effect::FetchSteps("t-done".into())));
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .contains("pull request queued"));
+
+    passed.can_open_pr = false;
+    passed.publication = Some(toolroll_api::CandidatePublication {
+        id: 3,
+        state: "open".into(),
+        pr_number: Some(42),
+        pr_url: Some("https://github.com/acme/app/pull/42".into()),
+    });
+    app.update(Msg::Candidates("t-done".into(), vec![passed]));
+    let with_pr = screen(&mut app, 150, 30);
+    assert!(with_pr.contains("candidate PR #42"), "{with_pr}");
 }

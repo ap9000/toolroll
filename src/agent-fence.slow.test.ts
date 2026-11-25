@@ -241,12 +241,13 @@ describe("the agent fence", () => {
     const withoutStorage = withoutStorageOf(home);
     const fence = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     // The plane's git views (git-views.ts) are made in ~/.toolroll and fenced by name in every fence.
-    const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views")];
+    // The operator's own Codex home, denied to every launch by name (on Linux only when it is there).
+    const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views"), ...(process.platform === "linux" ? [] : [join(home, ".codex")])];
     // Flexible threads' folder (flexible-thread.ts): made first, then denied whole, on every platform.
     const threads = (folder: string) => [join(folder, "threads")];
     expect(fence).toEqual([...threads(state),
       join(home, ".standing-orders"), ...views,
-      join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
+      join(state, "backups"), join(state, "codex-sessions"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
       // The journal and shared memory by name, there or not.
       join(state, "orders.db-journal"), join(state, "orders.db-shm"),
       join(state, "repos.json"), join(state, ".toolroll-run"), join(state, ".toolroll-secrets"), join(state, "runner-token"), join(state, "runner-processes"), join(state, "up-login.txt"),
@@ -262,8 +263,8 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "backups"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, ".toolroll-secrets"), join(shared, "runner-processes"), join(shared, "up-login.txt"), ...threads(shared)].sort());
-    // No database file: only ~/.standing-orders and the git views.
+    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "backups"), join(shared, "codex-sessions"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, ".toolroll-secrets"), join(shared, "runner-processes"), join(shared, "up-login.txt"), ...threads(shared)].sort());
+    // No database file: only ~/.standing-orders, the git views and the operator's Codex home.
     expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views].sort());
   });
 
@@ -506,18 +507,28 @@ describe("the agent fence", () => {
       const seen: { file: string; args: readonly string[] }[] = [];
       const ask = { phase: "build" as const, brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null };
       const codexRun = open("t-codex", "codex");
-      await invokeAgent(store, codexRun, { provider: "codex", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args) => { seen.push({ file, args }); return OK; } });
+      let codexWrap: readonly string[] | undefined;
+      await invokeAgent(store, codexRun, { provider: "codex", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args, options) => { seen.push({ file, args }); codexWrap = options?.fence; return OK; } });
       const codex = seen.at(-1)!;
-      expect(codex.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-      const filesystem = codex.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-      expect(filesystem).toContain(`"${join(state, "up-login.txt")}"="deny"`);
-      expect(filesystem).toContain(`"${join(home, ".standing-orders")}"="deny"`);
-      // Codex keeps ancestors traversable, with explicit launch-time sibling denies.
-      expect(filesystem).toContain(`"${join(state, "worktrees")}"="read"`);
-      expect(filesystem).toContain(`"${worktree}"="write"`);
-      expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
-      expect(filesystem).not.toContain("[!");
-      expect(store.runFence(codexRun)).toMatchObject({ method: "codex-profile", paths: expect.any(Number) });
+      if (macosFenceAvailable()) {
+        // On a Mac Codex runs inside the OS fence like Claude: its own sandbox off, the spawn road wraps the whole process.
+        expect(codex.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(codex.args.some(one => one.startsWith("permissions.standing-orders"))).toBe(false);
+        expect(codexWrap).toContain(join(state, "up-login.txt"));
+        expect(store.runFence(codexRun)).toMatchObject({ method: "macos-sandbox", paths: expect.any(Number) });
+      } else {
+        expect(codex.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(codexWrap).toBeUndefined();
+        const filesystem = codex.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
+        expect(filesystem).toContain(`"${join(state, "up-login.txt")}"="deny"`);
+        expect(filesystem).toContain(`"${join(home, ".standing-orders")}"="deny"`);
+        // Codex keeps ancestors traversable, with explicit launch-time sibling denies.
+        expect(filesystem).toContain(`"${join(state, "worktrees")}"="read"`);
+        expect(filesystem).toContain(`"${worktree}"="write"`);
+        expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
+        expect(filesystem).not.toContain("[!");
+        expect(store.runFence(codexRun)).toMatchObject({ method: "codex-profile", paths: expect.any(Number) });
+      }
       const claudeRun = open("t-claude", "claude");
       let wrap: readonly string[] | undefined;
       await invokeAgent(store, claudeRun, { provider: "claude", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args, options) => { seen.push({ file, args }); wrap = options?.fence; return OK; } });

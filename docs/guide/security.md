@@ -80,8 +80,10 @@ result's checks, a flow's setup and script, a project tool's server) runs inside
 Claude Code uses. Its own code writes the macOS Seatbelt profile and the Linux
 bubblewrap and seccomp command for each launch; Toolroll only hands it a short
 config. `toolroll doctor` and **Settings → Project → Home folder** name the
-engine and its version. Codex builds use Codex's own sandbox, given the same
-rules.
+engine and its version. On a Mac, Codex and OpenRouter builds run inside the
+same sandbox (Codex's own sandbox off), with the same network rules and local
+services as every other agent; on Linux they use Codex's own sandbox, given the
+same rules.
 
 Each run records how it was fenced. Where the runtime can't run (Windows; Linux
 without bubblewrap, socat or ripgrep, or with unprivileged user namespaces off),
@@ -145,8 +147,8 @@ after a build starts is writable to it unless something above denies it.
 
 | | Auto | Full access |
 |---|---|---|
-| **Claude, Gemini, ACP agents** | Anthropic's sandbox-runtime (Seatbelt on macOS; bubblewrap and its seccomp filter on Linux, which also needs socat and ripgrep): reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files (anywhere outside the fence, under a project set to write anywhere), never the runtime's protected names in the checkout (Git hooks and config, shell profiles, `.mcp.json`, editor settings); no Apple Events. Neither (Windows, or a Linux missing one of those): the build doesn't start, unless an instance operator allows unconfined agents | same |
-| **Codex / OpenRouter** (any OS) | Codex's own sandbox, given the same fence: reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same reads and writes, with the fence; its commands reach the network only when the project's network is open |
+| **Claude, Gemini, ACP agents; Codex and OpenRouter on a Mac** | Anthropic's sandbox-runtime (Seatbelt on macOS; bubblewrap and its seccomp filter on Linux, which also needs socat and ripgrep): reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files (anywhere outside the fence, under a project set to write anywhere), never the runtime's protected names in the checkout (Git hooks and config, shell profiles, `.mcp.json`, editor settings); no Apple Events. Neither (Windows, or a Linux missing one of those): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Codex / OpenRouter** (Linux) | Codex's own sandbox, given the same fence: reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same reads and writes, with the fence; its commands reach the network only when the project's network is open |
 
 Toolroll's own Git on a build's checkout runs hardened (no hooks, fsmonitor,
 submodules or signing), reads none of your global Git config but its plain
@@ -207,8 +209,9 @@ run.
 **Settings → unattended permissions** chooses the starting policy for new
 tasks. **Auto** lets routine repository commands and edits proceed while the
 provider may stop on a risky permission request. **Full access** runs Claude
-with `--dangerously-skip-permissions`, Codex (and its OpenRouter transport) in
-its own sandbox widened to write anywhere with network on, and Gemini with
+with `--dangerously-skip-permissions`, Codex (and its OpenRouter transport) with
+its own sandbox off inside the macOS sandbox (on Linux, its own sandbox widened
+to write anywhere with network on), and Gemini with
 `--approval-mode yolo`, so permission prompts cannot pause work while you are
 away. A Full access agent can change files anywhere on your computer outside
 the fence. Use Full access only for repositories and setup commands you trust.

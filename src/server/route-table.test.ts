@@ -24,12 +24,16 @@ const LIMITED_ACCESS = {
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
   'task.page': 'resource', 'task.evidence': 'resource',
   // The engine API (solo-workbench plan A0): each read admitted as the page it mirrors (Work, the task page, the Live grid).
-  'work.rows': 'collection', 'task.steps': 'resource', 'task.approval': 'resource', 'task.diff': 'resource', 'agents.live.run': 'unscoped', 'agents.live.thread': 'unscoped', 'agents.live.threads': 'unscoped', 'agents.live.thread.answer': 'unscoped', 'agents.live.thread.start': 'unscoped', 'agents.live.thread.turn': 'unscoped', 'agents.live.thread.stop': 'unscoped', 'agents.live.thread.end': 'unscoped', 'agents.live.thread.ship': 'unscoped', 'agents.live.thread.ship-cancel': 'unscoped', 'agents.live.thread.ship-send-back': 'unscoped', 'engine.hello': 'unscoped', 'engine.agents': 'unscoped', 'engine.agents-check': 'unscoped', 'engine.models': 'unscoped',
+  'work.rows': 'collection', 'task.steps': 'resource', 'task.approval': 'resource', 'task.diff': 'resource', 'task.result': 'resource', 'agents.live.run': 'unscoped', 'agents.live.thread': 'unscoped', 'agents.live.threads': 'unscoped', 'agents.live.thread.answer': 'unscoped', 'agents.live.thread.start': 'unscoped', 'agents.live.thread.turn': 'unscoped', 'agents.live.thread.stop': 'unscoped', 'agents.live.thread.end': 'unscoped', 'agents.live.thread.ship': 'unscoped', 'agents.live.thread.ship-cancel': 'unscoped', 'agents.live.thread.ship-send-back': 'unscoped', 'engine.hello': 'unscoped', 'engine.agents': 'unscoped', 'engine.agents-check': 'unscoped', 'engine.models': 'unscoped', 'engine.chat': 'conversation',
   // One-tap release approval: the sheet and the push's locator are each one task's own page, admitted by its project.
   'task.release': 'resource', 'release.locate': 'resource',
   'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',
   'run.page': 'resource', 'run.evidence': 'resource',
   'flows.new': 'resource', 'flows.gallery': 'resource', 'flows.page': 'resource',
+  // The engine API's Automations read, admitted as /flows is.
+  'engine.automations': 'resource',
+  // The engine API's Projects read, admitted as /projects is.
+  'engine.projects': 'unscoped',
   'flow.insights': 'resource', 'flow.scripts': 'resource', 'flow.export': 'resource', 'flow.page': 'resource',
   'recipes': 'collection', 'recipes.run': 'collection', 'recipes.start': 'collection',
   'recipes.new': 'collection', 'recipes.edit': 'collection', 'recipes.from-task': 'collection',
@@ -126,7 +130,7 @@ describe("the route table", () => {
     // Each limited kind names how its object is found.
     for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
     expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));
-    expect(ids(ROUTES.filter(one => one.limited === "conversation"))).toEqual(["chat.page"]);
+    expect(ids(ROUTES.filter(one => one.limited === "conversation"))).toEqual(["engine.chat", "chat.page"]);
     for (const route of ROUTES.filter(one => ["task", "run", "decision", "routine", "flow"].includes(one.project))) expect(["resource", "deny"], route.id).toContain(route.limited);
     // Every project resolver but the adapter's is a console fact.
     for (const route of edgeRoutes) expect(["none", "flow", "adapter"], route.id).toContain(route.project);

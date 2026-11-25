@@ -13,7 +13,7 @@ export function FullComposition() {
   return (
     <Card style={{ maxWidth: 380 }}>
       <CardHeader>
-        <CardTitle>job-scraper</CardTitle>
+        <CardTitle>my-tool</CardTitle>
         <CardDescription>Personal job scrape and tracking tool</CardDescription>
       </CardHeader>
       <CardContent>

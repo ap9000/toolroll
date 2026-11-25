@@ -21,6 +21,15 @@ Only clearly tiny changes skip planning on the automatic route. See
 **"Sorting needs an OpenRouter key."** Add one in Settings → AI providers →
 OpenRouter. **Check again** there tests it.
 
+**Codex works in my terminal, but Agents says its sign-in could not be checked.**
+Run `codex login status` in your terminal. If it reports a ChatGPT login and
+Toolroll reports exit 127, check which executable the Toolroll service sees.
+A terminal launcher can forward to another `codex` that lives outside
+Toolroll's trusted PATH. Put the native Codex installation in a directory
+owned by your user on the service's PATH, such as `~/.local/bin`. If you
+change the service's PATH, restart the service when idle. In **Agents**,
+choose **Check again** to verify the existing login.
+
 **"Claude isn't signed in on this computer."** A Draft zone uses Claude
 Code's own sign-in: run `claude` in a terminal and sign in.
 

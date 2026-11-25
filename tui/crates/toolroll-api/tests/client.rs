@@ -184,12 +184,27 @@ async fn the_agents_screens_roads() {
     let saved = client
         .act(
             "/settings/models/agent",
-            &[("build", "codex|gpt-6-sol")],
+            &[("build", "codex|gpt-6-sol"), ("digest", &models.digest)],
             "done",
         )
         .await
         .unwrap();
     assert_eq!(saved, ActOutcome::Done("Models saved.".into()));
+    let updated = client.models().await.unwrap();
+    assert_ne!(updated.digest, models.digest);
+    assert_eq!(
+        updated
+            .roles
+            .iter()
+            .find(|r| r.key == "build")
+            .unwrap()
+            .current,
+        "codex|gpt-6-sol"
+    );
+    assert_eq!(
+        updated.roles.iter().find(|r| r.key == "plan"),
+        models.roles.iter().find(|r| r.key == "plan")
+    );
     engine.state.lock().unwrap().refuse_models =
         Some("Only an instance operator can change models.".into());
     let refused = client

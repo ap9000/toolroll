@@ -1145,7 +1145,11 @@ describe("checkout Git preflight", () => {
     } finally { store.close(); }
   });
 
-  test.each(["claude", "codex", "gemini"] as const)("%s checks the completed fence before stamping or starting, and cleans refused launches", async provider => {
+  test.each([
+    { provider: "claude", macos: true }, { provider: "codex", macos: true }, { provider: "gemini", macos: true },
+    // Codex where no OS fence works: its own profile, probed with `codex sandbox`.
+    { provider: "codex", macos: false },
+  ] as const)("$provider (macOS sandbox: $macos) checks the completed fence before stamping or starting, and cleans refused launches", async ({ provider, macos }) => {
     const store = openStore(join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
     const blocked = join(providerHome, "main", ".git");
@@ -1155,7 +1159,7 @@ describe("checkout Git preflight", () => {
     const cleanup = vi.fn(() => rmSync(privateDir, { recursive: true, force: true }));
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: { FENCE_FIXTURE: "same" }, omitEnv: [], privateDir, cleanup });
     fenceOnly([blocked]);
-    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(macos);
     const binary = join(providerHome, "gemini");
     writeFileSync(binary, "#!/bin/sh\necho 0.57.0\n");
     chmodSync(binary, 0o755);
@@ -1186,7 +1190,8 @@ describe("checkout Git preflight", () => {
       expect(calls[0]!.options.fence).toBeUndefined();
       expect(calls[1]!.options).toMatchObject({ cwd: tree, envAllowlist: [], omitEnv: expect.arrayContaining(["UNWANTED"]) });
       expect(calls[1]!.options.env).toBe(calls[0]!.options.env);
-      if (provider === "codex") {
+      const codexProfile = provider === "codex" && !macos;
+      if (codexProfile) {
         expect(calls[1]!.file).toBe("codex");
         expect(calls[1]!.args[0]).toBe("sandbox");
         const policy = calls[1]!.args.join(" ");
@@ -1202,7 +1207,7 @@ describe("checkout Git preflight", () => {
       expect(cleanup).toHaveBeenCalledOnce();
       expect(existsSync(privateDir)).toBe(false);
       expect(calls[0]!.options.env).not.toHaveProperty("GIT_DIR");
-      expect(calls[2]!.args.at(-1)).toBe(provider === "codex" ? "true" : undefined);
+      expect(calls[2]!.args.at(-1)).toBe(codexProfile ? "true" : undefined);
     } finally { store.close(); process.env["PATH"] = savedPath; }
   });
 

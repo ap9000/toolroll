@@ -52,10 +52,10 @@ import { readDenyPath } from "./project-sandbox.js";
 import { linuxSandboxToolsWords, sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
-import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, codexSessionsName, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
-import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
-import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
+import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
+import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, pruneCodexSessions, withCodexSessionsLock, type CodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
@@ -483,10 +483,21 @@ export async function invokeAgent(
   }
   const tools = launchTools;
   const codexHarness = spec.provider === "codex" || spec.provider === "openrouter";
-  // A Codex build's own CODEX_HOME (provider-home.ts): the operator's sign-in and sessions, linked, and nothing else.
-  let codexHome: { dir: string; cleanup: () => void } | null = null;
+  // Codex in its own permission profile (no OS fence here): its harness runs outside the command sandbox, its commands
+  // offline. On a Mac it runs inside the OS fence instead, its own sandbox off, like every other agent (codex-os-fence.md).
+  const codexProfile = codexHarness && containment.fence !== "macos-sandbox";
+  // A Codex build's own CODEX_HOME (provider-home.ts): a copy of the operator's sign-in and this task's own sessions,
+  // nothing that leads back to the operator's Codex folder or another task's sessions.
+  let codexHome: CodexHome | null = null;
   if (codexHarness && invocation.phase !== "review") {
-    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir())); }
+    try {
+      // Kept sessions of tasks that closed (or of an earlier database or generation here) go first, and this task's are
+      // copied in, under the kept folder's one lock (a concurrent launch's prune never takes a folder being filled).
+      const source = codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir());
+      const sessions = keptCodexSessions(store, run.taskRef);
+      codexHome = sessions === null ? isolatedCodexHome(source, undefined, { signIn: spec.provider === "codex", sessions: null })
+        : withCodexSessionsLock(dirname(sessions), () => isolatedCodexHome(source, undefined, { signIn: spec.provider === "codex", sessions }));
+    }
     catch {
       tools?.cleanup();
       removeAgentDatabase(isolatedDb.dir);
@@ -501,27 +512,36 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexProfile ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
     removeAgentDatabase(isolatedDb.dir);
     return { kind: "refused", reason: "storageRefused" in fenceOf && fenceOf.storageRefused === true ? "protected-storage" : "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
   }
-  const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
+  const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexProfile ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
   const grants: FenceGrants = { ...fenceOf.grants };
   // The run's network (egress.ts): sealed by its approval, or the provider's hosts alone, or the caller's own proxy.
   const network: LaunchNetwork = launchNetwork ?? { policy: providerOnlyNetwork(spec.provider) };
   // Codex's command sandbox has no proxy (its argv is fixed just below): its commands are online only for a sealed
   // open network, and offline otherwise.
-  if (fence.length > 0 && codexHarness) {
+  if (fence.length > 0 && codexProfile) {
     grants.network = "policy" in network && network.policy.mode === "open" ? { mode: "open" }
       : { mode: "allowlist", proxyPort: 0, brokerPorts: [], loopback: "proxy-only", socketRoots: [] };
   }
+  // Codex inside the OS fence: its own run home (its sign-in copy and sessions) read and written as this launch's, and
+  // nothing of the operator's Codex folder; trustd, which its TLS verification needs (measured, as signInGrants).
+  if (fence.length > 0 && codexHarness && !codexProfile && codexHome !== null) {
+    grants.runFolders = { ...(grants.runFolders ?? runFolders(ownTools)), alsoOwn: [realpathSync(codexHome.dir)] };
+    if (process.platform === "darwin") grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];
+  }
+  if (fence.length > 0 && spec.provider === "antigravity" && process.platform === "darwin") {
+    grants.machLookup = [...new Set([...grants.machLookup ?? [], "com.apple.trustd.agent"])];
+  }
   const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
-  const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  const launchArgv = tools === null ? argv : adapter.argv({ ...buildInvocation, fenceMethod: fenced.method });
   // An ACP agent runs only inside the OS fence: nothing else holds it (it may run commands without asking).
   if (isAcpProvider(spec.provider) && fenced.method !== "macos-sandbox" && fenced.method !== "linux-bubblewrap") {
     tools?.cleanup();
@@ -564,7 +584,7 @@ export async function invokeAgent(
   let egress: EgressProxy | null = null;
   let runTemp: string | null = null;
   const confinedOs = fenced.method === "macos-sandbox" || fenced.method === "linux-bubblewrap";
-  if (fence.length > 0 && !codexHarness && confinedOs) {
+  if (fence.length > 0 && !codexProfile && confinedOs) {
     const brokerPorts = tools?.brokerPort === undefined ? [] : [tools.brokerPort];
     // Unix sockets only under this run's own folders: its checkout, and a temp folder of its own inside its private
     // launch folder (the system temp folder holds other programs' sockets — editors, agents, password managers).
@@ -597,6 +617,16 @@ export async function invokeAgent(
       removeAgentDatabase(isolatedDb.dir);
       return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
         diagnostic: `The build's network could not be set up, so nothing was started: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    // An agent that needs this Mac's local services runs only where the network it was given admits them: the
+    // project's choice is never widened for it (egress.ts localServicesRefusal).
+    const localRefusal = fenced.method === "macos-sandbox" ? localServicesRefusal(spec.provider, grants.network, "darwin") : null;
+    if (localRefusal !== null) {
+      await egress?.close();
+      tools?.cleanup();
+      codexHome?.cleanup();
+      removeAgentDatabase(isolatedDb.dir);
+      return { kind: "refused", reason: "containment", providerVersion: acpAttestation?.agent.version ?? attested?.version ?? null, diagnostic: localRefusal };
     }
   }
   // The attempt's pinned fence, stamped on the run (C11): its method, policy version, the digest of exactly what it was
@@ -649,8 +679,8 @@ export async function invokeAgent(
     },
     ...(stdin === undefined ? {} : { stdin }),
     ...(liveInput === null ? {} : { liveInput }),
-    // One ACP conversation: the brief, the sealed model, and who the check says the agent is.
-    ...(acpLaunch === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation?.agent ?? null, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
+    // One ACP conversation: the brief, the sealed model, its auth method (when needed), and who the check says the agent is.
+    ...(acpLaunch === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation?.agent ?? null, authMethod: isAcpProvider(spec.provider) ? (ACP_AGENTS[spec.provider].authMethod ?? null) : null, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
     ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
     ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
@@ -674,7 +704,7 @@ export async function invokeAgent(
   let result: Awaited<ReturnType<typeof spawn>>;
   let spawnedAt: number;
   try {
-    if (fence.length > 0 && workspace !== null && (codexHarness || launchOptions.fence !== undefined)) {
+    if (fence.length > 0 && workspace !== null && (codexProfile || launchOptions.fence !== undefined)) {
       const inheritedEnv = launchOptions.envAllowlist === undefined ? process.env
         : Object.fromEntries(launchOptions.envAllowlist.map(name => [name, process.env[name]]));
       const probeOptions: RunOptions = {
@@ -685,7 +715,7 @@ export async function invokeAgent(
       const control = await runCommand("git", gitArgs, probeOptions);
       if (control.code === 0) {
         const executable = attested !== null ? attested.executable : adapter.binary;
-        const insideFence = (file: string, args: readonly string[]) => codexHarness
+        const insideFence = (file: string, args: readonly string[]) => codexProfile
           ? runCommand(executable, ["sandbox", ...codexFenceArgv(fence, invocation.skipPermissions, grants),
             "-P", "standing-orders", "--", file, ...args], probeOptions)
           : runCommand(file, args, { ...probeOptions, fence: launchOptions.fence!, confinement: "required",
@@ -822,6 +852,10 @@ export async function invokeAgent(
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
+    // The task keeps this launch's sessions (a repair resumes them), copied out by Toolroll before the home goes.
+    // Only once every process of the run is proven gone (the run's process witnesses, process-custody.ts): nothing of
+    // it can then rewrite the home while Toolroll copies its sessions out.
+    if (codexHome !== null) codexHome.keep(store.openRunProcessCount(runId, clock()) === 0);
     codexHome?.cleanup();
     // What the run's proxy saw (shown on its result): connections it made and refused. A connection the OS refused
     // outright never reached it, and isn't counted.
@@ -1290,7 +1324,8 @@ function fenceLaunch(provider: AgentSpec["provider"], fence: readonly string[]):
 /** The fence a launch gets, from its provider, whether it has anything to fence, and what this platform supports. */
 function fenceMethod(provider: AgentSpec["provider"], fenced: boolean): FenceMethod {
   if (!fenced) return "none";
-  if (provider === "codex" || provider === "openrouter") return "codex-profile";
+  // Codex and OpenRouter run inside the OS fence on a Mac (their own sandbox off); elsewhere in Codex's own profile.
+  if (provider === "codex" || provider === "openrouter") return macosFenceAvailable() ? "macos-sandbox" : "codex-profile";
   if (macosFenceAvailable()) return "macos-sandbox";
   if (linuxFenceAvailable()) return "linux-bubblewrap";
   return provider === "claude" ? "claude-rules" : "none";
@@ -1508,4 +1543,28 @@ export function childAuthEnv(args: { provider: string; phase: string; authMode: 
       ...(args.authMode === "subscription" ? args.ownKeyEnv : args.ownKeyEnv.filter(name => name !== args.keyEnvName)),
     ],
   };
+}
+
+/**
+ * This task's kept Codex sessions folder (agent-fence.ts codexSessionsFolder), after removing every kept folder whose
+ * task is closed: a built-in task done, cancelled or expired (or deleted) with no run still going, and anything not
+ * named for one of this database's task rows. Null (sessions live only as long as the launch) when the database has no
+ * folder or its workspace identity can't be read.
+ */
+export function keptCodexSessions(store: Store, taskRef: number): string | null {
+  const databaseFile = store.databaseFile();
+  let identity: { id: string; recoveryGeneration: string };
+  try { identity = store.workspaceIdentity(); } catch { return null; }
+  const folder = codexSessionsFolder(databaseFile, identity, taskRef);
+  if (folder === null) return null;
+  // Kept: open tasks of this database in its current recovery generation, and only those (the launching task among
+  // them: its run is going). Everything else goes, an earlier generation's folders included.
+  // The snapshot of open tasks and the removal under the kept folder's lock, which every copy in and out also holds.
+  withCodexSessionsLock(dirname(folder), () => {
+    const open = store.handle.prepare(`SELECT r.id AS ref FROM task_ref r LEFT JOIN task t ON r.backend = 'built-in' AND t.id = r.external_id
+      WHERE NOT (r.backend = 'built-in' AND (t.id IS NULL OR t.state IN ('done', 'cancelled', 'expired'))
+        AND NOT EXISTS (SELECT 1 FROM run live WHERE live.task_ref = r.id AND live.finished_at IS NULL))`).all();
+    pruneCodexSessions(dirname(folder), new Set(open.map(row => codexSessionsName(identity.id, identity.recoveryGeneration, Number(row["ref"])))));
+  });
+  return folder;
 }

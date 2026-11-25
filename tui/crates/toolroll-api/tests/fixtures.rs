@@ -42,15 +42,31 @@ const FIXTURES: &[(&str, &str)] = &[
     ("result-diff-no-result.json", "resultDiff"),
     ("result-diff-file.json", "resultDiffFile"),
     ("result-diff-context.json", "resultDiffContext"),
+    ("task-result.json", "taskResult"),
     ("link-redemption.json", "linkRedemption"),
     ("refusal.json", "refusal"),
     ("hello.json", "hello"),
     ("agents.json", "agents"),
     ("agents-none-signed-in.json", "agents"),
     ("models.json", "models"),
+    ("lead-chat.json", "leadChat"),
     ("term-state.json", "termState"),
     ("term-started.json", "termStarted"),
     ("term-start-refused.json", "termStarted"),
+    ("automations.json", "automations"),
+    ("automations-every-kind.json", "automations"),
+    ("projects.json", "projects"),
+    ("direct-chats-list.json", "directChatsList"),
+    ("direct-chat-detail.json", "directChatDetail"),
+    ("direct-chat-started.json", "directChatStarted"),
+    ("direct-chat-start-refused.json", "directChatStarted"),
+    ("direct-chat-mutated.json", "directChatMutated"),
+    ("direct-chat-mutate-refused.json", "directChatMutated"),
+    ("direct-chat-ship-preview.json", "directChatShipPreview"),
+    ("direct-chat-shipped.json", "directChatShipped"),
+    ("direct-chat-ship-refused.json", "directChatShipped"),
+    ("direct-chat-attached.json", "directChatAttached"),
+    ("direct-chat-attach-refused.json", "directChatAttached"),
 ];
 
 #[test]
@@ -96,13 +112,24 @@ fn every_fixture_round_trips_exactly() {
             "resultDiff" => drop(round_trip::<ResultDiff>(name)),
             "resultDiffContext" => drop(round_trip::<ResultDiffContext>(name)),
             "resultDiffFile" => drop(round_trip::<ResultDiffFile>(name)),
+            "taskResult" => drop(round_trip::<TaskResult>(name)),
             "linkRedemption" => drop(round_trip::<LinkRedemption>(name)),
             "refusal" => drop(round_trip::<Refusal>(name)),
             "hello" => drop(round_trip::<Hello>(name)),
             "agents" => drop(round_trip::<AgentsRead>(name)),
             "models" => drop(round_trip::<ModelsRead>(name)),
+            "leadChat" => drop(round_trip::<LeadChat>(name)),
             "termState" => drop(round_trip::<TermState>(name)),
             "termStarted" => drop(round_trip::<TermStarted>(name)),
+            "automations" => drop(round_trip::<AutomationsRead>(name)),
+            "projects" => drop(round_trip::<ProjectsRead>(name)),
+            "directChatsList" => drop(round_trip::<DirectChatsList>(name)),
+            "directChatDetail" => drop(round_trip::<DirectChatDetail>(name)),
+            "directChatStarted" => drop(round_trip::<DirectChatStarted>(name)),
+            "directChatMutated" => drop(round_trip::<DirectChatMutated>(name)),
+            "directChatShipPreview" => drop(round_trip::<DirectChatShipPreview>(name)),
+            "directChatShipped" => drop(round_trip::<DirectChatShipped>(name)),
+            "directChatAttached" => drop(round_trip::<DirectChatAttached>(name)),
             other => panic!("no model for {other}"),
         }
     }
@@ -167,6 +194,12 @@ fn check_props(schema: &Value, value: &Value, path: &str) {
 }
 
 fn matches_branch(branch: &Value, value: &Value) -> bool {
+    if let Some(any) = branch["anyOf"]
+        .as_array()
+        .or_else(|| branch["oneOf"].as_array())
+    {
+        return any.iter().any(|sub| matches_branch(sub, value));
+    }
     match value {
         Value::Object(map) => {
             let Some(props) = branch["properties"].as_object() else {

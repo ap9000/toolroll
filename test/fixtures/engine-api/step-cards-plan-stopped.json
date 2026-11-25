@@ -10,6 +10,8 @@
   "chain": "plan-first",
   "headline": "Queued",
   "liveRun": 3,
+  "latestRun": 3,
+  "models": null,
   "cards": [
     {
       "key": "plan",
@@ -124,5 +126,29 @@
     }
   },
   "plan": null,
-  "planQueued": false
+  "planQueued": false,
+  "scopeDigest": "a71c3e9d5b0f2a8c6e4d1b7f9a3c5e02",
+  "agentChoices": {
+    "plan": [
+      {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "provider": "claude",
+        "model": "claude-opus-5-5"
+      }
+    ],
+    "build": [
+      {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "provider": "codex",
+        "model": "gpt-5.5-codex"
+      }
+    ]
+  },
+  "pendingAgentChange": null
 }

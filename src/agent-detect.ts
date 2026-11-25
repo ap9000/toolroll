@@ -92,6 +92,7 @@ const ACP_LOGIN: Readonly<Record<AcpProviderId, LoginCheck>> = {
   goose: { kind: "file", path: (home, env) => join(xdg(env, "XDG_CONFIG_HOME", home, ".config"), "goose", "config.yaml"), how: "set up" },
   cursor: { kind: "none" },
   cline: { kind: "none" },
+  antigravity: { kind: "file", path: home => join(home, ".gemini", "oauth_creds.json"), how: "Google account" },
 };
 
 /** Every agent Toolroll supports, in preference order. */
@@ -190,6 +191,7 @@ export async function detectAgents(options: DetectOptions = {}): Promise<AgentDe
     const answer = await within(check(row.id).then(value => value as ProviderConnection | null), timeoutMs, null);
     if (answer === null) return out(resolved === null ? "not-installed" : "unknown");
     if (answer.state === "not-installed" || (KEY_ANSWERS.has(answer.state) && resolved === null)) return out("not-installed");
+    if (answer.launchIssue === "command-not-found") return { ...out("unknown"), next: "The status command exited with code 127. Check that the agent and its helpers are on Toolroll's trusted PATH." };
     if (SIGNED_IN.has(answer.state)) return out("signed-in", KEY_ANSWERS.has(answer.state) ? "API key" : answer.method ?? "signed in");
     return out(SIGNED_OUT.has(answer.state) ? "signed-out" : "unknown");
   };
@@ -205,7 +207,7 @@ export function withNext(agent: DetectedAgent, routed: string | null, acpChecked
   // Claude Code and Codex take tasks once signed in, unless another agent was chosen for builds.
   if (FIRST_TASK_ORDER.includes(agent.id)) {
     const ready = agent.state === "signed-in" && (routed === null || routed === agent.id);
-    return { ...agent, ready, next: agent.state === "signed-in" && !ready ? CHOOSE_AGENT : null };
+    return { ...agent, ready, next: agent.state === "signed-in" && !ready ? CHOOSE_AGENT : agent.next };
   }
   if (isAcpProvider(agent.id)) {
     const checked = acpChecked?.(agent.id) ?? false;
@@ -253,6 +255,7 @@ export function firstRunAgentLines(rows: readonly AgentLineRow[], firstTask: str
   }
   for (const one of installed) {
     if (one.state === "signed-in") { if (one.next !== null) lines.push(`${one.name} is signed in. ${one.next}`); continue; }
+    if (one.state === "unknown" && one.next !== null && FIRST_TASK_ORDER.includes(one.id)) { lines.push(`${one.name}: ${one.next}`); continue; }
     if (one.signIn !== null) lines.push(`Sign in to ${one.name}: run \`${one.signIn}\`${one.state === "unknown" ? " (its sign-in couldn't be checked)" : ""}`);
   }
   return lines.length > 0 ? lines : install;
@@ -323,6 +326,9 @@ export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.free
     note: "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit." },
   goose: { install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash", installRun: null, signIn: ACP_AGENTS.goose.signIn,
     signInRun: { binary: "goose", args: ["configure"] }, key: null, check: ACP_CHECK("goose"), note: null },
+  antigravity: { install: null, installRun: null, signIn: ACP_AGENTS.antigravity.signIn,
+    signInRun: { binary: "agy", args: ["acp", "--login"] }, key: null, check: ACP_CHECK("antigravity"),
+    note: "Uses your Google account through Antigravity ACP (`agy acp`). Run `agy install` if `agy` is not on PATH." },
 });
 
 /** An agent's setup, or null for an id Toolroll doesn't support. */

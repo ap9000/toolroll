@@ -461,6 +461,9 @@ pub struct WorkRows {
     pub room: String,
     /// The cost line: today's spend and the fullest current plan window (an instance operator's only; else None).
     pub spend: Option<Spend>,
+    /// Each provider's subscription windows (owner audience; null for others).
+    #[serde(default)]
+    pub limits: Option<Vec<ProviderLimit>>,
 }
 
 /// "$1.84 today · plan 62%": today's spend (the UTC day) and the fullest current subscription window, rounded.
@@ -611,6 +614,21 @@ pub struct StepCards {
     pub chain: String,
     pub headline: Option<String>,
     pub live_run: Option<i64>,
+    /// The task's newest run, live or finished: the run a cancel names as the one it showed.
+    #[serde(default)]
+    pub latest_run: Option<i64>,
+    /// The agent each step of this task runs (its route); null without an exact route.
+    #[serde(default)]
+    pub models: Option<Vec<TaskStepModel>>,
+    /// The scope digest this read shows: a model change sends it back as `sawDigest`.
+    #[serde(default)]
+    pub scope_digest: Option<String>,
+    /// The agents this task's plan and build steps may switch to (review is never per-task).
+    #[serde(default)]
+    pub agent_choices: Option<AgentChoices>,
+    /// A model change the server holds until the live run ends (or restarts), or why it couldn't apply.
+    #[serde(default)]
+    pub pending_agent_change: Option<PendingAgentChange>,
     pub cards: Option<Vec<StepCard>>,
     pub review: Option<Review>,
     /// Open build shell's build and why a terminal can't be opened on it (null `why`: it can be); null with no build.
@@ -655,6 +673,57 @@ pub struct Failure {
     pub suggestion: Option<String>,
     /// The agent's last lines before it stopped, cleaned by the engine (at most 8).
     pub agent_said: Option<Vec<String>>,
+}
+
+/// A provider's subscription window as last reported: used %, reached, and when it resets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderLimit {
+    pub provider: String,
+    pub plan: Option<String>,
+    pub window: String,
+    pub used_percent: f64,
+    pub reached: bool,
+    pub resets_at: Option<String>,
+    pub observed_at: String,
+}
+
+/// One step's agent on a task's own route; `chosen` says whether a person overrode the recommendation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskStepModel {
+    pub phase: String,
+    pub provider: String,
+    pub model: String,
+    pub chosen: String,
+}
+
+/// An agent a task step may run: one of the configured choices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentChoice {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentChoices {
+    pub plan: Vec<AgentChoice>,
+    pub build: Vec<AgentChoice>,
+}
+
+/// A model change waiting for the task's live run to end; `problem` when it couldn't apply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingAgentChange {
+    pub phase: String,
+    pub provider: String,
+    pub model: String,
+    pub when: String,
+    pub by: String,
+    pub at: String,
+    pub problem: Option<String>,
 }
 
 /// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last attempt.
@@ -856,6 +925,13 @@ pub struct LinkRedemption {
     pub csrf: String,
     pub key: String,
     pub epoch: String,
+    /// Whether the account has a password yet (the Mac app offers to set one); an older console doesn't say.
+    #[serde(
+        rename = "passwordSet",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub password_set: Option<bool>,
 }
 
 impl fmt::Debug for LinkRedemption {
@@ -1021,6 +1097,305 @@ pub struct AgentsRead {
     pub lines: Vec<String>,
 }
 
+// ---- Central Lead chat ---------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadLink {
+    pub label: String,
+    pub href: String,
+    pub task: Option<String>,
+    pub tab: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum LeadCardPrimary {
+    Confirm {
+        label: String,
+        irreversible: bool,
+        native: bool,
+    },
+    Link {
+        label: String,
+        href: String,
+        task: Option<String>,
+        tab: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardColumn {
+    pub label: String,
+    pub numeric: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardChartPoint {
+    pub label: String,
+    pub value: serde_json::Number,
+    pub shown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum ChatCardBlock {
+    Text {
+        text: String,
+    },
+    Divider {},
+    Facts {
+        heading: String,
+        items: Vec<ChatCardFact>,
+    },
+    Table {
+        heading: String,
+        origin: String,
+        columns: Vec<ChatCardColumn>,
+        rows: Vec<Vec<String>>,
+        more: i64,
+    },
+    Notes {
+        heading: String,
+        origin: String,
+        items: Vec<String>,
+        more: i64,
+    },
+    Chart {
+        heading: String,
+        chart: String,
+        points: Vec<ChatCardChartPoint>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardButton {
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCardAction {
+    pub proposal: i64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ChatCard {
+    pub version: u32,
+    pub title: String,
+    pub as_of: String,
+    pub repos: Vec<String>,
+    pub blocks: Vec<ChatCardBlock>,
+    pub buttons: Vec<ChatCardButton>,
+    pub actions: Vec<ChatCardAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadCard {
+    pub id: i64,
+    pub kind: String,
+    pub label: String,
+    pub state: String,
+    pub data: bool,
+    pub lines: Vec<String>,
+    pub card: Option<ChatCard>,
+    pub said: Option<String>,
+    pub note: Option<String>,
+    pub primary: Option<LeadCardPrimary>,
+    pub dismissable: bool,
+    pub links: Vec<LeadLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadAsk {
+    pub turn: i64,
+    pub question: String,
+    pub options: Vec<String>,
+    pub open: bool,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LeadMessage {
+    pub id: i64,
+    pub role: String,
+    pub text: String,
+    pub activity: Option<String>,
+    pub created_at: String,
+    pub cards: Vec<LeadCard>,
+    pub ask: Option<LeadAsk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadQueued {
+    pub id: i64,
+    pub text: String,
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+// ---- Automations ----------------------------------------------------------------------------------------------
+
+/// `GET /engine/automations`: the flows the caller can see, grouped as the web /flows list groups them. Pause, resume
+/// and run now post `/flows/<id>/triggers/<trigger>/{pause,resume,check,press}`; `can_act` says whether this caller may.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationsRead {
+    pub version: u32,
+    pub can_act: bool,
+    pub automations: Vec<Automation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Automation {
+    pub id: i64,
+    pub name: String,
+    pub project: Option<String>,
+    /// needs | running | on | paused
+    pub group: String,
+    /// What starts it, in a few words ("Weekdays at 09:00", "Cards added by hand").
+    pub starts: String,
+    /// ISO; the earliest next run of its active triggers.
+    pub next_at: Option<String>,
+    pub waiting: i64,
+    pub in_progress: i64,
+    pub trouble: Option<String>,
+    pub triggers: Vec<AutomationTrigger>,
+}
+
+/// One trigger (removed ones are never sent). `can_check`: Run now / Check now runs it (a plain schedule only fires when
+/// due); `can_press`: an active button, with its `label` and `questions`; `resume_runs_now`: resuming may run it once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AutomationTrigger {
+    pub id: i64,
+    pub kind: String,
+    pub words: String,
+    /// active | paused
+    pub state: String,
+    pub next_at: Option<String>,
+    pub last_at: Option<String>,
+    pub last_outcome: Option<String>,
+    pub failures: i64,
+    pub can_press: bool,
+    pub can_check: bool,
+    pub label: Option<String>,
+    pub questions: Option<Vec<String>>,
+    pub resume_runs_now: bool,
+}
+
+// ---- Projects ---------------------------------------------------------------------------------------------------
+
+/// `GET /engine/projects`: the projects the caller can see (named as the web names them) and, for a caller who may add
+/// one (`can_add`), git repositories on the server's disk that are not projects yet (at most 40). Adding one posts
+/// `/projects/open` with its `path`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProjectsRead {
+    pub version: u32,
+    pub can_add: bool,
+    pub projects: Vec<NamedPath>,
+    pub found: Vec<NamedPath>,
+}
+
+/// A project or a found repository: its display name and its path on the server's disk.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NamedPath {
+    pub name: String,
+    pub path: String,
+}
+
+/// `GET /engine/chat`: the person's central Lead conversation (messages, structured cards, proposals, queue).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LeadChat {
+    pub version: u32,
+    pub room: String,
+    pub session: Option<i64>,
+    pub lead_name: String,
+    pub can_send: bool,
+    pub problem: Option<String>,
+    pub project: Option<String>,
+    pub busy: bool,
+    pub pending_proposals: i64,
+    pub queued: Vec<LeadQueued>,
+    pub messages: Vec<LeadMessage>,
+}
+
+/// A live reply snapshot carried on `GET /live?room=chat` as `event: turn`.
+/// When no turn is running, the server sends `{"room":"chat","state":"idle"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurn {
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<LiveTurnStep>,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub ok: bool,
+}
+
+impl LiveTurn {
+    /// True when the server sent `{"state":"idle"}` (no active turn).
+    pub fn is_idle(&self) -> bool {
+        self.state.as_deref() == Some("idle")
+            || (!self.done
+                && self.phase.is_empty()
+                && self.status.is_empty()
+                && self.text.is_empty()
+                && self.steps.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurnStep {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<LiveTurnTool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurnTool {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
 // ---- Live terminals (take over) -------------------------------------------------------------------------------------
 
 /// `GET /term/state`: this session's live terminals. `task` and `run`: the build a take-over opened on.
@@ -1104,4 +1479,313 @@ impl From<FalseOnly> for bool {
     fn from(_: FalseOnly) -> bool {
         false
     }
+}
+
+// ---- Direct Chat (server-backed local-clone agent chats) ------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatPosture {
+    pub summary: String,
+    pub detail: String,
+    pub sandboxed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatTool {
+    pub id: String,
+    pub ordinal: i64,
+    pub name: String,
+    pub detail: String,
+    pub status: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatArtifact {
+    pub id: String,
+    pub kind: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub url: String,
+    pub source_path: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatShipSummary {
+    pub id: String,
+    pub seq: i64,
+    pub mode: String,
+    pub branch: String,
+    pub candidate_sha: String,
+    pub state: String,
+    pub task_id: Option<String>,
+    pub pr_url: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
+    pub state_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub thinking_tokens: i64,
+    pub context_tokens: i64,
+    pub context_window: Option<i64>,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatModelOption {
+    pub provider: String,
+    pub id: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    pub context_window: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatTurn {
+    pub id: String,
+    pub seq: i64,
+    pub user_prompt: String,
+    pub switched_from_provider: Option<String>,
+    pub status: String,
+    pub assistant_text: String,
+    pub error_text: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    pub usage: Option<DirectChatUsage>,
+    pub tools: Vec<DirectChatTool>,
+    pub artifacts: Vec<DirectChatArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatSummary {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    pub branch: String,
+    pub provider: String,
+    pub model_id: String,
+    pub effort: Option<String>,
+    pub posture: DirectChatPosture,
+    pub running: bool,
+    pub last_status: Option<String>,
+    pub changed_files_count: i64,
+    pub main_dirty_files: Vec<String>,
+    pub usage: Option<DirectChatUsage>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatDiff {
+    pub changed_files: Vec<String>,
+    pub diff_text: String,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatsList {
+    pub version: u32,
+    pub available: bool,
+    pub problem: Option<String>,
+    pub background_on: bool,
+    pub models: Vec<DirectChatModelOption>,
+    pub threads: Vec<DirectChatSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatDetail {
+    pub version: u32,
+    pub room: String,
+    pub thread: DirectChatSummary,
+    pub turns: Vec<DirectChatTurn>,
+    pub attachments: Vec<DirectChatArtifact>,
+    pub ships: Vec<DirectChatShipSummary>,
+    pub diff: DirectChatDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatShipPreview {
+    pub version: u32,
+    pub thread_id: String,
+    pub mode: String,
+    pub can_auto_merge: bool,
+    pub auto_merge_reason: Option<String>,
+    pub terms_digest: String,
+    pub title: String,
+    pub goal: String,
+    pub base_sha: String,
+    pub branch: String,
+    pub changed_files: Vec<String>,
+    pub check_command: Option<String>,
+    pub github_repo: Option<String>,
+    pub github_base: Option<String>,
+    pub merge_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatShipped {
+    Ok {
+        ok: TrueOnly,
+        ship: Box<DirectChatShipSummary>,
+        said: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatAttached {
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        ok: TrueOnly,
+        artifact: DirectChatArtifact,
+        clone_relative_path: Option<String>,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatStarted {
+    #[serde(rename_all = "camelCase")]
+    Started {
+        ok: TrueOnly,
+        thread_id: String,
+        turn_id: String,
+        room: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatMutated {
+    Ok {
+        ok: TrueOnly,
+        said: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportItem {
+    pub title: String,
+    pub why: String,
+    pub url: String,
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportFollowUp {
+    pub title: String,
+    pub goal: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportShot {
+    pub file: String,
+    pub caption: String,
+    pub url: String,
+    pub artifact_url: Option<String>,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskResultReport {
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        ok: TrueOnly,
+        title: String,
+        summary: String,
+        document: String,
+        truncated: bool,
+        items: Vec<TaskResultReportItem>,
+        follow_ups: Vec<TaskResultReportFollowUp>,
+        shots: Vec<TaskResultReportShot>,
+    },
+    Problem {
+        ok: FalseOnly,
+        problem: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultHandoff {
+    pub conclusion: String,
+    pub changes: Vec<String>,
+    pub verification: Vec<String>,
+    pub follow_ups: Vec<String>,
+    pub decisions: Vec<String>,
+    pub assumptions: Vec<String>,
+    pub not_done: Vec<String>,
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultScreenshot {
+    pub caption: String,
+    pub path: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResult {
+    pub version: u32,
+    pub task: String,
+    pub deliverable: String,
+    pub run: Option<i64>,
+    pub role: Option<String>,
+    pub outcome: Option<String>,
+    pub verdict: Option<String>,
+    pub summary: Option<String>,
+    pub report: Option<TaskResultReport>,
+    pub handoff: Option<TaskResultHandoff>,
+    pub screenshots: Vec<TaskResultScreenshot>,
 }

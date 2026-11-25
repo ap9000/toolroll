@@ -35,7 +35,7 @@
     "Removing the project up was started with (--repo/cwd) hides it in the console until restart, but up keeps building it and re-enrolls it at the next start",
     "Under a --project-root ceiling, a removed project that still has tasks stays listed (it is inside the root); taskless ones disappear",
     "project use never registers (it only selects saved checkouts), so it was left unchanged",
-    "Not deployed: the running installed up still needs the normal verified update before the live vamarketplacenew case works"
+    "Not deployed: the running installed up still needs the normal verified update before the live my-shop case works"
   ],
   "freshness": {
     "stampedAt": "2026-10-05T22:00:21.123Z",

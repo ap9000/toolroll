@@ -32,7 +32,7 @@ Read `styles.css` (imports the compiled theme — every token above is defined t
 ```tsx
 <div className="bg-background text-foreground font-sans min-h-screen p-4 flex flex-col gap-4">
   <PageHeader title="Standing Orders" subtitle="2 waiting · 1 running · 3 built today" />
-  <AttentionCard title="Approve scope for job-scraper" meta="task #12"
+  <AttentionCard title="Approve scope for my-tool" meta="task #12"
     action={<Button size="sm">Review and sign</Button>}>
     <div>
       <KeyValueRow label="runs on" value="claude · sonnet" mono />

@@ -20,7 +20,7 @@ import { selectionSchema, type Selection } from "./route-results.js";
 export const ROUTE_PHASES = ["plan", "build", "repair", "review"] as const;
 /** provider.ts's provider ids, restated (provider.ts sits above phase-routing.ts in the module graph) and pinned to
  * them by the test suite. */
-export const ROUTE_PROVIDERS = ["claude", "codex", "openrouter", "gemini", "opencode", "cursor", "cline", "qwen", "goose"] as const;
+export const ROUTE_PROVIDERS = ["claude", "codex", "openrouter", "gemini", "opencode", "cursor", "cline", "qwen", "goose", "antigravity"] as const;
 /** provider.ts's MODEL_ID, restated for the same reason: an exact model id is argv-safe — no leading dash, no
  * whitespace or control bytes. */
 export const MODEL_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;

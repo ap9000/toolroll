@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, schemaVersionPreflight, Store, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, type Database } from "./store.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION, BASELINE_SHAPE_SHA256, schemaShape } from "./store-baseline.js";
+import { WORKSPACE_ID_PATTERN, RECOVERY_GENERATION_PATTERN } from "./workspace-identity-schema.js";
 import { baselineFile } from "../test/baseline.js";
 
 const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -33,6 +34,30 @@ function snapshot(file: string): Snapshot {
   }
   db.close();
   return { schema, rows };
+}
+
+/** Independent installations get different identity bytes, not different schema or saved rows.
+ * Validate the exact singleton shape before replacing only its three generated fields
+ * for this cross-file comparison. Same-file snapshots below stay completely exact. */
+function expectSameInstallationShape(left: Snapshot, right: Snapshot): void {
+  const comparable = (one: Snapshot): Snapshot => {
+    const identity = one.rows["workspace_identity"]!;
+    expect(identity).toEqual([{
+      singleton: "1", workspace_id: expect.stringMatching(WORKSPACE_ID_PATTERN),
+      recovery_generation: expect.stringMatching(RECOVERY_GENERATION_PATTERN),
+      created_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+    }]);
+    const row = identity[0]!;
+    expect(new Date(row["created_at"] as string).toISOString()).toBe(row["created_at"]);
+    return { ...one, rows: { ...one.rows, workspace_identity: [{ ...row,
+      workspace_id: "<independent workspace UUID>", recovery_generation: "<independent recovery generation>",
+      created_at: "<identity creation time>",
+    }] } };
+  };
+  const comparableLeft = comparable(left), comparableRight = comparable(right);
+  expect(left.rows["workspace_identity"]![0]!["workspace_id"]).not.toBe(right.rows["workspace_identity"]![0]!["workspace_id"]);
+  expect(left.rows["workspace_identity"]![0]!["recovery_generation"]).not.toBe(right.rows["workspace_identity"]![0]!["recovery_generation"]);
+  expect(comparableLeft).toEqual(comparableRight);
 }
 
 /** The file and its WAL, byte for byte. */
@@ -75,11 +100,12 @@ describe("the v107 baseline", () => {
     openStore(upgraded).close();
     expect(rawVersion(fresh)).toBe(SCHEMA_VERSION);
     // Only a new file knows when it was installed (the storage sweep's 48-hour clock); an upgraded one anchors that
-    // on its first service pass (storage-sweep-schedule.ts). Every other row and the schema are the same.
+    // on its first service pass (storage-sweep-schedule.ts). Independent workspace identity bytes are checked
+    // separately; the schema and every other row stay exact.
     const installed = (one: Snapshot): Snapshot => ({ ...one, rows: { ...one.rows, installation_fact: one.rows["installation_fact"]!.filter(row => row["key"] !== "installed-at") } });
     expect(snapshot(fresh).rows["installation_fact"]!.filter(row => row["key"] === "installed-at")).toHaveLength(1);
     expect(snapshot(upgraded).rows["installation_fact"]!.filter(row => row["key"] === "installed-at")).toHaveLength(0);
-    expect(installed(snapshot(fresh))).toEqual(installed(snapshot(upgraded)));
+    expectSameInstallationShape(installed(snapshot(fresh)), installed(snapshot(upgraded)));
     // A second open of the current file changes nothing.
     const before = snapshot(fresh);
     openStore(fresh).close();
@@ -94,7 +120,7 @@ describe("the v107 baseline", () => {
     corrupt(partial, "ALTER TABLE task_ref ADD COLUMN auth_wait_pause INTEGER REFERENCES provider_auth_pause(id)");
     openStore(whole).close();
     openStore(partial).close();
-    expect(snapshot(partial)).toEqual(snapshot(whole));
+    expectSameInstallationShape(snapshot(partial), snapshot(whole));
   });
 
   test.each([106, -106, 47, -47, 1])("schema v%s is refused before any DDL, in words a person can act on, and the file is untouched", version => {

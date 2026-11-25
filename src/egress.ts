@@ -113,6 +113,7 @@ export const PROVIDER_HOSTS: Readonly<Record<string, readonly string[]>> = {
   qwen: ["chat.qwen.ai", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"],
   // Goose talks to whatever model service it is set up with: a project using it adds that service's host.
   goose: [],
+  antigravity: ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com", "generativelanguage.googleapis.com", "oauth2.googleapis.com", "accounts.google.com"],
 };
 
 /** A package ecosystem a project's files name, and the registry hosts its installs read from. */
@@ -175,7 +176,11 @@ export function repositoryEcosystems(repo: string): Ecosystem[] {
   return ecosystemsOf(paths);
 }
 
-/** The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries. */
+/**
+ * The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries.
+ * The project's local-services choice is never overridden for a provider: an agent that can't work without them is
+ * refused at launch instead (localServicesRefusal).
+ */
 export function resolveNetwork(provider: string, project: ProjectNetwork, ecosystems: readonly Ecosystem[]): NetworkProfile {
   if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback: project.loopback };
   const hosts = new Set<string>([
@@ -189,6 +194,21 @@ export function resolveNetwork(provider: string, project: ProjectNetwork, ecosys
 /** The network of a launch nothing sealed one for (a planner, a check): its provider's own hosts and nothing else. */
 export function providerOnlyNetwork(provider: string): NetworkProfile {
   return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(), loopback: "proxy-only" };
+}
+
+/**
+ * Agents that talk to a helper of their own on this machine's loopback, on a port they pick at start. The macOS sandbox
+ * can't admit one such port without admitting every local service, so these run on a Mac only where the project
+ * itself allows local services (or an open network); elsewhere they are refused, never widened.
+ */
+const NEEDS_LOCAL_SERVICES: Readonly<Record<string, string>> = { antigravity: "Antigravity" };
+
+/** Why `provider` can't start under `network` on `platform`, in plain words, or null when it can. */
+export function localServicesRefusal(provider: string, network: { mode: "open" } | { mode: "allowlist"; loopback: LoopbackMode } | undefined, platform: NodeJS.Platform = process.platform): string | null {
+  const name = NEEDS_LOCAL_SERVICES[provider];
+  if (name === undefined || platform !== "darwin") return null;
+  if (network !== undefined && (network.mode === "open" || network.loopback === "any")) return null;
+  return `${name} needs to reach its own helper on this Mac, and this project doesn't let builds reach local services, so nothing was started. To use ${name} here, allow local services in the project's network settings, or choose another agent.`;
 }
 
 /**
@@ -240,9 +260,21 @@ export function unaccountedHosts(network: NetworkProfile, provider: string): str
   return network.hosts.filter(one => !known.has(one));
 }
 
-export function networkWords(network: NetworkProfile | null, provider: string): string {
-  if (network === null) return "Network: approved before network rules (provider and package registries only)";
-  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}`;
+/** Where Codex runs in its own command sandbox (no OS fence: off a Mac), it can't route through Toolroll's egress proxy
+ * (agent-fence.ts codexNetworkOn): its shell commands reach the network only with Full access and an open network. */
+export function codexCommandsOffline(profile: { provider: string; sandboxMode?: string; network?: NetworkProfile | null }, platform: NodeJS.Platform = process.platform): boolean {
+  if (profile.provider !== "codex" && profile.provider !== "openrouter") return false;
+  // On a Mac Codex runs inside the OS fence with the run's proxy, like every other agent (codex-os-fence.md).
+  if (platform === "darwin") return false;
+  return !(profile.sandboxMode === "danger-full-access" && profile.network?.mode === "open");
+}
+
+export function networkWords(network: NetworkProfile | null, provider: string, options?: { commandsOffline?: boolean }): string {
+  const offlineSuffix = options?.commandsOffline !== true ? ""
+    : network?.mode === "open" ? " (Codex commands run offline until Full access is on)"
+    : " (Codex commands run offline — set a worktree setup command for dependencies)";
+  if (network === null) return `Network: approved before network rules (provider and package registries only)${offlineSuffix}`;
+  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}${offlineSuffix}`;
   // Only what is accounted for collapses into a name: this agent's own provider hosts, and a registry whose every host is
   // listed. Any other host — another provider's included, or part of a registry — is said exactly (the terms diet,
   // Codex r1 finding 3).
@@ -253,7 +285,8 @@ export function networkWords(network: NetworkProfile | null, provider: string): 
   const added = network.hosts.filter(one => !known.has(one));
   const parts = [...(named ? ["the agent's provider"] : []), ...full.map(([name]) => REGISTRY_NAMES[name])];
   return `Network: ${parts.length === 0 && added.length === 0 ? "no hosts" : [parts.join(", "), added.length === 0 ? "" : `${parts.length === 0 ? "" : "and "}${added.join(", ")}`].filter(Boolean).join(", ")}`
-    + (network.loopback === "any" ? "; and every local service on this Mac" : "");
+    + (network.loopback === "any" ? "; and every local service on this Mac" : "")
+    + offlineSuffix;
 }
 const REGISTRY_NAMES: Readonly<Record<Ecosystem, string>> = { npm: "npm", python: "PyPI", rust: "crates.io", go: "the Go proxy", ruby: "RubyGems", jvm: "Maven and Gradle" };
 

@@ -116,6 +116,10 @@ export const chatActionRequestSchemas = {
   task_resume: z.strictObject({ task: words, run: id }),
   /** One-step start from chat: the project and the preview the lead's turn loop prepared (never the model's id). */
   task_start: z.strictObject({ repo: words, preview: words }),
+  direct_chat_start: z.strictObject({ repo: words, prompt: words, provider: words, model: words, effort: words.nullable().optional() }),
+  direct_chat_reply: z.strictObject({ repo: words, chat: words, prompt: words }),
+  direct_chat_promote: z.strictObject({ repo: words, chat: words, title: words, goal: words, planning: z.enum(["auto", "required", "skip"]).optional() }),
+  direct_chat_ship: z.strictObject({ repo: words, chat: words, mode: z.enum(["ship", "keep-branch"]).optional(), title: words.optional(), goal: words.optional() }),
 } as const;
 
 export type ChatActionOperation = keyof typeof chatActionRequestSchemas;

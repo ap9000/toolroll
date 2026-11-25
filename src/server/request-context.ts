@@ -54,6 +54,8 @@ export type RequestFacts = {
   terminalAct?: boolean;
   /** Easy-start C2: this session's key is from an earlier console start (or it has none): how to reconnect. */
   reconnect?: import("./mutation-key.js").Reconnect | null;
+  /** Project limit carried by a scoped API token (`Principal.projects`): null = all of the account's projects, string[] = narrowed set. */
+  tokenProjects?: readonly string[] | null;
 };
 
 /**

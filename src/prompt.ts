@@ -20,7 +20,7 @@ export function interactive(): boolean {
 const AGENT_VARIABLES = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "GOOSE_TERMINAL", "AIDER_CHAT",
   "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID", "CODEX_CI", "CODEX_MANAGED_BY_NPM", "CODEX_MANAGED_BY_BUN"];
 /** Agents known by the program running this command, for those that set no variable of their own. */
-const AGENT_PROGRAMS = new Set(["claude", "codex", "gemini", "cursor-agent", "opencode", "aider", "copilot", "amp", "goose", "crush", "qwen"]);
+const AGENT_PROGRAMS = new Set(["claude", "codex", "gemini", "agy", "cursor-agent", "opencode", "aider", "copilot", "amp", "goose", "crush", "qwen"]);
 
 /** The program names of this process's ancestors, nearest first: each one's command and, for a script run by node
  * or python, the script's name. Empty where `ps` cannot say. */

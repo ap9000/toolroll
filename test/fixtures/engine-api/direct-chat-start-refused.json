@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "Direct chat is only available from this computer over loopback.",
+  "code": "loopback_only"
+}

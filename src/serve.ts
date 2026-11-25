@@ -1,4 +1,6 @@
 import { secretFolder } from "./tool-secret-store.js";
+import { pendingNetworkRequests } from "./agent-network-request.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest, REMOTE_TUI_READ_ROUTES, sendTerminalConnectionRefusal } from "./terminal-connection.js";
 import { fallbackSettingOf } from "./fallback.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
 import { consoleFolderGate, syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
@@ -185,6 +187,7 @@ import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
+import { createDirectChatHandlers } from './server/direct-chat.js';
 import { declareSoloOnUpgrade, sessionStandsIn } from './install-mode.js';
 import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
@@ -538,7 +541,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     canDelete: who.via === "cookie" && store.isInstanceOperator(who.name),
     builds: projectBuildsOf(repo, who),
     access: projectAccessOf(repo),
-    network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo), requests: pendingNetworkRequests(store, repo) },
     fallback: { setting: fallbackSettingOf(store, repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
@@ -919,7 +922,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // One source charge before password proof and one account/token charge after it, including GET /login.
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal; elsewhere?: boolean } = {};
-    const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
+    const remoteTerminal = isRemoteTerminalRequest(request) && (edgeRoute?.domain === "live" || (matchedRoute?.stage === "console" && REMOTE_TUI_READ_ROUTES.has(matchedRoute.id)));
+    const who = identify(request, touch, edgeRoute?.domain === 'live' || remoteTerminal, refusedToken);
     timeline.mark("signed in");
     // Local-owner slice 0: a local owner's session presented from anywhere but this computer (another address, a
     // proxy, a tailnet or LAN name) signs in no one and changes nothing. Sign-in pages still answer (a password signs
@@ -937,6 +941,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
+    if (remoteTerminal) {
+      if (who === null || who.via !== "bearer" || who.principal === undefined) {
+        return sendTerminalConnectionRefusal(request, response, 401, "unauthenticated");
+      }
+      const remoteAdmitted = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!remoteAdmitted.ok) {
+        return sendTerminalConnectionRefusal(request, response, remoteAdmitted.status, remoteAdmitted.error);
+      }
+    }
     // A read ahead from anything but a signed-in browser session (signed out, a token): 204, never the sign-in page.
     if (purpose === 'prefetch' && who?.via !== 'cookie') {
       request.resume();
@@ -998,6 +1011,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
       // The terminal workbench's acts: refusals answered as `{ outcome, words }` (http.ts refusedInPlace), shape only.
       ...(method === "POST" && who.via === "cookie" && request.headers["x-toolroll-act"] === "in-place" && request.headers["x-toolroll-client"] === "terminal" ? { terminalAct: true } : {}),
+      ...(who.via === "bearer" && who.principal !== undefined ? { tokenProjects: who.principal.projects } : {}),
     };
     // A read ahead writes nothing, not even a slow request's record.
     if (purpose !== 'prefetch') response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
@@ -1062,6 +1076,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (who.via === 'cookie') {
             const current = identify(request, false);
             if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
+          } else if (remoteTerminal && who.via === 'bearer' && who.principal !== undefined) {
+            const recheck = admitRemoteTerminalRequest(request, store, who.principal, clock);
+            if (!recheck.ok) return sendTerminalConnectionRefusal(request, response, recheck.status, recheck.error);
             if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
           // One read of the work projection and its rows' saved facts for the whole page (work-reads.ts): this request's
@@ -1167,6 +1185,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Tasks (P1.4) says every project as scope=all; an old link's all=1 still reads so.
     if (route.id === 'tasks' && !url.searchParams.has('project') && ((url.searchParams.get('scope') === 'all' && url.searchParams.getAll('scope').length === 1)
       || (url.searchParams.get('all') === '1' && url.searchParams.getAll('all').length === 1))) project = null;
+    if (route.id === 'work.rows' && who.via === 'bearer' && isRemoteTerminalRequest(request) && !url.searchParams.has('project') && request.headers['x-standing-orders-project'] === undefined) {
+      project = null;
+    }
     // Every page's Tasks count covers this one project view, whatever project the page itself shows.
     const facts = requestContext.getStore();
     if (facts !== undefined) facts.lens = project;
@@ -1373,7 +1394,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * live update can never show a card the page would not. A task lens
    * keeps only that task's coordinator cards; the lead's own thread is one
    * thread regardless of lens. */
-  function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
+  function leadConversationRows(who: Who, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
     messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; staleAsk: number | null; asks: Map<number, LeadAsk>; queue: Map<number, LeadQueueRow>;
     previous: ReplacedThread | null; failure: string | null;
   } {
@@ -1442,7 +1463,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
     const session = notStarted ? null : found;
     if (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation)) return null;
@@ -2267,6 +2288,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     flowRooms.close();
     taskRooms.close();
     liveHandlers.close();
+    directChatHandlers.close();
     detachReads();
     liveFollower.close();
     void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close()), bounded(engineHandlers.close())])
@@ -2441,7 +2463,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
   const engineHandlers = createEngineHandlers(handlerRuntime);
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
-  const chatHandlers = createChatHandlers(handlerRuntime);
+  let directChatHandlersRef: ReturnType<typeof createDirectChatHandlers> | null = null;
+  const chatHandlers = createChatHandlers(handlerRuntime, {
+    directChatHost: () => directChatHandlersRef?.host ?? null,
+    directChatStop: (owner, threadId) => directChatHandlersRef === null
+      ? { ok: false, status: 503, error: "Direct Chat host is not ready." }
+      : directChatHandlersRef.host.stopThread(owner, threadId),
+    directChatDiff: (owner, threadId) => directChatHandlersRef === null
+      ? { ok: false, status: 503, error: "Direct Chat host is not ready." }
+      : directChatHandlersRef.host.inspectThreadDiff(owner, threadId),
+    publishDirectChat: threadId => liveBus.publish({ revision: `dc:${threadId}:lead:${Date.now()}` }),
+  });
   const settingsHandlers = createSettingsHandlers(handlerRuntime);
   const peopleHandlers = createPeopleHandlers(handlerRuntime);
 
@@ -2459,6 +2491,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get options() { return options; },
     get coding() { return coding; },
     get codingProjects() { return codingProjects; },
+    get codingActorAllowed() { return codingActorAllowed; },
+    get codingProjectAllowed() { return codingProjectAllowed; },
     get liveCeiling() { return liveCeiling; },
     get clock() { return clock; },
     get evidenceRoot() { return evidenceRoot; },
@@ -2470,6 +2504,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get hookContext() { return hookContext; },
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
+    get taskRooms() { return taskRooms; },
+    get terminalHost() { return () => terminals.host; },
   };
   const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;
@@ -2477,11 +2513,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server,
     ...(options.agentCommandEnv === undefined ? {} : { agentEnv: options.agentCommandEnv }) });
   terminalClosing.close = terminalHandlers.close;
+  const directChatHandlers = createDirectChatHandlers(handlerRuntime, {
+    bus: liveBus,
+    ...(options.directChatSeams === undefined ? {} : { seams: options.directChatSeams, disableLegacyImport: true }),
+  });
+  directChatHandlersRef = directChatHandlers;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...directChatHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
     ...createWelcomeHandlers(handlerRuntime).registrations, ...engineHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */

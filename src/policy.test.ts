@@ -88,7 +88,7 @@ describe("the rules", () => {
     expect(checkPolicy({ providers: null, models: null, tools: null, ceiling: "root" })).toMatchObject({ ok: false, problem: "Choose a permission ceiling: safe, standard or escalated." });
     // The refusal names every provider the policy knows, in plain words.
     expect(checkPolicy({ providers: ["mistral"], models: null, tools: null, ceiling: "safe" })).toMatchObject({ ok: false,
-      problem: "mistral isn't a provider here. Choose from Claude, Codex, Gemini, OpenRouter, OpenCode, Cursor, Cline, Qwen Code and Goose." });
+      problem: "mistral isn't a provider here. Choose from Claude, Codex, Gemini, OpenRouter, OpenCode, Cursor, Cline, Qwen Code, Goose and Antigravity." });
   });
 
   test("the form's ticks: every known provider is any; fewer is that list; an unknown one is left for the check to refuse", () => {

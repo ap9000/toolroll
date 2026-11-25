@@ -12,7 +12,7 @@ import { addApprover, approve, approvalOf, propose } from "./scope.js";
 import { diagnoseTaskDispatch, scopeApprovedForDispatch, taskReadinessBlocker } from "./dispatch.js";
 import { holdStaleApproval } from "./dispose.js";
 import { legOf, routeFromJson } from "./phase-routing.js";
-import { proposeNewRoute, routeChangeOf, routeChangeWords, routeLegacyPlans } from "./route-change.js";
+import { networkChangeWords, proposeNetworkChanges, proposeNewRoute, routeChangeOf, routeChangeWords, routeLegacyPlans } from "./route-change.js";
 import { register } from "./runner.js";
 import { planCardText } from "./chat-decide.js";
 
@@ -131,5 +131,54 @@ describe("legacy rows", () => {
     expect(routeFromJson(store.getScope("old")!.proposedRouteJson ?? null)).not.toBeNull();
     expect(routeChangeOf(store, "old")).toContain("The builder is Claude sonnet");
     expect(approvalOf(store.getScope("t")).approved).toBe(true);
+  });
+});
+
+describe("a project network change", () => {
+  const localOn = (at: Date) => store.setProjectNetwork(REPO, { mode: "allowlist", hosts: [], loopback: "any" }, "owner", at);
+
+  test("an idle approved task gets the same words on the new network, one line, and waits for Approve", () => {
+    store.handle.prepare("UPDATE task SET state = 'failed' WHERE id = 't'").run();
+    localOn(later(1));
+    expect(approvalOf(store.getScope("t")).approved).toBe(true);
+    expect(proposeNetworkChanges(store, REPO, later(2))).toBe(1);
+    const scope = store.getScope("t")!;
+    expect(scope.goal).toBe("Fix it.");
+    expect(scope.profile?.network.loopback).toBe("any");
+    expect(scope.approvedProfile?.network.loopback).toBe("proxy-only");
+    expect(approvalOf(scope).approved).toBe(false);
+    expect(scopeApprovedForDispatch(store, ref, later(3))).toBe(false);
+    expect(routeChangeOf(store, "t")).toBe("Builds may now reach this Mac's local services. Approve to continue.");
+    // The one Approve seals exactly the proposed network.
+    const yes = approve(store, "t", "owner", later(4), scope.digest, password);
+    expect(yes.ok).toBe(true);
+    expect(store.getScope("t")!.approvedProfile?.network.loopback).toBe("any");
+    // Turning it off again proposes the narrower network the same way.
+    store.setProjectNetwork(REPO, { mode: "allowlist", hosts: [], loopback: "proxy-only" }, "owner", later(5));
+    expect(proposeNetworkChanges(store, REPO, later(6))).toBe(1);
+    expect(routeChangeOf(store, "t")).toBe("Builds no longer reach this Mac's local services. Approve to continue.");
+  });
+
+  test("a running task, another project's task, and an unchanged network are left alone", () => {
+    store.handle.prepare("UPDATE task SET state = 'running' WHERE id = 't'").run();
+    localOn(later(1));
+    expect(proposeNetworkChanges(store, REPO, later(2))).toBe(0);
+    expect(approvalOf(store.getScope("t")).approved).toBe(true);
+    store.handle.prepare("UPDATE task SET state = 'queued' WHERE id = 't'").run();
+    expect(proposeNetworkChanges(store, "/repos/other", later(3))).toBe(0);
+    expect(approvalOf(store.getScope("t")).approved).toBe(true);
+    store.setProjectNetwork(REPO, { mode: "allowlist", hosts: [], loopback: "proxy-only" }, "owner", later(4));
+    expect(proposeNetworkChanges(store, REPO, later(5))).toBe(0);
+    expect(approvalOf(store.getScope("t")).approved).toBe(true);
+  });
+
+  test("the words name each change to what builds may reach", () => {
+    const base = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.openai.com"], loopback: "proxy-only" as const };
+    expect(networkChangeWords(base, { ...base, hosts: ["api.openai.com", "api.stripe.com"] })).toEqual(["builds may now also reach api.stripe.com"]);
+    expect(networkChangeWords(base, { ...base, hosts: [] })).toEqual(["builds no longer reach api.openai.com"]);
+    expect(networkChangeWords(base, { ...base, mode: "open", hosts: [] })).toEqual(["builds may now reach any host"]);
+    expect(networkChangeWords({ ...base, mode: "open", hosts: [] }, base)).toEqual(["builds now reach only their allowed hosts"]);
+    expect(networkChangeWords(base, base)).toEqual([]);
+    expect(networkChangeWords(undefined, base)).toEqual([]);
   });
 });

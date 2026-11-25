@@ -1,6 +1,7 @@
+import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
-import type { Store } from './store.js';
+import type { Database, Store } from './store.js';
 import { WorkIndexCursorError, type WorkIndexOptions, type WorkIndexPage, type WorkProjectCounts } from './work-index.js';
 import type { BrowserProjectState } from './browser-workspace.js';
 import type { SidebarProject } from './console-chrome.js';
@@ -22,9 +23,41 @@ export type ReadReply = { id: number; ok: true; value: unknown } | { id: number;
 
 /** More queued reads than this fail at once instead of growing without bound. */
 export const READ_QUEUE_MAX = 1_000;
+/** Exact-version completed read cache cap and TTL (short enough that relative-time words stay fresh). */
+const READ_CACHE_MAX = 64;
+const READ_CACHE_TTL_MS = 1_000;
+/** Max age for coalescing concurrent identical reads onto an already-running worker job. */
+const INFLIGHT_COALESCE_MS = 250;
 
 type Pending = { id: number; job: ReadJob; resolve: (value: unknown) => void; reject: (error: Error) => void };
 type Slot = { worker: Worker; busy: Pending | null };
+type CacheEntry = { value: unknown; dataVersion: number; at: number };
+type InflightEntry = { promise: Promise<unknown>; startedAt: number };
+
+function canonicalAccess(access: WorkSummaryAccess): Record<string, unknown> {
+  return {
+    ...access,
+    repos: access.repos === null ? null : [...access.repos].sort(),
+    ...(access.dependencyRepos === undefined ? {} : { dependencyRepos: access.dependencyRepos === null ? null : [...access.dependencyRepos].sort() }),
+  };
+}
+
+function readCacheKey(job: ReadJob): string {
+  const secondBucket = Math.floor(Date.parse(job.now) / 1_000);
+  if (job.kind === 'work-index-page') {
+    const o = job.options;
+    return JSON.stringify([
+      'wip',
+      secondBucket,
+      canonicalAccess(job.access),
+      { ...o, ...(o.roots === undefined ? {} : { roots: [...o.roots].sort() }) },
+    ]);
+  }
+  if (job.kind === 'work-counts') {
+    return JSON.stringify(['wc', secondBucket, canonicalAccess(job.access)]);
+  }
+  return JSON.stringify(['ps', secondBucket, canonicalAccess(job.access), job.actor, job.projects, job.evidenceRoot]);
+}
 
 export class ReadExecutorError extends Error {
   constructor(message: string) { super(message); this.name = 'ReadExecutorError'; }
@@ -35,6 +68,10 @@ export class ReadExecutor {
   readonly #size: number;
   readonly #slots: Slot[] = [];
   readonly #queue: Pending[] = [];
+  readonly #cache = new Map<string, CacheEntry>();
+  readonly #inflight = new Map<string, InflightEntry>();
+  #probeDb: Database | null | undefined = undefined;
+  #probeStmt: ReturnType<Database['prepare']> | null = null;
   #next = 1;
   #closed = false;
 
@@ -44,6 +81,25 @@ export class ReadExecutor {
   }
 
   get size(): number { return this.#size; }
+
+  /** Cheap read-only SQLite `PRAGMA data_version` probe (~3 µs) to detect any committed write across all connections. */
+  #dataVersion(): number | null {
+    if (this.#probeDb === null) return null;
+    try {
+      if (this.#probeDb === undefined) {
+        const require = createRequire(import.meta.url);
+        const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string, options: { readOnly: boolean }) => Database };
+        this.#probeDb = new DatabaseSync(this.#file, { readOnly: true });
+        this.#probeStmt = this.#probeDb.prepare('PRAGMA data_version');
+      }
+      const row = this.#probeStmt?.get() as { data_version?: number } | undefined;
+      return typeof row?.data_version === 'number' ? row.data_version : null;
+    } catch {
+      this.#probeDb = null;
+      this.#probeStmt = null;
+      return null;
+    }
+  }
 
   /** workIndexPage(store, now, access, options) on a worker's read-only connection: same rows, same errors. */
   async workIndexPage(now: Date, access: WorkSummaryAccess, options: WorkIndexOptions): Promise<WorkIndexPage> {
@@ -67,11 +123,48 @@ export class ReadExecutor {
 
   #run(job: ReadJob): Promise<unknown> {
     if (this.#closed) return Promise.reject(new ReadExecutorError('The server is closing.'));
+    const version = this.#dataVersion();
+    const key = version === null ? null : readCacheKey(job);
+    const nowMs = Date.now();
+    if (key !== null && version !== null) {
+      const hit = this.#cache.get(key);
+      if (hit !== undefined) {
+        if (hit.dataVersion === version && nowMs - hit.at <= READ_CACHE_TTL_MS) {
+          return Promise.resolve(structuredClone(hit.value));
+        }
+        this.#cache.delete(key);
+      }
+      const running = this.#inflight.get(key);
+      if (running !== undefined && nowMs - running.startedAt <= INFLIGHT_COALESCE_MS) {
+        return running.promise.then(value => structuredClone(value));
+      }
+    }
     if (this.#queue.length >= READ_QUEUE_MAX) return Promise.reject(new ReadExecutorError('The server is too busy to read this now; try again shortly.'));
-    return new Promise((resolve, reject) => {
+    const promise = new Promise<unknown>((resolve, reject) => {
       this.#queue.push({ id: this.#next++, job, resolve, reject });
       this.#pump();
     });
+    if (key !== null && version !== null) {
+      const entry: InflightEntry = { promise, startedAt: nowMs };
+      this.#inflight.set(key, entry);
+      void promise.then(
+        value => {
+          if (this.#inflight.get(key) === entry) this.#inflight.delete(key);
+          // Only cache completed results when no commit landed while the read ran (strict linearizability).
+          if (!this.#closed && this.#dataVersion() === version) {
+            if (this.#cache.size >= READ_CACHE_MAX) {
+              const oldest = this.#cache.keys().next().value;
+              if (oldest !== undefined) this.#cache.delete(oldest);
+            }
+            this.#cache.set(key, { value: structuredClone(value), dataVersion: version, at: Date.now() });
+          }
+        },
+        () => {
+          if (this.#inflight.get(key) === entry) this.#inflight.delete(key);
+        },
+      );
+    }
+    return promise;
   }
 
   #pump(): void {
@@ -120,6 +213,11 @@ export class ReadExecutor {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#cache.clear();
+    this.#inflight.clear();
+    try { this.#probeDb?.close(); } catch { /* closing */ }
+    this.#probeDb = null;
+    this.#probeStmt = null;
     const stopped = new ReadExecutorError('The server is closing.');
     for (const pending of this.#queue.splice(0)) pending.reject(stopped);
     const slots = this.#slots.splice(0);

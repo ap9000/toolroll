@@ -1,0 +1,4 @@
+{
+  "ok": false,
+  "error": "Unsupported file type. Allowed: PNG, JPEG, WebP, GIF (and plain text, Markdown, JSON for attachments)."
+}

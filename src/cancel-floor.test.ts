@@ -18,11 +18,18 @@ describe("cancellation floor", () => {
       if (!name.endsWith(".ts") || name.endsWith(".test.ts")) continue;
       const text = readFileSync(join(src, name), "utf8");
       let at = -1;
-      // The floor is a task's: the lead's own promises (lead_commitment) and a Flexible Ship (flexible_ship, its own
-      // table and states) close with their own cancelled state. A task's cancellation is still store.ts alone.
+      // The floor is a task's: the lead's own promises (lead_commitment), a Flexible Ship (flexible_ship), and a
+      // Direct Chat Ship (direct_chat_ship) close with their own cancelled state on their own tables. A task's
+      // cancellation is still store.ts alone.
       while ((at = text.indexOf("SET state = 'cancelled'", at + 1)) !== -1) {
         const before = text.slice(Math.max(0, at - 40), at);
-        if (!before.includes("UPDATE lead_commitment") && !before.includes("UPDATE flexible_ship")) hits.push(name);
+        if (
+          !before.includes("UPDATE lead_commitment") &&
+          !before.includes("UPDATE flexible_ship") &&
+          !before.includes("UPDATE direct_chat_ship")
+        ) {
+          hits.push(name);
+        }
       }
     }
     expect(hits).toEqual(["store.ts"]);

@@ -17,17 +17,29 @@ export const NAME = "toolroll";
 export const LEGACY_NAMES = ["standing-orders", "nightorders"] as const;
 export const NAMES: readonly string[] = [NAME, ...LEGACY_NAMES];
 
+function hasActiveConsoleMarker(dir: string): boolean {
+  return existsSync(join(dir, "up-console.json")) || existsSync(join(dir, ".toolroll-run"));
+}
+
 /**
  * A file inside the product's folder under `base` (~/.config, ~/.cache, or a
  * home dotfolder when `dot` is set). The first name that already holds the
- * file wins; otherwise the file goes into the folder that holds the database,
- * else the first folder that exists, else a new-name folder — so one install
- * keeps one folder, and a fresh one gets ~/.config/toolroll.
+ * file wins (preferring a folder with an active console marker when multiple
+ * legacy databases coexist); otherwise the file goes into the folder that
+ * holds the database, else the first folder that exists, else a new-name
+ * folder — so one install keeps one folder, and a fresh one gets ~/.config/toolroll.
  */
 export function namedPath(base: string, rest: readonly string[], options: { dot?: boolean; names?: readonly string[] } = {}): string {
   const names = options.names ?? NAMES;
   const folder = (name: string) => join(base, options.dot ? `.${name}` : name);
-  for (const name of names) if (existsSync(join(folder(name), ...rest))) return join(folder(name), ...rest);
+  const matches = names.filter(name => existsSync(join(folder(name), ...rest)));
+  if (matches.length > 0) {
+    if (matches.length > 1 && rest.length === 1 && rest[0] === "orders.db") {
+      const active = matches.find(name => hasActiveConsoleMarker(folder(name)));
+      if (active !== undefined) return join(folder(active), ...rest);
+    }
+    return join(folder(matches[0]!), ...rest);
+  }
   return join(namedFolder(base, options), ...rest);
 }
 
@@ -35,7 +47,12 @@ export function namedPath(base: string, rest: readonly string[], options: { dot?
 export function namedFolder(base: string, options: { dot?: boolean; names?: readonly string[] } = {}): string {
   const names = options.names ?? NAMES;
   const folder = (name: string) => join(base, options.dot ? `.${name}` : name);
-  const chosen = names.find(name => existsSync(join(folder(name), "orders.db"))) ?? names.find(name => existsSync(folder(name))) ?? names[0]!;
+  const dbMatches = names.filter(name => existsSync(join(folder(name), "orders.db")));
+  const chosen =
+    (dbMatches.length > 1 ? dbMatches.find(name => hasActiveConsoleMarker(folder(name))) : undefined) ??
+    dbMatches[0] ??
+    names.find(name => existsSync(folder(name))) ??
+    names[0]!;
   return folder(chosen);
 }
 

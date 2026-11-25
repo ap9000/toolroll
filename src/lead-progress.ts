@@ -63,6 +63,15 @@ const TOOL_LABELS: Record<string, string> = {
   remember: "Preparing a card for you to confirm",
   get_person: "Looking them up",
   find_tools: "Finding the right tool",
+  toolroll_view_read: "Checking Toolroll's appearance",
+  toolroll_view_set: "Updating Toolroll's appearance",
+  list_direct_chats: "Listing Direct Chats",
+  get_direct_chat: "Reading Direct Chat",
+  manage_direct_chat: "Updating Direct Chat",
+  get_usage_limits: "Checking subscription usage and budgets",
+  get_recent_updates: "Catching up on what changed while you were away",
+  propose_direct_chat: "Preparing Direct Chat card",
+  propose_report_followups: "Drafting tasks from Scout Report follow-ups",
 };
 
 export function leadToolLabel(name: string): string {

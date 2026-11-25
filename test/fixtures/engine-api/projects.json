@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "canAdd": true,
+  "projects": [
+    {
+      "name": "payments-api",
+      "path": "/Users/sam/code/payments-api"
+    },
+    {
+      "name": "Storefront",
+      "path": "/Users/sam/code/storefront"
+    }
+  ],
+  "found": [
+    {
+      "name": "docs-site",
+      "path": "/Users/sam/code/docs-site"
+    },
+    {
+      "name": "mobile-app",
+      "path": "/Users/sam/Documents/mobile-app"
+    }
+  ]
+}

@@ -9,10 +9,11 @@ import { entryMovesOnWords, entryWords, type FallbackSetting } from "./fallback.
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import type { ProjectSandbox } from "./project-sandbox.js";
 import type { ProjectNetwork } from "./egress.js";
+import type { NetworkRequestTerms } from "./agent-network-request.js";
 import type { WritesMode } from "./writes-mode.js";
 import { CHECK_ACCESS_WARNINGS, signInHostsMissing, type CheckAccess } from "./check-access.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
-import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
+import { holdingsWords, PROJECT_RECOVERY_DELETE_MESSAGE, type ProjectHoldings } from "./project-delete.js";
 import { acts, btn, codeLine, disclose, formRow, infoLine, input, note, notice, radios, settingsSection, switchInput, textarea } from "./server/kit.js";
 import { kitSectionForm } from "./settings-kit.js";
 import { flexibleSettingsHtml } from "./flexible-ui.js";
@@ -36,7 +37,7 @@ export type ProjectSettingsView = {
   /** Live view (live-detail.ts): whether running agents' commands and their output show, and whether this person may change it. */
   liveView?: { commands: boolean; canChange: boolean; nonce?: string };
   /** What its builds may reach on the network (egress.ts), and whether this person may change it. */
-  network?: { setting: ProjectNetwork; canChange: boolean };
+  network?: { setting: ProjectNetwork; canChange: boolean; requests?: NetworkRequestTerms[] };
   /** Who takes over when an agent runs out of its plan (fallback.ts), and whether this person may change it. */
   fallback?: { setting: FallbackSetting | null; canChange: boolean };
   /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
@@ -164,15 +165,20 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
   const local = setting.loopback === "any"
     ? note("On a Mac, builds may reach this Mac's local services: test servers, and anything else listening here.")
     : note("On a Mac, builds reach no local services. A project whose tests start a local server needs them on.");
+  const codexNote = note("Codex's own command sandbox runs offline unless the network is Open with Full access; use Worktree setup to install dependencies before a Codex build starts.");
+  // An agent's request: the exact change, computed by the server from the setting now; approving sends its digest back.
+  const asks = !network.canChange ? [] : (network.requests ?? []).map(one => html`<div data-agent-request="${one.id}" data-agent-request-digest="${one.digest}" data-agent-request-terms="${JSON.stringify({ id: one.id, repo: one.repo, change: one.change, before: one.before, after: one.after, digest: one.digest, words: one.words })}">\
+<p class="k-note"><b>${one.requester} asks:</b> ${one.words.join(" · ")}</p>${one.why === "" ? "" : note(`Why: ${one.why}`)}${kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: `network-request-${one.id}`,
+    hidden: { repo: one.repo, request: one.id, digest: one.digest }, save: { label: "Approve" }, body: "" })}</div>`);
   return settingsSection({ id: "network", title: "Network", state: setting.mode === "open" ? " · Open" : "", lead: reach,
-    body: joinHtml([local, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
+    body: joinHtml([...asks, local, codexNote, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
       body: joinHtml([
         formRow("This Mac's local services", "Local test servers work, and so does anything else listening on this Mac (a local database, a dev proxy). Linux builds always have local services of their own.",
           switchInput({ id: "network-local", name: "local", label: "Allowed", on: setting.loopback === "any", attrs: { value: "any", "aria-label": "Builds may reach this Mac's local services" } }), "inline"),
         formRow("Other hosts builds may reach", "One per line.", textarea({ id: "network-hosts", name: "hosts", value: setting.hosts.join("\n"), rows: 3,
           attrs: { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "api.stripe.com\n*.example.com", "aria-label": "Other hosts builds may reach" } }), "top"),
         formRow("Open", "Builds may reach any host.", switchInput({ id: "network-open", name: "mode", label: "Open", on: setting.mode === "open", attrs: { value: "open", "aria-label": "Open: builds may reach any host" } }), "inline"),
-        note("Tasks scoped from now on use this; tasks already approved keep the network they were approved with."),
+        note("Idle tasks in this project then wait for your Approve to use the change; a running task keeps its network."),
       ]) }))]) });
 }
 
@@ -258,7 +264,8 @@ function codeMapHtml(view: ProjectSettingsView): Html {
 }
 
 export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: string | null; problem?: string | null }): Html {
-  const answer = said.problem ? notice(said.problem) : said.said ? infoLine(said.said) : "";
+  const recoveryShownBelow = view.canDelete && view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE) && said.problem === PROJECT_RECOVERY_DELETE_MESSAGE;
+  const answer = said.problem && !recoveryShownBelow ? notice(said.problem) : said.said ? infoLine(said.said) : "";
   const project = settingsSection({ id: "project", title: view.name, lead: mono(view.repo),
     body: joinHtml([
       note(`Toolroll holds ${holdingsWords(view.holdings)} for this project.`),
@@ -271,7 +278,9 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
   const settings = joinHtml([flexibleSettingsHtml(view.flexible), buildsHtml(view), accessHtml(view), networkHtml(view), advanced || (view.fallback?.setting ?? null) !== null ? fallbackHtml(view) : "",
     writesHtml(view), sandboxHtml(view), checkAccessHtml(view), advanced || view.liveView?.commands === true ? liveViewHtml(view) : "", advanced ? codeMapHtml(view) : ""]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
-  const deleteBody = view.running.length > 0
+  const deleteBody = view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)
+    ? notice(PROJECT_RECOVERY_DELETE_MESSAGE)
+    : view.running.length > 0
     ? notice(`Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.`)
     : joinHtml([note(`Removes everything Toolroll holds for ${view.name}. The repository and its own branches stay. There's no undo.`),
         postForm("/settings/project/delete", joinHtml([

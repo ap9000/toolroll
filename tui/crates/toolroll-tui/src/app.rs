@@ -11,9 +11,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
-    ActOutcome, AgentsRead, ApiError, ApprovalCard, LiveRecord, LiveSessionWindow, LiveSignal,
-    LiveThreads, NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, Spend,
-    StepCards, TermEvent, TermSend, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, ApprovalCard, ChatSendOutcome, LeadChat, LiveRecord,
+    LiveSessionWindow, LiveSignal, LiveThreads, NeedRow, ProposalActOutcome, Question, ResultDiff,
+    ResultDiffContext, ResultDiffFile, Spend, StepCards, TermEvent, TermSend, Window, WorkRow,
+    WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -31,6 +32,19 @@ pub const ANSWER_TOO_LONG: &str =
 
 /// Records kept per run (the newest); older ones are dropped from memory, never written anywhere.
 pub const RECORDS_KEPT: usize = 20_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    #[default]
+    List,
+    Detail,
+}
+
+enum WaitingJump {
+    Oldest,
+    Next,
+    Previous,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -122,6 +136,12 @@ pub enum Filter {
     Failed,
     /// What finished.
     Done,
+    /// Tasks currently owned by / handed to the signed-in person.
+    Mine,
+    /// Tasks currently owned by / handed to a teammate.
+    WaitingOnTeam,
+    /// Tasks without a recorded human owner.
+    Unassigned,
     /// One project, picked by name in the palette (not remembered).
     Project(String),
 }
@@ -137,6 +157,9 @@ impl Filter {
             Filter::Working => "working",
             Filter::Failed => "failed",
             Filter::Done => "done",
+            Filter::Mine => "mine",
+            Filter::WaitingOnTeam => "team",
+            Filter::Unassigned => "unassigned",
         }
     }
     pub fn from_key(key: &str) -> Option<Filter> {
@@ -148,6 +171,9 @@ impl Filter {
             "working" => Filter::Working,
             "failed" => Filter::Failed,
             "done" => Filter::Done,
+            "mine" => Filter::Mine,
+            "team" => Filter::WaitingOnTeam,
+            "unassigned" => Filter::Unassigned,
             _ => return None,
         })
     }
@@ -161,6 +187,9 @@ impl Filter {
             Filter::Working => Some(Action::FilterWorking),
             Filter::Failed => Some(Action::FilterFailed),
             Filter::Done => Some(Action::FilterDone),
+            Filter::Mine => Some(Action::FilterMine),
+            Filter::WaitingOnTeam => Some(Action::FilterWaitingOnTeam),
+            Filter::Unassigned => Some(Action::FilterUnassigned),
             Filter::Project(_) => None,
         }
     }
@@ -174,11 +203,19 @@ impl Filter {
             Filter::Working => Some("Working".into()),
             Filter::Failed => Some("Failed".into()),
             Filter::Done => Some("Done".into()),
+            Filter::Mine => Some("Assigned to me".into()),
+            Filter::WaitingOnTeam => Some("Waiting on team".into()),
+            Filter::Unassigned => Some("Unassigned".into()),
             Filter::Project(p) => Some(p.clone()),
         }
     }
     /// Whether a row is shown (`here`: the terminal's project's name and path).
-    fn keeps(&self, item: &Item, here: Option<(&str, &str)>) -> bool {
+    fn keeps(
+        &self,
+        item: &Item,
+        here: Option<(&str, &str)>,
+        presence: &toolroll_api::PresenceSnapshot,
+    ) -> bool {
         match self {
             Filter::All => true,
             Filter::ThisProject => here.is_some_and(|(name, path)| {
@@ -191,6 +228,24 @@ impl Filter {
             Filter::Working => matches!(item.section, Section::Working | Section::UpNext),
             Filter::Failed => item.tone == "problem" || item.word == "Failed",
             Filter::Done => item.section == Section::Recent && item.tone == "done",
+            Filter::Mine => {
+                !presence.me.is_empty()
+                    && presence.owners.get(&item.id).and_then(|o| o.as_deref())
+                        == Some(presence.me.as_str())
+            }
+            Filter::WaitingOnTeam => {
+                !presence.me.is_empty()
+                    && presence
+                        .owners
+                        .get(&item.id)
+                        .and_then(|o| o.as_deref())
+                        .is_some_and(|o| o != presence.me.as_str())
+            }
+            Filter::Unassigned => presence
+                .owners
+                .get(&item.id)
+                .and_then(|o| o.as_deref())
+                .is_none(),
             Filter::Project(p) => item.project.as_deref() == Some(p.as_str()),
         }
     }
@@ -310,6 +365,15 @@ pub const UNDRAWN: &str = "Make the window bigger to see this first.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
+    BuilderPassword {
+        task: String,
+        setup: bool,
+    },
+    TaskBuilder {
+        task: String,
+        form: Option<toolroll_api::TaskBuilder>,
+        index: usize,
+    },
     Normal,
     Steer(String),
     Note(NoteKind, String),
@@ -441,6 +505,13 @@ pub enum Mode {
     Copied,
     /// Searching the focused pane (search.rs): its query and where it is among the matches.
     Search(crate::search::Search),
+    /// Filtering the task list live (`/` while the list has focus).
+    ListFilter(String),
+    /// Typing a message to the central Lead (`s`/`i` while Lead chat is focused).
+    ChatCompose(String),
+    LeadProviders(Option<crate::chat_providers::Membership>),
+    /// Confirming a Lead proposal card (pinned lines, `seen_end` gate, and explicit arming if irreversible).
+    ConfirmProposal(crate::chat::ProposalPin),
     Help,
     /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
     Settings,
@@ -454,10 +525,11 @@ pub enum Mode {
     /// live. What is typed meanwhile is kept for it (bounded, as a paste is) and sent on hello, never to the workbench;
     /// Esc or Ctrl-] goes back, and a shell that fails or never answers goes back with words, sending nothing.
     ShellOpening,
-    /// What taking over this build opens, said before anything starts (TAKE_OVER_SCOPE): t opens it, Esc doesn't.
+    /// What taking over this build opens, said before anything starts: t / i / Enter opens it, 1/2/3/Tab switches program, Esc doesn't.
     ConfirmTakeOver {
         task: String,
         run: i64,
+        program: String,
     },
 }
 
@@ -488,6 +560,44 @@ pub const READ_TERMS_FIRST: &str =
 /// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
 pub fn take_over_scope(attempt: &str) -> String {
     format!("A shell in a separate copy of this task's latest build. It does not control the running agent. Build: {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
+}
+
+/// Scope explanation for the program selected in `ConfirmTakeOver` ("shell", "claude", or "codex").
+pub fn take_over_scope_for(attempt: &str, program: &str, live: bool) -> String {
+    if program == "shell" {
+        return take_over_scope(attempt);
+    }
+    let name = crate::term::program_label(program);
+    if live {
+        format!("An interactive {name} session in a separate copy of this task's build ({attempt}), pre-loaded with the task goal and context. The background worker keeps running independently.")
+    } else {
+        format!("An interactive {name} session in a separate copy of this task's build ({attempt}), pre-loaded with the task goal and latest build status. Your local agent credentials and project tools run there.")
+    }
+}
+
+/// Default interactive agent program for a task: matches the task's build agent (Codex, Antigravity/Gemini, else Claude Code).
+pub fn default_agent_program(steps: &StepCards) -> &'static str {
+    let provider = steps
+        .cards
+        .as_ref()
+        .and_then(|cards| cards.iter().find(|c| c.key == "build"))
+        .and_then(|card| card.agent.as_ref())
+        .map(|agent| agent.provider.as_str());
+    match provider {
+        Some("codex") => "codex",
+        Some("antigravity") | Some("gemini") => "antigravity",
+        _ => "claude",
+    }
+}
+
+/// Cycle program order in ConfirmTakeOver (`shell` -> `claude` -> `codex` -> `antigravity`).
+fn cycle_program(program: &str, reverse: bool) -> &'static str {
+    match (program, reverse) {
+        ("shell", false) | ("codex", true) => "claude",
+        ("claude", false) | ("antigravity", true) => "codex",
+        ("codex", false) | ("shell", true) => "antigravity",
+        _ => "shell",
+    }
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -701,6 +811,8 @@ pub const TERMINAL_PANE_KEYS: &[Action] = &[
     Action::TakeOver,
     Action::MoveDown,
     Action::MoveUp,
+    Action::FocusList,
+    Action::FocusDetail,
     Action::NextTab,
     Action::PreviousTab,
     Action::ScrollUp,
@@ -727,6 +839,25 @@ pub enum Effect {
     FetchSteps(String),
     /// The approval waiting on a task (GET /t/<task>/approval), asked when the person presses Approve.
     FetchApproval(String),
+    /// Remote TUI out-of-band approval step-up ping (`POST /api/handoff/task/<task>/approval-ping`).
+    PingApproval(String),
+    /// Hand the selected task off to a teammate (`POST /api/handoff/task/<task>/assign-person`).
+    AssignTaskPerson {
+        task: String,
+        person: String,
+    },
+    /// Promote an unverified Local Checkout Candidate into a central Run + queued checks.
+    PromoteCandidate {
+        task: String,
+        candidate_id: String,
+    },
+    /// Queue a Git push & GitHub Pull Request for a promoted Candidate's central Run.
+    OpenCandidatePr {
+        task: String,
+        candidate_id: String,
+    },
+    /// Suspend the TUI, pull the selected remote task into an isolated local worktree (`toolroll handoff pull`), and resume.
+    HandoffLocal(String),
     FetchLive {
         run: i64,
         file: &'static str,
@@ -768,6 +899,10 @@ pub enum Effect {
     OpenBrowser,
     /// Open the browser signed in, on one of the console's fixed pages by name (tui-contract.ts TUI_PAGES).
     OpenPage(&'static str),
+    OpenBuilderPassword {
+        task: String,
+        setup: bool,
+    },
     /// Open this text (a pane's own, already cleaned) in the person's editor: a private temporary file, the screen
     /// given back to the editor and taken again after (editor.rs, run.rs).
     OpenInEditor {
@@ -776,11 +911,12 @@ pub enum Effect {
     },
     Notify(String),
     Exit(i32),
-    /// Open build shell (T4): find this session's terminal on that task's build (GET /term/state), else start one
-    /// (POST /term/start), then attach (GET /term/<id>/socket).
+    /// Open build shell or live agent (T4): find this session's terminal on that task's build (GET /term/state), else
+    /// start one (POST /term/start), then attach (GET /term/<id>/socket).
     TermOpen {
         task: String,
         run: i64,
+        program: String,
     },
     /// Typed input or a new size for terminal `id` (dropped unless it is the terminal the pane shows).
     TermSend {
@@ -791,8 +927,14 @@ pub enum Effect {
     TermDetach(String),
     /// The installation's models (GET /engine/models), for the Agents screen.
     FetchModels,
+    FetchTaskBuilder {
+        root: String,
+        task: String,
+    },
     /// Look for this computer's agents again (POST /engine/agents/check), then the agents read.
     CheckAgents,
+    CheckLeadProviders,
+    SwitchLead(crate::chat_providers::Membership),
     /// An agent's own sign-in, or its confirmed install (`confirm`: the exact command shown), in a pane: started by
     /// the console from its own command for that agent (POST /term/agent/<kind>), then attached.
     AgentTerm {
@@ -800,6 +942,23 @@ pub enum Effect {
         agent: String,
         confirm: Option<String>,
     },
+    /// Read the person's central Lead conversation (GET /engine/chat).
+    FetchLeadChat,
+    /// Send or queue a message to the central Lead (POST /chat).
+    ChatSend {
+        message: String,
+        request: String,
+        session: Option<i64>,
+        project: Option<String>,
+    },
+    /// Confirm or dismiss a Lead proposal card (POST /chat/proposal/<id>/(confirm|dismiss)).
+    ProposalAct {
+        id: i64,
+        op: &'static str,
+        confirm_yes: bool,
+    },
+    /// Remove a queued follow-up message (POST /chat/queued/<id>/remove).
+    QueuedRemove(i64),
 }
 
 /// One read of a task's changes: which task, which build (None: the newest), and the request's generation. Its answer
@@ -854,10 +1013,23 @@ pub struct ContextAsk {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Msg {
+    TaskBuilder(String, Result<toolroll_api::BuilderPicker, ApiError>),
     Work(Result<WorkRows, ApiError>),
     Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
     Approval(String, Result<ApprovalCard, ApiError>),
+    /// Observational workspace presence & task ownership snapshot (`GET /api/presence`).
+    Presence(toolroll_api::PresenceSnapshot),
+    /// Out-of-band remote approval ping response.
+    ApprovalPinged(Result<toolroll_api::ApprovalPingResult, ApiError>),
+    /// Human task handoff response.
+    TaskHandedOff(Result<String, ApiError>),
+    /// Local Checkout Candidates for a task (`GET /api/handoff/task/<task>/candidates`).
+    Candidates(String, Vec<toolroll_api::HandoffCandidate>),
+    /// Candidate promotion response (`POST /api/handoff/task/<task>/candidate/<id>/promote`).
+    CandidatePromoted(Result<toolroll_api::PromoteCandidateOutcome, ApiError>),
+    /// Promoted Candidate PR creation response (`POST /api/handoff/task/<task>/candidate/<id>/open-pr`).
+    CandidatePrOpened(Result<toolroll_api::OpenCandidatePrOutcome, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -887,12 +1059,104 @@ pub enum Msg {
     Term(String, TermEvent),
     /// The installation's models (the Agents screen).
     Models(Result<toolroll_api::ModelsRead, ApiError>),
+    /// Central Lead conversation read (GET /engine/chat).
+    LeadChat(Result<LeadChat, ApiError>),
+    /// Central Lead message send outcome (POST /chat).
+    LeadProvidersChecked(Result<toolroll_api::AgentsRead, ApiError>),
+    LeadSwitched(
+        crate::chat_providers::Membership,
+        Result<toolroll_api::ActOutcome, ApiError>,
+    ),
+    ChatSent(Result<ChatSendOutcome, ApiError>),
+    /// Central Lead proposal confirm/dismiss outcome.
+    ProposalActed {
+        id: i64,
+        op: &'static str,
+        result: Result<ProposalActOutcome, ApiError>,
+    },
 }
 
 /// Where things were drawn last frame (for the mouse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerClick {
+    Action(Action),
+    Send,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BuilderControl {
+    Choose(usize),
+    Save,
+    Back,
+}
+
+/// A click follows the destination that was drawn, even if a refresh races the mouse event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepDestination {
+    Details,
+    Plan(String),
+    Live(i64),
+    Changes(i64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepLink {
+    pub task: String,
+    pub step: String,
+    pub destination: StepDestination,
+}
+
+impl StepLink {
+    pub fn new(steps: &StepCards, card: &toolroll_api::StepCard) -> Self {
+        let destination = match card.key.as_str() {
+            "approve"
+                if card.state == "current"
+                    && card.needs_you
+                    && steps.live_run.is_none()
+                    && steps.review.is_none() =>
+            {
+                card.terms
+                    .as_ref()
+                    .map(|terms| StepDestination::Plan(terms.key.clone()))
+            }
+            "build" if card.mark == "live" => steps.live_run.map(StepDestination::Live),
+            "ready" => steps
+                .review
+                .as_ref()
+                .map(|review| StepDestination::Changes(review.run)),
+            _ => None,
+        };
+        Self {
+            task: steps.task.id.clone(),
+            step: card.key.clone(),
+            destination: destination.unwrap_or(StepDestination::Details),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct StepNavigation {
+    pub expanded: Option<String>,
+    pending: Option<StepLink>,
+    pub selected: Option<String>,
+    pub offset: usize,
+    pub reveal: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
+    pub builder_button: Option<(Rect, String)>,
+    pub lead_providers_button: Rect,
+    pub lead_send: Rect,
+    pub lead_provider_controls: Vec<(Rect, KeyCode)>,
+    pub builder_controls: Vec<(Rect, BuilderControl)>,
     pub list: Rect,
+    pub steps: Vec<(Rect, Tab, StepLink)>,
+    pub approval_dialog: Rect,
+    pub approval_controls: Vec<(Rect, KeyCode)>,
+    pub steer_targets: Vec<(Rect, i64, ComposerClick)>,
+    pub spinner_visible: bool,
     /// The list's screen rows and the item each shows (None: a heading).
     pub rows: Vec<(u16, Option<usize>)>,
     pub tabs: Vec<(u16, u16, Tab)>,
@@ -902,6 +1166,15 @@ pub struct Areas {
     /// The list and panels together (for the divider's drag, whichever side the list is on).
     pub body: Rect,
     pub split_x: u16,
+    /// The top bar's "N need you" chip: clicking it jumps to the oldest item waiting on you.
+    pub needs_chip: Rect,
+    pub agents_refresh: Rect,
+    /// The pinned `Lead` row at the top of the Work rail (clickable to open/focus Lead chat).
+    pub lead_row: Rect,
+    /// Where the Lead chat sheet was drawn last frame.
+    pub chat_area: Rect,
+    /// Where the docked Peeked Task sheet was drawn last frame (when `chat_split_active()`).
+    pub peek_area: Rect,
     /// The links drawn this frame (only ours: link.rs), written clickable after it.
     pub links: Vec<crate::link::LinkArea>,
 }
@@ -922,12 +1195,31 @@ pub struct App {
     pub panes: crate::panes::Panes,
     /// The console's origin, for its own task links (link.rs).
     pub origin: Option<String>,
+    /// Remote central workspace indicator shown in the top bar (None in local mode).
+    pub remote_badge: Option<String>,
+    /// Observational live presence, terminal controller, and human owner map (`GET /api/presence`).
+    pub presence: toolroll_api::PresenceSnapshot,
+    /// Uploaded Local Checkout Candidates keyed by task id (`GET /api/handoff/task/<task>/candidates`).
+    pub candidates: std::collections::HashMap<String, Vec<toolroll_api::HandoffCandidate>>,
     /// Where the last run left off, until the first work list has been read (state.rs).
     pub restore: Option<crate::state::Resume>,
     restore_scroll: Option<(String, usize)>,
     restore_diff: Option<(String, usize, usize)>,
     pub selected: usize,
     pub loaded: bool,
+    pub focus: Focus,
+    /// Live text filter on the task list (`/` while List is focused); empty shows every filtered row.
+    pub list_query: String,
+    /// Central Lead chat state (chat.rs), synced live with `/chat`.
+    pub chat: crate::chat::LeadChatState,
+    /// Whether the main panel is showing Central Lead chat (normal view) or keeping it open.
+    pub chat_open: bool,
+    /// Whether Central Lead chat is docked beside the Peeked Task panel on wide viewports (Slice 3).
+    pub chat_docked: bool,
+    /// Which side holds focus when Lead chat and Peeked Task are docked side by side.
+    pub chat_focus: crate::chat::ChatFocus,
+    /// Last drawn terminal width (used to decide whether docked Chat + Peek split fits).
+    pub last_width: u16,
     pub tab: Tab,
     pub mode: Mode,
     pub steps: Option<StepCards>,
@@ -1064,17 +1356,19 @@ pub struct App {
     pub build_unfold: bool,
     pub work_again: bool,
     pub areas: Areas,
+    pub step_nav: StepNavigation,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
     pub line_cache: Option<LineCache>,
     /// Seconds since the epoch, for elapsed times (the loop sets it; tests fix it).
     pub now: i64,
+    pub spinner_frame: usize,
     /// The Terminal tab's terminal (T4): the selected task's take-over, when one is open.
     pub term: Option<Pane>,
-    /// The builds (task, build) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
-    pub confirmed: HashSet<(String, i64)>,
-    /// `t` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as ever) once
-    /// they are, while the person is still on that task's Terminal tab with nothing else open.
-    take_over_wanted: Option<String>,
+    /// The builds (task, build, program) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
+    pub confirmed: HashSet<(String, i64, String)>,
+    /// `t` or `i` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as
+    /// ever) once they are, while the person is still on that task's Terminal tab with nothing else open.
+    take_over_wanted: Option<(String, bool)>,
     /// Typed while the build shell opened (Mode::ShellOpening): sent once it is live, never anywhere else.
     pub shell_typed: Vec<u8>,
     /// When the build shell started opening (Mode::ShellOpening): it goes back with words after SHELL_OPEN_LIMIT.
@@ -1095,11 +1389,21 @@ impl App {
             spend: None,
             panes: crate::panes::Panes::default(),
             origin: None,
+            remote_badge: None,
+            presence: toolroll_api::PresenceSnapshot::default(),
+            candidates: std::collections::HashMap::new(),
             restore: None,
             restore_scroll: None,
             restore_diff: None,
             selected: 0,
             loaded: false,
+            focus: Focus::List,
+            list_query: String::new(),
+            chat: crate::chat::LeadChatState::new(),
+            chat_open: false,
+            chat_docked: false,
+            chat_focus: crate::chat::ChatFocus::Chat,
+            last_width: 0,
             tab: Tab::Live,
             mode: Mode::Normal,
             steps: None,
@@ -1177,8 +1481,10 @@ impl App {
             build_unfold: false,
             work_again: false,
             areas: Areas::default(),
+            step_nav: StepNavigation::default(),
             line_cache: None,
             now: 0,
+            spinner_frame: 0,
             term: None,
             confirmed: HashSet::new(),
             take_over_wanted: None,
@@ -1191,6 +1497,187 @@ impl App {
 
     pub fn selected_item(&self) -> Option<&Item> {
         self.items.get(self.selected)
+    }
+
+    /// Which sheet owns navigation keys (`j`/`k`, `/`, Diff keys): narrow view binds focus to whichever column is
+    /// drawn; wide view uses the explicit List vs. Detail focus (`Enter`/`Right` focuses Detail, `Esc`/`Left` List).
+    pub fn effective_focus(&self) -> Focus {
+        if self.zoom || (!self.narrow && self.list_state == crate::viewstate::ListState::Hidden) {
+            Focus::Detail
+        } else if self.narrow {
+            if self.narrow_list {
+                Focus::List
+            } else {
+                Focus::Detail
+            }
+        } else {
+            self.focus
+        }
+    }
+
+    /// Whether the docked Chat + Peek split is active right now (wide enough viewport, not zoomed, not narrow).
+    pub fn chat_split_active(&self) -> bool {
+        self.chat_docked
+            && !self.zoom
+            && !self.narrow
+            && (self.last_width == 0
+                || self.last_width >= 136
+                || (self.list_state != crate::viewstate::ListState::Full && self.last_width >= 104))
+    }
+
+    /// Whether the central Lead chat panel is currently drawn on screen.
+    pub fn chat_visible(&self) -> bool {
+        self.chat_open || self.chat_split_active()
+    }
+
+    /// Whether keyboard navigation in Detail belongs to the central Lead chat panel.
+    pub fn chat_focused(&self) -> bool {
+        self.effective_focus() == Focus::Detail
+            && ((self.chat_split_active() && self.chat_focus == crate::chat::ChatFocus::Chat)
+                || (!self.chat_split_active() && self.chat_open))
+    }
+
+    /// Open and focus Central Lead chat (fetching it if not yet loaded) and focus the chatbox for immediate typing.
+    pub fn open_lead_chat(&mut self) -> Vec<Effect> {
+        self.chat_open = true;
+        self.chat_focus = crate::chat::ChatFocus::Chat;
+        self.focus = Focus::Detail;
+        self.narrow_list = false;
+        self.status = None;
+        if self.chat.data.as_ref().is_none_or(|d| d.can_send) {
+            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+        }
+        let mut fx = Vec::new();
+        if !self.chat.loaded && !self.chat.loading {
+            self.chat.loading = true;
+            fx.push(Effect::FetchLeadChat);
+        }
+        fx.push(Effect::Watch(self.rooms()));
+        fx.extend(crate::chat_providers::offer_recovery(self));
+        fx
+    }
+
+    /// Toggle Docked Chat + Peek split layout (Slice 3).
+    pub fn toggle_dock_chat(&mut self) -> Vec<Effect> {
+        self.chat_docked = !self.chat_docked;
+        let mut fx = Vec::new();
+        if self.chat_docked {
+            self.chat_open = true;
+            self.chat_focus = crate::chat::ChatFocus::Chat;
+            self.focus = Focus::Detail;
+            self.narrow_list = false;
+            if !self.chat.loaded && !self.chat.loading {
+                self.chat.loading = true;
+                fx.push(Effect::FetchLeadChat);
+            }
+            if self.last_width > 0 && !self.chat_split_active() {
+                self.say(
+                    Tone::Said,
+                    "Docked chat needs a wider window (or press b for a slim rail). Showing Lead chat.",
+                );
+            } else {
+                self.say(
+                    Tone::Said,
+                    "Docked Lead chat beside task. o moves between Chat and Peek.",
+                );
+            }
+        } else {
+            self.say(Tone::Said, "Undocked Lead chat.");
+        }
+        fx.push(Effect::Watch(self.rooms()));
+        fx
+    }
+
+    /// Jump the Peek inspector straight to `task` and optional preferred tab (`diff` / `steps` / `live`).
+    pub fn peek_task(&mut self, task: &str, tab: Option<&str>) -> Vec<Effect> {
+        let mut fx = self.show_task(task);
+        let target_tab = match tab {
+            Some("diff") => Some(Tab::Diff),
+            Some("steps") => Some(Tab::Steps),
+            Some("live") => Some(Tab::Live),
+            _ => None,
+        };
+        if let Some(t) = target_tab {
+            fx.extend(self.set_tab(t));
+        }
+        if self.chat_split_active() {
+            self.chat_focus = crate::chat::ChatFocus::Peek;
+            self.focus = Focus::Detail;
+        } else {
+            self.chat_open = false;
+            self.focus = Focus::Detail;
+            self.narrow_list = false;
+        }
+        fx
+    }
+
+    fn send_chat_message(&mut self, text: String) -> Vec<Effect> {
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return vec![];
+        }
+        if self.chat.sending {
+            self.say(Tone::Said, "Your previous message is still sending.");
+            return vec![];
+        }
+        let Some(data) = &self.chat.data else {
+            self.say(Tone::Refused, "Lead chat is still loading.");
+            return vec![];
+        };
+        if !data.can_send {
+            self.say(
+                Tone::Refused,
+                data.problem
+                    .clone()
+                    .unwrap_or_else(|| "Start a Lead conversation in the browser first.".into()),
+            );
+            return vec![];
+        }
+        let session = data.session;
+        let project = data.project.clone();
+        let request = self.token(32);
+        self.chat.sending = true;
+        self.chat.draft.clear();
+        self.chat.optimistic_sent = Some(trimmed.clone());
+        self.chat.last_submission = Some(trimmed.clone());
+        self.chat.follow_end();
+        self.say(Tone::Said, "Sending to Lead…");
+        vec![Effect::ChatSend {
+            message: trimmed,
+            request,
+            session,
+            project,
+        }]
+    }
+
+    fn activate_chat_hit(&mut self, hit: crate::chat::ChatHit) -> Vec<Effect> {
+        match hit {
+            crate::chat::ChatHit::ConfirmProposal(id) => {
+                if let Some(pin) = self.chat.pin_proposal(id) {
+                    self.mode = Mode::ConfirmProposal(pin);
+                } else {
+                    self.say(Tone::Refused, "That proposal is no longer waiting.");
+                }
+                vec![]
+            }
+            crate::chat::ChatHit::DismissProposal(id) => {
+                self.say(Tone::Said, "Dismissing proposal…");
+                vec![Effect::ProposalAct {
+                    id,
+                    op: "dismiss",
+                    confirm_yes: false,
+                }]
+            }
+            crate::chat::ChatHit::PeekTask { task, tab, .. } => {
+                self.peek_task(&task, tab.as_deref())
+            }
+            crate::chat::ChatHit::ManageProjects => vec![Effect::OpenPage("projects")],
+            crate::chat::ChatHit::AnswerAsk(option) => self.send_chat_message(option),
+            crate::chat::ChatHit::RemoveQueued(id) => {
+                self.say(Tone::Said, "Removing queued message…");
+                vec![Effect::QueuedRemove(id)]
+            }
+        }
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -1606,6 +2093,12 @@ impl App {
                     }
                     // Only an ended session matters here: the lines are a first-run nicety, never a reason to stop.
                     Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+                    Err(e) if self.agents_screen.as_ref().is_some_and(|s| s.checking) => {
+                        if let Some(s) = self.agents_screen.as_mut() {
+                            s.checking = false;
+                        }
+                        self.say(Tone::Refused, format!("Agent check failed. {e}"));
+                    }
                     Err(_) => {}
                 }
                 vec![]
@@ -1709,19 +2202,110 @@ impl App {
                         .into_iter()
                         .filter(|e| !matches!(e, Effect::Watch(_))),
                 );
-                // A `t` pressed before these steps were read: the same take-over now (its confirm first), only while
-                // the person is still on this task's Terminal tab with no dialog open.
-                if self.take_over_wanted.take().as_deref() == Some(task.as_str())
-                    && self.tab == Tab::Terminal
-                    && self.mode == Mode::Normal
+                // A `t` or `i` pressed before these steps were read: the same take-over now (its confirm first), only
+                // while the person is still on this task's Terminal tab with no dialog open.
+                if let Some((wanted, agent)) = self.take_over_wanted.take() {
+                    if wanted == task && self.tab == Tab::Terminal && self.mode == Mode::Normal {
+                        fx.extend(if agent {
+                            self.take_over_agent()
+                        } else {
+                            self.take_over()
+                        });
+                    }
+                }
+                if let Some(link) = self
+                    .step_nav
+                    .pending
+                    .take()
+                    .filter(|_| self.mode == Mode::Normal)
                 {
-                    fx.extend(self.take_over());
+                    fx.extend(self.open_step(&link));
                 }
                 fx
             }
             Msg::Steps(task, Err(ApiError::Contract(_))) => self.steps_unreadable(task),
             Msg::Steps(_, Err(e)) => self.read_failed(e),
             Msg::Approval(task, read) => self.approval_read(task, read),
+            Msg::Presence(snapshot) => {
+                self.presence = snapshot;
+                if matches!(
+                    self.filter,
+                    Filter::Mine | Filter::WaitingOnTeam | Filter::Unassigned
+                ) {
+                    let keep = self.selected_id();
+                    self.items = self.filtered();
+                    self.selected = keep
+                        .and_then(|id| self.items.iter().position(|i| i.id == id))
+                        .unwrap_or(0)
+                        .min(self.items.len().saturating_sub(1));
+                }
+                vec![]
+            }
+            Msg::ApprovalPinged(Ok(res)) => {
+                let target = res.url.as_deref().unwrap_or(&res.path);
+                if res.channels.is_empty() {
+                    self.say(
+                        Tone::Said,
+                        format!(
+                            "Approval link: {target} (pair Web Push or Telegram in /settings for 1-tap pings)"
+                        ),
+                    );
+                } else {
+                    self.say(
+                        Tone::Said,
+                        format!(
+                            "Sent approval ping via {} — open on your phone or browser ({target}).",
+                            res.channels.join(", ")
+                        ),
+                    );
+                }
+                vec![]
+            }
+            Msg::ApprovalPinged(Err(e)) => self.read_failed(e),
+            Msg::TaskHandedOff(Ok(person)) => {
+                self.say(Tone::Said, format!("Handed task off to {person}."));
+                vec![Effect::FetchWork]
+            }
+            Msg::TaskHandedOff(Err(e)) => self.read_failed(e),
+            Msg::Candidates(task, list) => {
+                if list.is_empty() {
+                    self.candidates.remove(&task);
+                } else {
+                    self.candidates.insert(task, list);
+                }
+                vec![]
+            }
+            Msg::CandidatePromoted(Ok(outcome)) => {
+                let run_words = outcome
+                    .run_id
+                    .map(|id| format!(" into central Run #{id}"))
+                    .unwrap_or_default();
+                self.say(
+                    Tone::Said,
+                    format!(
+                        "Promoted Candidate {}{} — central checks queued.",
+                        outcome.candidate_id, run_words
+                    ),
+                );
+                vec![Effect::FetchSteps(outcome.task_id), Effect::FetchWork]
+            }
+            Msg::CandidatePromoted(Err(e)) => self.read_failed(e),
+            Msg::CandidatePrOpened(Ok(outcome)) => {
+                let pr_words = outcome
+                    .publication
+                    .pr_number
+                    .map(|n| format!("PR #{n}"))
+                    .unwrap_or_else(|| "pull request queued".into());
+                self.say(
+                    Tone::Said,
+                    format!(
+                        "Candidate {} (Run #{}) → {pr_words}.",
+                        outcome.candidate_id, outcome.run_id
+                    ),
+                );
+                vec![Effect::FetchSteps(outcome.task_id), Effect::FetchWork]
+            }
+            Msg::CandidatePrOpened(Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -1828,6 +2412,16 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::BuilderPassword { task, setup })) => {
+                self.say(
+                    Tone::Refused,
+                    "Builder unchanged. Toolroll requires a password for this change.",
+                );
+                if self.mode == Mode::Normal && self.builder_task().as_deref() == Some(&task) {
+                    self.mode = Mode::BuilderPassword { task, setup };
+                }
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::NextStep { words, next })) => {
                 // Said in the console's words; the next step's page and command one key away.
                 self.say(Tone::Refused, words);
@@ -1877,7 +2471,149 @@ impl App {
             Msg::Tick => self.tick(),
             Msg::TermOpened { task, run, result } => self.term_opened(task, run, result),
             Msg::Term(id, event) => self.term_event(id, event),
+            Msg::TaskBuilder(task, read) => {
+                if !matches!(&self.mode, Mode::TaskBuilder { task: asked, form: None, .. } if asked == &task)
+                {
+                    return vec![];
+                }
+                match read {
+                    Ok(toolroll_api::BuilderPicker::Password { setup })
+                        if self.builder_task().as_deref() == Some(&task) =>
+                    {
+                        self.mode = Mode::BuilderPassword { task, setup };
+                    }
+                    Ok(toolroll_api::BuilderPicker::Choices(form))
+                        if self.builder_task().as_deref() == Some(task.as_str()) =>
+                    {
+                        let index = form
+                            .choices
+                            .iter()
+                            .position(|v| Some(v) == form.current.as_ref())
+                            .unwrap_or(0);
+                        self.mode = Mode::TaskBuilder {
+                            task,
+                            form: Some(form),
+                            index,
+                        };
+                    }
+                    Ok(_) => {
+                        self.mode = Mode::Normal;
+                        self.say(Tone::Refused, TASK_CHANGED);
+                    }
+                    Err(e) => {
+                        self.mode = Mode::Normal;
+                        return self.failed(e);
+                    }
+                }
+                vec![]
+            }
             Msg::Models(read) => crate::agents::on_models(self, read),
+            Msg::LeadChat(read) => match read {
+                Ok(chat) => {
+                    // If a proposal confirmation dialog is open, verify the pinned proposal still matches.
+                    if let Mode::ConfirmProposal(pin) = &self.mode {
+                        let still = chat.messages.iter().find_map(|m| {
+                            m.cards
+                                .iter()
+                                .find(|c| c.id == pin.id && !c.data && c.state == "pending")
+                        });
+                        let same = still.is_some_and(|c| {
+                            c.lines.iter().map(|l| clean(l)).collect::<Vec<_>>() == pin.lines
+                        });
+                        if !same {
+                            self.mode = Mode::Normal;
+                            self.say(Tone::Refused, "This proposal changed — look again.");
+                        }
+                    }
+                    self.chat.apply_data(chat);
+                    let mut fx = vec![Effect::Watch(self.rooms())];
+                    fx.extend(crate::chat_providers::offer_recovery(self));
+                    fx
+                }
+                Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
+                Err(e) => {
+                    self.chat.loading = false;
+                    self.chat.error = Some(e.to_string());
+                    vec![]
+                }
+            },
+            Msg::LeadProvidersChecked(result) => {
+                self.chat.checking_providers = false;
+                match result {
+                    Ok(agents) => self.chat.checked_providers = Some(agents),
+                    Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+                    Err(e) => self.chat.provider_problem = Some(clean(&e.to_string())),
+                }
+                vec![]
+            }
+            Msg::LeadSwitched(plan, result) => {
+                self.chat.switching_provider = false;
+                match result {
+                    Ok(toolroll_api::ActOutcome::Done(_)) => {
+                        if matches!(self.mode, Mode::LeadProviders(_)) {
+                            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        }
+                        self.say(
+                            Tone::Said,
+                            format!("Lead uses {}. Send your message when ready.", plan.name()),
+                        );
+                        vec![Effect::FetchLeadChat]
+                    }
+                    Err(ApiError::SessionEnded) => self.failed(ApiError::SessionEnded),
+                    other => {
+                        let words = match other {
+                            Ok(toolroll_api::ActOutcome::Refused(s)) => s,
+                            Err(e) => e.to_string(),
+                            _ => "The console did not confirm the provider change.".into(),
+                        };
+                        self.chat.provider_problem = Some(clean(&words));
+                        self.say(Tone::Refused, clean(&words));
+                        vec![]
+                    }
+                }
+            }
+            Msg::ChatSent(result) => {
+                self.chat.sending = false;
+                match result {
+                    Ok(ChatSendOutcome::Accepted { queued, .. }) => {
+                        self.say(
+                            Tone::Said,
+                            if queued {
+                                "Queued for Lead."
+                            } else {
+                                "Submitted to Lead."
+                            },
+                        );
+                        self.chat.loading = true;
+                        vec![Effect::FetchLeadChat, Effect::Watch(self.rooms())]
+                    }
+                    Ok(ChatSendOutcome::Refused(words)) => {
+                        crate::chat_providers::restore_submission(self);
+                        self.chat.optimistic_sent = None;
+                        self.say(Tone::Refused, words);
+                        vec![Effect::FetchLeadChat]
+                    }
+                    Err(e) => {
+                        crate::chat_providers::restore_submission(self);
+                        self.chat.optimistic_sent = None;
+                        self.failed(e)
+                    }
+                }
+            }
+            Msg::ProposalActed { result, .. } => match result {
+                Ok(ProposalActOutcome::Done { said, task_id }) => {
+                    self.say(Tone::Said, said);
+                    if let Some(id) = task_id {
+                        self.filed = Some(id);
+                    }
+                    vec![Effect::FetchLeadChat, Effect::FetchWork]
+                }
+                Ok(ProposalActOutcome::Refused(words)) => {
+                    self.say(Tone::Refused, words);
+                    vec![Effect::FetchLeadChat]
+                }
+                Err(e) => self.failed(e),
+            },
         }
     }
 
@@ -2326,7 +3062,32 @@ impl App {
 
     fn signal(&mut self, signal: LiveSignal) -> Vec<Effect> {
         match signal {
-            LiveSignal::Change(room) if room == "workspace" => self.fetch_work(),
+            LiveSignal::Change(room) if room == "workspace" => {
+                let mut fx = self.fetch_work();
+                if self.chat.loaded && (self.chat.optimistic_sent.is_some() || self.chat.is_busy())
+                {
+                    self.chat.loading = true;
+                    fx.push(Effect::FetchLeadChat);
+                }
+                fx
+            }
+            LiveSignal::Change(room) if room == self.chat.room() || room.starts_with("chat") => {
+                self.chat.loading = true;
+                vec![Effect::FetchLeadChat]
+            }
+            LiveSignal::Turn { room, turn }
+                if room == self.chat.room() || room.starts_with("chat") =>
+            {
+                let finished = turn.done;
+                let idle = turn.is_idle();
+                self.chat.apply_turn(turn);
+                if finished || (!idle && self.chat.optimistic_sent.is_some()) {
+                    self.chat.loading = true;
+                    vec![Effect::FetchLeadChat]
+                } else {
+                    vec![]
+                }
+            }
             LiveSignal::Change(room) if room.starts_with("task:") => {
                 let mut fx = self.watch_changed(&room);
                 let mine = self.steps.as_ref().is_none_or(|s| s.room == room) || fx.is_empty();
@@ -2488,6 +3249,9 @@ impl App {
     /// The rooms that say when what's on screen changed (the watched panels' too).
     pub(crate) fn rooms(&self) -> Vec<String> {
         let mut rooms = self.watch_rooms();
+        if self.chat.loaded || self.chat_visible() {
+            rooms.push(self.chat.room());
+        }
         if let Some(steps) = &self.steps {
             rooms.push(steps.room.clone());
         }
@@ -2498,6 +3262,13 @@ impl App {
     }
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
+        self.step_nav = StepNavigation::default();
+        if matches!(
+            self.mode,
+            Mode::TaskBuilder { .. } | Mode::BuilderPassword { .. }
+        ) {
+            self.mode = Mode::Normal;
+        }
         // Opened: no longer unread (a thread: its news seen, so it moves on to Recent once nothing else waits).
         if let Some(id) = self.selected_id() {
             self.unread.remove(&id);
@@ -2589,6 +3360,77 @@ impl App {
         self.selection_changed()
     }
 
+    pub fn builder_task(&self) -> Option<String> {
+        self.steps_here()
+            .filter(|s| {
+                s.live_run.is_none()
+                    && s.review.is_none()
+                    && !matches!(s.task.state.as_str(), "cancelled" | "done")
+            })
+            .map(|s| s.task.id.clone())
+    }
+
+    fn open_step(&mut self, link: &StepLink) -> Vec<Effect> {
+        let Some(steps) = self.steps_here() else {
+            return vec![];
+        };
+        let Some(card) = steps
+            .cards
+            .iter()
+            .flatten()
+            .find(|c| c.in_chain && c.key == link.step)
+        else {
+            return vec![];
+        };
+        if StepLink::new(steps, card) != *link {
+            return vec![];
+        }
+        self.focus = Focus::Detail;
+        self.step_nav.expanded =
+            if self.tab == Tab::Steps && self.step_nav.expanded.as_ref() == Some(&link.step) {
+                None
+            } else {
+                Some(link.step.clone())
+            };
+        self.step_nav.selected = Some(link.step.clone());
+        self.step_nav.reveal = true;
+        match &link.destination {
+            StepDestination::Plan(key) if self.approval_changed(&link.task, key).is_none() => {
+                self.run_action(Action::Accept)
+            }
+            StepDestination::Plan(_) => vec![],
+            StepDestination::Live(_) => self.set_tab(Tab::Live),
+            StepDestination::Changes(_) => self.set_tab(Tab::Diff),
+            StepDestination::Details => self.set_tab(Tab::Steps),
+        }
+    }
+
+    fn move_step(&mut self, down: bool) {
+        let Some(steps) = self.steps_here() else {
+            return;
+        };
+        let cards: Vec<_> = steps
+            .cards
+            .iter()
+            .flatten()
+            .filter(|c| c.in_chain)
+            .collect();
+        let Some(last) = cards.len().checked_sub(1) else {
+            return;
+        };
+        let next = match cards
+            .iter()
+            .position(|c| Some(&c.key) == self.step_nav.selected.as_ref())
+        {
+            Some(i) if down => (i + 1).min(last),
+            Some(i) => i.saturating_sub(1),
+            None if down => 0,
+            None => last,
+        };
+        self.step_nav.selected = Some(cards[next].key.clone());
+        self.step_nav.reveal = true;
+    }
+
     fn set_tab(&mut self, tab: Tab) -> Vec<Effect> {
         if self.tab != tab {
             // What was said belonged to the tab left.
@@ -2604,6 +3446,7 @@ impl App {
     // ---- keys ---------------------------------------------------------------------------------------------------
 
     pub fn key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        self.step_nav.pending = None;
         // A key: what was said before it may give way now.
         self.key_since_said = true;
         // Typing in the terminal: every key is the terminal's (Ctrl-C too), but Ctrl-].
@@ -2624,7 +3467,15 @@ impl App {
                 return vec![];
             }
         }
+        if key.code == KeyCode::F(2)
+            && self.agents_screen.is_none()
+            && self.chat_focused()
+            && matches!(self.mode, Mode::Normal | Mode::ChatCompose(_))
+        {
+            return crate::chat_providers::open_providers(self);
+        }
         match self.mode.clone() {
+            Mode::LeadProviders(plan) => crate::chat_providers::provider_key(self, plan, key.code),
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
             Mode::Copied => {
                 self.mode = Mode::Normal;
@@ -2637,6 +3488,62 @@ impl App {
                     },
                 );
                 vec![Effect::ResumeScreen]
+            }
+            Mode::BuilderPassword { task, setup } => match key.code {
+                KeyCode::Enter if self.builder_task().as_deref() == Some(&task) => {
+                    self.mode = Mode::Normal;
+                    vec![Effect::OpenBuilderPassword { task, setup }]
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                _ => vec![],
+            },
+            Mode::TaskBuilder { task, form, index } => {
+                if key.code == KeyCode::Esc {
+                    self.mode = Mode::Normal;
+                    return vec![];
+                }
+                let Some(form) = form else { return vec![] };
+                if self.builder_task().as_deref() != Some(task.as_str()) {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Refused, TASK_CHANGED);
+                    return vec![];
+                }
+                let last = form.choices.len().saturating_sub(1);
+                let index = match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => index.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => (index + 1).min(last),
+                    KeyCode::Enter => {
+                        let Some(value) = form
+                            .choices
+                            .get(index)
+                            .filter(|v| Some(*v) != form.current.as_ref())
+                        else {
+                            return vec![];
+                        };
+                        let path = format!("/t/{}/route", toolroll_api::client::encode(&task));
+                        self.mode = Mode::Normal;
+                        self.say(Tone::Said, "Changing this task’s builder…");
+                        return self.act(
+                            path,
+                            vec![
+                                ("sawDigest", form.digest),
+                                ("phase", "build".into()),
+                                ("agent", value.clone()),
+                            ],
+                            "Builder changed. Review the updated plan before resuming.".into(),
+                        );
+                    }
+                    _ => return vec![],
+                };
+                self.mode = Mode::TaskBuilder {
+                    task,
+                    form: Some(form),
+                    index,
+                };
+                vec![]
             }
             Mode::Help => {
                 self.mode = if key.code == KeyCode::Char('s') {
@@ -2700,6 +3607,174 @@ impl App {
                     }
                 }
             }
+            Mode::ChatCompose(mut text) => match key.code {
+                KeyCode::Esc => {
+                    self.chat.draft = text;
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                KeyCode::Enter
+                    if key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                {
+                    if text.chars().count() < 10_000 {
+                        text.push('\n');
+                    }
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if text.chars().count() < 10_000 {
+                        text.push('\n');
+                    }
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Enter => {
+                    if text.trim().is_empty() {
+                        return vec![];
+                    }
+                    self.chat.draft = text.clone();
+                    let fx = self.send_chat_message(text);
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                    fx
+                }
+                KeyCode::PageUp => {
+                    let page = self.chat.view_height.saturating_sub(2).max(6);
+                    self.chat.scroll_up(page);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::PageDown => {
+                    let page = self.chat.view_height.saturating_sub(2).max(6);
+                    self.chat.scroll_down(page);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Up if text.is_empty() => {
+                    self.chat.scroll_up(1);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Down if text.is_empty() => {
+                    self.chat.scroll_down(1);
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Tab if !self.chat.items.is_empty() => {
+                    self.chat.selected_hit = self
+                        .chat
+                        .hits
+                        .first()
+                        .and_then(|(_, hit)| self.chat.items.iter().position(|item| item == hit))
+                        .unwrap_or(0);
+                    self.chat.reveal_selection = true;
+                    self.chat.draft = text;
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                KeyCode::BackTab if !self.chat.items.is_empty() => {
+                    self.chat.selected_hit = self.chat.items.len() - 1;
+                    self.chat.reveal_selection = true;
+                    self.chat.draft = text;
+                    self.mode = Mode::Normal;
+                    vec![]
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !c.is_control() =>
+                {
+                    if text.chars().count() < 10_000 {
+                        text.push(c);
+                    }
+                    self.chat.draft = text.clone();
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+                _ => {
+                    self.mode = Mode::ChatCompose(text);
+                    vec![]
+                }
+            },
+            Mode::ConfirmProposal(mut pin) => match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, NOTHING_CHANGED);
+                    vec![]
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(' ')
+                    if !pin.seen_end || key.code != KeyCode::Char(' ') =>
+                {
+                    let step = if key.code == KeyCode::Char(' ') { 6 } else { 1 };
+                    pin.scroll = pin.scroll.saturating_add(step);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    pin.scroll = pin.scroll.saturating_sub(1);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::PageDown => {
+                    pin.scroll = pin.scroll.saturating_add(10);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::PageUp => {
+                    pin.scroll = pin.scroll.saturating_sub(10);
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char(' ')
+                    if pin.irreversible =>
+                {
+                    pin.armed = !pin.armed;
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if !pin.seen_end {
+                        self.mode = Mode::ConfirmProposal(pin);
+                        self.say(
+                            Tone::Refused,
+                            "Read the proposal to the end first (j or Space).",
+                        );
+                        return vec![];
+                    }
+                    if pin.irreversible && !pin.armed {
+                        self.mode = Mode::ConfirmProposal(pin);
+                        self.say(
+                            Tone::Refused,
+                            "Press a first to confirm you understand this cannot be undone.",
+                        );
+                        return vec![];
+                    }
+                    let id = pin.id;
+                    let confirm_yes = pin.irreversible && pin.armed;
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, "Confirming proposal…");
+                    vec![Effect::ProposalAct {
+                        id,
+                        op: "confirm",
+                        confirm_yes,
+                    }]
+                }
+                _ => {
+                    self.mode = Mode::ConfirmProposal(pin);
+                    vec![]
+                }
+            },
             Mode::ThreadNext(next) => {
                 self.mode = Mode::Normal;
                 let step = crate::thread::next_step(&next);
@@ -3205,23 +4280,71 @@ impl App {
             Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
             Mode::Search(s) => self.search_key(key, s),
+            Mode::ListFilter(q) => self.list_filter_key(key, q),
             Mode::TakeOver | Mode::ShellOpening => vec![],
             Mode::ConfirmInstall { .. }
             | Mode::PickModel(_)
             | Mode::ConfirmModels(_)
             | Mode::ConfirmSignInAgain { .. } => crate::agents::mode_key(self, key),
-            Mode::ConfirmTakeOver { task, run } => match key.code {
-                KeyCode::Char('t') => {
+            Mode::ConfirmTakeOver { task, run, program } => match key.code {
+                KeyCode::Char('1') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "shell".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('2') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "claude".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('3') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "codex".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('4') => {
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: "antigravity".into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let next = cycle_program(&program, key.code == KeyCode::BackTab);
+                    self.mode = Mode::ConfirmTakeOver {
+                        task,
+                        run,
+                        program: next.into(),
+                    };
+                    vec![]
+                }
+                KeyCode::Char('t') | KeyCode::Char('i') | KeyCode::Enter => {
                     self.mode = Mode::Normal;
                     // Still the task on screen, and still its build to take over: else nothing opens.
                     let still = self.selected_item().is_some_and(|i| i.id == task)
-                        && self.steps.as_ref().is_some_and(|s| s.live_run != Some(run));
+                        && self.steps.as_ref().is_some_and(|s| {
+                            if program == "shell" {
+                                s.live_run != Some(run)
+                            } else {
+                                shell_run_of(s) == Some(run) || s.live_run == Some(run)
+                            }
+                        });
                     if !still {
                         self.say(Tone::Refused, RESULT_CHANGED);
                         return vec![];
                     }
-                    self.confirmed.insert((task.clone(), run));
-                    self.open_take_over(task, run)
+                    self.confirmed.insert((task.clone(), run, program.clone()));
+                    self.open_take_over(task, run, program)
                 }
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
@@ -3310,6 +4433,19 @@ impl App {
                 grow(&mut p.query);
                 p.selected = 0;
             }
+            Mode::PickModel(p) if p.filter.is_some() => {
+                grow(p.filter.as_mut().unwrap());
+                p.selected = 0;
+            }
+            Mode::ListFilter(q) => {
+                let mut next = q.clone();
+                grow(&mut next);
+                return self.apply_list_query(next, true);
+            }
+            Mode::ChatCompose(t) => {
+                grow(t);
+                self.chat.draft = t.clone();
+            }
             Mode::Steer(t)
             | Mode::NewTask(t, _)
             | Mode::NewThread(t)
@@ -3329,17 +4465,25 @@ impl App {
         // A terminal pane on screen and not being typed in: its keys go to the shell only once t says so, and never
         // fall through to the workbench's acts (w, n, Enter, a, r…) that a person who thinks they are typing would
         // set off. Moving, tabs, scrolling, copy, help, the palette and quit still work; anything else is refused.
-        if self.tab == Tab::Terminal && self.pane_here().is_some() {
+        if self.effective_focus() == Focus::Detail
+            && self.tab == Tab::Terminal
+            && self.pane_here().is_some()
+        {
             let action = self.prefs.settings.keymap.lookup(Scope::Global, &key);
             let layout = |a: Action| {
                 crate::keys::SPECS
                     .iter()
                     .any(|s| s.action == a && s.group == crate::keys::Group::Layout)
             };
-            if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a)) {
+            let take_agent_ok = action == Some(Action::TakeOverAgent)
+                && self.pane_here().is_some_and(|p| {
+                    p.drawn && (self.remote_badge.is_some() || p.program != "shell")
+                });
+            if !action.is_some_and(|a| TERMINAL_PANE_KEYS.contains(&a) || layout(a))
+                && !take_agent_ok
+            {
                 if key.code == KeyCode::Esc {
-                    self.status = None;
-                    return vec![];
+                    return self.run_action(Action::FocusList);
                 }
                 let t = self.prefs.settings.keymap.key_words(Action::TakeOver);
                 self.say(
@@ -3349,8 +4493,78 @@ impl App {
                 return vec![];
             }
         }
-        // The Diff tab's keys are a task result's; a thread's panel has no Diff (its own keys come below).
-        if self.tab == Tab::Diff && self.thread_selected().is_none() {
+        // When Central Lead chat holds Detail focus, handle its stream-specific keys before global task shortcuts.
+        if self.chat_focused() {
+            match key.code {
+                KeyCode::Char(digit @ '1'..='9') if key.modifiers.is_empty() => {
+                    let index = (digit as u8 - b'1') as usize;
+                    if let Some(hit) = self.chat.numbered_choices.get(index) {
+                        if let Some(at) = self.chat.items.iter().position(|item| item == hit) {
+                            self.chat.selected_hit = at;
+                        }
+                        return vec![];
+                    }
+                }
+                KeyCode::Down if key.modifiers.is_empty() && !self.chat.items.is_empty() => {
+                    self.chat.select_next_hit();
+                    return vec![];
+                }
+                KeyCode::Up if key.modifiers.is_empty() && !self.chat.items.is_empty() => {
+                    self.chat.select_prev_hit();
+                    return vec![];
+                }
+                KeyCode::Char('i')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                    return vec![];
+                }
+                KeyCode::Char('e')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.chat.tools_expanded = !self.chat.tools_expanded;
+                    return vec![];
+                }
+                KeyCode::Tab | KeyCode::BackTab
+                    if self.chat.data.as_ref().is_some_and(|d| d.can_send)
+                        && (self.chat.items.is_empty()
+                            || (key.code == KeyCode::Tab
+                                && self.chat.selected_hit + 1 >= self.chat.items.len())
+                            || (key.code == KeyCode::BackTab
+                                && self.chat.selected_hit
+                                    <= self
+                                        .chat
+                                        .hits
+                                        .first()
+                                        .and_then(|(_, hit)| {
+                                            self.chat.items.iter().position(|item| item == hit)
+                                        })
+                                        .unwrap_or(0))) =>
+                {
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                    return vec![];
+                }
+                KeyCode::Char(']') | KeyCode::Tab => {
+                    self.chat.select_next_hit();
+                    return vec![];
+                }
+                KeyCode::Char('[') | KeyCode::BackTab => {
+                    self.chat.select_prev_hit();
+                    return vec![];
+                }
+                _ => {}
+            }
+        }
+        // The Diff tab's keys apply only when the Detail panel is focused (never stealing j/k or n from the task list).
+        if self.effective_focus() == Focus::Detail
+            && !self.chat_focused()
+            && self.tab == Tab::Diff
+            && self.thread_selected().is_none()
+        {
             if let Some(action) = self.prefs.settings.keymap.lookup(Scope::Diff, &key) {
                 return self.run_action(action);
             }
@@ -3360,18 +4574,28 @@ impl App {
         }
         match key.code {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
-            // A result's Diff tab: Esc leaves it (stranger test round 11: only Tab did, so typing went on running the
-            // Diff's own keys).
+            // A result's Diff tab: Esc leaves it (stranger test round 11: also returns focus to the list).
             KeyCode::Esc if self.tab == Tab::Diff && self.thread_selected().is_none() => {
                 self.leave_diff();
+                if self.effective_focus() == Focus::Detail {
+                    self.focus = Focus::List;
+                }
                 self.status = None;
                 vec![]
+            }
+            KeyCode::Esc if self.effective_focus() == Focus::Detail => {
+                self.run_action(Action::FocusList)
             }
             // Narrow, a task's panel showing: Esc goes back to the list.
             KeyCode::Esc if self.narrow && !self.narrow_list => {
                 self.narrow_list = true;
                 self.status = None;
                 vec![]
+            }
+            // List focused with an active text filter: Esc clears the list filter.
+            KeyCode::Esc if !self.list_query.is_empty() => {
+                self.status = None;
+                self.apply_list_query(String::new(), false)
             }
             KeyCode::Esc => {
                 self.status = None;
@@ -3405,6 +4629,56 @@ impl App {
             Pick::Answer(n) => self.answer_key(n),
             Pick::Task(id) => self.show_task(&id),
             Pick::Project(name) => self.set_filter(Filter::Project(name)),
+            Pick::HandOff(person) => match self.selected_item().filter(|i| i.is_task) {
+                Some(item) => {
+                    let task = item.id.clone();
+                    self.say(Tone::Said, format!("Handing task off to {person}…"));
+                    vec![Effect::AssignTaskPerson { task, person }]
+                }
+                None => vec![],
+            },
+            Pick::PromoteCandidate(candidate_id) => {
+                let Some(task) = self
+                    .selected_item()
+                    .filter(|i| i.is_task)
+                    .map(|i| i.id.clone())
+                else {
+                    return vec![];
+                };
+                if self
+                    .candidates
+                    .get(&task)
+                    .and_then(|list| list.iter().find(|c| c.id == candidate_id))
+                    .is_some_and(|c| c.stale)
+                {
+                    self.say(
+                        Tone::Refused,
+                        format!(
+                            "Candidate {candidate_id} is stale — run `toolroll handoff rebase {task}` before promoting."
+                        ),
+                    );
+                    return vec![];
+                }
+                self.say(
+                    Tone::Said,
+                    format!("Promoting Candidate {candidate_id} into central Run…"),
+                );
+                vec![Effect::PromoteCandidate { task, candidate_id }]
+            }
+            Pick::OpenCandidatePr(candidate_id) => {
+                let Some(task) = self
+                    .selected_item()
+                    .filter(|i| i.is_task)
+                    .map(|i| i.id.clone())
+                else {
+                    return vec![];
+                };
+                self.say(
+                    Tone::Said,
+                    format!("Queuing pull request for promoted Candidate {candidate_id}…"),
+                );
+                vec![Effect::OpenCandidatePr { task, candidate_id }]
+            }
         }
     }
 
@@ -3457,25 +4731,185 @@ impl App {
     /// ways keep the same pins and confirms.
     pub fn run_action(&mut self, action: Action) -> Vec<Effect> {
         let item = self.selected_item().cloned();
-        let diff_here = self.tab == Tab::Diff && self.thread_selected().is_none();
+        let focus = self.effective_focus();
+        let chat_here = self.chat_focused();
+        let diff_here = !chat_here && self.tab == Tab::Diff && self.thread_selected().is_none();
         // (An agent's sign-in pane is never the Terminal tab's, and never copied.)
-        let terminal_here =
-            self.tab == Tab::Terminal && self.term.as_ref().is_some_and(|p| !p.sensitive);
+        let terminal_here = !chat_here
+            && self.tab == Tab::Terminal
+            && self.term.as_ref().is_some_and(|p| !p.sensitive);
         match action {
-            Action::MoveDown => self.select(self.selected + 1),
-            Action::MoveUp => self.select(self.selected.saturating_sub(1)),
-            // Narrow, the list showing: Enter opens the selected task's panel.
+            Action::LeadChat => {
+                if chat_here && !self.chat_split_active() {
+                    // Already focused on Lead chat (not docked): toggle back to the selected task panel.
+                    self.chat_open = false;
+                    self.focus = Focus::Detail;
+                    vec![]
+                } else {
+                    self.open_lead_chat()
+                }
+            }
+            Action::DockChat => self.toggle_dock_chat(),
+            Action::MoveDown | Action::MoveUp if chat_here => {
+                if action == Action::MoveDown {
+                    self.chat.scroll_down(1);
+                } else {
+                    self.chat.scroll_up(1);
+                }
+                vec![]
+            }
+            Action::ScrollUp | Action::ScrollDown if chat_here => {
+                let page = self.chat.view_height.saturating_sub(2).max(6);
+                if action == Action::ScrollUp {
+                    self.chat.scroll_up(page);
+                } else {
+                    self.chat.scroll_down(page);
+                }
+                vec![]
+            }
+            Action::Follow if chat_here => {
+                self.chat.follow_end();
+                vec![]
+            }
+            Action::Open if chat_here => {
+                if let Some(hit) = self.chat.current_hit().cloned() {
+                    self.activate_chat_hit(hit)
+                } else {
+                    self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                    vec![]
+                }
+            }
+            Action::Steer if chat_here => {
+                self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                vec![]
+            }
+            Action::Stop if chat_here => {
+                if let Some(crate::chat::ChatHit::ConfirmProposal(id)) =
+                    self.chat.current_hit().cloned()
+                {
+                    if self.chat.find_proposal(id).is_some_and(|c| c.dismissable) {
+                        return self.activate_chat_hit(crate::chat::ChatHit::DismissProposal(id));
+                    }
+                }
+                self.say(
+                    Tone::Said,
+                    "Select a dismissable proposal card with [ / ] first.",
+                );
+                vec![]
+            }
+            Action::NextTab if chat_here => {
+                self.chat.select_next_hit();
+                vec![]
+            }
+            Action::PreviousTab if chat_here => {
+                self.chat.select_prev_hit();
+                vec![]
+            }
+            Action::MoveDown | Action::MoveUp
+                if focus == Focus::Detail
+                    && !chat_here
+                    && self.tab == Tab::Steps
+                    && self.thread_selected().is_none() =>
+            {
+                self.move_step(action == Action::MoveDown);
+                vec![]
+            }
+            Action::Open
+                if focus == Focus::Detail
+                    && !chat_here
+                    && self.tab == Tab::Steps
+                    && self.thread_selected().is_none() =>
+            {
+                let Some(steps) = self.steps_here() else {
+                    return vec![];
+                };
+                let cards = || steps.cards.iter().flatten().filter(|c| c.in_chain);
+                let card = cards()
+                    .find(|c| Some(&c.key) == self.step_nav.selected.as_ref())
+                    .or_else(|| cards().find(|c| c.state == "current"))
+                    .or_else(|| cards().next());
+                let link = card.map(|c| StepLink::new(steps, c));
+                link.map_or_else(Vec::new, |link| self.open_step(&link))
+            }
+            Action::MoveDown => {
+                if focus == Focus::Detail {
+                    if diff_here {
+                        self.move_cursor(1);
+                    } else if terminal_here {
+                        if let Some(pane) = self.term.as_mut() {
+                            pane.scroll_by(-1);
+                        }
+                    } else {
+                        self.scroll_by(-1);
+                    }
+                    vec![]
+                } else {
+                    if !self.chat_split_active() {
+                        self.chat_open = false;
+                    }
+                    self.select(self.selected + 1)
+                }
+            }
+            Action::MoveUp => {
+                if focus == Focus::Detail {
+                    if diff_here {
+                        self.move_cursor(-1);
+                    } else if terminal_here {
+                        if let Some(pane) = self.term.as_mut() {
+                            pane.scroll_by(1);
+                        }
+                    } else {
+                        self.scroll_by(1);
+                    }
+                    vec![]
+                } else {
+                    if !self.chat_split_active() {
+                        self.chat_open = false;
+                    }
+                    self.select(self.selected.saturating_sub(1))
+                }
+            }
+            Action::FocusList => {
+                self.zoom = false;
+                if self.narrow {
+                    self.narrow_list = true;
+                } else if self.list_state == crate::viewstate::ListState::Hidden {
+                    self.list_state = crate::viewstate::ListState::Full;
+                }
+                self.focus = Focus::List;
+                self.status = None;
+                vec![]
+            }
+            Action::FocusDetail => {
+                if self.narrow {
+                    self.narrow_list = false;
+                }
+                self.focus = Focus::Detail;
+                self.status = None;
+                vec![]
+            }
+            // Narrow, the list showing: Enter opens the selected task's panel and focuses it.
             Action::Open if self.narrow && self.narrow_list => {
                 self.narrow_list = false;
+                self.focus = Focus::Detail;
                 self.status = None;
                 vec![]
             }
             Action::Open => {
-                // On a hidden-lines marker in Diff: show them.
-                if diff_here && matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. })) {
+                // On a hidden-lines marker in Diff (when focused): show them.
+                if focus == Focus::Detail
+                    && diff_here
+                    && matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. }))
+                {
                     return self.expand(true);
                 }
-                // Open: the tab that answers what it asks.
+                // Open: the tab that answers what it asks, and move focus into the task panel.
+                if !self.chat_split_active() {
+                    self.chat_open = false;
+                } else {
+                    self.chat_focus = crate::chat::ChatFocus::Peek;
+                }
+                self.focus = Focus::Detail;
                 let tab = match item
                     .as_ref()
                     .and_then(|i| i.need.as_ref())
@@ -3628,8 +5062,51 @@ impl App {
             // A plan waiting for this person's yes: `a` reads its terms (the approval card), then asks.
             Action::Accept if self.approval_waiting() => {
                 match item.as_ref().filter(|i| i.is_task) {
+                    Some(i) if self.remote_badge.is_some() => {
+                        self.say(
+                            Tone::Said,
+                            "Approvals stay in the browser — pinging your phone with the approval link (or press w)…",
+                        );
+                        vec![Effect::PingApproval(i.id.clone())]
+                    }
                     Some(i) => vec![Effect::FetchApproval(i.id.clone())],
                     None => vec![],
+                }
+            }
+            Action::PingApproval => match item.as_ref().filter(|i| i.is_task) {
+                Some(i) => {
+                    self.say(Tone::Said, "Sending approval ping to your phone…");
+                    vec![Effect::PingApproval(i.id.clone())]
+                }
+                None => vec![],
+            },
+            Action::HandoffLocal => match item.as_ref().filter(|i| i.is_task) {
+                Some(i) => vec![Effect::HandoffLocal(i.id.clone())],
+                None => vec![],
+            },
+            Action::SwitchWorkspace => {
+                self.say(
+                    Tone::Said,
+                    "Switch workspaces with `toolroll connect --list` and `toolroll --remote --profile <name>`.",
+                );
+                vec![]
+            }
+            Action::ReleaseTerminal => {
+                if let Some(id) = self
+                    .pane_here()
+                    .filter(|p| p.link == Link::Live && !p.is_observer)
+                    .and_then(|p| p.id.clone())
+                {
+                    if self.mode == Mode::TakeOver {
+                        self.mode = Mode::Normal;
+                    }
+                    self.say(Tone::Said, "Released Live Terminal control.");
+                    vec![Effect::TermSend {
+                        id,
+                        send: TermSend::ReleaseControl,
+                    }]
+                } else {
+                    vec![]
                 }
             }
             Action::Accept => {
@@ -3644,6 +5121,7 @@ impl App {
                 {
                     self.say(Tone::Said, SHOW_CHANGES_FIRST);
                     self.tab = Tab::Diff;
+                    self.focus = Focus::Detail;
                     return vec![self.ask_diff(pin.task)];
                 }
                 if let Err(why) = self.diff_agrees(&pin) {
@@ -3699,6 +5177,7 @@ impl App {
             }
             Action::NewTask => self.open_new_task(),
             Action::TakeOver => self.take_over(),
+            Action::TakeOverAgent => self.take_over_agent(),
             Action::Browser => {
                 self.say(Tone::Said, "Opening Toolroll in your browser…");
                 vec![Effect::OpenBrowser]
@@ -3712,9 +5191,21 @@ impl App {
                 self.mode = Mode::Palette(crate::palette::Palette::default());
                 vec![]
             }
-            Action::NextNeedsYou => self.next_needs_you(true),
-            Action::PreviousNeedsYou => self.next_needs_you(false),
+            Action::NextNeedsYou => self.jump_to_waiting(WaitingJump::Next),
+            Action::PreviousNeedsYou => self.jump_to_waiting(WaitingJump::Previous),
             Action::JumpBack => self.jump_back(),
+            Action::Search
+                if focus == Focus::List
+                    && !self.all_items.is_empty()
+                    && !(self.tab == Tab::Terminal
+                        && self
+                            .term
+                            .as_ref()
+                            .is_some_and(|p| p.sensitive || p.task.starts_with("agent:"))) =>
+            {
+                self.mode = Mode::ListFilter(self.list_query.clone());
+                vec![]
+            }
             Action::Search => match crate::search::pane_text(self) {
                 Some(_) => {
                     self.mode = Mode::Search(crate::search::Search {
@@ -3759,7 +5250,8 @@ impl App {
             }
             // Narrow (one column): b swaps between the list and the selected task's panel, and says which is drawn.
             Action::ListCycle if self.narrow => {
-                self.narrow_list = !self.narrow_list;
+                self.narrow_list = self.effective_focus() == Focus::Detail;
+                self.zoom = false;
                 self.say(
                     Tone::Said,
                     if self.narrow_list {
@@ -3868,6 +5360,14 @@ impl App {
                 vec![]
             }
             Action::Layout => self.next_layout(),
+            Action::NextPane | Action::PreviousPane if self.chat_split_active() => {
+                self.focus = Focus::Detail;
+                self.chat_focus = match self.chat_focus {
+                    crate::chat::ChatFocus::Chat => crate::chat::ChatFocus::Peek,
+                    crate::chat::ChatFocus::Peek => crate::chat::ChatFocus::Chat,
+                };
+                vec![]
+            }
             Action::NextPane => self.move_focus(1),
             Action::PreviousPane => self.move_focus(-1),
             Action::LayoutFocused => self.set_layout(crate::panes::Layout::Focused),
@@ -3881,6 +5381,9 @@ impl App {
             Action::FilterWorking => self.set_filter(Filter::Working),
             Action::FilterFailed => self.set_filter(Filter::Failed),
             Action::FilterDone => self.set_filter(Filter::Done),
+            Action::FilterMine => self.set_filter(Filter::Mine),
+            Action::FilterWaitingOnTeam => self.set_filter(Filter::WaitingOnTeam),
+            Action::FilterUnassigned => self.set_filter(Filter::Unassigned),
             Action::NextTheme => {
                 self.prefs.cycle_theme();
                 self.line_cache = None;
@@ -3909,6 +5412,23 @@ impl App {
                 vec![]
             }
             Action::Agents => crate::agents::open(self),
+            Action::TaskBuilder => {
+                let Some(task) = self.builder_task() else {
+                    self.say(
+                        Tone::Refused,
+                        "Select an idle task with a plan to change its builder.",
+                    );
+                    return vec![];
+                };
+                let root = self.steps_here().unwrap().task.root.clone();
+                self.mode = Mode::TaskBuilder {
+                    task: task.clone(),
+                    form: None,
+                    index: 0,
+                };
+                vec![Effect::FetchTaskBuilder { root, task }]
+            }
+            Action::Models => crate::agents::open_models(self),
             Action::LineDown => {
                 self.move_cursor(1);
                 vec![]
@@ -4013,6 +5533,61 @@ impl App {
         );
     }
 
+    /// Live list filter (`/` while List is focused): typing narrows the Work list immediately, Up/Down move through
+    /// matches, Enter keeps the filter and focuses the selected task, and Esc clears it.
+    fn list_filter_key(&mut self, key: KeyEvent, mut q: String) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = None;
+                return self.apply_list_query(String::new(), false);
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                if !self.items.is_empty() {
+                    return self.run_action(Action::Open);
+                }
+                return vec![];
+            }
+            KeyCode::Down => return self.select(self.selected + 1),
+            KeyCode::Char('n') if ctrl => return self.select(self.selected + 1),
+            KeyCode::Up => return self.select(self.selected.saturating_sub(1)),
+            KeyCode::Char('p') if ctrl => return self.select(self.selected.saturating_sub(1)),
+            KeyCode::Backspace => {
+                q.pop();
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+            }
+            KeyCode::Char(c)
+                if !ctrl && !c.is_control() && q.chars().count() < crate::search::MAX_QUERY =>
+            {
+                q.push(c);
+            }
+            _ => {}
+        }
+        self.apply_list_query(q, true)
+    }
+
+    fn apply_list_query(&mut self, query: String, stay_in_mode: bool) -> Vec<Effect> {
+        let before = self.selected_id();
+        self.list_query = query.clone();
+        if stay_in_mode {
+            self.mode = Mode::ListFilter(query);
+        }
+        self.items = self.filtered();
+        self.selected = before
+            .as_ref()
+            .and_then(|id| self.items.iter().position(|i| &i.id == id))
+            .unwrap_or(0)
+            .min(self.items.len().saturating_sub(1));
+        if self.selected_id() != before {
+            return self.selection_changed();
+        }
+        vec![]
+    }
+
     /// A key while searching (search.rs): typing builds the query; Enter keeps it and n / N step through the matches;
     /// Esc leaves. Only these keys, while it is open.
     fn search_key(&mut self, key: KeyEvent, mut s: crate::search::Search) -> Vec<Effect> {
@@ -4080,9 +5655,15 @@ impl App {
                 if let Some(pane) = self.term.as_mut().filter(|p| !p.sensitive) {
                     let up = total.saturating_sub(i + 3) as i64;
                     pane.scroll_by(up - pane.scroll as i64);
+                } else {
+                    self.follow = false;
+                    self.scroll = total.saturating_sub(i + 3);
                 }
             }
-            Tab::Steps => {}
+            Tab::Steps => {
+                self.step_nav.offset = i;
+                self.step_nav.reveal = false;
+            }
         }
     }
 
@@ -4140,7 +5721,7 @@ impl App {
         vec![]
     }
 
-    /// The rows the filter keeps.
+    /// The rows the filter (and any live `/` list query) keeps.
     fn filtered(&self) -> Vec<Item> {
         let name = self.project.as_deref().map(|p| {
             std::path::Path::new(p)
@@ -4152,9 +5733,25 @@ impl App {
             (Some(n), Some(p)) => Some((n.as_str(), p.as_str())),
             _ => None,
         };
+        let q = self.list_query.trim();
         self.all_items
             .iter()
-            .filter(|i| self.filter.keeps(i, here))
+            .filter(|i| {
+                if !self.filter.keeps(i, here, &self.presence) {
+                    return false;
+                }
+                if q.is_empty() {
+                    return true;
+                }
+                let hay = format!(
+                    "{} {} {} {}",
+                    i.title,
+                    i.word,
+                    i.project.as_deref().unwrap_or(""),
+                    i.detail
+                );
+                crate::palette::score(q, &hay).is_some()
+            })
             .cloned()
             .collect()
     }
@@ -4189,8 +5786,10 @@ impl App {
 
     /// Select a task by id, showing everything first when the filter hides it.
     fn show_task(&mut self, id: &str) -> Vec<Effect> {
+        let previous = self.selected_id();
         if !self.items.iter().any(|i| i.id == id) && self.all_items.iter().any(|i| i.id == id) {
             self.filter = Filter::All;
+            self.list_query.clear();
             self.items = self.filtered();
             self.say(Tone::Said, "Showing everything: the filter hid it.");
         }
@@ -4198,10 +5797,10 @@ impl App {
             self.say(Tone::Refused, "That task isn't listed any more.");
             return vec![];
         };
-        if index == self.selected {
+        self.selected = index;
+        if previous.as_deref() == Some(id) {
             return vec![];
         }
-        self.selected = index;
         self.selection_changed()
     }
 
@@ -4237,7 +5836,7 @@ impl App {
         vec![]
     }
 
-    fn next_needs_you(&mut self, forward: bool) -> Vec<Effect> {
+    fn jump_to_waiting(&mut self, direction: WaitingJump) -> Vec<Effect> {
         let mut waiting: Vec<(usize, &Item)> = self
             .all_items
             .iter()
@@ -4255,23 +5854,22 @@ impl App {
         let at = here
             .as_ref()
             .and_then(|id| ids.iter().position(|w| w == id));
-        let next = match (at, forward) {
-            (Some(at), true) => (at + 1) % ids.len(),
-            (Some(at), false) => (at + ids.len() - 1) % ids.len(),
-            (None, true) => 0,
-            (None, false) => ids.len() - 1,
+        let next = match direction {
+            WaitingJump::Oldest => 0,
+            WaitingJump::Next => at.map_or(0, |i| (i + 1) % ids.len()),
+            WaitingJump::Previous => at.unwrap_or(0).checked_sub(1).unwrap_or(ids.len() - 1),
         };
         // Where this jump left from, whatever it was (a needs-you task too): jump-back returns there. The list's
         // order stays.
-        if let Some(here) = here {
+        if let Some(here) = here.filter(|id| id != &ids[next]) {
             if self.jumps.last() != Some(&here) {
                 self.jumps.push(here);
             }
             if self.jumps.len() > JUMPS_KEPT {
                 self.jumps.remove(0);
             }
+            self.jump_forward = None;
         }
-        self.jump_forward = None;
         let id = ids[next].clone();
         let fx = self.show_task(&id);
         let words = format!("{} of {} waiting on you.", next + 1, ids.len());
@@ -4307,8 +5905,15 @@ impl App {
     /// was seen are left out (they change as it is read); Accept's "notes go with it" is part of it.
     pub fn dialog_key(&self) -> Option<String> {
         match &self.mode {
+            Mode::BuilderPassword { task, setup } => {
+                Some(format!("BuilderPassword {task} {setup}"))
+            }
+            Mode::TaskBuilder { task, form, index } => {
+                Some(format!("TaskBuilder {task} {form:?} {index}"))
+            }
             Mode::Normal
             | Mode::Steer(_)
+            | Mode::ChatCompose(_)
             | Mode::Note(..)
             | Mode::NewTask(..)
             | Mode::NewThread(_)
@@ -4318,6 +5923,7 @@ impl App {
             | Mode::Palette(_)
             | Mode::PickModel(_)
             | Mode::Search(_)
+            | Mode::ListFilter(_)
             | Mode::Help
             | Mode::Copied
             | Mode::ThreadNext(_)
@@ -4338,6 +5944,10 @@ impl App {
             Mode::ConfirmAccept(pin) => {
                 Some(format!("ConfirmAccept {pin:?} {}", self.accept_attach))
             }
+            Mode::ConfirmProposal(pin) => Some(format!(
+                "ConfirmProposal {} {:?} {} {}",
+                pin.id, pin.lines, pin.irreversible, pin.armed
+            )),
             other => Some(format!("{other:?}")),
         }
     }
@@ -4480,6 +6090,11 @@ impl App {
 
     /// Scroll the right pane: positive is up (older). In Diff the cursor moves with the view.
     pub fn scroll_by(&mut self, lines: i64) {
+        if self.tab == Tab::Steps && self.thread_selected().is_none() {
+            self.step_nav.offset = self.step_nav.offset.saturating_add_signed(-lines as isize);
+            self.step_nav.reveal = false;
+            return;
+        }
         if self.tab == Tab::Diff {
             let last = self.rows.len().saturating_sub(1) as i64;
             self.diff_scroll = (self.diff_scroll as i64 - lines).clamp(0, last.max(0)) as usize;
@@ -5249,6 +6864,7 @@ impl App {
                 | ActOutcome::ThreadTerms { .. }
                 | ActOutcome::ThreadStarted { .. }
                 | ActOutcome::ShipTerms { .. }
+                | ActOutcome::BuilderPassword { .. }
                 | ActOutcome::NextStep { .. },
             ) => {
                 self.say(
@@ -5324,14 +6940,162 @@ impl App {
         // A click is the person's next act, like a key (a move or the wheel isn't).
         if matches!(ev.kind, MouseEventKind::Down(_)) {
             self.key_since_said = true;
+            self.step_nav.pending = None;
         }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if self.agents_screen.is_some()
+            && self.mode == Mode::Normal
+            && ev.kind == MouseEventKind::Down(MouseButton::Left)
+            && inside(self.areas.agents_refresh)
+        {
+            return crate::agents::check_again(self);
+        }
+        if matches!(self.mode, Mode::LeadProviders(_)) {
+            if ev.kind == MouseEventKind::Down(MouseButton::Left) {
+                if let Some((_, code)) = self
+                    .areas
+                    .lead_provider_controls
+                    .iter()
+                    .find(|(r, _)| inside(*r))
+                {
+                    return self.key(KeyEvent::new(*code, KeyModifiers::NONE));
+                }
+            }
+            return vec![];
+        }
+        if matches!(
+            self.mode,
+            Mode::TaskBuilder { .. } | Mode::BuilderPassword { .. }
+        ) {
+            let code = match ev.kind {
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::Down(MouseButton::Left) => match self
+                    .areas
+                    .builder_controls
+                    .iter()
+                    .find(|(r, _)| inside(*r))
+                    .map(|(_, c)| *c)
+                {
+                    Some(BuilderControl::Choose(i)) => {
+                        if let Mode::TaskBuilder { index, .. } = &mut self.mode {
+                            *index = i;
+                        }
+                        None
+                    }
+                    Some(BuilderControl::Save) => Some(KeyCode::Enter),
+                    Some(BuilderControl::Back) => Some(KeyCode::Esc),
+                    None => None,
+                },
+                _ => None,
+            };
+            return code.map_or_else(Vec::new, |code| {
+                self.key(KeyEvent::new(code, KeyModifiers::NONE))
+            });
+        }
+        if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some((_, task)) = self
+                .areas
+                .builder_button
+                .as_ref()
+                .filter(|(r, _)| inside(*r))
+            {
+                if self.builder_task().as_ref() == Some(task) {
+                    return self.run_action(Action::TaskBuilder);
+                }
+                return vec![];
+            }
+        }
+        if matches!(self.mode, Mode::Approve { .. }) && inside(self.areas.approval_dialog) {
+            let key = match ev.kind {
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::Down(MouseButton::Left) => self
+                    .areas
+                    .approval_controls
+                    .iter()
+                    .find(|(rect, _)| inside(*rect))
+                    .map(|(_, key)| *key),
+                _ => None,
+            };
+            return key.map_or_else(Vec::new, |code| {
+                self.key(KeyEvent::new(code, KeyModifiers::NONE))
+            });
+        }
+        if self.mode == Mode::Normal && ev.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some((_, _, link)) = self
+                .areas
+                .steps
+                .iter()
+                .find(|(r, tab, _)| *tab == self.tab && inside(*r))
+                .cloned()
+            {
+                if let Some(slot) = self
+                    .panes
+                    .areas
+                    .iter()
+                    .position(|r| inside(*r))
+                    .filter(|slot| *slot != self.panes.focus)
+                {
+                    self.focus = Focus::Detail;
+                    let mut fx = self.focus_pane(slot);
+                    if fx
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::FetchSteps(_)))
+                    {
+                        self.step_nav.pending = Some(link);
+                    } else {
+                        fx.extend(self.open_step(&link));
+                    }
+                    return fx;
+                }
+                return self.open_step(&link);
+            }
+        }
+        if ev.kind == MouseEventKind::Down(MouseButton::Left) && self.tab == Tab::Live {
+            if let Some(&(_, run, target)) =
+                self.areas.steer_targets.iter().find(|(r, _, _)| inside(*r))
+            {
+                if self.steps_here().and_then(|s| s.live_run) != Some(run) {
+                    return vec![];
+                }
+                match (target, &self.mode) {
+                    (ComposerClick::Action(action), Mode::Normal) => {
+                        self.focus = Focus::Detail;
+                        return self.run_action(action);
+                    }
+                    (ComposerClick::Send | ComposerClick::Cancel, Mode::Steer(_)) => {
+                        let key = if target == ComposerClick::Send {
+                            KeyCode::Enter
+                        } else {
+                            KeyCode::Esc
+                        };
+                        return self.key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                    _ => return vec![],
+                }
+            }
+        }
+        if !matches!(
+            self.mode,
+            Mode::Normal | Mode::TakeOver | Mode::ChatCompose(_)
+        ) {
+            self.dragging = false;
+            return vec![];
+        }
         if let Some(fx) = self.terminal_mouse(&ev) {
             return fx;
         }
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Clicking the top bar's "N need you" chip jumps straight to the oldest waiting item (Fitts's Law).
+                if self.areas.needs_chip.width > 0
+                    && self.needs_count > 0
+                    && inside(self.areas.needs_chip)
+                {
+                    return self.jump_to_waiting(WaitingJump::Oldest);
+                }
                 // A click on a watched panel moves focus there.
                 if let Some(slot) = self
                     .panes
@@ -5340,6 +7104,7 @@ impl App {
                     .position(|r| inside(*r))
                     .filter(|s| *s != self.panes.focus)
                 {
+                    self.focus = Focus::Detail;
                     return self.focus_pane(slot);
                 }
                 if x.abs_diff(self.areas.split_x) <= 1
@@ -5372,14 +7137,74 @@ impl App {
                     .find(|(from, to, _)| y == self.areas.right.y && x >= *from && x < *to)
                     .copied()
                 {
+                    self.focus = Focus::Detail;
                     return self.set_tab(tab);
                 }
                 if inside(self.areas.list) {
+                    if self.areas.lead_row.width > 0 && inside(self.areas.lead_row) {
+                        return self.open_lead_chat();
+                    }
+                    if let Mode::ChatCompose(draft) =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    {
+                        self.chat.draft = draft;
+                    }
+                    self.focus = Focus::List;
                     if let Some((_, Some(index))) =
                         self.areas.rows.iter().find(|(row, _)| *row == y).cloned()
                     {
+                        if !self.chat_split_active() {
+                            self.chat_open = false;
+                        }
                         return self.select(index);
                     }
+                    return vec![];
+                }
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) {
+                    self.focus = Focus::Detail;
+                    self.chat_focus = crate::chat::ChatFocus::Chat;
+                    if inside(self.areas.lead_providers_button) {
+                        return crate::chat_providers::open_providers(self);
+                    }
+                    if inside(self.areas.lead_send) {
+                        self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        return self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    }
+                    if self.chat.composer_area.width > 0 && inside(self.chat.composer_area) {
+                        if self.chat.data.as_ref().is_some_and(|d| !d.can_send) {
+                            return vec![];
+                        }
+                        if !matches!(self.mode, Mode::ChatCompose(_)) {
+                            self.mode = Mode::ChatCompose(self.chat.draft.clone());
+                        }
+                        return vec![];
+                    }
+                    if let Some((_, hit)) = self.chat.hits.iter().find(|(r, _)| inside(*r)).cloned()
+                    {
+                        if let Mode::ChatCompose(draft) =
+                            std::mem::replace(&mut self.mode, Mode::Normal)
+                        {
+                            self.chat.draft = draft;
+                        }
+                        if let Some(idx) = self.chat.items.iter().position(|x| x == &hit) {
+                            self.chat.selected_hit = idx;
+                        }
+                        return self.activate_chat_hit(hit);
+                    }
+                    return vec![];
+                }
+                if self.areas.peek_area.width > 0 && inside(self.areas.peek_area) {
+                    if let Mode::ChatCompose(draft) =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    {
+                        self.chat.draft = draft;
+                    }
+                    self.focus = Focus::Detail;
+                    self.chat_focus = crate::chat::ChatFocus::Peek;
+                    return vec![];
+                }
+                if inside(self.areas.right) {
+                    self.focus = Focus::Detail;
                 }
                 vec![]
             }
@@ -5419,6 +7244,18 @@ impl App {
                 self.select(self.selected.saturating_sub(1))
             }
             MouseEventKind::ScrollDown if inside(self.areas.list) => self.select(self.selected + 1),
+            MouseEventKind::ScrollUp
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) =>
+            {
+                self.chat.scroll_up(3);
+                vec![]
+            }
+            MouseEventKind::ScrollDown
+                if self.areas.chat_area.width > 0 && inside(self.areas.chat_area) =>
+            {
+                self.chat.scroll_down(3);
+                vec![]
+            }
             MouseEventKind::ScrollUp => {
                 self.scroll_by(3);
                 vec![]
@@ -5481,8 +7318,12 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 .clone()
                 .unwrap_or_else(|| ask_word(asks).unwrap_or(&r.word.word).to_string());
             needs.push(item(Section::NeedsYou, r, word));
-        } else if r.status.token == "cancelled" {
-            // Cancelled (or Replaced by …): its own words, never the stage's "Stopped".
+        } else if matches!(
+            r.status.token.as_str(),
+            "cancelled" | "assignment-cancelled"
+        ) {
+            // Cancelled (or Replaced by …): its own words, never the stage's "Stopped". The server's token is
+            // `assignment-cancelled` (work-index.ts `assignment-${state}`); bare `cancelled` is the older spelling.
             rest.push(item(section, r, r.status.label.clone()));
         } else if r.waiting.is_some() {
             // One word while it waits to try again, whatever the status says from moment to moment.
@@ -6027,9 +7868,39 @@ impl App {
             return vec![];
         };
         self.tab = Tab::Terminal;
+        self.focus = Focus::Detail;
         if let Some(pane) = self.pane_here() {
             match pane.link {
                 Link::Live => {
+                    if pane.is_observer {
+                        let active_controller = pane.controller.clone();
+                        let armed = pane.takeover_armed;
+                        let id = pane.id.clone();
+                        if let Some(who) = active_controller.filter(|_| !armed) {
+                            if let Some(p) = self.term.as_mut() {
+                                p.takeover_armed = true;
+                            }
+                            self.say(
+                                Tone::Said,
+                                format!(
+                                    "Observing · {who} controlling — press t again to confirm takeover."
+                                ),
+                            );
+                            return vec![];
+                        }
+                        if let Some(p) = self.term.as_mut() {
+                            p.takeover_armed = false;
+                        }
+                        self.mode = Mode::TakeOver;
+                        self.say(Tone::Said, TYPING);
+                        return id
+                            .map(|id| Effect::TermSend {
+                                id,
+                                send: TermSend::TakeControl,
+                            })
+                            .into_iter()
+                            .collect();
+                    }
                     self.mode = Mode::TakeOver;
                     self.say(Tone::Said, TYPING);
                     return vec![];
@@ -6041,8 +7912,16 @@ impl App {
                 Link::Ended { .. } | Link::Closed(_) => {}
             }
         }
+        if self.remote_badge.is_some() {
+            let run = self
+                .steps
+                .as_ref()
+                .and_then(|s| shell_run_of(s).or(s.live_run))
+                .unwrap_or(0);
+            return self.open_take_over(item.id, run, "shell".into());
+        }
         let Some(steps) = self.steps.as_ref() else {
-            self.take_over_wanted = Some(item.id.clone());
+            self.take_over_wanted = Some((item.id.clone(), false));
             self.say(Tone::Said, "Reading this task…");
             return vec![];
         };
@@ -6058,13 +7937,21 @@ impl App {
             // The first time on a build, what opening it means is said first, and nothing starts until t again.
             Some(run)
                 if Some(run) != steps.live_run
-                    && !self.confirmed.contains(&(item.id.clone(), run)) =>
+                    && !self
+                        .confirmed
+                        .contains(&(item.id.clone(), run, "shell".into())) =>
             {
                 self.status = None;
-                self.mode = Mode::ConfirmTakeOver { task: item.id, run };
+                self.mode = Mode::ConfirmTakeOver {
+                    task: item.id,
+                    run,
+                    program: "shell".into(),
+                };
                 vec![]
             }
-            Some(run) if Some(run) != steps.live_run => self.open_take_over(item.id, run),
+            Some(run) if Some(run) != steps.live_run => {
+                self.open_take_over(item.id, run, "shell".into())
+            }
             _ if steps.live_run.is_some() => {
                 self.say(Tone::Refused, STILL_BUILDING);
                 vec![]
@@ -6079,14 +7966,119 @@ impl App {
         }
     }
 
-    /// Open (or reattach to) the console's terminal on that build: a person's yes to it was given (ConfirmTakeOver).
-    fn open_take_over(&mut self, task: String, run: i64) -> Vec<Effect> {
-        let mut fx = self.drop_term();
-        self.term = Some(Pane::opening(task.clone(), run));
+    /// `i`: open an interactive agent session (`claude` or `codex`, matching the task's builder) on an isolated copy
+    /// of this task's build, pre-loaded with the task goal and latest build status. Works on finished, failed, and
+    /// running builds alike.
+    fn take_over_agent(&mut self) -> Vec<Effect> {
+        let Some(item) = self.selected_item().filter(|i| i.is_task).cloned() else {
+            self.say(Tone::Refused, "Choose a task to open a live agent.");
+            return vec![];
+        };
         self.tab = Tab::Terminal;
-        let words = format!("Opening a terminal on {}…", self.attempt_words(run));
+        self.focus = Focus::Detail;
+        if let Some(pane) = self.pane_here() {
+            if pane.program != "shell" || self.remote_badge.is_some() {
+                match pane.link {
+                    Link::Live => {
+                        if pane.is_observer {
+                            let active_controller = pane.controller.clone();
+                            let armed = pane.takeover_armed;
+                            let id = pane.id.clone();
+                            if let Some(who) = active_controller.filter(|_| !armed) {
+                                if let Some(p) = self.term.as_mut() {
+                                    p.takeover_armed = true;
+                                }
+                                self.say(
+                                    Tone::Said,
+                                    format!(
+                                        "Observing · {who} controlling — press i again to confirm takeover."
+                                    ),
+                                );
+                                return vec![];
+                            }
+                            if let Some(p) = self.term.as_mut() {
+                                p.takeover_armed = false;
+                            }
+                            self.mode = Mode::TakeOver;
+                            self.say(Tone::Said, TYPING);
+                            return id
+                                .map(|id| Effect::TermSend {
+                                    id,
+                                    send: TermSend::TakeControl,
+                                })
+                                .into_iter()
+                                .collect();
+                        }
+                        self.mode = Mode::TakeOver;
+                        self.say(Tone::Said, TYPING);
+                        return vec![];
+                    }
+                    Link::Opening | Link::Attaching => {
+                        self.shell_opening();
+                        return vec![];
+                    }
+                    Link::Ended { .. } | Link::Closed(_) => {}
+                }
+            }
+        }
+        if self.remote_badge.is_some() {
+            let run = self
+                .steps
+                .as_ref()
+                .and_then(|s| shell_run_of(s).or(s.live_run))
+                .unwrap_or(0);
+            let program = self
+                .steps
+                .as_ref()
+                .map(default_agent_program)
+                .unwrap_or("claude")
+                .to_string();
+            return self.open_take_over(item.id, run, program);
+        }
+        let Some(steps) = self.steps.as_ref() else {
+            self.take_over_wanted = Some((item.id.clone(), true));
+            self.say(Tone::Said, "Reading this task…");
+            return vec![];
+        };
+        self.take_over_wanted = None;
+        if let Some(why) = shell_refusal_of(steps) {
+            self.say(Tone::Refused, why);
+            return vec![];
+        }
+        let Some(run) = shell_run_of(steps).or(steps.live_run) else {
+            self.say(
+                Tone::Refused,
+                "This task has no build to open a live agent on yet.",
+            );
+            return vec![];
+        };
+        let program = default_agent_program(steps).to_string();
+        if !self
+            .confirmed
+            .contains(&(item.id.clone(), run, program.clone()))
+        {
+            self.status = None;
+            self.mode = Mode::ConfirmTakeOver {
+                task: item.id,
+                run,
+                program,
+            };
+            return vec![];
+        }
+        self.open_take_over(item.id, run, program)
+    }
+
+    /// Open (or reattach to) the console's terminal on that build: a person's yes to it was given (ConfirmTakeOver).
+    fn open_take_over(&mut self, task: String, run: i64, program: String) -> Vec<Effect> {
+        let mut fx = self.drop_term();
+        let label = crate::term::program_label(&program);
+        self.term = Some(Pane::opening_program(task.clone(), run, program.clone()));
+        self.tab = Tab::Terminal;
+        self.focus = Focus::Detail;
+        self.narrow_list = false;
+        let words = format!("Opening {label} on {}…", self.attempt_words(run));
         self.status = Some((Tone::Said, words));
-        fx.push(Effect::TermOpen { task, run });
+        fx.push(Effect::TermOpen { task, run, program });
         fx
     }
 
@@ -6110,7 +8102,10 @@ impl App {
                 // the terminal's hello makes it live (term_event), never while it attaches.
                 let agent = task.starts_with("agent:") && self.agents_screen.is_some();
                 if matches!(self.mode, Mode::Normal)
-                    && (agent || (self.tab == Tab::Terminal && self.pane_here().is_some()))
+                    && (agent
+                        || (self.effective_focus() == Focus::Detail
+                            && self.tab == Tab::Terminal
+                            && self.pane_here().is_some()))
                 {
                     self.shell_opening();
                 }
@@ -6122,7 +8117,22 @@ impl App {
             // attached), and while it is on screen keys never fall through to the workbench (normal_key's gate).
             Err(e) if wanted => {
                 let words = e.to_string();
-                if let Some(pane) = self.term.as_mut() {
+                if let Some(agent) = task.strip_prefix("agent:") {
+                    self.term = None;
+                    if let Some(screen) = self.agents_screen.as_mut() {
+                        if let Some((_, kind)) = screen.pane.take() {
+                            let label = if kind == "install" {
+                                "Install"
+                            } else {
+                                "Sign-in"
+                            };
+                            screen.outcome = Some((
+                                agent.to_string(),
+                                format!("{label} terminal could not open. {}", clean(&words)),
+                            ));
+                        }
+                    }
+                } else if let Some(pane) = self.term.as_mut() {
                     pane.link = Link::Closed(clean(&words));
                 }
                 if matches!(self.mode, Mode::TakeOver | Mode::ShellOpening) {
@@ -6165,6 +8175,36 @@ impl App {
                 pane.hello(cols, rows, ended);
                 if ended {
                     back = true;
+                }
+            }
+            TermEvent::Control {
+                is_controller,
+                controller,
+                viewers,
+                ..
+            } => {
+                pane.is_observer = !is_controller;
+                pane.controller = controller.clone();
+                pane.observer_count = viewers.len().saturating_sub(1);
+                pane.takeover_armed = false;
+                if !is_controller {
+                    back = true;
+                    let who = controller
+                        .as_deref()
+                        .map(|name| format!("{name} controlling"))
+                        .unwrap_or_else(|| "idle".into());
+                    said = Some((
+                        Tone::Said,
+                        format!("Observing ({who}) · press i to take control."),
+                    ));
+                } else if pane.observer_count > 0 {
+                    said = Some((
+                        Tone::Said,
+                        format!(
+                            "Controlling Live Terminal · {} observing (: release control).",
+                            pane.observer_count
+                        ),
+                    ));
                 }
             }
             TermEvent::Exit { code, signal } => {
@@ -6335,7 +8375,8 @@ impl App {
         }
         let pane = self.term.as_mut()?;
         let a = pane.area;
-        let inside = ev.column >= a.x
+        let inside = pane.drawn
+            && ev.column >= a.x
             && ev.row >= a.y
             && ev.column < a.x + a.width
             && ev.row < a.y + a.height;
@@ -6355,6 +8396,7 @@ impl App {
             MouseEventKind::ScrollUp => pane.scroll_by(3),
             MouseEventKind::ScrollDown => pane.scroll_by(-3),
             MouseEventKind::Down(MouseButton::Left) if self.mode == Mode::Normal && pane.live() => {
+                self.focus = Focus::Detail;
                 self.mode = Mode::TakeOver;
                 self.say(Tone::Said, TYPING);
             }

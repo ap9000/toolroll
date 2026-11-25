@@ -59,7 +59,11 @@ describe("attack: planting what runs for the person next, outside the checkout",
       const launch = fence(workspace);
       const result = underSandbox(attempt([...targets, join(home, "notes.txt")]), launch.fence, launch.fenceGrants, { cwd: worktree });
       const said = result.stdout.trim().split("\n");
-      expect(targets.map((path, at) => `${said[at]} ${path}`), `${workspace ? "workspace" : "anywhere"}: ${result.stderr}`).toEqual(targets.map(path => `denied ${path}`));
+      // The operator's Codex home is read-denied to every launch (agent-fence.ts operatorCodexHomes). On Linux the sandbox
+      // runtime hides a read-denied folder under an empty in-memory one of the launch's own: a write there succeeds and
+      // reaches nothing (the real files are proved unchanged below); on a Mac it is refused outright.
+      const masked = (path: string) => process.platform === "linux" && path.startsWith(`${join(home, ".codex")}/`);
+      expect(targets.map((path, at) => `${said[at]} ${path}`), `${workspace ? "workspace" : "anywhere"}: ${result.stderr}`).toEqual(targets.map(path => `${masked(path) ? "written" : "denied"} ${path}`));
       expect(said.at(-1)).toBe(workspace ? "denied" : "written");
     }
     for (const path of targets) expect(readFileSync(path, "utf8")).not.toContain("planted");

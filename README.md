@@ -7,15 +7,15 @@
 
 ### Your agents build. You decide.
 
-**Delegate a change. Review the diff here.**
+**Delegate changes. Review verified diffs. Ship in one keystroke — in the native macOS app or your terminal.**
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/media/terminal-workbench-light.png">
-  <img src="docs/media/terminal-workbench.png" alt="The Toolroll terminal workbench: the work list with two tasks that need you, and the Live tab following a running build" width="900">
+  <img src="docs/media/terminal-workbench.png" alt="Toolroll: native macOS app and terminal workbench with tasks that need you and live streaming output" width="900">
 </picture>
-<sub>The terminal workbench, shown with sample tasks and output.</sub>
+<sub>Native SwiftUI macOS app and keyboard-driven terminal workbench, zero Electron, zero telemetry.</sub>
 
-For Claude Code, Codex and Gemini, on your own machine.
+For Claude Code, Codex, and Gemini — using the subscriptions already on your machine.
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
@@ -29,37 +29,54 @@ For Claude Code, Codex and Gemini, on your own machine.
 
 ## Quick start
 
-macOS or Linux, Node.js 22.20+, git 2.41+, and Claude Code (`claude`) or
-Codex (`codex`) signed in on this computer. On Linux, also the sandbox tools:
-`sudo apt update && sudo apt install bubblewrap socat ripgrep`.
+### Native macOS app (recommended on Mac)
+
+Install the native SwiftUI macOS app and local CLI together via Homebrew Cask (macOS 14 Sonoma+, Apple Silicon & Intel):
+
+```sh
+brew install --cask ap9000/toolroll/toolroll
+```
+
+Or download the signed, notarized `Toolroll-<version>-macos.dmg` directly from [GitHub Releases](https://github.com/ap9000/toolroll/releases/latest) and drag **Toolroll.app** to Applications. On launch, Toolroll automatically discovers or starts your local engine — no manual terminal setup required.
+
+<details>
+<summary>Building the native Mac app from source</summary>
+
+```sh
+cd mac && bash build-app.sh && open build/Toolroll.app
+# Or package a local .dmg:
+cd mac && bash build-dmg.sh
+```
+
+See [macOS release & signing guide](docs/guide/mac-release.md) for Developer ID signing, notarization, and Homebrew Cask automation.
+
+</details>
+
+### CLI & Terminal Workbench (macOS or Linux)
+
+Requires Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux, also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-or
+Or with Homebrew / npm:
 
 ```sh
-npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll    # or: brew install ap9000/toolroll/toolroll
+brew install ap9000/toolroll/toolroll   # or: npm install -g toolroll
 toolroll
 ```
 
-The first command removes Toolroll's older package, `standing-orders`, if you
-have it: npm can't install over it (it stops with `EEXIST: file already
-exists … bin/standing-orders`). Without it, the command does nothing.
+<details>
+<summary>Upgrading from the older <code>standing-orders</code> npm package</summary>
 
-Toolroll opens in your terminal. On quit, choose whether agents keep running. No
-password and no login file: on your own computer you're already in. Started
-in a git repository, that repository is your project; press `n` for a first
-task and describe the change. Enter chooses **Just code**; Tab switches to
-**Plan first**, then Enter submits. Review any proposed build terms before
-starting. The result comes back **Ready**: review the diff with Enter, then
-press `a` to accept (confirm after reading), or `r` to request a revision. Elsewhere, press
-`s` to try a small sample project, add your own with
-`toolroll repos add <folder>`, or open the browser (press `w`, or run
-`toolroll --web`). To look around
-first, `toolroll demo` opens a seeded sandbox with no model calls and no spend.
-More: [Getting started](docs/guide/getting-started.md).
+```sh
+npm uninstall -g standing-orders && npm install -g toolroll
+```
+
+</details>
+
+Toolroll opens locally with no password and no login file — on your own computer you're already in. Start a **Direct Chat** for fast interactive iteration in an isolated clone, or delegate a **Task** to build while you walk away. Every result returns **Ready** with its diff and real check status; press `⌘⏎` (Mac app) or `a` (terminal) to accept and ship, or send it back with notes. To explore without model calls or spend, run `toolroll demo`. More: [Getting started](docs/guide/getting-started.md).
 
 ## The terminal loop
 
@@ -122,7 +139,7 @@ the CLI or MCP. Every act lands in one ledger.
 | **Approvals** | Digest-bound scopes, password step-up, typed decisions with reversibility, expiring operating modes |
 | **Agents** | Claude Code, Codex, Gemini, OpenRouter; an exact model per phase; subscription or API key |
 | **Models** | One editor (Settings → Models): "Sized by job" by default (Haiku for small tasks, Sonnet for routine, Opus for large or risky, Opus plans and reviews), or "Opus for everything"; every change shown before → after and logged |
-| **Surfaces** | Web console (desktop and phone), CLI, Telegram, Slack, Discord, Teams, MCP |
+| **Surfaces** | Native macOS app (SwiftUI), terminal workbench, web console (desktop & phone), CLI, Telegram, Slack, Discord, Teams, MCP |
 | **Flows** | Zones on a canvas; triggers from schedules, GitHub, Linear, webhooks, email and chat; scripts, drafts, AI triage |
 | **Team** | Team server, OpenID Connect sign-in, per-person API tokens, project grants, subagents |
 | **Audit** | Hash-chained action ledger (`toolroll ledger verify`), evidence packs, full export |

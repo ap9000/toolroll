@@ -156,10 +156,13 @@ pub enum Role {
     RunningSoft,
     PassedSoft,
     FailedSoft,
+    /// Chat message bubbles (the user's own messages in Lead and Direct Chat) and the text drawn inside them.
+    ChatBubble,
+    ChatBubbleInk,
 }
 
 impl Role {
-    pub const ALL: [Role; 16] = [
+    pub const ALL: [Role; 18] = [
         Role::Paper,
         Role::Ink,
         Role::Muted,
@@ -176,6 +179,8 @@ impl Role {
         Role::RunningSoft,
         Role::PassedSoft,
         Role::FailedSoft,
+        Role::ChatBubble,
+        Role::ChatBubbleInk,
     ];
     /// The four whose colour means something; they must never look alike.
     pub const MEANING: [Role; 4] = [Role::NeedsYou, Role::Running, Role::Passed, Role::Failed];
@@ -199,6 +204,8 @@ impl Role {
             Role::RunningSoft => "running-soft",
             Role::PassedSoft => "passed-soft",
             Role::FailedSoft => "failed-soft",
+            Role::ChatBubble => "chat-bubble",
+            Role::ChatBubbleInk => "chat-bubble-ink",
         }
     }
 
@@ -225,6 +232,8 @@ impl Role {
             Role::RunningSoft => "running's badge",
             Role::PassedSoft => "passed's badge",
             Role::FailedSoft => "failed's badge",
+            Role::ChatBubble => "chat message bubbles",
+            Role::ChatBubbleInk => "text in chat bubbles",
         }
     }
 
@@ -234,7 +243,7 @@ impl Role {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Palette([Paint; 16]);
+pub struct Palette([Paint; 18]);
 
 impl Palette {
     pub fn get(&self, role: Role) -> Paint {
@@ -243,7 +252,7 @@ impl Palette {
     pub fn set(&mut self, role: Role, paint: Paint) {
         self.0[role.index()] = paint;
     }
-    fn of(hex: [&str; 16]) -> Palette {
+    fn of(hex: [&str; 18]) -> Palette {
         Palette(hex.map(|h| Paint::Rgb(Rgb::parse(h).expect("built-in colour"))))
     }
 }
@@ -325,6 +334,7 @@ pub fn light() -> Palette {
     Palette::of([
         "#ffffff", "#171717", "#666666", "#d4d4d4", "#d4d4d4", "#171717", "#171717", "#0d74ce",
         "#218358", "#c4320a", "#efefef", "#f5f5f5", "#e8e8e8", "#e6f4fe", "#e6f6eb", "#feebe7",
+        "#f5f5f5", "#171717",
     ])
 }
 
@@ -333,6 +343,7 @@ pub fn dark() -> Palette {
     Palette::of([
         "#161616", "#ededed", "#a1a1a1", "#363636", "#3a3a3a", "#ededed", "#ededed", "#70b8ff",
         "#3dd68c", "#ff977d", "#0b0b0b", "#1c1c1c", "#2a2a2a", "#232d37", "#1b3127", "#372824",
+        "#1c1c1c", "#ededed",
     ])
 }
 
@@ -342,6 +353,7 @@ pub fn high_contrast() -> Palette {
     Palette::of([
         "#000000", "#ffffff", "#d4d4d4", "#a3a3a3", "#ffffff", "#000000", "#ffffff", "#8ec8ff",
         "#5ff0a8", "#ffa08a", "#000000", "#141414", "#2e2e2e", "#0d2742", "#0b3220", "#3d1a12",
+        "#141414", "#ffffff",
     ])
 }
 
@@ -377,6 +389,7 @@ pub const DRAWN_PAIRS: &[(Role, Role, f64)] = &[
     (Role::Ink, Role::PassedSoft, TEXT_FLOOR),
     (Role::Ink, Role::FailedSoft, TEXT_FLOOR),
     (Role::SelectionInk, Role::Selection, TEXT_FLOOR),
+    (Role::ChatBubbleInk, Role::ChatBubble, TEXT_FLOOR),
     // A search match: the raised block's colour on ink (the match reversed out of its line).
     (Role::Raised, Role::Ink, TEXT_FLOOR),
     // The one verb and the solid chip: the sheet's paper on ink, and on needs you.
@@ -492,6 +505,12 @@ impl Theme {
                 );
                 set(
                     &mut palette,
+                    Role::ChatBubble,
+                    mix(b, ink, if is_dark { 0.05 } else { 0.03 }),
+                );
+                set(&mut palette, Role::ChatBubbleInk, ink);
+                set(
+                    &mut palette,
                     Role::Fill,
                     mix(b, ink, if is_dark { 0.11 } else { 0.08 }),
                 );
@@ -522,9 +541,33 @@ impl Theme {
             return (theme, refused);
         }
         // All together when they keep the rules; else one by one, in the file's order, each kept only if it does.
+        let has_bubble_ink = overrides.iter().any(|(r, _)| *r == Role::ChatBubbleInk);
+        let auto_bubble_ink = |bg: Rgb| -> Rgb {
+            let candidates = [
+                Rgb(0x17, 0x17, 0x17),
+                Rgb(0xed, 0xed, 0xed),
+                Rgb(0, 0, 0),
+                Rgb(255, 255, 255),
+            ];
+            for c in candidates {
+                if c.contrast(bg) >= TEXT_FLOOR
+                    && c.quantized256().contrast(bg.quantized256()) >= TEXT_FLOOR
+                {
+                    return c;
+                }
+            }
+            if Rgb(0, 0, 0).contrast(bg) >= Rgb(255, 255, 255).contrast(bg) {
+                Rgb(0, 0, 0)
+            } else {
+                Rgb(255, 255, 255)
+            }
+        };
         let mut all = theme;
         for (role, c) in overrides {
             all.set_override(*role, *c);
+            if *role == Role::ChatBubble && !has_bubble_ink {
+                all.set_override(Role::ChatBubbleInk, auto_bubble_ink(*c));
+            }
         }
         if all.problem(None).is_none() {
             return (all, refused);
@@ -532,6 +575,9 @@ impl Theme {
         for (role, c) in overrides {
             let mut next = theme;
             next.set_override(*role, *c);
+            if *role == Role::ChatBubble && !has_bubble_ink {
+                next.set_override(Role::ChatBubbleInk, auto_bubble_ink(*c));
+            }
             match next.problem(Some(*role)) {
                 None => theme = next,
                 Some(why) => refused.push(format!(
@@ -566,7 +612,9 @@ impl Theme {
                 Paint::Rgb(c) => Some(c),
                 Paint::Terminal => match r {
                     Role::Paper => Some(self.reference),
-                    Role::Ink | Role::NeedsYou | Role::SelectionInk => Some(ink_on),
+                    Role::Ink | Role::NeedsYou | Role::SelectionInk | Role::ChatBubbleInk => {
+                        Some(ink_on)
+                    }
                     _ => None,
                 },
             }
@@ -1007,6 +1055,10 @@ pub fn ascii_of(c: char) -> Option<char> {
         '⏎' => '>',
         '⋯' => '~',
         '▸' => '>',
+        '▾' => 'v',
+        '◆' => '*',
+        '→' => '>',
+        '█' => '#',
         _ => return None,
     })
 }

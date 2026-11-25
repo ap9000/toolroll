@@ -14,7 +14,8 @@
  */
 import { existsSync, lstatSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { ExecResult } from "./exec.js";
+import { run as execRun, type ExecResult } from "./exec.js";
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
 import type { Runner } from "./worktree.js";
 import { teardownGit, refusal } from "./teardown-git.js";
 import { BUILT_IN, forgetProjectModels, V149_REPO_TABLES, type Database, type Store } from "./store.js";
@@ -31,7 +32,7 @@ export type ProjectHoldings = {
 
 export type ProjectDeleteResult =
   | { ok: true; repo: string; removed: ProjectHoldings & { branches: number; rows: number }; left: string[]; ledgerId: number }
-  | { ok: false; reason: "running" | "failed"; said: string; running?: string[] };
+  | { ok: false; reason: "running" | "failed" | "recovery-held"; said: string; running?: string[] };
 
 type Doomed = { refs: number[]; tasks: string[]; runs: number[]; artifacts: number[]; threads: number[]; turns: number[]; flows: number[]; cards: number[]; subagents: number[] };
 
@@ -128,6 +129,7 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const agents = tableExists(db, "flexible_thread_launch")
     ? count("SELECT COUNT(*) AS n FROM flexible_thread_launch WHERE state <> 'exited' AND thread IN (SELECT id FROM flexible_thread WHERE repo = ?)", repo) : 0;
   return [
+    ...(projectRecoveryDeletionProblem(store, repo) !== null ? [PROJECT_RECOVERY_DELETE_MESSAGE] : []),
     ...(building > 0 ? [`${plural(building, "task")} ${building === 1 ? "is" : "are"} being built`] : []),
     ...(slots > 0 ? ["an agent is working"] : []),
     ...(chats > 0 ? ["a chat is answering"] : []),
@@ -170,6 +172,7 @@ async function removeCheckoutsAndBranches(store: Store, repo: string, d: Doomed,
     // No repository to ask: only checkouts in Toolroll's own folder go.
     for (const row of recorded) {
       if (poolRoot === null || !inside(poolRoot, row.path) || !existsSync(row.path)) continue;
+      assertProjectRecoveryDeletion(store, repo);
       rmSync(row.path, { recursive: true, force: true });
       checkouts++;
     }
@@ -206,6 +209,7 @@ async function removeCheckoutsAndBranches(store: Store, repo: string, d: Doomed,
     if (targets.has(row.path) || poolRoot === null || !inside(poolRoot, row.path) || !existsSync(row.path)) continue;
     // Only one git has forgotten: a checkout git still lists was either removed above or left alone on purpose.
     if (trees.some(tree => resolve(tree.path) === resolve(row.path))) continue;
+    assertProjectRecoveryDeletion(store, repo);
     rmSync(row.path, { recursive: true, force: true });
     checkouts++;
   }
@@ -315,7 +319,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("publication", IN("id"), publications);
   del("artifact", IN("id"), A);
 
-  // Tasks and their versions.
+  // Tasks and their versions. A pending model change names a run, so it goes first.
+  del("pending_agent_change", IN("task_ref"), T);
   del("run", IN("id"), R);
   del("plan_revision", IN("task_ref"), T);
   for (const table of ["claim", "hold", "task_steer"]) del(table, IN("task_ref"), T);
@@ -388,28 +393,46 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
 export async function deleteProject(store: Store, repo: string, options: {
   actor: string; via: "console" | "command line"; now: Date; evidenceRoot: string | null; poolRoot: string | null; git?: GitRunner; runner?: Runner;
 }): Promise<ProjectDeleteResult> {
-  const hardened = teardownGit(options.runner ?? (options.git === undefined ? undefined :
-    (_file, args, execOptions) => options.git!(args, execOptions!.cwd!)));
-  const git: GitRunner = (args, cwd) => hardened(cwd, args);
+  const rawRunner: Runner = options.runner ?? (options.git === undefined ? execRun :
+    (_file, args, execOptions) => options.git!(args, execOptions!.cwd!));
+  const hardened = teardownGit((file, args, execOptions) => { assertProjectRecoveryDeletion(store, repo); return rawRunner(file, args, execOptions); });
+  const git: GitRunner = async (args, cwd) => {
+    assertProjectRecoveryDeletion(store, repo);
+    const result = await hardened(cwd, args);
+    assertProjectRecoveryDeletion(store, repo);
+    return result;
+  };
+  const recovery = projectRecoveryDeletionProblem(store, repo);
+  if (recovery !== null) return { ok: false, reason: "recovery-held", said: recovery };
   const running = projectRunning(store, repo, options.now);
+  if (running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)) return { ok: false, reason: "recovery-held", said: PROJECT_RECOVERY_DELETE_MESSAGE };
   if (running.length > 0) return { ok: false, reason: "running", said: `Nothing was deleted: ${running.join(", ")}. Stop it, then try again.`, running };
   const db = store.handle;
   const held = projectHoldings(store, repo);
   let d = doomed(db, repo);
   // Nothing new starts while the checkouts go.
-  store.transact(() => {
+  const admission = store.transact(() => {
+    const problem = projectRecoveryDeletionProblem(store, repo);
+    if (problem !== null) return problem;
     for (const ref of d.refs) {
       db.prepare(`INSERT INTO hold (task_ref, owner_kind, owner_id, reason, until, held_at) VALUES (?, 'operator', ?, 'Its project is being deleted', NULL, ?)
         ON CONFLICT (owner_kind, owner_id) DO NOTHING`).run(ref, `project-delete:${ref}`, options.now.toISOString());
     }
+    return null;
   });
+  if (admission !== null) return { ok: false, reason: "recovery-held", said: admission };
   const release = () => store.transact(() => { db.prepare("DELETE FROM hold WHERE owner_kind = 'operator' AND owner_id LIKE 'project-delete:%' AND task_ref IN (SELECT value FROM json_each(?))").run(json(d.refs)); });
   let git_: Awaited<ReturnType<typeof removeCheckoutsAndBranches>>;
   try { git_ = await removeCheckoutsAndBranches(store, repo, d, git, options.poolRoot); }
-  catch (error) { release(); return { ok: false, reason: "failed", said: `Nothing was deleted: the checkouts couldn't be removed (${error instanceof Error ? error.message : String(error)}).` }; }
+  catch (error) {
+    release();
+    if (error instanceof RecoveryDeletionHeld) return { ok: false, reason: "recovery-held", said: `${PROJECT_RECOVERY_DELETE_MESSAGE} Earlier deletion steps may already have completed.` };
+    return { ok: false, reason: "failed", said: `Nothing was deleted: the checkouts couldn't be removed (${error instanceof Error ? error.message : String(error)}).` };
+  }
   let rows = 0, ledgerId = 0;
   try {
     store.transact(() => {
+      assertProjectRecoveryDeletion(store, repo);
       const again = projectRunning(store, repo, options.now);
       if (again.length > 0) throw new RunningError(again);
       d = doomed(db, repo);
@@ -441,6 +464,7 @@ export async function deleteProject(store: Store, repo: string, options: {
     });
   } catch (error) {
     release();
+    if (error instanceof RecoveryDeletionHeld) return { ok: false, reason: "recovery-held", said: `${PROJECT_RECOVERY_DELETE_MESSAGE} Earlier deletion steps may already have completed; project records were kept.` };
     if (error instanceof RunningError) return { ok: false, reason: "running", said: `Nothing was deleted: ${error.running.join(", ")}. Stop it, then try again.`, running: error.running };
     return { ok: false, reason: "failed", said: `Nothing was deleted from the database: ${error instanceof Error ? error.message : String(error)}.` };
   }
@@ -448,6 +472,8 @@ export async function deleteProject(store: Store, repo: string, options: {
   if (options.evidenceRoot !== null) {
     for (const runId of d.runs) {
       const folder = resolve(options.evidenceRoot, String(runId));
+      const problem = projectRecoveryDeletionProblem(store, repo);
+      if (problem !== null) return { ok: false, reason: "recovery-held", said: `${problem} Project records were deleted; remaining evidence was kept.` };
       try { if (lstatSync(folder).isDirectory() && inside(options.evidenceRoot, folder)) rmSync(folder, { recursive: true, force: true }); }
       catch { /* never written, or already gone */ }
     }
@@ -457,4 +483,28 @@ export async function deleteProject(store: Store, repo: string, options: {
 
 class RunningError extends Error {
   constructor(readonly running: string[]) { super(running.join(", ")); }
+}
+
+export const PROJECT_RECOVERY_DELETE_MESSAGE = "Project deletion is on hold after recovery. Earlier check execution is unverified.";
+/** Admission denial from actual recorded project scope and internally resolved families, not a native stop proof. */
+export function projectRecoveryDeletionProblem(store: Store, repo: string): string | null {
+  const db = store.handle;
+  if (db.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  // Immutable project scope remains relevant after mutable run/task bindings move or rows are deleted.
+  const recorded = db.prepare(`SELECT 1 FROM action_ledger h WHERE h.action = ? AND (h.repo = ? OR EXISTS
+    (SELECT 1 FROM action_ledger q WHERE q.id=CAST(h.outcome AS INTEGER) AND CAST(q.id AS TEXT)=h.outcome AND q.repo = ?)) LIMIT 1`)
+    .get(CHECK_RECOVERY_HELD, repo, repo);
+  if (recorded !== undefined) return PROJECT_RECOVERY_DELETE_MESSAGE;
+  const covered = new Set<number>();
+  for (const row of db.prepare("SELECT id FROM task_ref WHERE repo = ?").all(repo)) {
+    const ref = Number(row["id"]); if (covered.has(ref)) continue;
+    const evidence = readCheckRecoveryHoldsForTaskRef(store, ref);
+    if (evidence.kind !== "no-evidence") return PROJECT_RECOVERY_DELETE_MESSAGE;
+    for (const member of evidence.familyRefs) covered.add(member);
+  }
+  return null;
+}
+class RecoveryDeletionHeld extends Error { constructor() { super(PROJECT_RECOVERY_DELETE_MESSAGE); } }
+function assertProjectRecoveryDeletion(store: Store, repo: string): void {
+  if (projectRecoveryDeletionProblem(store, repo) !== null) throw new RecoveryDeletionHeld();
 }

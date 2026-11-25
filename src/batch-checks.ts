@@ -18,6 +18,9 @@
  * The queue is the follow-up check ledger (result-follow-ups.ts), with `batch` requests: the same
  * claim, receipts, abandoned-check reading, status projection and Merge gate. The policy is an
  * append-only ledger entry, like the check level. */
+import { keepCheckScreenshots } from "./check-screenshots.js";
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
+import type { Runner } from "./backend.js";
 import type { CheckAccess } from "./check-access.js";
 import { checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -38,8 +41,10 @@ import {
 } from "./result-follow-ups.js";
 
 /** Queue a finished build's commit for a batch check, bound to the exact approved command. Once per commit. */
-export function queueBatchCheck(store: Store, input: { runId: number; taskId: string; repo: string; head: string; base: string | null; command: VerifyCommand }, now: Date): number {
+export function queueBatchCheck(store: Store, input: { runId: number; taskId: string; repo: string; head: string; base: string | null; command: VerifyCommand }, now: Date): number | BatchCheckRecoveryHeld {
   return store.transact(() => {
+    const held = recoveryBlock(store, input.runId);
+    if (held !== null) return { state: "recovery-held", recovery: held, priorExecution: "unverified" };
     const [where, params] = repoClause(input.repo);
     const existing = store.handle.prepare(`SELECT id FROM action_ledger WHERE ${where} AND run_id = ? AND action = ? AND detail LIKE ? ORDER BY id LIMIT 1`)
       .get(...params, input.runId, CHECKS_REQUESTED, `${input.head} · batch · %`);
@@ -51,6 +56,13 @@ export function queueBatchCheck(store: Store, input: { runId: number; taskId: st
   });
 }
 
+export type BatchCheckRecoveryHeld = { state: "recovery-held"; recovery: ReadCheckRecoveryHolds; priorExecution: "unverified" };
+function recoveryBlock(store: Store, runId: number): ReadCheckRecoveryHolds | null {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  const evidence = readCheckRecoveryHoldsForRun(store, runId);
+  return evidence.kind === "no-evidence" ? null : evidence;
+}
+class BatchRecoveryBlocked extends Error {}
 type Member = { request: number; runId: number; task: string; head: string; base: string | null; at: string };
 type Outcome = { ran: true; exitCode: number } | { ran: false; failure: string };
 type Attempt = { members: string[]; tested: string | null; outcome: "passed" | "failed" | "conflict" | "not-run" };
@@ -67,7 +79,8 @@ export async function runBatchChecks(store: Store, root: string, deps: CheckRunD
     if (run === null || ref === null || ref.repo === null) continue;
     // Not finished yet: the build is still sealing its result.
     if (run.finishedAt === null) continue;
-    const finish = (detail: string) => { claim(store, one, ref.repo!, ref.externalId, 0, now()) && finishOne(store, one, ref.repo!, ref.externalId, "not-run", detail, now()); settled++; };
+    const finish = (detail: string) => { if (claim(store, one, ref.repo!, ref.externalId, 0, now()) && finishOne(store, one, ref.repo!, ref.externalId, "not-run", detail, now())) settled++; };
+    if (recoveryBlock(store, one.runId) !== null) continue;
     if (run.role !== "builder" || run.outcome !== "built" || run.headRevision !== one.head) { finish("The result stopped or changed before its batch check."); continue; }
     const live = store.liveVerifyCommand(ref.repo);
     if (live === null || live.digest !== one.digest) { finish("The approved check changed while it waited. Run checks to check it now."); continue; }
@@ -91,24 +104,28 @@ export async function runBatchChecks(store: Store, root: string, deps: CheckRunD
 
 function claim(store: Store, one: Pick<FollowUpCheck, "request" | "runId">, repo: string, task: string, limitMs: number, at: Date): boolean {
   return store.transact(() => {
+    if (recoveryBlock(store, one.runId) !== null) return false;
     if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE run_id = ? AND action = ? AND outcome = ?").get(one.runId, CHECKS_STARTED, String(one.request)) !== undefined) return false;
     store.recordAction({ at: at.toISOString(), actor: "system", repo, taskId: task, runId: one.runId, action: CHECKS_STARTED, outcome: String(one.request), source: "work", detail: `limit ${limitMs} · batch` });
     return true;
   });
 }
 
-function finishOne(store: Store, one: Pick<FollowUpCheck, "request" | "runId">, repo: string, task: string, status: "passed" | "failed" | "not-run", detail: string, at: Date): true {
+function finishOne(store: Store, one: Pick<FollowUpCheck, "request" | "runId">, repo: string, task: string, status: "passed" | "failed" | "not-run", detail: string, at: Date): boolean {
+  return store.transact(() => {
+  if (recoveryBlock(store, one.runId) !== null) return false;
   store.recordAction({ at: at.toISOString(), actor: "system", repo, taskId: task, runId: one.runId, action: CHECKS_FINISHED, outcome: `${one.request}:${status}`, source: "work", detail });
   store.bumpWake();
   return true;
+  });
 }
 
-/** Check one cohort. Every member is claimed first; every claimed member ends with a sealed receipt. */
+/** Claim each cohort member first. Recovery holds retain observed custody instead of inventing a receipt. */
 async function checkCohort(store: Store, root: string, repo: string, cohort: Member[], deps: CheckRunDeps & { shouldStop?: () => boolean }): Promise<number> {
   const now = deps.now ?? (() => new Date());
   const runner = deps.runner ?? execRun;
   // The project's repository and checkouts of builds' commits, both agent-writable: the hardened git (teardown-git.ts).
-  const git = deps.git ?? hardenedGit(execRun);
+  const cleanupGit = deps.git ?? hardenedGit(execRun);
   const command = store.liveVerifyCommand(repo);
   if (command === null) return 0;
   const setup = store.liveWorktreeSetup(repo);
@@ -116,29 +133,40 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
   const limit = (command.timeoutMs + (setup?.timeoutMs ?? 0) + 240_000) * Math.max(1, 2 * cohort.length - 1);
   const members = cohort.filter(one => claim(store, one, repo, one.task, limit, now())).sort((a, b) => a.request - b.request);
   if (members.length === 0) return 0;
+  let settled = 0;
+  const proveSet = (set: Member[]): void => { if (set.some(one => recoveryBlock(store, one.runId) !== null)) throw new BatchRecoveryBlocked(); };
   // The project base: the oldest member's recorded base, else its own parent.
   const base = members[0]!.base;
   const logs = new Map<number, string[]>(members.map(one => [one.request, []]));
+  const observed = new Map<number, string[]>(members.map(one => [one.request, []]));
   const attempts = new Map<number, Attempt[]>(members.map(one => [one.request, []]));
   const bound = (text: string) => { const hits = scanForSecrets(text); return boundStreamHeadTail(hits.length > 0 ? redactSecretLines(text, hits) : text, 12 * 1024); };
   const section = (label: string, shown: string, result: ExecResult) =>
     `=== ${label} ===\n$ ${shown}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n${bound(result.stdout)}\n\n--- stderr ---\n${bound(result.stderr)}`;
   // How each command actually ran (check-access.ts), per result: only the commands it was part of count for its receipt.
   const ranAtOf = new Map<number, CheckAccess[]>();
-  const note = (set: Member[], text: string) => { for (const one of set) logs.get(one.request)!.push(text); };
+  const note = (set: Member[], text: string) => { for (const one of set) { logs.get(one.request)!.push(text); observed.get(one.request)!.push(text); } };
+  const observation = (set: Member[], text: string) => { for (const one of set) observed.get(one.request)!.push(text); };
   const attempt = (set: Member[], tested: string | null, outcome: Attempt["outcome"]) => { for (const one of set) attempts.get(one.request)!.push({ members: set.map(m => m.task), tested, outcome }); };
 
   /** One approved check of `set` in a temporary detached checkout: the merge of every member onto the base,
    * or a single member's own commit. Never a real ref: the checkout is detached and always removed. */
   const checkOnce = async (set: Member[]): Promise<{ conflict: true } | { conflict: false; tested: string | null; outcome: Outcome; setupFailed: boolean }> => {
+    proveSet(set);
+    const guardedRunner: Runner = (file, args, options) => { proveSet(set); return runner(file, args, options); };
+    const guardedGit: Runner = (file, args, options) => { proveSet(set); return execRun(file, args, options); };
+    const git: Runner = deps.git === undefined ? hardenedGit(guardedGit) : (file, args, options) => { proveSet(set); return deps.git!(file, args, options); };
+    let checkoutCreated = false;
     const folder = mkdtempSync(join(deps.scratch ?? tmpdir(), "toolroll-batch-"));
     const checkout = join(folder, "checkout");
     const label = set.length === 1 ? `${set[0]!.task} on its own` : `Batch of ${set.length}: ${set.map(one => one.task).join(", ")}`;
     try {
       const start = set.length === 1 ? set[0]!.head : base ?? `${set[0]!.head}^`;
       const added = await git("git", ["-C", repo, "worktree", "add", "--detach", checkout, start], { timeoutMs: 120_000 });
+      checkoutCreated = added.code === 0;
+      (added.code === 0 ? observation : note)(set, section(`${label} · checkout`, `git worktree add --detach <temporary folder> ${start}`, added));
+      proveSet(set);
       if (added.code !== 0) {
-        note(set, section(`${label} · checkout`, `git worktree add --detach <temporary folder> ${start}`, added));
         return { conflict: false, tested: null, outcome: { ran: false, failure: "The commit couldn't be checked out. It may have been removed from this computer." }, setupFailed: false };
       }
       if (set.length > 1) {
@@ -146,14 +174,17 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
           // A local merge commit in the detached checkout only: no hooks, no signing, no branch.
           const merged = await git("git", ["-C", checkout, "-c", "user.name=Toolroll batch check", "-c", "user.email=batch-check@toolroll.invalid", "-c", "commit.gpgsign=false",
             "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-edit", "--no-verify", "-m", `Batch check: ${one.task}`, one.head], { timeoutMs: 120_000 });
+          (merged.code === 0 ? observation : note)(set, section(`${label} · merge ${one.task}`, `git merge --no-ff ${one.head}`, merged));
+          proveSet(set);
           if (merged.code !== 0) {
-            note(set, section(`${label} · merge ${one.task}`, `git merge --no-ff ${one.head}`, merged));
             await git("git", ["-C", checkout, "merge", "--abort"], { timeoutMs: 60_000 }).catch(() => null);
             return { conflict: true };
           }
         }
       }
       const head = await git("git", ["-C", checkout, "rev-parse", "HEAD"], { timeoutMs: 60_000 });
+      observation(set, section(`${label} · read tested commit`, "git rev-parse HEAD", head));
+      proveSet(set);
       const tested = head.code === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim()) ? head.stdout.trim() : null;
       if (tested === null) return { conflict: false, tested: null, outcome: { ran: false, failure: "The batch commit couldn't be read." }, setupFailed: false };
       if (deps.shouldStop?.() === true) return { conflict: false, tested, outcome: { ran: false, failure: "Stopped before the check started." }, setupFailed: false };
@@ -165,25 +196,34 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       if ((liveSetup?.digest ?? null) !== (setup?.digest ?? null)) return { conflict: false, tested, outcome: { ran: false, failure: "The project's approved setup changed before the check started." }, setupFailed: false };
       if (liveSetup !== null) {
         const shell = approvedCommandShell(liveSetup.command);
-        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note(set, section(`${label} · approved project setup on ${tested.slice(0, 7)}`, liveSetup.command, prepared));
+        proveSet(set);
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) return { conflict: false, tested, outcome: { ran: false, failure: "The project's setup failed, so the check didn't run." }, setupFailed: true };
       }
       const live = store.liveVerifyCommand(repo);
       if (live === null || live.digest !== command.digest) return { conflict: false, tested, outcome: { ran: false, failure: "The approved check changed before it started." }, setupFailed: false };
       const shell = approvedCommandShell(live.command);
-      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, guardedRunner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
       note(set, section(`${label} · full check on ${tested.slice(0, 7)}`, live.command, ran));
+      proveSet(set);
+      // Its screenshots, while its checkout is still here (check-screenshots.ts): only for a single result, whose commit is
+      // the one tested; a merge of several results belongs to none of them.
+      if (set.length === 1 && !ran.timedOut && !ran.notFound) {
+        const kept = keepCheckScreenshots(store, root, set[0]!.runId, checkout, tested, (deps.now ?? (() => new Date()))());
+        if (kept.length > 0) note(set, `=== Screenshots ===\n${kept.join("\n")}`);
+      }
       return { conflict: false, tested, setupFailed: false,
         outcome: ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code } };
     } finally {
-      await git("git", ["-C", repo, "worktree", "remove", "--force", checkout], { timeoutMs: 120_000 }).catch(() => null);
+      if (checkoutCreated) await cleanupGit("git", ["-C", repo, "worktree", "remove", "--force", checkout], { timeoutMs: 120_000 }).catch(() => null);
       rmSync(folder, { recursive: true, force: true });
     }
   };
 
-  const seal = (one: Member, mode: BatchFacts["mode"], together: Member[], tested: string | null, outcome: Outcome) => {
+  const seal = (one: Member, mode: BatchFacts["mode"], together: Member[], tested: string | null, outcome: Outcome) => store.transact(() => {
     const at = now();
+    proveSet(together);
     const ranLine = ranAtLine(widestRan(ranAtOf.get(one.request) ?? []));
     const text = logs.get(one.request)!.length === 0 ? "No command started." : [...logs.get(one.request)!, ...(ranLine === null ? [] : [ranLine])].join("\n\n");
     const logId = storeEvidence(store, root, one.runId, "structured-output", `batch-check-${one.request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
@@ -197,12 +237,16 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
     const how = mode === "together" ? `together with ${peers.join(", ")}` : mode === "split" ? "on its own after its batch failed" : mode === "conflict" ? "on its own: it conflicted with another result" : "on its own";
     if (outcome.ran) finishOne(store, one, repo, one.task, outcome.exitCode === 0 ? "passed" : "failed", `Full checks ${how} on ${(tested ?? one.head).slice(0, 7)} · exit ${outcome.exitCode}`.slice(0, 300), at);
     else finishOne(store, one, repo, one.task, "not-run", outcome.failure, at);
-  };
+    settled++;
+  });
 
-  const checkSet = async (set: Member[], mode: Exclude<BatchFacts["mode"], "together">): Promise<void> => {
+  const checkSet = async (offered: Member[], mode: Exclude<BatchFacts["mode"], "together">): Promise<void> => {
+    const set = offered.filter(one => recoveryBlock(store, one.runId) === null);
+    if (set.length === 0) return;
     if (set.length === 1) {
       const one = set[0]!;
       const result = await checkOnce(set);
+      proveSet(set);
       const tested = result.conflict ? null : result.tested;
       const outcome: Outcome = result.conflict ? { ran: false, failure: "The commit couldn't be checked out." } : result.outcome;
       attempt(set, tested, outcome.ran ? outcome.exitCode === 0 ? "passed" : "failed" : "not-run");
@@ -210,6 +254,7 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       return;
     }
     const result = await checkOnce(set);
+    proveSet(set);
     if (result.conflict) {
       attempt(set, null, "conflict");
       for (const one of set) await checkSet([one], "conflict");
@@ -235,8 +280,14 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
   };
 
   await checkSet(members, "alone").catch(error => {
+    if (error instanceof BatchRecoveryBlocked || members.some(one => recoveryBlock(store, one.runId) !== null)) {
+      // Preserve only observed output. A held/mixed attempt has no synthetic terminal result or receipt.
+      for (const one of members) if (observed.get(one.request)!.length > 0) storeEvidence(store, root, one.runId, "structured-output", `batch-check-${one.request}-held.log`,
+        Buffer.from(observed.get(one.request)!.join("\n\n"), "utf8"), FOLLOW_UP_LOG, now(), { captureStatus: "ok" });
+      return;
+    }
     // An unexpected failure still ends every claimed member, visibly.
-    for (const one of members) if (followUpChecksOf(store, one.runId, now()).find(f => f.request === one.request)?.state === "running") finishOne(store, one, repo, one.task, "not-run", `The batch check failed to run: ${String(error).slice(0, 200)}`, now());
+    for (const one of members) if (followUpChecksOf(store, one.runId, now()).find(f => f.request === one.request)?.state === "running") { if (finishOne(store, one, repo, one.task, "not-run", `The batch check failed to run: ${String(error).slice(0, 200)}`, now())) settled++; }
   });
-  return members.length;
+  return settled;
 }

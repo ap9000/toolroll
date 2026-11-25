@@ -1,5 +1,6 @@
 /** Whether a check-only authorization stands for one automatic recheck (check-only.ts), read at every step. Kept apart
  * from the sweep so the follow-up runner reads it without loading the road that asks. */
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun } from "./check-recovery-hold.js";
 import { authorityStandsSql } from "./approval-authority.js";
 import type { CheckAccess } from "./check-access.js";
 import { checkAccessOf } from "./check-access.js";
@@ -25,6 +26,8 @@ export function approvedScopeStands(store: Store, taskRef: number, scopeDigest: 
 /** The plain reason an authorization doesn't stand, or null: this exact commit and command, on the result it was
  * written for, under the same standing approval, not put away. */
 export function authorizationProblem(store: Store, auth: CheckAuthorization, input: { head: string; digest: string }, now: Date): string | null {
+  const held = checkOnlyRecoveryProblem(store, auth.run);
+  if (held !== null) return held;
   if (auth.candidate !== input.head) return "The commit changed.";
   if (auth.commandDigest !== input.digest) return "The approved check changed.";
   if (refArchived(store, auth.taskRef)) return "This task is put away.";
@@ -34,9 +37,19 @@ export function authorizationProblem(store: Store, auth: CheckAuthorization, inp
 
 /** At the run: the used authorization this request claimed. */
 export function recheckStanding(store: Store, input: { request: number; runId: number; head: string; digest: string }): { ok: true; access: CheckAccess } | { ok: false; problem: string } {
+  const held = checkOnlyRecoveryProblem(store, input.runId);
+  if (held !== null) return { ok: false, problem: held };
   const row = store.handle.prepare("SELECT * FROM check_authorization WHERE used_request = ? AND run = ?").get(input.request, input.runId);
   if (row === undefined) return { ok: false, problem: "Its authorization couldn't be read." };
   const auth = readAuthorization(row);
   const problem = authorizationProblem(store, auth, input, new Date());
   return problem === null ? { ok: true, access: auth.access } : { ok: false, problem };
+}
+
+/** Prospective check-only admission only, never a native stop or spent-authorization event. */
+export function checkOnlyRecoveryProblem(store: Store, runId: number): string | null {
+  // Keep never-held personal/legacy authorization behavior unchanged.
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  const evidence = readCheckRecoveryHoldsForRun(store, runId);
+  return evidence.kind === "no-evidence" ? null : "Checks are on hold after recovery. Earlier execution is unverified.";
 }

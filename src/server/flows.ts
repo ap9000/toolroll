@@ -21,7 +21,9 @@ import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
 import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, removeLinearKey, setFlowTriggerOn, renewFlowHook, saveHooksBase, saveLinearKey, saveSigningSecret, setUpFlowHook, changeFlowHookSender, setFlowHookScope, shareFlowButton, stopSharingFlowButton, rawTakesDeliveries, rawAdmitsAnyone } from "../flow-triggers.js";
-import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
+import { automationsOf,FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
+import { checkEngineResponse,ENGINE_API_VERSION } from "../contracts/engine-api.js";
+import { localActNow,localOwnerRefusal,type LocalOwnerAct } from "../local-owner.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { revokeFlowBrowser, signFlowBrowser } from "../flow-browser.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
@@ -146,6 +148,17 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const projects = consoleProjects();
     const flows = store.listFlows(projects);
     return sendScreen(response, 200, screen("Flows", flowsListHtml(store, flows, projects, who.via === "cookie" && who.role === "approver", url.searchParams.get("problem"), url.searchParams.get("project"), clock()), { chrome: chromeFor(project, "flows"), functional: { script: FLOW_IMPORT_SCRIPT } }));
+  }
+
+  /** GET /engine/automations (the Mac app's Automations screen): the flows /flows lists, from the same projects, as data
+   * (flows-ui.ts automationsOf). `canAct`: an approver signed in through a browser or this computer's session, who
+   * may post the trigger acts (an API token never may: those rows count the role only through a browser sign-in). */
+  async function automationsRead(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    if ([...url.searchParams.keys()].length > 0) return sendJson(response, 400, checkEngineResponse("refusal", { error: "request" }));
+    response.setHeader("cache-control", "no-store");
+    return sendJson(response, 200, checkEngineResponse("automations", { version: ENGINE_API_VERSION, canAct: who.via === "cookie" && who.role === "approver",
+      automations: automationsOf(store, store.listFlows(consoleProjects()), clock()) }));
   }
 
   async function flowInsightsRead(ctx: HandlerContext): Promise<void> {
@@ -551,12 +564,15 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
 
   // ---- flows: changing one (answers the editor's JSON) -----------------------
 
-  /** What every change to one flow starts from: its form, the flow (else the editor hears 404), and how a change settles. Null once answered. */
-  function openFlowChange(ctx: HandlerContext) {
+  /** What every change to one flow starts from: its form, the flow (else the editor hears 404), and how a change settles. Null once answered.
+   * `inPlace`: a terminal client's act (the Mac app) hears `{ outcome, words }` as its other acts do, never the canvas's
+   * view; it shapes only the answer, read after every decision. */
+  function openFlowChange(ctx: HandlerContext, inPlace = false) {
     const { url, who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.flows);
     const now = clock();
-    const answer = (status: number, payload: Record<string, unknown>) => sendJson(response, status, payload);
+    const answer = (status: number, payload: Record<string, unknown>) => sendJson(response, status, !inPlace ? payload
+      : { outcome: status < 400 && payload["ok"] === true ? "done" : "refused", words: typeof payload["said"] === "string" ? payload["said"] : "" });
     const projects = consoleProjects();
     const flow = visibleFlow(Number(pathPart(url, 2)));
     if (flow === null) { answer(404, { ok: false, said: "No such flow in your projects." }); return null; }
@@ -566,9 +582,9 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const settle = (said: string, extra: Record<string, unknown> = {}) => {
       // Move what can move right away (a message, a decision's next zone); workers file and run the tasks.
       try { advanceFlows(store, flow.repo, now, { evidenceRoot }); } catch { /* the next worker pass retries */ }
-      return answer(200, { ok: true, said, view: viewNow(), ...extra });
+      return answer(200, inPlace ? { ok: true, said } : { ok: true, said, view: viewNow(), ...extra });
     };
-    return { body, now, answer, projects, flow, definition, dir, viewNow, settle };
+    return { body, now, answer, projects, flow, definition, dir, viewNow, settle, inPlace };
   }
 
   type FlowAction = "save" | "cards" | "archive" | "scripts" | "linear-key" | "hooks-address" | "secrets" | "triggers" | "unattended" | "unattended-off" | "browser" | "browser-off";
@@ -718,14 +734,36 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
   };
 
   type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "scope" | "share" | "unshare" | "dropped";
+  /** The trigger acts a local owner may make (the Mac app's Automations screen), each its own act; every other verb is
+   * refused to one, here as well as by the route table. */
+  const LOCAL_TRIGGER_ACTS: Partial<Record<TriggerVerb, LocalOwnerAct>> = { pause: "trigger-pause", resume: "trigger-resume", check: "trigger-run", press: "trigger-run" };
   const triggerAct = (verb: TriggerVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who } = ctx;
-    const change = openFlowChange(ctx);
+    const localAct = LOCAL_TRIGGER_ACTS[verb];
+    const change = openFlowChange(ctx, localAct !== undefined && requestContext.getStore()?.terminalAct === true);
     if (change === null) return;
-    const { body, now, answer, flow, dir, viewNow, settle } = change;
+    const { body, now, answer, flow, dir, viewNow, settle, inPlace } = change;
     const trigger = store.getFlowTrigger(Number(pathPart(url, 4)));
     if (trigger === null || trigger.flow !== flow.id || trigger.state === "removed") return answer(404, { ok: false, said: "That trigger isn't on this flow." });
-    if (verb === "pause" || verb === "resume") { setFlowTriggerOn(store, trigger, verb === "resume", now, who.name); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
+    // A local owner (no password) acts only as exactly this verb's act, still standing now: read again at the write
+    // (inside its transaction), or right before a check starts (its writes re-check that the owner still stands).
+    const localOwner = who.via === "cookie" && who.authority !== "full";
+    const ownerStands = () => !localOwner || (localAct !== undefined && localActNow(store, localAct) !== null);
+    const ownerRefused = () => answer(403, { ok: false, said: localOwnerRefusal(store.accountOf(who.name)?.passwordSet === true, `/flows/${flow.id}`).message });
+    if (!ownerStands()) return ownerRefused();
+    if (verb === "pause" || verb === "resume") {
+      // The trigger as it is now, read in the write's own transaction: a removed one is never turned on again.
+      const done = store.transact(() => {
+        const current = store.getFlowTrigger(trigger.id);
+        if (current === null || current.flow !== flow.id || current.state === "removed") return "gone" as const;
+        if (!ownerStands()) return "refused" as const;
+        setFlowTriggerOn(store, current, verb === "resume", now, who.name);
+        return "done" as const;
+      });
+      if (done === "gone") return answer(404, { ok: false, said: "That trigger isn't on this flow." });
+      if (done === "refused") return ownerRefused();
+      return settle(verb === "pause" ? "Trigger paused." : "Trigger on again.");
+    }
     if (verb === "remove") { removeFlowTrigger(store, trigger, now, dir, who.name); return settle("Trigger removed."); }
     // A public form link and a new webhook address each open a way in: credential acts, a password typed now.
     if ((verb === "share" || verb === "renew") && !authenticateCredential(who, body.get("password") ?? "").ok) {
@@ -741,7 +779,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (verb === "press") {
       let answers: unknown;
       try { answers = JSON.parse(body.get("answers") ?? "[]"); } catch { answers = []; }
-      const pressed = pressFlowButton(store, trigger, Array.isArray(answers) ? answers : [], who.name, now);
+      const pressed = store.transact(() => ownerStands() ? pressFlowButton(store, trigger, Array.isArray(answers) ? answers : [], who.name, now) : null);
+      if (pressed === null) return ownerRefused();
       return pressed.ok ? settle(pressed.said) : answer(400, { ok: false, said: pressed.message });
     }
     if (verb === "check") {
@@ -749,7 +788,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         // A schedule's script, run now (v90): in a clean folder beside the database, inside the agents' fence.
         shell: options.flowTriggerIo?.shell ?? execRun, scratch: options.flowTriggerIo?.scratch ?? join(dir ?? tmpdir(), "flow-scratch") });
       try { advanceFlows(store, flow.repo, now, { evidenceRoot }); } catch { /* the next worker pass retries */ }
-      return answer(checked.ok ? 200 : 409, { ok: checked.ok, said: checked.said, view: viewNow() });
+      return answer(checked.ok ? 200 : 409, inPlace ? { ok: checked.ok, said: checked.said } : { ok: checked.ok, said: checked.said, view: viewNow() });
     }
     if (dir === null) return answer(409, { ok: false, said: "Webhook secrets are kept on the console's computer." });
     if (verb === "renew") {
@@ -857,6 +896,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flows.new": newFlowGallery,
     "flows.gallery": galleryTemplatePage,
     "flows.page": flowsPage,
+    "engine.automations": automationsRead,
     "kits": kitsGallery,
     "kit.page": kitPage,
     "subagents": subagentsPage,

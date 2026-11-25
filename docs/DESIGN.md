@@ -329,7 +329,7 @@ toolroll ── good morning ─────────────────
   overnight    7 PRs · 2 aborted · 412k tokens · $18.40
   idle spend   $0.02                    ← §5, measured
   ▸ BLOCKED    1 gap unblocks 3 tasks
-       SUPABASE_SERVICE_ROLE_KEY — oddcircle
+       SUPABASE_SERVICE_ROLE_KEY — my-site
        expired 2d ago    [paste] [verify]
   ▸ DECIDE     3 waiting
   ▸ REVIEW     7 PRs

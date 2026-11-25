@@ -51,6 +51,8 @@ const LINK_LANDINGS = Object.freeze({
   flexible: "/settings/general?section=flexible",
   "flexible-sign-in": "/settings/change/flexible-sign-in",
   project: "/settings/project",
+  projects: "/projects",
+  "lead-providers": "/settings/lead#lead-config",
 } as const satisfies Record<import("../tui-contract.js").TuiPage, string>);
 
 export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
@@ -457,6 +459,12 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
 
   async function loginSend(ctx: EdgeContext): Promise<void> {
     const { request, response } = ctx;
+    const terminalJson =
+      request.headers["x-toolroll-client"] === "terminal" &&
+      request.headers.origin === undefined &&
+      !Object.keys(request.headers).some(header => header.startsWith("sec-fetch-")) &&
+      /\bapplication\/json\b/i.test(String(request.headers.accept ?? "")) &&
+      fromThisComputer(request);
     const body = readForm(await form(request), CONSOLE_FORMS.login);
     const name = body.get("name");
     const token = body.get("token");
@@ -469,7 +477,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (wait > 0) {
       recordSignIn(signInActor(name), "sign-in refused", "too many tries", "from one address");
       response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
-      return page(response, 429, loginWith(store, fromThisComputer(ctx.request), `Too many sign-in attempts. Try again in ${minutesWords(wait)}.`, returnTo));
+      const msg = `Too many sign-in attempts. Try again in ${minutesWords(wait)}.`;
+      if (terminalJson) return respond(response, 429, "application/json; charset=utf-8", JSON.stringify({ error: msg }));
+      return page(response, 429, loginWith(store, fromThisComputer(ctx.request), msg, returnTo));
     }
     const authenticated =
       name !== null && token !== null ? authenticateAccount(store, name, token) : null;
@@ -478,25 +488,39 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         const locked = authenticated.retryAfterMs!;
         recordSignIn(signInActor(name), "sign-in refused", "locked");
         response.setHeader("Retry-After", String(Math.ceil(locked / 1000)));
-        return page(response, 429, loginWith(store, fromThisComputer(ctx.request), `Too many wrong passwords. Try again in ${minutesWords(locked)}.`, returnTo));
+        const msg = `Too many wrong passwords. Try again in ${minutesWords(locked)}.`;
+        if (terminalJson) return respond(response, 429, "application/json; charset=utf-8", JSON.stringify({ error: msg }));
+        return page(response, 429, loginWith(store, fromThisComputer(ctx.request), msg, returnTo));
       }
       signInBudget.failed(source, at);
       recordSignIn(signInActor(name), "sign-in refused", "wrong password");
+      if (terminalJson) return respond(response, 403, "application/json; charset=utf-8", JSON.stringify({ error: "wrong username or password" }));
       return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "wrong username or password", returnTo, ssoOffer()));
     }
     if (!passwordAllowed(name as string)) {
       recordSignIn(name as string, "sign-in refused", "provider only");
-      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, returnTo, ssoOffer()));
+      const msg = `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`;
+      if (terminalJson) return respond(response, 403, "application/json; charset=utf-8", JSON.stringify({ error: msg }));
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), msg, returnTo, ssoOffer()));
     }
-    recordSignIn(name as string, "signed in", "browser");
     const id = randomBytes(32).toString("hex");
-    const keyed = keyFor(request);
+    const csrf = randomBytes(32).toString("hex");
+    let keyed: { fields: { keyEpoch: string | null; keyHash: string | null }; key: string | null };
+    if (terminalJson) {
+      const fields: { keyEpoch: string | null; keyHash: string | null } = { keyEpoch: null, keyHash: null };
+      const key = browserKeys.issueForClient(fields, request);
+      if (key === null) return respond(response, 403, "application/json; charset=utf-8", JSON.stringify({ error: "not this console's own address" }));
+      keyed = { fields, key };
+    } else {
+      keyed = keyFor(request);
+    }
+    recordSignIn(name as string, "signed in", terminalJson ? "local-app" : "browser");
     sessions.set(id, {
       ...arrival(request),
       ...FULL_SESSION,
       ...keyed.fields,
       name: name as string,
-      csrf: randomBytes(32).toString("hex"),
+      csrf,
       role: authenticated.role,
       generation: authenticated.generation,
       createdAt: Date.now(),
@@ -508,6 +532,23 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // else (a phone, a proxy) it signs in and proves nothing more.
       ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
+    if (terminalJson) {
+      response.setHeader("Pragma", "no-cache");
+      return respond(
+        response,
+        200,
+        "application/json; charset=utf-8",
+        JSON.stringify({
+          version: 1,
+          account: name as string,
+          cookie: { name: SESSION_COOKIE, value: id },
+          csrf,
+          key: keyed.key,
+          epoch: runtime.keyEpoch,
+          passwordSet: store.accountOf(name as string)?.passwordSet === true,
+        }),
+      );
+    }
     return signedInTo(response, keyed.key, returnTo, [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }
 

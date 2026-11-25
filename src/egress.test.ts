@@ -8,9 +8,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  ecosystemsOf, hostAllowed, legacyNetwork, networkFromValue, networkWords, normalizeHost, projectNetworkFromValue, providerOnlyNetwork,
+  codexCommandsOffline, ecosystemsOf, hostAllowed, legacyNetwork, networkFromValue, networkWords, normalizeHost, projectNetworkFromValue, providerOnlyNetwork,
   repositoryEcosystems, resolveNetwork, runNetworkFromValue, startEgressProxy, PROJECT_NETWORK_DEFAULT, PROVIDER_HOSTS, REGISTRY_HOSTS, type EgressProxy,
 } from "./egress.js";
+import { codexOfflineDependencySuggestion } from "./needs-you.js";
 import { canonicalProfileJson, profileDigestOf, profileFromJson, type ExecutionProfile } from "./scope.js";
 import { shortTempDir } from "../test/short-temp.js";
 import { SOCKETS_TOO_DEEP } from "../test/inside-fence.js";
@@ -71,9 +72,33 @@ describe("the network a scope is written with", () => {
   test("the defaults are the narrow ones: no local services, provider-only for launches nothing sealed, legacy approvals narrowed", () => {
     expect(PROJECT_NETWORK_DEFAULT).toEqual({ mode: "allowlist", hosts: [], loopback: "proxy-only" });
     expect(providerOnlyNetwork("codex")).toEqual({ version: 1, mode: "allowlist", hosts: [...PROVIDER_HOSTS["codex"]!].sort(), loopback: "proxy-only" });
+    // No provider overrides the project's local-services choice (test/attacks/antigravity-loopback.test.ts).
+    expect(providerOnlyNetwork("antigravity")).toEqual({ version: 1, mode: "allowlist", hosts: [...PROVIDER_HOSTS["antigravity"]!].sort(), loopback: "proxy-only" });
+    expect(resolveNetwork("antigravity", PROJECT_NETWORK_DEFAULT, []).loopback).toBe("proxy-only");
     expect(legacyNetwork("claude", ["python"]).hosts).toEqual([...PROVIDER_HOSTS["claude"]!, ...REGISTRY_HOSTS.python].sort());
     expect(legacyNetwork("claude", []).loopback).toBe("proxy-only");
     expect(networkWords(null, "claude")).toContain("approved before network rules");
+  });
+
+  test("Codex sandboxed commands are flagged offline in network wording and offline registry failures point to worktree setup", () => {
+    const allow = resolveNetwork("codex", { mode: "allowlist", hosts: [], loopback: "proxy-only" }, ["npm"]);
+    const open = resolveNetwork("codex", { mode: "open", hosts: [], loopback: "proxy-only" }, ["npm"]);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: allow }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "workspace-write", network: open }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: allow }, "linux")).toBe(true);
+    expect(codexCommandsOffline({ provider: "codex", sandboxMode: "danger-full-access", network: open }, "linux")).toBe(false);
+    expect(codexCommandsOffline({ provider: "claude", network: allow })).toBe(false);
+    // On a Mac Codex and OpenRouter run inside the OS fence with the run's proxy: never offline.
+    for (const provider of ["codex", "openrouter"]) expect(codexCommandsOffline({ provider, sandboxMode: "workspace-write", network: allow }, "darwin")).toBe(false);
+    expect(codexCommandsOffline({ provider: "openrouter", sandboxMode: "workspace-write", network: allow }, "linux")).toBe(true);
+    expect(networkWords(allow, "codex", { commandsOffline: true })).toContain("Codex commands run offline");
+    expect(networkWords(open, "codex", { commandsOffline: true })).toContain("until Full access is on");
+
+    const said = ["pnpm install --frozen-lockfile failed because registry.npmjs.org could not be resolved (ENOTFOUND)."];
+    expect(codexOfflineDependencySuggestion({ provider: "codex", agentSaid: said, hasSetup: false })).toContain("toolroll setup set");
+    expect(codexOfflineDependencySuggestion({ provider: "codex", agentSaid: said, hasSetup: true })).toContain("worktree setup command installs every dependency");
+    expect(codexOfflineDependencySuggestion({ provider: "claude", agentSaid: said, hasSetup: false })).toBeNull();
+    expect(codexOfflineDependencySuggestion({ provider: "codex", agentSaid: ["TypeScript error in src/index.ts"], hasSetup: false })).toBeNull();
   });
 });
 

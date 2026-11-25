@@ -149,7 +149,7 @@ describe("the summary, short and plain", () => {
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans and reviews; Codex · gpt-5-codex builds and fixes
         Files        any file in the project
-        Network      the agent's provider
+        Network      the agent's provider (Codex commands run offline — set a worktree setup command for dependencies)
         Tools        file edits and commands inside the project only
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Your pick    builder Codex · gpt-5-codex, not the project’s usual pick

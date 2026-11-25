@@ -810,12 +810,14 @@ export type ToolContainment = { platform: NodeJS.Platform; fence: FenceMethod };
 /**
  * Why a local tool that carries secrets can't start for this launch, or null when it can. Its server's environment
  * holds the values, and a process of the same user can read another's (KERN_PROCARGS2, /proc/<pid>/environ) unless
- * an OS fence stops it: only the macOS sandbox around a Claude build does. Codex's filesystem policy can't deny that
- * read (OpenRouter uses the same harness); Claude's own file rules and Linux's bubblewrap don't stop it, and on Linux
+ * an OS fence stops it: only the macOS sandbox around a build does (Claude, and Codex/OpenRouter on a Mac). Codex's own
+ * profile, where no OS fence works, can't deny that read; Claude's own file rules and Linux's bubblewrap don't stop it, and on Linux
  * hidepid hides nothing from the same user, so Linux never starts one.
  */
 export function secretToolRefusal(provider: ProviderId, containment: ToolContainment): string | null {
-  if (provider === "codex" || provider === "openrouter") return "This tool needs a Claude build to protect its sign-in details.";
+  // Codex in its own profile can't deny that read (its harness runs outside its command sandbox); on a Mac it runs inside
+  // the OS fence, as Claude does, and takes Claude's rule below.
+  if ((provider === "codex" || provider === "openrouter") && containment.fence !== "macos-sandbox") return "This tool needs a Claude build to protect its sign-in details.";
   if (containment.platform === "linux") return "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
   if (containment.platform !== "darwin" || containment.fence !== "macos-sandbox") return "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
   return null;

@@ -829,7 +829,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     now = new Date(T0.getTime() + TURN_WALL_CLOCK_MS + CONVERSATION_CLAIM_MS + 60_000);
     expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
     expect(requests).toHaveLength(1);
-    // The crashed step's cost is unknown, so chat is paused: the phone is told to confirm it, not to send again.
+    // The crashed step recorded no billing (a subscription route's CLI may bill an API key it found itself), so its cost
+    // is unknown and chat is paused: the phone is told to confirm it, not to send again.
     expect(script.texts()).toEqual([leadFailureText("crashed", true)]);
     expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:crashed" });
   });
@@ -1065,7 +1066,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
       expect(requests).toHaveLength(1);
       // Ending the session from the console superseded the running turn; that is the word the phone gets, not a silent restart.
-      // Its in-flight step's cost is unknown, so the word also says chat is paused until that cost is confirmed.
+      // Its in-flight step recorded no billing, so its cost is unknown: the word also says chat is paused until confirmed.
       expect(script.texts()).toEqual([leadFailureText("superseded", true)]);
       expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:superseded", session: original.id });
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()?.["n"]).toBe(1);

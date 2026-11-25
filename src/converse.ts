@@ -463,8 +463,53 @@ export function settleWithCache(price: ModelPrice, answer: Pick<LeadProviderAnsw
     + answer.tokensOut * price.outMicrousd;
 }
 /** One message of the lead's own history, provider-neutral. */
+export type LeadImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+export type LeadImageAttachment = {
+  mediaType: LeadImageMediaType;
+  dataBase64: string;
+  filename?: string;
+};
+
+const LEAD_IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+export const LEAD_MAX_IMAGES_PER_MESSAGE = 4;
+const LEAD_MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+function imageMagicMatches(mediaType: LeadImageMediaType, bytes: Buffer): boolean {
+  if (bytes.length < 12) return false;
+  if (mediaType === "image/png") return bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  if (mediaType === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mediaType === "image/gif") return bytes.subarray(0, 6).toString("ascii") === "GIF89a" || bytes.subarray(0, 6).toString("ascii") === "GIF87a";
+  if (mediaType === "image/webp") return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+  return false;
+}
+
+/** Validate up to 4 pasted/attached image payloads sent alongside a Lead message. Invalid entries are skipped safely. */
+export function parseLeadImagesField(raw: string | null | undefined): LeadImageAttachment[] {
+  if (typeof raw !== "string" || raw.trim() === "") return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const out: LeadImageAttachment[] = [];
+  for (const item of parsed.slice(0, LEAD_MAX_IMAGES_PER_MESSAGE)) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const mediaType = rec["mediaType"];
+    const dataBase64 = rec["dataBase64"];
+    if (typeof mediaType !== "string" || !LEAD_IMAGE_MEDIA_TYPES.has(mediaType)) continue;
+    if (typeof dataBase64 !== "string" || dataBase64.length === 0 || dataBase64.length > Math.ceil(LEAD_MAX_IMAGE_BYTES * 1.4)) continue;
+    if (!/^[A-Za-z0-9+/=\s]+$/.test(dataBase64)) continue;
+    const cleanB64 = dataBase64.replace(/\s+/g, "");
+    const bytes = Buffer.from(cleanB64, "base64");
+    if (bytes.length === 0 || bytes.length > LEAD_MAX_IMAGE_BYTES) continue;
+    if (!imageMagicMatches(mediaType as LeadImageMediaType, bytes)) continue;
+    const filename = typeof rec["filename"] === "string" ? rec["filename"].trim().slice(0, 120) : undefined;
+    out.push({ mediaType: mediaType as LeadImageMediaType, dataBase64: cleanB64, ...(filename ? { filename } : {}) });
+  }
+  return out;
+}
+
 export type LeadHistoryMessage =
-  | { role: "operator"; text: string }
+  | { role: "operator"; text: string; images?: readonly LeadImageAttachment[] }
   | { role: "assistant"; text: string; calls: LeadToolCall[] }
   | { role: "tool"; callId: string; name: string; result: string };
 
@@ -604,8 +649,19 @@ export function composeLeadRequest(args: {
     const cached = args.cache !== undefined;
     const messages: unknown[] = [{ role: "user", content: cached ? [{ type: "text", text: opener, ...ephemeral }] : opener }];
     for (const one of args.history) {
-      if (one.role === "operator") messages.push({ role: "user", content: one.text });
-      else if (one.role === "assistant") {
+      if (one.role === "operator") {
+        if (one.images !== undefined && one.images.length > 0) {
+          messages.push({
+            role: "user",
+            content: [
+              ...one.images.map(img => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.dataBase64 } })),
+              { type: "text", text: one.text },
+            ],
+          });
+        } else {
+          messages.push({ role: "user", content: one.text });
+        }
+      } else if (one.role === "assistant") {
         const blocks: unknown[] = [];
         if (one.text !== "") blocks.push({ type: "text", text: one.text });
         for (const call of one.calls) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
@@ -627,8 +683,19 @@ export function composeLeadRequest(args: {
   }
   const messages: unknown[] = [{ role: "system", content: args.system }, { role: "user", content: opener }];
   for (const one of args.history) {
-    if (one.role === "operator") messages.push({ role: "user", content: one.text });
-    else if (one.role === "assistant") {
+    if (one.role === "operator") {
+      if (one.images !== undefined && one.images.length > 0) {
+        messages.push({
+          role: "user",
+          content: [
+            ...one.images.map(img => ({ type: "image_url", image_url: { url: `data:${img.mediaType};base64,${img.dataBase64}` } })),
+            { type: "text", text: one.text },
+          ],
+        });
+      } else {
+        messages.push({ role: "user", content: one.text });
+      }
+    } else if (one.role === "assistant") {
       messages.push({
         role: "assistant",
         content: one.text === "" ? null : one.text,

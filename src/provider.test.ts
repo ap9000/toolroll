@@ -432,6 +432,22 @@ describe("argv dialects", () => {
     expect(bypassAttempt).toContain("read-only");
   });
 
+  test("Codex turns its own sandbox off only inside the macOS fence, and only with a fence to wrap it", () => {
+    const fence = ["/state"];
+    for (const provider of ["codex", "openrouter"] as const) {
+      const inside = adapterFor(provider).argv({ ...ASK, fence, fenceMethod: "macos-sandbox" });
+      expect(inside).toContain("--dangerously-bypass-approvals-and-sandbox");
+      expect(inside.some(one => one.startsWith("permissions.standing-orders"))).toBe(false);
+      // Its own profile everywhere else: no fence method, Codex's profile, or an empty fence.
+      for (const other of [{ fence }, { fence, fenceMethod: "codex-profile" as const }, { fence: [], fenceMethod: "macos-sandbox" as const }]) {
+        expect(adapterFor(provider).argv({ ...ASK, ...other })).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+      }
+      expect(adapterFor(provider).argv({ ...ASK, fence, fenceMethod: "codex-profile" }).join(" ")).toContain('default_permissions="standing-orders"');
+      // A review stays read-only whatever the fence says.
+      expect(adapterFor(provider).argv({ ...ASK, phase: "review", fence, fenceMethod: "macos-sandbox" })).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    }
+  });
+
   test("openrouter rides codex under a private provider key, TOML-quoted, key shell-excluded", () => {
     const argv = adapterFor("openrouter").argv({ ...ASK, model: "anthropic/claude-sonnet-4.5" });
     expect(adapterFor("openrouter").binary).toBe(adapterFor("codex").binary);

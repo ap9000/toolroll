@@ -151,6 +151,7 @@ describe("the lead restyles the person's own workbench", () => {
 
   test("the lead finds them by what the person asks; a task's agents and tokens never see them", () => {
     expect(findLeadTools("restyle the workbench theme").map(one => one.name)).toEqual(expect.arrayContaining(["toolroll_view_read", "toolroll_view_set"]));
+    expect(findLeadTools("make my chat message bubbles peach fuzz").map(one => one.name)).toEqual(expect.arrayContaining(["toolroll_view_read", "toolroll_view_set"]));
     expect(LEAD_TOOLS.map(one => one.name)).toEqual(expect.arrayContaining(["toolroll_view_read", "toolroll_view_set"]));
     // The MCP gateway (a person's agent with a token, and a task's agents) has neither.
     expect(Object.keys(GATEWAY_TOOL_INPUTS).filter(name => name.startsWith("toolroll_view"))).toEqual([]);
@@ -240,9 +241,16 @@ describe("the lead restyles the person's own workbench", () => {
       expect(set.ok, set.ok ? "" : set.message).toBe(true);
       const file = join(home, ".config", "toolroll", "tui.toml");
       expect(readFileSync(file, "utf8")).toContain('theme = "light"');
+      // Setting chat-bubble to Peach Fuzz (#ffbe98) passes auto-contrast without requiring chat-bubble-ink,
+      // while explicitly setting low-contrast white text on Peach Fuzz is refused.
+      const peach = executeLeadTool(ctx({ view: runner }), "toolroll_view_set", { colors: { "chat-bubble": "#ffbe98" } });
+      expect(peach.ok, peach.ok ? "" : peach.message).toBe(true);
+      expect(readFileSync(file, "utf8")).toContain('chat-bubble = "#ffbe98"');
+      const faintBubbleInk = executeLeadTool(ctx({ view: runner }), "toolroll_view_set", { colors: { "chat-bubble": "#ffbe98", "chat-bubble-ink": "#ffffff" } });
+      expect(faintBubbleInk.ok).toBe(false);
       const off = executeLeadTool(ctx({ view: runner }), "toolroll_view_set", { notifications: { asks: false } });
       expect(off.ok ? "" : off.message).toMatch(/Turning that off is yours to do: Settings, or tui\.toml/);
-      expect(history().map(one => one.outcome)).toEqual(["pending", "done", "pending", "failed"]);
+      expect(history().map(one => one.outcome)).toEqual(["pending", "done", "pending", "done", "pending", "failed", "pending", "failed"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
