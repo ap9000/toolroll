@@ -74,6 +74,8 @@ const COOKIE_ONLY_POSTS = [
   // Direct Chat: local-clone direct agent chats, loopback + cookie session only, never a token.
   'direct-chat.start', 'direct-chat.send', 'direct-chat.stop', 'direct-chat.model', 'direct-chat.delete',
   'direct-chat.attach', 'direct-chat.apply-main', 'direct-chat.repair', 'direct-chat.ship-preview', 'direct-chat.ship', 'direct-chat.ship-cancel',
+  // The Direct Chat pages' Ship (everyday-8 #6): its review and its yes, from this computer's browser only.
+  'direct-chat.page-ship-review', 'direct-chat.page-ship',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

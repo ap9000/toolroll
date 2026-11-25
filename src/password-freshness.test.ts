@@ -985,6 +985,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#<module>": 1,
     // Plain Toolroll P1.1: `task accept --finish` is the old `task complete`, through the same operator check.
     "src/operate.ts#acceptTaskProof@99>runTaskOutcomeCommand(complete,positional,rest,_).operator@1": 1,
+    // Everyday-8 #1: `task land --yes`, the same authority as Accept (a password typed now; the local owner never here).
+    "src/operate.ts#landTaskCommand@274": 1,
     "src/operate.ts#agentsCommand@43": 1,
     "src/operate.ts#dispatch@14": 1,
     "src/operate.ts#proposalsCommand@121": 1,

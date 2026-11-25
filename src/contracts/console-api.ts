@@ -274,7 +274,8 @@ export const CONSOLE_FORMS = {
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).
   recipes: formContract("POST /recipes/prepare, /recipes/preview, /recipes/import, /recipes/launch, /recipes/save", ["repo", "projectRevision", "recipe", "recipeRevision", "document", "purpose", "source", "sourceRevision", "preview", "next"]),
   runNote: formContract("POST /r/<run>/note", ["note"]),
-  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "context", "note", "path", "line", "request", "image", "comment"]),
+  // `approve`: Send back and build, the local owner's yes to the revision in the same act (everyday-8 #7).
+  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "context", "note", "path", "line", "request", "image", "comment", "approve"]),
   editorLinks: formContract("POST /session/editor-links", ["on", "return"]),
   revise: formContract("POST /r/<run>/revise", ["return", "batch", "source"]),
   followUp: formContract("POST /r/<run>/checks|add-tests", ["return", "level"]),
@@ -305,6 +306,8 @@ export const CONSOLE_FORMS = {
   taskApprove: formContract("POST /t/<task>/approve", ["return", "digest", "token", "nonce", "rebuild", "sheet"]),
   taskAcceptProof: formContract("POST /t/<task>/accept-proof", ["run", "note", "return"]),
   taskComplete: formContract("POST /t/<task>/complete", ["receipt", "run", "accept", "note", "publish", "return"]),
+  // Land on main (everyday-8 #1): the key the page showed (absent: show what lands), another branch, or an undo.
+  taskLand: formContract("POST /t/<task>/land", ["key", "into", "undo"]),
   taskStop: formContract("POST /t/<task>/stop", ["run", "return"]),
   // Pause, or Pause and steer when a note rides along, or Resume (mode=resume): the exact run shown, and the page's own
   // request id.
@@ -318,6 +321,9 @@ export const CONSOLE_FORMS = {
   directChatShipPreview: formContract("POST /engine/direct-chats/<id>/ship-preview", ["mode", "title", "goal"]),
   directChatShip: formContract("POST /engine/direct-chats/<id>/ship", ["mode", "title", "goal", "termsDigest", "password"]),
   directChatShipCancel: formContract("POST /engine/direct-chats/<id>/ship-cancel", ["shipId"]),
+  // The Direct Chat pages' Ship (everyday-8 #6): its review, then the yes with the terms digest the review showed.
+  directChatPageShipReview: formContract("POST /direct-chats/<id>/ship-review", []),
+  directChatPageShip: formContract("POST /direct-chats/<id>/ship", ["mode", "termsDigest", "title", "goal", "password"]),
 } as const;
 
 export type ConsoleFormName = keyof typeof CONSOLE_FORMS;

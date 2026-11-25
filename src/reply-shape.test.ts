@@ -137,3 +137,13 @@ describe("warm touches", () => {
     none.stop();
   });
 });
+
+describe("Toolroll's own page links by path (everyday-8 #6)", () => {
+  const id = "a".repeat(32);
+  test("a Direct Chat page link becomes the app's own link, or just its words with no origin; nothing else is rewritten", () => {
+    expect(shapeReply(`Done. [Review it](/direct-chats/${id})`, { appOrigin: "http://127.0.0.1:4180" })).toContain(`[Review it](http://127.0.0.1:4180/direct-chats/${id})`);
+    expect(shapeReply(`Done. [Review it](/direct-chats/${id})`, {})).toBe("Done. Review it");
+    expect(shapeReply("See [this](/t/payout)", { appOrigin: "http://127.0.0.1:4180" })).not.toContain("http://127.0.0.1:4180/t/payout");
+    expect(shapeReply(`[x](/direct-chats/${id}/../../settings)`, { appOrigin: "http://127.0.0.1:4180" })).not.toContain("4180/direct-chats");
+  });
+});

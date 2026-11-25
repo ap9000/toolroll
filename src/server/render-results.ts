@@ -862,8 +862,11 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const youCheck = panel.panel.youCheck;
   // Accept and finish posts the completion; when an acceptance is owed (the person's own checks, or a reason a
   // report that doesn't match its changes asks for), the same request records it first.
+  // Otherwise exactly what the completion itself owes (assignment.ts owedAcceptance, the rule acceptAndComplete enforces): a
+  // person's own check needs no reason, only an exception does (everyday-8 #5).
+  const shared = accepted || assignment?.receipt == null ? null : owedAcceptance(assignment.receipt, assignment.readiness?.blockers ?? []);
   const owed = accepted ? null : youCheck?.accept != null ? { note: null } : panel.panel.need?.accept != null ? { note: panel.panel.need.accept.note }
-    : blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
+    : shared === "person-check" ? { note: null } : shared === "exception" || blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
   const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
     ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed, ...(host.kind === "task" ? { returnTo: at() } : {}) } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
@@ -1929,6 +1932,8 @@ export type ResultDetail = {
   pullRequestTo?: string | null;
   /** Where publishing stands: a pull request can be opened, publishing isn't set up, or neither said. Accept never publishes. */
   publishing?: "pull-request" | "off" | "other";
+  /** Send back can approve the revision in the same act (everyday-8 #7): this computer's local owner only. */
+  buildNowOnSendBack?: boolean;
   learning?: Html;
   skillTest?: boolean;
   rootId?: string;
@@ -2380,6 +2385,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
         html`<div class="diff-comment-target"><label>File<input type="text" name="path" placeholder="src/…" aria-label="file" class="mono"></label>`,
         html`<label>Line<input type="text" name="line" placeholder="—" aria-label="line" inputmode="numeric"></label></div></details>`,
+        detail.buildNowOnSendBack === true ? html`<label class="meta result-build-now"><input type="checkbox" name="approve" value="1" data-build-now> Build again right away, on the same terms with these notes</label>` : "",
         html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
       ]), { attrs: { class: "diff-comment-form", id: "comment-form" }, returnTo: o.returnTo, hidden: { tab: o.tab, request: o.requestToken } })
       }</details>`,

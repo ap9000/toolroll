@@ -159,6 +159,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
+import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -934,7 +935,7 @@ export const TASK_ACTIONS = [
   "add", "new", "keep", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first", "land",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -960,6 +961,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "say", "ceiling-usd", "cap-usd",
   // Plan again (task plan --incident): the planning incident the terminal read.
   "incident",
+  // task land --into <branch> (everyday-8 #1).
+  "into",
   // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
   // stuck campaign a person ends (recover --abandon).
   "case", "k", "world", "deny", "abandon",
@@ -6057,10 +6060,19 @@ async function verifyCommand(
   const { store, write, json } = context;
   const clock = context.clock ?? (() => new Date());
   const action = positional[0] ?? "show";
-  const repo = text(flags, "repo");
+  const raw = text(flags, "repo");
+  // The project the path names, before any read, preview or password (everyday-8 #3): `.` or a symlinked spelling is
+  // the registered project's own path, never the literal text.
+  if (raw !== undefined && activeRemote() !== null && !isAbsolute(raw)) return fail(write, json, `verify ${action}`, "usage", "name the project's full path: --repo <path>", EXIT.usage);
+  const repo = raw === undefined ? undefined : verifyRepoOf(store, raw);
+  // An older version saved a command under the literal text it was given (`.`): it applies to no project, so it never
+  // moves to today's folder; it is only said, and cleared with this project's.
+  const legacy = raw !== undefined && raw !== repo && !isAbsolute(raw) && store.liveVerifyCommand(raw) !== null ? raw : null;
+  const legacyNote = legacy === null ? [] : [`An older check command saved under the name "${legacy}" applies to no project. Set the command for ${repo} again; \`toolroll verify clear --repo ${legacy}\` removes the old one.`];
 
   if (action === "show") {
     if (repo === undefined) return fail(write, json, "verify show", "usage", "which repo? --repo <path>", EXIT.usage);
+    for (const line of json ? [] : legacyNote) write(line);
     const live = store.liveVerifyCommand(repo);
     const quick = liveQuickCommand(store, repo);
     const level = projectCheckLevel(store, repo);
@@ -6110,7 +6122,9 @@ async function verifyCommand(
   if (acting === null || !verified?.ok) return refuseApprover(context, `verify ${action}`, verified, "an approved verification command runs unattended after every future build — changing it takes `--as <you> --token <t>`", repo);
 
   if (action === "clear") {
-    const cleared = store.clearVerifyCommand(grantKey!, acting.name, clock());
+    // Clearing only narrows: the old literal-named command goes with this project's.
+    if (legacy !== null && !quickClear) store.clearVerifyCommand(legacy, acting.name, clock());
+    const cleared = store.clearVerifyCommand(grantKey!, acting.name, clock()) || (legacy !== null && !quickClear);
     if (quickClear) return succeed(write, json, "verify clear", { repo, cleared, level: "quick" }, () => [
       cleared ? `Cleared the quick command — Quick builds of ${repo} run the full check now.` : `No quick command was set for ${repo}.`,
     ]);
@@ -9696,6 +9710,8 @@ function taskAction(
       return reviewTaskCommand(rest, flags, context);
     case "accept":
       return acceptTaskProof(rest, flags, context);
+    case "land":
+      return landTaskCommand(rest, flags, context);
     case "repair":
       return repairTaskCommand(rest, flags, context);
     case "route":
@@ -10162,7 +10178,8 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
 
 function showTask(positional: readonly string[], context: Context): number {
   const { store, write, json, now } = context;
-  const id = positional[0];
+  // As the person types it: the exact id first, else the generated `task-` id it names (everyday-8 #9).
+  const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
   if (id === undefined) return fail(write, json, "task show", "usage", "which task?", EXIT.usage);
 
   const task = store.getTask(id);
@@ -11593,6 +11610,9 @@ async function askCredentials(
   // Easy-start C3: the local owner is never asked for a password (the prover decides its act, refusing all others).
   const local = currentLocalOwner();
   if (local !== null) return { name: local.account, token: "" };
+  // A password given without --as, on a solo install: the install's one operator is the only one it can be (everyday-8
+  // #3). It names; the password still has to be theirs.
+  if (name === undefined && token !== undefined && activeRemote() === null) name = soloOperatorOf(context.store) ?? undefined;
   if ((name === undefined || token === undefined) && interactive() && !context.json) {
     // The name this install would mean (its one operator on a solo install), offered: Enter takes it.
     const usual = name === undefined ? soloOperatorOf(context.store) : null;
@@ -15340,23 +15360,23 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const termsLines = (terms: FlexibleTerms, digest: string) => [...flexibleTermsWords(terms), `Terms ${digest}`];
   const shown = (standing: FlexibleStanding): { data: Record<string, unknown>; lines: string[] } => {
     if (standing.state === "secure") return { data: { state: "secure" }, lines: [`${repo}: Secure. Work is planned and approved before it starts.`] };
-    if (standing.state === "unreadable") return { data: { state: "unreadable" }, lines: [`${repo}: its Flexible terms can't be read, so they allow nothing. Turn Flexible off, then on again.`] };
+    if (standing.state === "unreadable") return { data: { state: "unreadable" }, lines: [`${repo}: its thread terms can't be read, so they allow nothing. Turn interactive agent threads off for it, then on again.`] };
     const data = { state: standing.state, digest: standing.digest, terms: standing.terms, signedBy: standing.signedBy, signedAt: standing.signedAt, ...(standing.state === "lapsed" ? { lapse: standing.reason } : {}) };
     if (standing.state === "lapsed") return { data, lines: [`${repo}: Flexible terms no longer count. ${FLEXIBLE_LAPSE_WORDS[standing.reason]} Turn it on again to sign new terms.`] };
-    return { data, lines: [`${repo}: Flexible, turned on by ${standing.signedBy}.`, ...termsLines(standing.terms, standing.digest)] };
+    return { data, lines: [`${repo}: interactive agent threads are on, turned on by ${standing.signedBy}.`, ...termsLines(standing.terms, standing.digest)] };
   };
   if (action === "show") {
     const now = shown(flexibleStanding(store, repo));
     return succeed(write, json, command, { repo, flexible: now.data }, () => now.lines);
   }
   const refused = (message: string) => fail(write, json, command, "person-only", message, EXIT.refused);
-  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's Flexible terms, never the lead, a token or a chat app.");
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's thread terms, never the lead, a token or a chat app.");
   const acting = await askCredentials(flags, context);
-  if (acting === null) return refused(`${action === "enable" ? "Turning on Flexible needs your password" : "This needs your sign-in"}: pass --as and --token.`);
+  if (acting === null) return refused(`${action === "enable" ? "Turning on interactive agent threads needs your password" : "This needs your sign-in"}: pass --as and --token.`);
   if (action === "enable") {
     if (!flexibleAvailable(store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
     const proved = credentialApprover(store, acting.name, acting.token, repo);
-    if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on Flexible.");
+    if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on interactive agent threads.");
     const choice: FlexibleChoice = { ...(max === undefined ? {} : { max }), ...(chosenDefault === undefined ? {} : { default: chosenDefault }) };
     const proposed = proposedFlexibleTerms(store, repo, acting.name, choice);
     if (!proposed.ok) return fail(write, json, command, proposed.reason, proposed.message, EXIT.refused);
@@ -15364,15 +15384,15 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
     if (digest === undefined) {
       if (!interactive() || json) return fail(write, json, command, "review-terms", [...termsLines(proposed.terms, proposed.digest), `Read these terms, then run again with --digest ${proposed.digest} to agree to them. Nothing changed.`].join("\n"), EXIT.refused, { digest: proposed.digest, terms: proposed.terms });
       write(termsLines(proposed.terms, proposed.digest).join("\n"));
-      if (!(await confirm("Turn on Flexible with these terms? [y/N] "))) return fail(write, json, command, "declined", "Nothing changed.", EXIT.refused);
+      if (!(await confirm("Turn on interactive agent threads in this project with these terms?"))) return fail(write, json, command, "declined", "Nothing changed.", EXIT.refused);
       digest = proposed.digest;
     }
     const done = enableFlexible(store, { repo, by: acting.name, proof: proved.method, choice, shownDigest: digest, now: context.clock() });
     if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
-    return succeed(write, json, command, { repo, flexible: shown(flexibleStanding(store, repo)).data, replaced: done.replaced }, () => [`${repo} is Flexible.`, ...termsLines(done.terms, done.digest)]);
+    return succeed(write, json, command, { repo, flexible: shown(flexibleStanding(store, repo)).data, replaced: done.replaced }, () => [`Interactive agent threads are on in ${repo} (terms ${done.digest}). Start one with T in the terminal workbench.`]);
   }
   const proved = authenticateApprover(store, acting.name, acting.token, repo);
-  if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, signed in as a person, changes its Flexible terms.");
+  if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, signed in as a person, changes its thread terms.");
   if (action === "lower") {
     if (max === undefined) return fail(write, json, command, "usage", "Name the highest level with --max supervised, auto or full.", EXIT.usage);
     const done = lowerFlexible(store, { repo, by: acting.name, max, now: context.clock() });
@@ -15381,7 +15401,7 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   }
   const done = turnFlexibleOff(store, { repo, by: acting.name, now: context.clock() });
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
-  return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `${repo} is Secure again. No new Flexible threads start.` : `${repo} is already Secure.`]);
+  return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `Interactive agent threads are off in ${repo}. No new ones start.` : `Interactive agent threads are already off in ${repo}.`]);
 }
 
 /** `toolroll config set task-sizing on|off` and `config show task-sizing`: Settings → General's switch, proved as its
@@ -15925,4 +15945,72 @@ async function requestCommand(
   }
 
   return fail(context.write, context.json, "request", "usage", "Use `toolroll request [list [--all]|show <id>|wait <id>|decline <id>|clear]`.", EXIT.usage);
+}
+
+/**
+ * `task land <id>` (everyday-8 #1, local-landing.ts): accepted work onto the project's own branch, for a project with no
+ * pull requests. Bare, it says exactly what would happen (the branch, the folder, the commits, the check) and the key
+ * that pins it; `--yes --key <k>` does exactly that, refused when anything changed since. `--undo` reverts a landing with
+ * a new commit. The same authority as Accept: a password typed now, or this computer's local owner in the workbench.
+ */
+async function landTaskCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, now } = context;
+  const command = "task land";
+  const allowed = new Set(["json", "db", "into", "undo", "yes", "key", "as", "token", "token-file", "token-env"]);
+  for (const key of flags.keys()) if (!allowed.has(key)) return fail(write, json, command, "usage", `--${key} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
+  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <key>` to land it.", EXIT.usage);
+  const into = text(flags, "into"), undo = flags.get("undo") === true, yes = flags.get("yes") === true, key = text(flags, "key");
+  if (flags.has("into") && into === undefined) return fail(write, json, command, "usage", "--into needs a branch name.", EXIT.usage);
+  if (undo && into !== undefined) return fail(write, json, command, "usage", "--undo lands on the branch the work landed on; it takes no --into.", EXIT.usage);
+  const landRepo = store.lookupRef(id)?.repo ?? null;
+  if (landRepo !== null && publishesThroughPullRequests(store, landRepo)) return fail(write, json, command, "pull-requests", PULL_REQUESTS_INSTEAD, EXIT.refused);
+  const local = currentLocalOwner();
+  const localRepos = local === null ? null : store.knownRepos().filter(repo => store.accountCanAccess(local.account, repo));
+  const options = { root: context.evidenceRoot, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) };
+  if (!yes) {
+    if (key !== undefined) return fail(write, json, command, "usage", "--key goes with --yes.", EXIT.usage);
+    const read = await readLanding(store, id, { repos: localRepos }, now, options);
+    if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
+    if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
+    const plan = read.plan;
+    return succeed(write, json, command, { plan }, () => [...landingWords(plan),
+      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}`]);
+  }
+  if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
+  let authority: LandAuthority;
+  if (local !== null) authority = { kind: "local" };
+  else {
+    const acting = await askCredentials(flags, context);
+    const ref = store.lookupRef(id);
+    const repos = store.knownRepos().filter(repo => acting !== null && store.accountCanAccess(acting.name, repo));
+    const proved = acting === null || ref === null ? null : verifyApproverByPassword(store, acting.name, acting.token, repos);
+    if (proved === null || !proved.ok) return fail(write, json, command, "unauthenticated", "Landing work is a person's act: it takes `--as <you>` and your password.", EXIT.refused);
+    authority = { kind: "person", who: proved.who };
+  }
+  const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
+  const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
+  if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
+  return succeed(write, json, command, { landing: result }, () => [
+    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : ""}.`,
+    ...(result.warning === null ? [] : [result.warning])]);
+}
+
+/** A task id as typed: exact first, else the one generated `task-` id it names (everyday-8 #9). Never a prefix match. */
+function resolveTaskId(store: Store, typed: string): string {
+  if (store.getTask(typed) !== null || typed.startsWith("task-")) return typed;
+  return store.getTask(`task-${typed}`) !== null ? `task-${typed}` : typed;
+}
+
+/** The project a `verify` command's --repo names (everyday-8 #3): resolved from the current folder, and when it is a
+ * registered project's folder by its real path, that project's own recorded path. An unregistered folder keeps its
+ * resolved absolute path, as it did; nothing is ever stored under relative text. */
+function verifyRepoOf(store: Store, raw: string): string {
+  const absolute = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+  let real: string;
+  try { real = realpathSync(absolute); } catch { return absolute; }
+  for (const known of new Set([...store.listProjects().map(one => one.path), ...store.knownRepos()])) {
+    try { if (known === absolute || realpathSync(known) === real) return known; } catch { /* a project folder that's gone matches nothing */ }
+  }
+  return absolute;
 }

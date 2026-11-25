@@ -19,7 +19,7 @@ describe("the result's Accept words", () => {
 
   test("the label names the gap: without checks only when the checks are what's missing; the why line says what, once", () => {
     expect(acceptWordsOf({ checks: "not-run", unmet: 0, action: "complete", publishing: "off", proof: true }))
-      .toEqual({ label: "Accept without checks", ready: false, why: "Checks didn't run.", effect: "Finishes the task. The branch stays; publishing isn't set up." });
+      .toEqual({ label: "Accept without checks", ready: false, why: "Checks didn't run.", effect: "Finishes the task. Then you can land it on your project's branch." });
     expect(acceptWordsOf({ checks: "passed", unmet: 2, action: "complete", publishing: "other", proof: true }))
       .toEqual({ label: "Accept anyway", ready: false, why: "2 requirements aren't met.", effect: "Finishes the task. Nothing is published." });
     // Checks deliberately Off are checked at release: only the unmet requirement is said, and it isn't "without checks".

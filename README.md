@@ -23,7 +23,7 @@ For Claude Code, Codex, and Gemini — using the subscriptions already on your m
 [![Homebrew](https://img.shields.io/badge/homebrew-ap9000%2Ftoolroll-171717)](https://github.com/ap9000/homebrew-toolroll)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2022.20-171717)
 
-**[Website](https://toolroll.dev)** · [Docs](docs/guide/README.md) · [For agents](docs/agents.md) · [Use cases](https://toolroll.dev/use-cases) · [Changelog](CHANGELOG.md)
+**[Website](https://toolroll.dev)** · [Docs](https://github.com/ap9000/toolroll/blob/main/docs/guide/README.md) · [For agents](https://github.com/ap9000/toolroll/blob/main/docs/agents.md) · [Use cases](https://toolroll.dev/use-cases) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -48,7 +48,7 @@ cd mac && bash build-app.sh && open build/Toolroll.app
 cd mac && bash build-dmg.sh
 ```
 
-See [macOS release & signing guide](docs/guide/mac-release.md) for Developer ID signing, notarization, and Homebrew Cask automation.
+See [macOS release & signing guide](https://github.com/ap9000/toolroll/blob/main/docs/guide/mac-release.md) for Developer ID signing, notarization, and Homebrew Cask automation.
 
 </details>
 
@@ -76,7 +76,7 @@ npm uninstall -g standing-orders && npm install -g toolroll
 
 </details>
 
-Toolroll opens locally with no password and no login file — on your own computer you're already in. Start a **Direct Chat** for fast interactive iteration in an isolated clone, or delegate a **Task** to build while you walk away. Every result returns **Ready** with its diff and real check status; press `⌘⏎` (Mac app) or `a` (terminal) to accept and ship, or send it back with notes. To explore without model calls or spend, run `toolroll demo`. More: [Getting started](docs/guide/getting-started.md).
+Toolroll opens locally with no password and no login file — on your own computer you're already in. Start a **Direct Chat** for fast interactive iteration in an isolated clone, or delegate a **Task** to build while you walk away. Every result returns **Ready** with its diff and real check status; press `⌘⏎` (Mac app) or `a` (terminal) to accept and ship, or send it back with notes. To explore without model calls or spend, run `toolroll demo`. More: [Getting started](https://github.com/ap9000/toolroll/blob/main/docs/guide/getting-started.md).
 
 ## The terminal loop
 
@@ -92,8 +92,8 @@ you. A result becomes **Ready**, awaiting your review, with its diff and actual
 check status. Accept marks it Complete; publishing and merging need their own
 approvals. Set your project's check to verify the exact result.
 
-[Coming from herdr](docs/guide/from-herdr.md) ·
-[Terminal keys and layouts](docs/guide/getting-started.md#the-terminal-workbench)
+[Coming from herdr](https://github.com/ap9000/toolroll/blob/main/docs/guide/from-herdr.md) ·
+[Terminal keys and layouts](https://github.com/ap9000/toolroll/blob/main/docs/guide/getting-started.md#the-terminal-workbench)
 
 ## Use cases
 
@@ -158,19 +158,19 @@ toolroll contract --commands --json   # the whole command surface
 toolroll skills get operating         # the rules, from the binary you're running
 ```
 
-Start at [docs/agents.md](docs/agents.md). [`llms.txt`](llms.txt) indexes the
+Start at [docs/agents.md](https://github.com/ap9000/toolroll/blob/main/docs/agents.md). [`llms.txt`](https://github.com/ap9000/toolroll/blob/main/llms.txt) indexes the
 docs for language models.
 
 ## Docs
 
-- [Getting started](docs/guide/getting-started.md): install, first task, terminal, desktop app
-- [Tasks, results and revisions](docs/guide/tasks.md)
-- [Chat and your phone](docs/guide/chat-and-phone.md)
-- [Flows](docs/guide/flows.md) · [Steps that reach outside](docs/guide/steps-outside.md) · [Subagents](docs/guide/subagents.md)
-- [Running unattended](docs/guide/unattended.md) · [Fleets and trackers](docs/guide/fleet.md)
-- [Security](docs/guide/security.md) · [Models, spend and routing](docs/guide/routing.md)
-- [A team server](docs/team-server.md) · [Linux](docs/guide/linux.md)
-- [All docs](docs/guide/README.md)
+- [Getting started](https://github.com/ap9000/toolroll/blob/main/docs/guide/getting-started.md): install, first task, terminal, desktop app
+- [Tasks, results and revisions](https://github.com/ap9000/toolroll/blob/main/docs/guide/tasks.md)
+- [Chat and your phone](https://github.com/ap9000/toolroll/blob/main/docs/guide/chat-and-phone.md)
+- [Flows](https://github.com/ap9000/toolroll/blob/main/docs/guide/flows.md) · [Steps that reach outside](https://github.com/ap9000/toolroll/blob/main/docs/guide/steps-outside.md) · [Subagents](https://github.com/ap9000/toolroll/blob/main/docs/guide/subagents.md)
+- [Running unattended](https://github.com/ap9000/toolroll/blob/main/docs/guide/unattended.md) · [Fleets and trackers](https://github.com/ap9000/toolroll/blob/main/docs/guide/fleet.md)
+- [Security](https://github.com/ap9000/toolroll/blob/main/docs/guide/security.md) · [Models, spend and routing](https://github.com/ap9000/toolroll/blob/main/docs/guide/routing.md)
+- [A team server](https://github.com/ap9000/toolroll/blob/main/docs/team-server.md) · [Linux](https://github.com/ap9000/toolroll/blob/main/docs/guide/linux.md)
+- [All docs](https://github.com/ap9000/toolroll/blob/main/docs/guide/README.md)
 
 ## Contributing
 

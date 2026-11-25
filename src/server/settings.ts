@@ -526,9 +526,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
   // exactly what turning on would do, or what to fix first.
   async function pullRequestsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
-    const repo = url.searchParams.get("repo") ?? "";
     const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
-    if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
+    const repo = projectForPage(ctx, "/settings/pull-requests", "Pull requests", known);
+    if (repo === null || who.via !== "cookie") return;
     const publishing = publishingOf(store, repo);
     const canChange = who.role === "approver" && !store.isDemo();
     // The last setup check for this project (Check setup posts); opening the page asks git and GitHub nothing.
@@ -540,9 +540,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
   // Settings → Projects → Checks: how much checks after each build, and the quick command beside the full one.
   async function checksPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
-    const repo = url.searchParams.get("repo") ?? "";
     const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
-    if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
+    const repo = projectForPage(ctx, "/settings/checks", "Checks", known);
+    if (repo === null || who.via !== "cookie") return;
     const quick = liveQuickCommand(store, repo);
     const body = (checkSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange: who.role === "approver" && !store.isDemo(),
       level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
@@ -608,7 +608,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // Turning it on is a credential act: a password typed now (or a one-use provider re-check), never a session.
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to turn Passwordless on.");
     setPasswordless(store, true, who.name, now);
-    return back("said", "Passwordless is on. Signing in is the only password now.");
+    return back("said", "Passwordless is on. Approvals need no password now; changes that add a way in still ask.");
   }
   async function knowledgePage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -3256,6 +3256,27 @@ ${postForm("/settings/chat-approval/save", html`\
     return done("said", !removed.removed ? (self ? `You had no Claude sign-in for threads saved.${stopWords}` : `${person} had no Claude sign-in for threads saved.${stopWords}`)
       : self ? `Removed.${stopWords} Your threads can't reach Claude until you add one again. The token still works at Claude until you revoke it in your Claude account.`
         : `Removed ${person}'s Claude sign-in for threads.${stopWords} Their threads can't reach Claude until they add one again.`);
+  }
+  /**
+   * The project a per-project settings page shows (everyday-8 #4): the one its address names (an unknown or hidden one is
+   * refused, never swapped for another), else the console's current project, else the only one this person can see.
+   * With several and none chosen it answers with a picker; with none, an empty state. Null: it answered already.
+   */
+  function projectForPage(ctx: HandlerContext, path: string, title: string, known: readonly string[]): string | null {
+    const { url, who, response, project } = ctx;
+    const named = url.searchParams.get("repo");
+    if (who.via !== "cookie") { refuse(response, who, 404, "No such project.", "/projects"); return null; }
+    if (named !== null) {
+      if (!known.includes(named) || !visible(named)) { refuse(response, who, 404, "No such project.", "/projects"); return null; }
+      return named;
+    }
+    const mine = known.filter(repo => visible(repo));
+    if (project != null && mine.includes(project)) return project;
+    if (mine.length === 1) return mine[0]!;
+    const body = mine.length === 0 ? html`<p>No projects yet. <a class="k-link" href="/projects">Add one on Projects</a>.</p>`
+      : html`<p>Pick a project.</p>${projectPicker(path, mine.map(repo => ({ repo, name: projectName(repo) })), "")}`;
+    sendScreen(response, 200, screen(title, settingsSubPage("projects", title, body), { chrome: chromeFor(project, "projects") }));
+    return null;
   }
   return { registrations, modelsView };
 }

@@ -142,6 +142,9 @@ const ABSENT: Record<string, { status: number; why: string }> = {
   "task.release": { status: 404, why: "no release waiting" },
   "chat.ack": { status: 404, why: "no chat turn with an unknown charge" },
   "chat.action": { status: 409, why: "no chat proposal" },
+  // Direct Chat is for a solo install's own browser on this computer (server/direct-chat.ts admit): both consoles refuse.
+  "direct-chat.page-list": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
+  "direct-chat.page": { status: 403, why: "Direct Chat is only on a solo install, from this computer" },
 };
 /** Each mixed row's two answers, as the demo gives them (welcome's page: the empty console's first run). */
 const MIXED: Record<string, { page: { world: "demo" | "operator"; path: string }; alias: { world: "demo" | "operator"; path: string } }> = {

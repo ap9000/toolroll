@@ -92,6 +92,13 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
   /** Who this revision comes from (results routing): each caller says it from its own trusted context, never from
    * `allowMode` or the actor's name. Only `person` counts against the model that built the result. */
   origin: RevisionOrigin;
+  /** Send back and build (everyday-8 #7): the caller's own approval of the sealed revision, in this same transaction,
+   * with the person's authority proved by that caller (approve() re-proves it). True: approved, nothing replans; false
+   * (refused, or not offered): the revision is planned afresh and waits for its approval as before. */
+  approveNow?: (childTaskId: string) => boolean;
+  /** With approveNow: why the result the form was drawn for is no longer the current one (a newer build, a newer
+   * version), or null. Read in this transaction before anything is sealed; a stale form seals and approves nothing. */
+  currentResult?: () => string | null;
 }, now: Date): RevisionResult {
   return store.transact((): RevisionResult => {
     const id = input.run;
@@ -147,6 +154,11 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
     if (replay !== null) return { ok: true, id: replay };
     if (consumers.size > 0) {
       return fail(409, `some of these notes were already sealed into revision ${[...consumers].join(", ")}; the others are still waiting — reload the result to see the current batch`);
+    }
+    // (A replay above returns its own revision.) Send back and build approves only the exact current result its form was drawn for (everyday-8 #7, Codex P1-4).
+    if (input.approveNow !== undefined) {
+      const stale = input.currentResult === undefined ? "Reload the result before sending it back to build." : input.currentResult();
+      if (stale !== null) return fail(409, stale);
     }
     if (postedSource !== revisionSourceOf(sourceScope?.digest ?? null)) {
       return fail(409, "the task's terms changed since this page was shown — reload the result and read the current terms before creating a revision");
@@ -252,7 +264,10 @@ export function createResultRevision(store: Store, evidenceRoot: string, input: 
       // more than the old plan allows becomes an amendment the person approves before anything
       // builds. Under a live mode the filing is approved at once instead, as every signer filing
       // is; revisions never inherit the mode's planner authority (docs/AUTO_APPROVAL.md).
-      if (result.ok && coverage === null) {
+      // The person's own Send back and build approves exactly this revision (its inherited terms and these notes, bound
+      // above to the displayed batch and source digest) in the same act; refused, it replans as ever.
+      const approvedNow = result.ok && coverage === null && input.approveNow !== undefined && input.approveNow(result.id);
+      if (result.ok && coverage === null && !approvedNow) {
         const ref = store.lookupRef(result.id);
         if (ref !== null) store.requestPlan(ref.id, now);
       }

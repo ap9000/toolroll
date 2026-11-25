@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import { openStore, verifiedAuthor, type Store } from "./store.js";
-import { acceptAndCompleteAsOperator, assignmentOf } from "./assignment.js";
+import { acceptAndCompleteAsOperator, assignmentOf, owedAcceptance } from "./assignment.js";
 import { verifyApproverByPassword } from "./principal.js";
 import { acquire, release } from "./claim.js";
 import { register } from "./runner.js";
@@ -725,6 +725,24 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(plain).toContain("Pull request: remote: permission denied The commit is safe locally.");
   });
 
+  test("an exception's reason is owed at accept-proof too: without it nothing is accepted (everyday-8 #5)", async () => {
+    const ref = seed("t-exc", "needs a reason");
+    const run = build("t-exc", ref, {
+      patch: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+      stat: [{ path: "x", additions: 1, deletions: 1 }],
+      verdict: { verdict: "short", reasons: ["no proof for c1"], matrix: [row("c1", "t-exc is done", "missing", [], ["no proof for c1"])] },
+    });
+    await boot();
+    const cookie = await login();
+    const csrf = csrfOf(await (await fetch(url("/review?result=t-exc"), { headers: { cookie } })).text());
+    const owed = assignmentOf(store, "t-exc", new Date(), { principal: "operator", repos: null }, evidenceRoot);
+    expect(owedAcceptance(owed!.receipt, owed!.readiness?.blockers ?? [])).toBe("exception");
+    expect((await post(cookie, "/t/t-exc/accept-proof", { csrf, run: String(run) })).status).toBe(400);
+    expect(store.proofAcceptance(run)).toBeNull();
+    expect((await post(cookie, "/t/t-exc/accept-proof", { csrf, run: String(run), note: "Checked it myself" })).status).toBe(303);
+    expect(store.proofAcceptance(run)?.approver).toBe("alex");
+  });
+
   test("actions: only applicable roads appear, each through its existing endpoint with the session's CSRF; a bearer session sees no forms", async () => {
     const ref = seed("t-act", "decide on me");
     const run = build("t-act", ref, {
@@ -1079,7 +1097,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(first.panel!.requirements).toMatchObject({ met: 0, total: 1, yours: 1, missed: 0 });
     // Checks didn't run and the item is still the person's: Accept without your check, naming it, and that it finishes the task.
     expect(first.decision).toEqual({ label: "Accept without your check", ready: false, why: `Not checked yet: “${statement}”.`,
-      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or send it back.",
+      effect: "Finishes the task. Then you can land it on your project's branch.", sentence: "Review the change, then accept it or send it back.",
       base: { label: "Accept without checks", ready: false, why: "Checks didn't run." } });
     // One request: the completion carries the acceptance the person's check owes.
     expect(first.complete).toMatchObject({ action: "/t/t-look/complete", run, accept: { note: null } });

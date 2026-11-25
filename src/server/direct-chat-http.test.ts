@@ -236,6 +236,29 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect(JSON.parse(teamStart.body)).toMatchObject({ ok: false });
   });
 
+  test("the pages (everyday-8 #6): the same chats as a browser reads them, with the same admission", async () => {
+    const world = await openDirectChatWorld();
+    worlds.push(world);
+    expect((await world.send("/direct-chats", "GET", { cookie: world.cookie })).body).toContain("No Direct Chats yet");
+    const startedRes = await world.post("/engine/direct-chats", { project: "payments-api", prompt: "Summarize <README>", provider: "claude", model: "claude-sonnet-4-6", request: "e".repeat(32) });
+    const started = JSON.parse(startedRes.body) as { ok: true; threadId: string };
+    const list = await world.send("/direct-chats", "GET", { cookie: world.cookie });
+    expect(list.status).toBe(200);
+    expect(list.body).toContain(`href="/direct-chats/${started.threadId}"`);
+    const detail = await world.send(`/direct-chats/${started.threadId}`, "GET", { cookie: world.cookie });
+    expect(detail.status).toBe(200);
+    // The person's own words, escaped; the changes section says what it shows.
+    expect(detail.body).toContain("Summarize &lt;README&gt;");
+    expect(detail.body).toContain("Changes");
+    // The same refusals as the API: forwarded, unknown, bearer, team.
+    expect((await world.send(`/direct-chats/${started.threadId}`, "GET", { cookie: world.cookie, "x-forwarded-for": "100.64.0.1" })).status).toBe(403);
+    expect((await world.send(`/direct-chats/${"f".repeat(32)}`, "GET", { cookie: world.cookie })).status).toBe(404);
+    expect((await world.send("/direct-chats", "GET", { authorization: "Bearer tr_fake_token" })).status).not.toBe(200);
+    expect((await world.post(`/direct-chats/${started.threadId}/ship`, { mode: "ship", termsDigest: "0".repeat(32) }, { "x-forwarded-for": "100.64.0.1" })).status).toBe(403);
+    expect(addApprover(world.store, "jordan", T0, { name: "alex", token: world.token }).ok).toBe(true);
+    expect((await world.send("/direct-chats", "GET", { cookie: world.cookie })).status).toBe(403);
+  });
+
   test("refuses demo mode", async () => {
     const made = createDemoSandbox(new Date());
     const server = createDecisionServer({

@@ -45,7 +45,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     "decision.answer=answer-question",
     // Direct Chat (server-backed local-clone agent chats, loopback + solo only; src/server/direct-chat.ts re-checks each act).
     "direct-chat.apply-main=direct-chat-manage", "direct-chat.attach=direct-chat-send", "direct-chat.delete=direct-chat-manage",
-    "direct-chat.model=direct-chat-manage", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
+    "direct-chat.model=direct-chat-manage", "direct-chat.page-ship-review=read", "direct-chat.page-ship=direct-chat-ship", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
     "direct-chat.ship-preview=read", "direct-chat.ship=direct-chat-ship", "direct-chat.start=direct-chat-start", "direct-chat.stop=direct-chat-stop",
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
@@ -70,7 +70,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.project-network=project-network",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
-    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
+    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan", "task.act.land=land-task",
     "task.act.pause=pause-run", "task.act.plan=request-plan", "task.act.reply=answer-question", "task.act.requeue=retry-build", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
     // The Mac app's Change Models for one task (local-owner-acts.ts localOwnerChangeAgents re-checks this exact act; an
     // approved task stays approved only when nothing but the picked agent changed).
