@@ -440,4 +440,21 @@ describe("what a thread changed, for its owner to read (never an import)", () =>
     expect(namedFile.file.path).toBe("[a name was hidden]");
     expect(namedFile.file.meta).toEqual(["diff --git a/[a name was hidden] b/[a name was hidden]", "index 1111111..2222222 100644", "--- a/[a name was hidden]", "+++ b/[a name was hidden]"]);
   });
+
+  test.each([
+    ["a zero-width space", "\u200b"], ["a word joiner", "\u2060"], ["a direction mark", "\u200e"], ["an escape", "\x1b[0m"],
+  ])("a key split by %s (joined again when it is cleaned) is still hidden: lines, hunk header context and names", (_name, split) => {
+    const hidden = `to${split}ken=opaquecredential9f8e7d6c`;
+    const patch = [
+      `diff --git a/src/${hidden}.ts b/src/${hidden}.ts`, `--- a/src/${hidden}.ts`, `+++ b/src/${hidden}.ts`,
+      `@@ -1,2 +1,3 @@ const ${hidden}`, " keep", `+const ${hidden};`, `-AKIA${split}Q7ZKM3XWP9TRB2NV`, "",
+    ].join("\n");
+    const read = threadDiffFileOf(thread.id, 1, { ok: true, patch, truncated: false }, 0)!;
+    const everything = JSON.stringify(read);
+    expect(everything).not.toContain("opaquecredential");
+    expect(everything).not.toContain("Q7ZKM3XWP9TRB2NV");
+    expect(read.file.hunks[0]!.header).toBe("@@ -1,2 +1,3 @@");
+    expect(threadDiffOf(thread.id, 1, { ok: true, patch, truncated: false }).files[0]!.path).toBe("[a name was hidden]");
+  });
 });
+

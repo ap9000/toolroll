@@ -13,7 +13,7 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexi
 import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn, withdrawFlexibleTurn } from "./flexible-turns.js";
 import {
   CONVERSATION_BEGIN, CONVERSATION_END, conversationBriefLines, flexibleConversationOf, flexibleTurnMessage, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid,
-  recordFlexibleStartTip, type FlexibleSaidTurn,
+  recordFlexibleStartTip, saidLines, type FlexibleSaidTurn,
 } from "./flexible-conversation.js";
 import { attachFlexibleAgent, flexibleThreadLiveOf, openFlexibleSessions, startFlexibleThreadSession, type FlexibleSessions } from "./flexible-session.js";
 import { HIDDEN_LINE } from "./live-records.js";
@@ -149,6 +149,13 @@ describe("what was said, recorded per turn", () => {
     const key = ["AKIA", "Q7ZK", "M3XW", "P9TR", "B2NV"].join("");
     const turn = finished("Read the config", `Found it.\naws_access_key_id = ${key}\nDone.`);
     expect(flexibleConversationOf(world.store, T1).find(one => one.turn === turn)?.reply).toBe(`Found it.\n${HIDDEN_LINE}\nDone.`);
+  });
+
+  test.each([["a zero-width space", "\u200b"], ["a word joiner", "\u2060"], ["an escape", "\x1b[0m"]])("a key split by %s is hidden before a reply is kept and when a message is shown", (_name, split) => {
+    const turn = finished(`Use to${split}ken=opaquecredential9f8e7d6c please`, `Set to${split}ken=opaquecredential9f8e7d6c\nDone.`);
+    const kept = flexibleConversationOf(world.store, T1).find(one => one.turn === turn)!;
+    expect(kept.reply).toBe(`${HIDDEN_LINE}\nDone.`);
+    expect(saidLines(kept.said)).toEqual([HIDDEN_LINE]);
   });
 
   test("with no session here, the thread's window is the conversation so far: the person's messages marked as theirs, then each final reply", () => {

@@ -50,8 +50,14 @@ export function recordFlexibleStartTip(store: Store, input: { turn: string; tip:
   store.handle.prepare("UPDATE flexible_turn_said SET start_tip = ? WHERE turn = ? AND start_tip IS NULL").run(input.tip, input.turn);
 }
 
+/** Whether text looks like a key, as written or as it is shown: invisible characters (zero-width, joiners, direction
+ * marks) and escapes can split a key that cleaning then joins, so both are checked. */
+export function keyShaped(text: string): boolean {
+  return liveSecretHit(text) || liveSecretHit(cleanLiveText(text));
+}
+
 /** A line of the agent's or the person's words as it is kept or shown: a line that looks like a key is hidden. */
-const hiddenIfKey = (line: string): string => liveSecretHit(line) ? HIDDEN_LINE : line;
+const hiddenIfKey = (line: string): string => keyShaped(line) ? HIDDEN_LINE : line;
 
 /** The agent's final reply for its turn (once): lines that look like a key hidden, cut at FLEXIBLE_REPLY_KEPT. */
 export function recordFlexibleReply(store: Store, input: { turn: string; reply: string }): void {
@@ -91,7 +97,7 @@ export function flexibleConversationOf(store: Store, thread: string): FlexibleSa
 /** The person's message as they are shown it: each line cleaned (controls, escapes, bidi out), a line that looks like a
  * key hidden, at most `lines` lines (the rest counted). */
 export function saidLines(said: string, lines = 200): string[] {
-  const all = said.replace(/\r\n?/g, "\n").split("\n").map(one => hiddenIfKey(cleanLiveText(one)).slice(0, LINE_CHARS));
+  const all = said.replace(/\r\n?/g, "\n").split("\n").map(one => cleanLiveText(hiddenIfKey(one)).slice(0, LINE_CHARS));
   while (all.length > 0 && all.at(-1)!.trim() === "") all.pop();
   return all.length <= lines ? all : [...all.slice(0, lines), `(${all.length - lines} more lines)`];
 }
