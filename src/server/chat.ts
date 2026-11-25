@@ -814,7 +814,7 @@ export function createChatHandlers(
         return cardJson ? cardAnswer(200, true, said, null) : redirect(response, chatReturnWithLatest(back));
       } else {
         const chatId = String(req["chat"] ?? "");
-        const sent = host.sendMessage({
+        const sent = await host.sendMessage({
           owner: who.name,
           threadId: chatId,
           requestId: randomBytes(16).toString("hex"),

@@ -375,7 +375,7 @@ describe("DirectChatHost & helpers", () => {
       });
       expect(switched.ok).toBe(true);
 
-      const followUp = host.sendMessage({
+      const followUp = await host.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "4".repeat(32),
@@ -504,7 +504,7 @@ describe("DirectChatHost & helpers", () => {
     expect(prompt).toContain("Hello");
   });
 
-  test("importLegacyDirectChatJson imports Mac chat-threads.json strictly as archived read-only history and refuses writes", () => {
+  test("importLegacyDirectChatJson imports Mac chat-threads.json strictly as archived read-only history and refuses writes", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const legacyPath = join(root, "chat-threads.json");
@@ -549,7 +549,7 @@ describe("DirectChatHost & helpers", () => {
 
       // Even if someone manually clears archived_at and sets clone_path = repo, every write path refuses!
       store.handle.prepare("UPDATE direct_chat_thread SET archived_at = NULL, clone_path = ? WHERE id = ?").run(repo, "a1b2c3d4e5f64789abcd0123456789ab");
-      const sendBlocked = host.sendMessage({
+      const sendBlocked = await host.sendMessage({
         owner: "alex",
         threadId: "a1b2c3d4e5f64789abcd0123456789ab",
         requestId: "9".repeat(32),
@@ -648,7 +648,7 @@ describe("DirectChatHost & helpers", () => {
 
       // 3. Start a second turn that ignores SIGTERM -> stopThread enters stopping state, deleteThread refuses 409,
       //    and after stopGraceMs elapses reconcileRunningTurns escalates to SIGKILL and settles!
-      const second = host.sendMessage({
+      const second = await host.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "7".repeat(32),
@@ -699,7 +699,7 @@ describe("DirectChatHost & helpers", () => {
           return { pid, pgid: pid, startIdentity: null };
         },
       });
-      const third = missingIdHost.sendMessage({
+      const third = await missingIdHost.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "6".repeat(32),
