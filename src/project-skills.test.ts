@@ -11,7 +11,8 @@ import {
   renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fenceFor, runFolders, srtTermsOf } from "./agent-fence.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { openStore, type Store } from "./store.js";
@@ -23,6 +24,7 @@ import { executeLeadTool } from "./lead-tools.js";
 import { chatControlHref } from "./chat-controls.js";
 import {
   changeSkills,
+  checkSkillsManifest,
   conversationSkills,
   freezeSkills,
   githubSkill,
@@ -268,9 +270,23 @@ describe("managed project skills", () => {
     const a = add();
     change(a.sha);
     const run = start();
-    const brief = skillsContext(store, join(root, "evidence"), run);
+    const { text: brief, manifest } = skillsContext(store, join(root, "evidence"), run);
     const json = JSON.parse(brief.slice(brief.indexOf("[{")));
     expect(readFileSync(json[0].skillFile, "utf8")).toBe(main());
+    // Every path the brief names is one the launch's fence reads back inside the denied evidence root: exactly the
+    // manifest's files, rechecked, and never their folder.
+    const checked = checkSkillsManifest(manifest!);
+    if (!checked.ok) throw Error(checked.problem);
+    const named = [json[0].skillFile, join(dirname(json[0].skillFile), "references", "style.md")];
+    expect(checked.files.sort()).toEqual(named.sort());
+    const launch = fenceFor("build", { databaseFile: null, worktree: null, boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [], home: root, extra: [join(root, "evidence")], exactFiles: checked.files });
+    const terms = srtTermsOf(launch.fence, launch.fenceGrants);
+    expect(terms.readConfig.denyOnly).toContain(join(root, "evidence"));
+    for (const path of named) expect(terms.readConfig.allowWithinDeny).toContain(path);
+    expect(terms.readConfig.allowWithinDeny).not.toContain(manifest!.directory);
+    expect(terms.readConfig.allowWithinDeny).not.toContain(dirname(json[0].skillFile));
+    expect(terms.writeConfig.denyWithinAllow).toEqual(expect.arrayContaining(named));
+    expect(brief).toContain("read them with a shell command");
     expect(
       readFileSync(
         join(json[0].skillFile, "..", "references/style.md"),

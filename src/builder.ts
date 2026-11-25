@@ -13,7 +13,7 @@ import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./che
 import { captureCheckConditions, learnRequestFor, recordCheckFacts, type CheckConditions } from "./check-facts.js";
 import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
-import { skillsContext } from "./project-skills.js";
+import { skillsContext, type SkillsManifest } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, sealJson, type PreparedAttempt } from "./check-report.js";
 import { CHECK_LOAD_CAPTURE, CheckLoadWatch, type MachineSample } from "./check-load.js";
@@ -1371,8 +1371,10 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   };
 
   let projectSkillContext: string;
+  // The skills the brief names, and the manifest the launch grants them by (each file, rechecked right before it starts).
+  let projectSkills: SkillsManifest | null;
   try {
-    projectSkillContext = skillsContext(store, root, request.runId);
+    ({ text: projectSkillContext, manifest: projectSkills } = skillsContext(store, root, request.runId));
   } catch (error) {
     return { ok: false, reason: "skills-unavailable", message: `Project skills could not be loaded: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -1728,6 +1730,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
         writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
+        skills: projectSkills,
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -1782,6 +1785,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     clock, fenced: () => fencedMidBuild,
     plan: { proposal, revision: planRevisionNumber, authority, progress: progressState },
     ...(liveSession === null ? {} : { live: { close: liveSession.closeReason, maxTurns: liveSession.maxTurns } }),
+    skills: projectSkills,
   };
   return await settleProviderOutcome(captured, result);
   } finally {
@@ -1860,6 +1864,9 @@ export type CapturedBuild = {
    * one) settles exactly as it always has, and a caller assembling a
    * capture by hand need not know this protocol exists. */
   plan?: PlanBinding;
+  /** The project skills the brief named (project-skills.ts SkillsManifest): a turn that resumes the session gets the
+   * same files, rechecked again at its launch. */
+  skills?: SkillsManifest | null;
   /** A Claude build's live input (live-input.ts): why Toolroll closed its stdin, and its total turn budget. */
   live?: { close: LiveCloseReason | null; maxTurns: number };
 };
@@ -2069,6 +2076,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
 
   const parked = await ingestPark({
     profile: effective.profile,
+    skills: captured.skills ?? null,
     store,
     request,
     agent,
@@ -3239,6 +3247,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
         writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
+        skills: captured.skills ?? null,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3421,6 +3430,8 @@ async function ingestPark(args: {
   /** v24: the sealed profile the dispatch proof passed — repair invocations
    * are paid work under the SAME approval and route from it. */
   profile?: ExecutionProfile;
+  /** The skills the session was told about: its repair turns resume it, so they get the same files. */
+  skills?: SkillsManifest | null;
 }): Promise<
   | { ok: true; park: ParkPackage }
   | { ok: false; problems: Problem[] }
@@ -3585,6 +3596,7 @@ async function ingestPark(args: {
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
         ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile), sandbox: launchSandboxOf(args.profile) }),
+        skills: resumableRepair ? (args.skills ?? null) : null,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,

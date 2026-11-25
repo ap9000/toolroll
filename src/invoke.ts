@@ -52,6 +52,7 @@ import { readDenyPath } from "./project-sandbox.js";
 import { linuxSandboxToolsWords, sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
+import { checkSkillsManifest, type SkillsManifest } from "./skills-manifest.js";
 import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, codexSessionsName, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -206,7 +207,9 @@ export async function invokeAgent(
   runId: number,
   spec: AgentSpec,
   invocation: Omit<Invocation, "model">,
-  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork; writes?: WritesMode; sandbox?: LaunchSandbox },
+  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork; writes?: WritesMode; sandbox?: LaunchSandbox;
+    /** The project skills this launch's brief names (project-skills.ts SkillsManifest): rechecked, then granted file by file. */
+    skills?: SkillsManifest | null },
 ): Promise<InvokeResult> {
   const clock = options.clock ?? (() => new Date());
   if (options.accumulateUsage && (invocation.phase !== "review" || invocation.resumeSession === null)) {
@@ -512,7 +515,11 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexProfile ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : await runFence(store, runId, spec.provider, options.keyHome, codexProfile ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchSandbox ?? LEGACY_SANDBOX, options.skills ?? null);
+  // A skill file that changed since Toolroll wrote it is not granted; the run says so, and the agent works without it.
+  if ("skillsProblem" in fenceOf && fenceOf.skillsProblem !== undefined) {
+    try { store.addRunNote(runId, "Toolroll", `Project skills weren't shared with the agent: ${fenceOf.skillsProblem}.`, clock()); } catch { /* the launch goes on without them either way */ }
+  }
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
@@ -1120,11 +1127,15 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-async function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX): Promise<{ fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string; storageRefused?: true }> {
+async function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, sandbox: LaunchSandbox = LEGACY_SANDBOX, skills: SkillsManifest | null = null): Promise<{ fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string; storageRefused?: true; skillsProblem?: string }> {
+  // The skills this launch was told about, rechecked right before the grant: exactly those files, or none of them.
+  const skillCheck = skills === null || provider === "command" ? null : checkSkillsManifest(skills);
+  const skillFiles = skillCheck?.ok === true ? skillCheck.files : [];
+  const skillsProblem = skillCheck?.ok === false ? { skillsProblem: skillCheck.problem } : {};
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
-    if (databaseFile === null) return { fence: [], fileTools: [], grants: NO_GRANTS };
+    if (databaseFile === null) return { fence: [], fileTools: [], grants: NO_GRANTS, ...skillsProblem };
     const worktree = store.getRun(runId)?.worktree ?? null;
     const home = keyHome === undefined ? {} : { home: keyHome };
     const row = worktree === null ? null : store.getWorktree(worktree);
@@ -1145,7 +1156,7 @@ async function runFence(store: Store, runId: number, provider: AgentSpec["provid
     const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots, storage,
       extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, policy: sandbox.policy, provider,
       // This launch's code map file: exactly that file, read-only, inside the denied state folder. Commands don't get it.
-      ...(provider === "command" ? {} : { exactFile: deliveredFile(store, runId) }),
+      ...(provider === "command" ? {} : { exactFile: deliveredFile(store, runId), exactFiles: skillFiles }),
       // The sealed read denies, and whatever the project lists now too (adding a deny only narrows).
       readDeny: [...new Set([...sandbox.readDeny, ...(row === null ? [] : store.projectSandbox(row.repo).readDeny)])].map(one => readDenyPath(one, keyHome ?? homedir())), machLookup: sandbox.machLookup });
     return {
@@ -1155,6 +1166,7 @@ async function runFence(store: Store, runId: number, provider: AgentSpec["provid
       // The checkout's own Git data (a sign-ins check's network keeps it reachable).
       gitPaths: binding === null ? [] : [binding.gitdir, join(binding.main, ".git")],
       ...(allowed === null || row === null ? {} : { cache: buildCacheFolder(row.repo, keyHome ?? homedir()) }),
+      ...skillsProblem,
     };
   } catch (error) {
     // The storage check's own words: what didn't finish, and which program macOS may need to allow.

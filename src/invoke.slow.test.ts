@@ -19,6 +19,7 @@ import { acquire } from "./claim.js";
 import * as command from "./exec.js";
 import * as fencing from "./agent-fence.js";
 import * as projectTools from "./project-tools.js";
+import { materializeProjectSkills } from "./project-skills.js";
 import type { RunOptions } from "./exec.js";
 vi.mock("./exec.js", { spy: true });
 vi.mock("./agent-fence.js", { spy: true });
@@ -1123,6 +1124,39 @@ describe("checkout Git preflight", () => {
       vi.mocked(fencing.fenceFor).mockClear();
       await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, sandbox: { policy: 2, readDeny: ["~/.ssh"], machLookup: [] } });
       expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({ readDeny: [join(providerHome, ".ssh"), join(providerHome, ".aws")] }));
+    } finally { store.close(); }
+  });
+
+  test("a build's project skills are granted file by file; a skill file changed since it was written is not granted, and the run says so", async () => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    const { manifest } = materializeProjectSkills({ version: 1, revision: 1, identity: "fixture", inheritedFrom: null, test: false, packages: [{ name: "copy", description: "Copy rules", sha: "a".repeat(64), requirements: [], warnings: [],
+      files: [{ path: "SKILL.md", base64: Buffer.from("SKILL-CANARY").toString("base64") }, { path: "references/style.md", base64: Buffer.from("STYLE").toString("base64") }] }] } as never, join(providerHome, ".toolroll", "evidence"), "1");
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      vi.mocked(fencing.fenceFor).mockClear();
+      await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, skills: manifest });
+      const files = manifest!.files.map(one => one.path);
+      expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({ exactFiles: files }));
+      const granted = vi.mocked(fencing.fenceFor).mock.results[0]!.value as ReturnType<typeof realFenceFor>;
+      expect(granted.fenceGrants.exactFiles).toEqual(expect.arrayContaining(files));
+      // Read-only, and never the folder they are in.
+      expect(granted.fenceGrants.readOnly).toEqual(expect.arrayContaining(files));
+      expect(granted.fenceGrants.readable).not.toContain(manifest!.directory);
+      expect(store.notesForRun(runId)).toEqual([]);
+
+      chmodSync(files[0]!, 0o600);
+      writeFileSync(files[0]!, "SWAPPED");
+      store.finishRun(runId, { outcome: "failed", reason: "agent", now: T0 });
+      const next = store.startRun({ taskRef: store.getRun(runId)!.taskRef, leaseId: "probe-lease", runner: RUNNER, branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      vi.mocked(fencing.fenceFor).mockClear();
+      await invokeAgent(store, next, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, skills: manifest });
+      expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({ exactFiles: [] }));
+      expect(store.notesForRun(next).map(one => one.note)).toEqual(["Project skills weren't shared with the agent: A skill file changed after Toolroll prepared it."]);
     } finally { store.close(); }
   });
 

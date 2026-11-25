@@ -2,7 +2,7 @@ import { readSnapshot, REFERENCE_LIMIT, referenceWords } from "./task-source.js"
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import type { ProviderId } from "./contracts/provider.js";
 import { TASK_TEXT_LIMITS } from "./task-text.js";
-import { skillsContext } from "./project-skills.js";
+import { skillsContext, type SkillsManifest } from "./project-skills.js";
 /**
  * The scout (mate arc §10): an agent that reads a repository and delivers
  * a report — never a builder, never a planner. It has no completion, no
@@ -378,8 +378,10 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
 
   const clock = request.clock ?? (() => now);
   let projectSkillContext: string;
+  // The skills the brief names, and the manifest the launch grants them by (each file, rechecked right before it starts).
+  let projectSkills: SkillsManifest | null;
   try {
-    projectSkillContext = skillsContext(store, root, request.runId);
+    ({ text: projectSkillContext, manifest: projectSkills } = skillsContext(store, root, request.runId));
   } catch (error) {
     return { ok: false, kind: "failure", reason: "skills-unavailable", message: `Project skills could not be loaded: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -482,6 +484,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         // The scout reaches the web only through its own public-web proxy and its browser (egress.ts LaunchNetwork
         // `via`): those ports are all its fence leaves open. With no proxy it reaches its provider alone.
         ...(proxy === null ? {} : { network: { via: [portOf(proxy.url), ...(browserServer === null ? [] : [portOf(browserServer.url)])] } }),
+        skills: projectSkills,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -664,7 +667,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
           resumeSession: session,
           ...(structured ? { jsonSchema: SCOUT_OUTPUT_JSON_SCHEMA } : {}),
         },
-        { cwd: worktree, timeoutMs: SHORTEN_TIMEOUT_MS, omitEnv: AGENT_ENV_DENYLIST, ...(agent === undefined ? {} : { runner: agent }), clock },
+        { cwd: worktree, timeoutMs: SHORTEN_TIMEOUT_MS, omitEnv: AGENT_ENV_DENYLIST, skills: projectSkills, ...(agent === undefined ? {} : { runner: agent }), clock },
       );
       if (spoken.kind === "refused" || spoken.outcome.timedOut || spoken.outcome.code !== 0 || !heartbeat(store, request.leaseId, clock()).ok) return null;
       const head = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
