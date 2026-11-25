@@ -1,4 +1,5 @@
 import { secretFolder } from "./tool-secret-store.js";
+import { pendingNetworkRequests } from "./agent-network-request.js";
 import { admitRemoteTerminalRequest, isRemoteTerminalRequest, REMOTE_TUI_READ_ROUTES, sendTerminalConnectionRefusal } from "./terminal-connection.js";
 import { fallbackSettingOf } from "./fallback.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
@@ -540,7 +541,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     canDelete: who.via === "cookie" && store.isInstanceOperator(who.name),
     builds: projectBuildsOf(repo, who),
     access: projectAccessOf(repo),
-    network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo), requests: pendingNetworkRequests(store, repo) },
     fallback: { setting: fallbackSettingOf(store, repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },

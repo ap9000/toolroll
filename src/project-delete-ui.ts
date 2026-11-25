@@ -9,6 +9,7 @@ import { entryMovesOnWords, entryWords, type FallbackSetting } from "./fallback.
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import type { ProjectSandbox } from "./project-sandbox.js";
 import type { ProjectNetwork } from "./egress.js";
+import type { NetworkRequestTerms } from "./agent-network-request.js";
 import type { WritesMode } from "./writes-mode.js";
 import { CHECK_ACCESS_WARNINGS, signInHostsMissing, type CheckAccess } from "./check-access.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
@@ -36,7 +37,7 @@ export type ProjectSettingsView = {
   /** Live view (live-detail.ts): whether running agents' commands and their output show, and whether this person may change it. */
   liveView?: { commands: boolean; canChange: boolean; nonce?: string };
   /** What its builds may reach on the network (egress.ts), and whether this person may change it. */
-  network?: { setting: ProjectNetwork; canChange: boolean };
+  network?: { setting: ProjectNetwork; canChange: boolean; requests?: NetworkRequestTerms[] };
   /** Who takes over when an agent runs out of its plan (fallback.ts), and whether this person may change it. */
   fallback?: { setting: FallbackSetting | null; canChange: boolean };
   /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
@@ -165,8 +166,12 @@ function networkHtml(view: ProjectSettingsView): Html | "" {
     ? note("On a Mac, builds may reach this Mac's local services: test servers, and anything else listening here.")
     : note("On a Mac, builds reach no local services. A project whose tests start a local server needs them on.");
   const codexNote = note("Codex's own command sandbox runs offline unless the network is Open with Full access; use Worktree setup to install dependencies before a Codex build starts.");
+  // An agent's request: the exact change, computed by the server from the setting now; approving sends its digest back.
+  const asks = !network.canChange ? [] : (network.requests ?? []).map(one => html`<div data-agent-request="${one.id}" data-agent-request-digest="${one.digest}" data-agent-request-terms="${JSON.stringify({ id: one.id, repo: one.repo, change: one.change, before: one.before, after: one.after, digest: one.digest, words: one.words })}">\
+<p class="k-note"><b>${one.requester} asks:</b> ${one.words.join(" · ")}</p>${one.why === "" ? "" : note(`Why: ${one.why}`)}${kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: `network-request-${one.id}`,
+    hidden: { repo: one.repo, request: one.id, digest: one.digest }, save: { label: "Approve" }, body: "" })}</div>`);
   return settingsSection({ id: "network", title: "Network", state: setting.mode === "open" ? " · Open" : "", lead: reach,
-    body: joinHtml([local, codexNote, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
+    body: joinHtml([...asks, local, codexNote, !network.canChange ? APPROVER_CHANGES : disclose("Change", kitSectionForm({ proof: "project-network", action: "/settings/project/network", id: "network-form", gate: true, hidden: { repo: view.repo },
       body: joinHtml([
         formRow("This Mac's local services", "Local test servers work, and so does anything else listening on this Mac (a local database, a dev proxy). Linux builds always have local services of their own.",
           switchInput({ id: "network-local", name: "local", label: "Allowed", on: setting.loopback === "any", attrs: { value: "any", "aria-label": "Builds may reach this Mac's local services" } }), "inline"),

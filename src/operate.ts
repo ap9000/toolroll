@@ -11976,7 +11976,11 @@ async function projectNetworkCommand(positional: readonly string[], flags: Map<s
       ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
       summary: parts.join(" · ") || "Update project network policy",
       why: text(flags, "why") ?? text(flags, "request") ?? "",
-      params: { local: next.loopback, mode: next.mode, hosts: next.hosts },
+      // The explicit change is what an approval applies, to the setting as it is then (agent-network-request.ts); the full
+      // next state beside it is only for older Toolroll.app builds, and is never applied by this server.
+      params: { local: next.loopback, mode: next.mode, hosts: next.hosts, change: { add, remove,
+        ...(flags.has("open") ? { mode: "open" as const } : flags.has("allowlist") ? { mode: "allowlist" as const } : {}),
+        ...(local === "any" ? { local: "any" as const } : local === "none" ? { local: "proxy-only" as const } : {}) } },
     }, context.clock());
     return finishFiledRequest(command, req, flags, context);
   }
