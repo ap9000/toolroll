@@ -1,6 +1,6 @@
 /** Actual v177 -> v178 catalog/history/epoch and query-plan contracts; no large benchmark. */
-import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { afterAll, afterEach, expect, test } from "vitest";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -12,21 +12,30 @@ import { V177_SCHEMA } from "./workspace-identity-schema.js";
 import { V178_INDEX, V178_SCHEMA } from "./check-recovery-index-schema.js";
 import { CHECK_RECOVERY_HELD } from "./check-recovery-hold.js";
 const dirs: string[] = [], now = new Date("2026-11-20T00:00:00Z");
+let template177: { dir: string; file: string } | null = null;
 afterEach(() => { for (const p of dirs.splice(0)) rmSync(p, { recursive: true, force: true }); });
+afterAll(() => { if (template177 !== null) { rmSync(template177.dir, { recursive: true, force: true }); template177 = null; } });
 function source177(): string {
+  if (template177 === null) {
+    const baseDir = mkdtempSync(join(tmpdir(), "so-index-178-tpl-"));
+    const baseFile = join(baseDir, "orders.db"), s = openStore(baseFile);
+    s.createTask({ id: "kept", title: "Keep history" }, now);
+    const who = addApprover(s, "synthetic", now); if (!who.ok) throw Error("fixture");
+    for (const phase of ["build", "plan", "review"] as const) s.setPhaseConfig("installation", phase, "codex", "gpt-5-codex", "synthetic", now);
+    s.placeTask(s.refFor("built-in", "kept").id, baseDir, {}, now);
+    const proposed = propose(s, { taskId: "kept", goal: "Keep this exact approval", touches: ["."], acceptance: [{ id: "c1", statement: "Preserve history", how: null, evidence: ["check"] }], now });
+    const approved = approve(s, "kept", "synthetic", now, proposed.digest, who.token);
+    if (!approved.ok) throw Error(`fixture approval: ${approved.reason}`);
+    const token = mintApiToken();
+    s.createApiToken({ id: token.id, account: "synthetic", name: "preserve", secretHash: token.hash, access: "read", expiresAt: "2027-11-20T00:00:00.000Z", by: "synthetic", projects: null, purpose: "api" }, now);
+    s.close(); const db = new DatabaseSync(baseFile);
+    db.exec(`DROP INDEX ${V178_INDEX}; UPDATE schema_version SET version=177`); db.close();
+    template177 = { dir: baseDir, file: baseFile };
+  }
   const folder = mkdtempSync(join(tmpdir(), "so-index-178-")); dirs.push(folder);
-  const file = join(folder, "orders.db"), s = openStore(file);
-  s.createTask({ id: "kept", title: "Keep history" }, now);
-  const who = addApprover(s, "synthetic", now); if (!who.ok) throw Error("fixture");
-  for (const phase of ["build", "plan", "review"] as const) s.setPhaseConfig("installation", phase, "codex", "gpt-5-codex", "synthetic", now);
-  s.placeTask(s.refFor("built-in", "kept").id, folder, {}, now);
-  const proposed = propose(s, { taskId: "kept", goal: "Keep this exact approval", touches: ["."], acceptance: [{ id: "c1", statement: "Preserve history", how: null, evidence: ["check"] }], now });
-  const approved = approve(s, "kept", "synthetic", now, proposed.digest, who.token);
-  if (!approved.ok) throw Error(`fixture approval: ${approved.reason}`);
-  const token = mintApiToken();
-  s.createApiToken({ id: token.id, account: "synthetic", name: "preserve", secretHash: token.hash, access: "read", expiresAt: "2027-11-20T00:00:00.000Z", by: "synthetic", projects: null, purpose: "api" }, now);
-  s.close(); const db = new DatabaseSync(file);
-  db.exec(`DROP INDEX ${V178_INDEX}; UPDATE schema_version SET version=177`); db.close(); return file;
+  const file = join(folder, "orders.db");
+  copyFileSync(template177.file, file);
+  return file;
 }
 function snapshot(file: string) {
   const db = new DatabaseSync(file, { readOnly: true });
@@ -90,7 +99,7 @@ test("current index damage is refused before compatibility replay; poisoned177 i
     db.prepare("UPDATE schema_version SET version=?").run(version);
     db.close(); const originalBytes = readFileSync(file), before = snapshot(file), steps: string[] = [];
     expect(() => openStore(file, { migrationStep: step => steps.push(step) })).toThrow(/action ledger action index/);
-    expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(readFileSync(file)).toEqual(originalBytes);
+    expect(steps).toEqual([]); expect(snapshot(file)).toEqual(before); expect(readFileSync(file).equals(originalBytes)).toBe(true);
   }
 });
 test("-SCHEMA_VERSION is impossible and never changes the source", () => {

@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveExecutable } from "./attest.js";
 import { codingEnvironment } from "./coding-provider.js";
 import { readCodexLimits } from "./codex-limits.js";
 import { claudeLimitsOf, type LimitReading } from "./provider-limits.js";
@@ -53,22 +54,9 @@ export function writeStoredGeminiStatus(databaseFile: string, gemini: GeminiSubs
   renameSync(tmp, path);
 }
 
-function locateBinary(name: string, extraPaths: readonly string[]): string | null {
-  for (const candidate of extraPaths) {
-    if (existsSync(candidate)) return candidate;
-  }
-  const pathEntries = (process.env["PATH"] ?? "").split(":").filter(Boolean);
-  for (const dir of pathEntries) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 export function readClaudeLimits(options: { command?: string; timeoutMs?: number } = {}): Promise<LimitReading | null> {
   return new Promise(resolve => {
-    const home = homedir();
-    const bin = options.command ?? locateBinary("claude", [join(home, ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]);
+    const bin = options.command ?? resolveExecutable("claude");
     if (!bin) {
       resolve(null);
       return;
@@ -125,13 +113,7 @@ export function readClaudeLimits(options: { command?: string; timeoutMs?: number
 export function readGeminiSubscription(options: { command?: string; timeoutMs?: number; now?: Date } = {}): Promise<GeminiSubscriptionStatus> {
   const nowIso = (options.now ?? new Date()).toISOString();
   return new Promise(resolve => {
-    const home = homedir();
-    const bin = options.command ?? locateBinary("agy", [
-      join(home, ".local", "bin", "agy"),
-      join(home, ".gemini", "bin", "agy"),
-      "/opt/homebrew/bin/agy",
-      "/usr/local/bin/agy",
-    ]);
+    const bin = options.command ?? resolveExecutable("agy");
     if (!bin) {
       resolve({
         connected: false,

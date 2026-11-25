@@ -1648,7 +1648,7 @@ pub struct DirectChatShipPreview {
 pub enum DirectChatShipped {
     Ok {
         ok: TrueOnly,
-        ship: DirectChatShipSummary,
+        ship: Box<DirectChatShipSummary>,
         said: String,
     },
     Refused {

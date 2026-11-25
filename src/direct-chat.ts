@@ -4,6 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { readdir, rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { resolveExecutable } from "./attest.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import { scanCustody, type CustodyIO, type LaunchCustody, type ProcessWitness, type ProcRow } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
@@ -653,16 +654,14 @@ export function buildProviderCommand(input: {
   }
 }
 
-export function locateDirectChatBinary(provider: DirectChatProvider, homeDir = homedir()): string | null {
-  const candidates: Record<DirectChatProvider, string[]> = {
-    claude: [`${homeDir}/.local/bin/claude`, "/opt/homebrew/bin/claude", "/usr/local/bin/claude"],
-    codex: [`${homeDir}/.local/bin/codex`, "/opt/homebrew/bin/codex", "/usr/local/bin/codex"],
-    gemini: [`${homeDir}/.local/bin/agy`, `${homeDir}/.gemini/bin/agy`, "/opt/homebrew/bin/agy", "/usr/local/bin/agy"],
-  };
-  for (const candidate of candidates[provider]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
+const DIRECT_CHAT_BINARIES: Record<DirectChatProvider, string> = {
+  claude: "claude",
+  codex: "codex",
+  gemini: "agy",
+};
+
+export function locateDirectChatBinary(provider: DirectChatProvider): string | null {
+  return resolveExecutable(DIRECT_CHAT_BINARIES[provider]);
 }
 
 export function buildSanitizedChildEnv(baseEnv: NodeJS.ProcessEnv = process.env, homeDir = homedir()): NodeJS.ProcessEnv {
