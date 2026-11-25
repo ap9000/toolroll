@@ -202,3 +202,55 @@ describe("send back as the local owner, from the terminal", () => {
     expect(revisions(result.runId)).toEqual([]);
   });
 });
+
+/** Send back and build (everyday-8 #7): from this computer's browser, the local owner's Send back with its box ticked
+ * approves exactly the revision it seals (the displayed notes on the source terms the form was drawn against) in the
+ * same act. Without the box, from anyone else, or when the approval is refused, the revision is planned afresh and waits
+ * for its own approval, as before. */
+describe("Send back and build, from the browser", () => {
+  const scopeOf = (id: string) => world.store.getScope(id)!;
+  // The console's own evidence folder, where the result page reads the saved changes.
+  const web = () => resultFixtures(world, join(world.root, "evidence"));
+  const send = async (session: { cookie: string; csrf: string }, result: { id: string; runId: number }, form: Record<string, string>) =>
+    world.post(`/r/${result.runId}/comment`, session.cookie, { csrf: session.csrf, intent: "revise", note: "Round the tax to cents.", batch: "", source: scopeOf(result.id).digest, ...form });
+
+  test("ticked: the revision is approved in the same act and nothing replans; the same send again is the same revision", async () => {
+    const session = await world.localSession();
+    const result = web().ready("ordinary");
+    expect((await send(session, result, { approve: "1", request: "a".repeat(32) })).status).toBe(303);
+    const made = revisions(result.runId);
+    expect(made).toHaveLength(1);
+    const child = String(made[0]!["id"]);
+    expect(scopeOf(child).approvedDigest).toBe(scopeOf(child).digest);
+    expect(world.store.lookupRef(child)?.plan ?? null).toBeNull();
+    expect((await send(session, result, { approve: "1", request: "a".repeat(32) })).status).toBe(303);
+    expect(revisions(result.runId)).toHaveLength(1);
+  });
+
+  test("not ticked: planned afresh, waiting for its approval", async () => {
+    const session = await world.localSession();
+    const result = web().ready("ordinary");
+    expect((await send(session, result, { request: "b".repeat(32) })).status).toBe(303);
+    const child = String(revisions(result.runId)[0]!["id"]);
+    expect(scopeOf(child).approvedDigest).not.toBe(scopeOf(child).digest);
+    expect(world.store.lookupRef(child)?.plan).not.toBeNull();
+  });
+
+  test("a stale form (the source terms changed since it was drawn) seals nothing and approves nothing", async () => {
+    const session = await world.localSession();
+    const result = web().ready("ordinary");
+    expect((await send(session, result, { approve: "1", request: "c".repeat(32), source: "0".repeat(64) })).status).not.toBe(303);
+    expect(revisions(result.runId)).toHaveLength(0);
+  });
+
+  test("work the local owner can't approve (protected): the yes is refused and it replans", async () => {
+    const session = await world.localSession();
+    const result = web().ready("declared-protected");
+    await send(session, result, { approve: "1", request: "d".repeat(32) });
+    const made = revisions(result.runId);
+    expect(made).toHaveLength(1);
+    const child = String(made[0]!["id"]);
+    expect(scopeOf(child).approvedDigest).not.toBe(scopeOf(child).digest);
+    expect(world.store.lookupRef(child)?.plan).not.toBeNull();
+  });
+});

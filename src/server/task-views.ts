@@ -1277,6 +1277,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       terminal,
       publication,
       pullRequestTo: pullRequestTargetOf(run.id),
+      buildNowOnSendBack: who.via === "cookie" && who.authority === "local-owner" && who.role === "approver",
       publishing: pullRequestTargetOf(run.id) !== null ? "pull-request" : publishingOf(runtime.store, runtime.store.refById(run.taskRef)?.repo ?? null).on ? "other" : "off",
       ciFailing: publication !== null && publication.prNumber !== null && runtime.store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber),
       files,

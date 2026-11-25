@@ -1932,6 +1932,8 @@ export type ResultDetail = {
   pullRequestTo?: string | null;
   /** Where publishing stands: a pull request can be opened, publishing isn't set up, or neither said. Accept never publishes. */
   publishing?: "pull-request" | "off" | "other";
+  /** Send back can approve the revision in the same act (everyday-8 #7): this computer's local owner only. */
+  buildNowOnSendBack?: boolean;
   learning?: Html;
   skillTest?: boolean;
   rootId?: string;
@@ -2383,6 +2385,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
         html`<div class="diff-comment-target"><label>File<input type="text" name="path" placeholder="src/…" aria-label="file" class="mono"></label>`,
         html`<label>Line<input type="text" name="line" placeholder="—" aria-label="line" inputmode="numeric"></label></div></details>`,
+        detail.buildNowOnSendBack === true ? html`<label class="meta result-build-now"><input type="checkbox" name="approve" value="1" data-build-now> Build again right away, on the same terms with these notes</label>` : "",
         html`<div class="result-feedback-actions"><button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" class="quiet" data-save-feedback>Save for later</button></div>`,
       ]), { attrs: { class: "diff-comment-form", id: "comment-form" }, returnTo: o.returnTo, hidden: { tab: o.tab, request: o.requestToken } })
       }</details>`,

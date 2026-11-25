@@ -125,7 +125,7 @@ import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskO
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
 import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
-import { localOwnerRefusal } from "../local-owner.js";
+import { localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
 
@@ -1314,7 +1314,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const typedNote = (body.get("note") ?? "").trim();
     const sentNote = withContext(body.get("context"), typedNote);
     if (body.get("intent") === "revise") {
+      // Send back and build (everyday-8 #7): this computer's local owner, who may approve a plan with no password, says
+      // yes to the revision in the same act; approve() re-proves the approve-plan act and every rule. Anyone else (and
+      // a refusal) keeps the revised plan's own approval.
+      const buildNow = body.get("approve") === "1" && who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
       const result = requestResultChanges(store, evidenceRoot, {
+        ...(buildNow ? { approveNow: (child: string) => withLocalAct("approve-plan", () => {
+          const filed = store.getScope(child);
+          return filed !== null && !approvalOf(filed).approved && approveScope(store, child, who.name, now, filed.digest, "").ok;
+        }) } : {}),
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
         // A browser session is a person's proof; a bearer credential is a machine's.
