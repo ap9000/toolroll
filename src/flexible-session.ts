@@ -1539,3 +1539,11 @@ export async function flexibleThreadChanges(store: Store, input: { thread: strin
 function saveInsteadWords(thread: string): string {
   return `To use its work now, save it as a branch in your repository instead (S on the thread in \`toolroll\`, or \`toolroll thread save ${thread.slice(0, 8)}\`).`;
 }
+
+/** Whether the thread's agent edited files in what this console holds of it (an `edit` step in its records): for the
+ * Diff's words when nothing is committed yet (everyday 9, B2). The records are the agent's own (display only): this
+ * decides nothing, and no git runs in the thread's folder to find out. */
+export function flexibleThreadEdited(sessions: FlexibleSessions, input: { thread: string }): boolean {
+  const session = sessions.threads.get(input.thread);
+  return session !== undefined && session.records.some(one => one.k === "step" && (one as { kind?: unknown }).kind === "edit");
+}

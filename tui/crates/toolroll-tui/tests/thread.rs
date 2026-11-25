@@ -1396,6 +1396,36 @@ fn a_thread_with_nothing_committed_says_so_on_its_diff_tab() {
 }
 
 #[test]
+fn the_diff_tab_reads_the_threads_changes_again_when_its_turn_ends() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    let Some(Effect::FetchThreadDiff(ask)) = fx
+        .iter()
+        .find(|e| matches!(e, Effect::FetchThreadDiff(_)))
+        .cloned()
+    else {
+        panic!("{fx:?}")
+    };
+    app.update(Msg::Diff(ask, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
+    // The turn ends (the agent committed): the thread's facts move, and the Diff is read again without leaving it.
+    let mut done = window();
+    done["live"] = json!(false);
+    done["thread"]["version"] = json!("2222222222222222");
+    done["thread"]["turn"]["status"] = json!("finished");
+    done["window"]["records"] = json!([]);
+    let fx = app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(done))));
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::FetchThreadDiff(a) if a.task == fake::THREAD)),
+        "{fx:?}"
+    );
+}
+
+#[test]
 fn a_reply_right_after_the_turn_is_done_goes_even_before_the_list_is_read_again() {
     // The list still says the turn runs; the thread's own window then says it finished.
     let mut app = thread_app(window());

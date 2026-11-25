@@ -30,7 +30,7 @@ import { laptopShipProblem } from "../flexible-laptop.js";
 import { threadsStatusNote, tidyFlexibleSignIns } from "../flexible-sign-in.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
 import { saveFlexibleBranch } from "../flexible-save.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
+import { admitFlexibleThreadOwner, answerFlexibleRequest, cancelFlexibleThreadShip, closeFlexibleSessions, closeFlexibleThread, continueFlexibleThread, flexibleThreadShipTerms, latestFlexibleShip, sendBackFlexibleThread, shipFlexibleThread, tidyEndedFlexibleThreads, flexibleThreadChangeOf, flexibleThreadEdited, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, flexibleThreadsExist, flexibleWorkOpen, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, flexibleThreadChanges, flexibleThreadTipOf, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { FLEXIBLE_NEXT_WORDS, flexibleReadiness, flexibleStartCard } from "../flexible-start.js";
@@ -296,7 +296,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const changes = await threadChanges(id);
     const turn = Number(store.handle.prepare("SELECT max(seq) AS seq FROM thread_turn WHERE thread = ? AND status <> 'withdrawn'").get(id)?.["seq"] ?? 0);
     if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
-    if (fileParam === null) return sendChecked(response, 200, "resultDiff", threadDiffOf(id, turn, changes));
+    if (fileParam === null) return sendChecked(response, 200, "resultDiff", threadDiffOf(id, turn, changes, { edited: flexibleThreadEdited(flexible, { thread: id }) }));
     const one = threadDiffFileOf(id, turn, changes, Number(fileParam));
     return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }

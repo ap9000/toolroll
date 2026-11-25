@@ -414,6 +414,9 @@ describe("what a thread changed, for its owner to read (never an import)", () =>
     expect(lines).toContain("const after = 1;");
     expect(threadDiffFileOf(thread.id, 2, changes, 99)).toBeNull();
     expect(threadDiffOf(thread.id, 2, { ok: true, none: true }).problem).toMatch(/^No committed changes yet/);
+    // Edited but nothing committed (everyday 9 B2): it says what to ask for; committed work is shown as before.
+    expect(threadDiffOf(thread.id, 2, { ok: true, none: true }, { edited: true }).problem).toMatch(/^The agent has uncommitted edits/);
+    expect(threadDiffOf(thread.id, 2, changes, { edited: true }).problem).toBeNull();
   });
 
   test("a key git copies into a hunk header's function context, or an added line shaped like a file header, is hidden from what the terminal and browser read", () => {
