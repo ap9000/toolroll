@@ -13,6 +13,7 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { recordRunCheckLevel } from "./check-levels.js";
 import { assignmentOf } from "./assignment.js";
+import { FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT } from "./result-follow-ups.js";
 import { mintCoordinator } from "./coordinator.js";
 import { assignmentStatusFacts, headlineOf } from "./task-status.js";
 
@@ -172,6 +173,20 @@ describe("a completion stays complete when the check command changes", () => {
     await complete("t-none");
     store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
     expect(snapshot("t-none").state).toBe("complete");
+  });
+
+  test("Run checks after completing (everyday-9 A2): its own log and receipt never reopen it; any other later evidence does", async () => {
+    const runId = built("t-recheck");
+    await complete("t-recheck");
+    const sealed = receipt("t-recheck");
+    storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.log", Buffer.from("1 failed\n"), FOLLOW_UP_LOG, LATER, { captureStatus: "ok" });
+    storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.json", Buffer.from("{}"), FOLLOW_UP_RECEIPT, LATER, { captureStatus: "ok" });
+    const after = snapshot("t-recheck");
+    expect(after.state).toBe("complete");
+    expect(after.completion?.digest).toBe(sealed);
+    // Something else saved on the result later is changed evidence: not covered by the completion.
+    storeEvidence(store, root(), runId, "structured-output", "other.json", Buffer.from("{}"), "something else", LATER, { captureStatus: "ok" });
+    expect(snapshot("t-recheck").state).not.toBe("complete");
   });
 
   test("changed scope or damaged evidence still reopens it", async () => {

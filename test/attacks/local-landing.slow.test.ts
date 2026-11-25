@@ -29,6 +29,7 @@ import { run as execRun } from "../../src/exec.js";
 import type { Runner } from "../../src/backend.js";
 import { EXIT, runOperate } from "../../src/operate.js";
 import { savePublishing } from "../../src/pull-request-flow.js";
+import { requestFollowUpChecks, runFollowUpCheck } from "../../src/result-follow-ups.js";
 
 const NOW = new Date("2026-11-25T12:00:00.000Z");
 const scratch = useScratch("land");
@@ -153,6 +154,30 @@ describe("land on main: the legitimate path", () => {
     const later = new Date(NOW.getTime() + 2000);
     expect(assignmentOf(store, "t3", later, { principal: "operator", repos: [repo] }, root)?.state).toBe("complete");
     expect(await readLanding(store, "t3", access(), later, options())).toMatchObject({ ok: false, reason: "checks" });
+  });
+
+  test("checks run again after Accept (everyday-9 A2): it stays Complete; a pass lands, a failure blocks Land with the reason", async () => {
+    const heads = { "t-pass": built("t-pass", { "a.txt": "t-pass\n" }).head, "t-fail": built("t-fail", { "a.txt": "t-fail\n" }).head };
+    let tick = 0;
+    for (const [id, command, passes] of [["t-pass", "true && true", true], ["t-fail", "false", false]] as const) {
+      const later = new Date(NOW.getTime() + ++tick * 1000), after = new Date(NOW.getTime() + ++tick * 1000);
+      store.setVerifyCommand({ repo, command, timeoutMs: 60_000, approvedBy: "alex" }, later);
+      const runId = store.runsFor(store.lookupRef(id)!.id)[0]!.id;
+      const asked = requestFollowUpChecks(store, { runId, level: "full", actor: "operator:alex", why: "person" }, after);
+      if (!asked.ok) throw new Error(JSON.stringify(asked));
+      expect(await runFollowUpCheck(store, root, asked.request, { now: () => after }), command).toMatchObject({ state: passes ? "passed" : "failed", head: heads[id] });
+      expect(assignmentOf(store, id, after, { principal: "operator", repos: [repo] }, root)?.state, command).toBe("complete");
+      const read = await readLanding(store, id, access(), after, options());
+      if (passes) {
+        expect(read.ok && "plan" in read && read.plan.checks, command).toBe("passed");
+        if (!read.ok || !("plan" in read)) throw new Error("plan");
+        expect(await land(store, id, { key: read.plan.key, into: "main" }, person, access(), after, options()), command).toMatchObject({ ok: true });
+        expect(git(repo, "show", "main:a.txt")).toBe(id);
+      } else {
+        expect(read, command).toMatchObject({ ok: false, reason: "checks" });
+        expect(!read.ok && read.message, command).toContain("stays Complete");
+      }
+    }
   });
 
   test("not accepted yet: nothing lands", async () => {

@@ -66,6 +66,9 @@ export type LandAuthority = { kind: "person"; who: VerifiedApprover } | { kind: 
 export type LandingPlan = {
   kind: "land" | "undo";
   taskId: string; rootId: string; runId: number; receipt: string;
+  /** land: the completion's digest: today's receipt, or (everyday-9 A2) the one the person accepted, for this same
+   * result, before its checks were run again. Undo: the receipt field's value. */
+  completion: string;
   repo: string; ref: string; branch: string;
   /** The branch's commit now (the expected old value of the swap). */
   old: string;
@@ -331,7 +334,11 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   if (options.undo === true) return readUndo(store, assignment.rootId, project, git, options);
   const receipt = assignment.receipt;
   if (assignment.state !== "complete" || assignment.completion === null || receipt === null) return refuse("not-complete", "Accept it first: only accepted work lands.");
-  if (assignment.completion.digest !== receipt.digest) return refuse("checks", "Its checks read differently since you accepted it. Run checks again, then land it.");
+  // A completion is history (everyday-9 A2): accepted, then its checks run again or their command changed, it stays
+  // Complete under the digest the person accepted, for this same result (the same build, commit and scope). It lands
+  // only on checks that pass on its exact commit now (below); a later failure blocks it, with the reason.
+  const later = assignment.completion.digest !== receipt.digest;
+  if (later && assignment.completion.historical !== true) return refuse("checks", "This result changed since you accepted it. Look at it again, then land it.");
   const candidate = receipt.head;
   if (candidate === null || !OID.test(candidate) || receipt.completionKind === "research-report") return refuse("nothing", "This result has no commit to land.");
   const landed = landingOf(store, assignment.rootId);
@@ -339,13 +346,18 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   // Exactly checked: the sealed receipt's check passed on this commit (verification-evidence.ts binds it to the head), or
   // the project has no check command at all.
   const checks = receipt.checks.status === "passed" ? "passed" as const : !projectCheckSet(store, project.repo) && receipt.checks.status === "not-run" ? "none" as const : null;
-  if (checks === null) return refuse("checks", receipt.checks.status === "failed" ? "Its checks failed. Only work whose checks passed on its exact commit lands." : "Its checks haven't passed on its exact commit. Run checks, then land it.");
+  if (checks === null) {
+    if (receipt.checks.status === "failed") return refuse("checks", later ? `Its checks failed when they ran again after you accepted it (${receipt.checks.detail}). It stays Complete; it can't land until they pass on its exact commit.`
+      : "Its checks failed. Only work whose checks passed on its exact commit lands.");
+    return refuse("checks", later ? "Its checks changed since you accepted it and haven't run on its exact commit since. Run checks (it stays Complete), then land it."
+      : "Its checks haven't passed on its exact commit. Run checks, then land it.");
+  }
   const destination = await destinationOf(store, project, git, options.into);
   if (!destination.ok) return destination;
   // The family's start the reviewed change ran from (task-base.ts), from Toolroll's run record: bound, for the record.
   const run = store.getRun(receipt.runId);
   const base = run === null || run.branch === null ? null : wholeChangeBaseOf(store, run.taskRef, run.branch) ?? run.baseRevision;
-  return planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, candidate, checks,
+  return planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, completion: assignment.completion.digest, candidate, checks,
     bindings: checkBindingsOf(store, project.repo) }, { base, message: squashMessage(store.getTask(receipt.taskId)?.title ?? null, receipt.taskId),
     handedOff: handoffsOf(store, project.repo, assignment.rootId).filter(one => one.candidate === candidate).map(one => one.commit) });
 }
@@ -396,7 +408,7 @@ async function changesOf(git: Git, old: string, candidate: string): Promise<Pick
 }
 
 async function planFor(git: Git, project: { repo: string; common: string }, destination: { ref: string; recorded: boolean },
-  fixed: Pick<LandingPlan, "kind" | "taskId" | "rootId" | "runId" | "receipt" | "candidate" | "checks" | "reverts" | "bindings">,
+  fixed: Pick<LandingPlan, "kind" | "taskId" | "rootId" | "runId" | "receipt" | "completion" | "candidate" | "checks" | "reverts" | "bindings">,
   squashing: { base: string | null; message: string; handedOff: readonly string[] } | null = null): Promise<LandingRead> {
   const { ref } = destination;
   const branch = ref.slice("refs/heads/".length);
@@ -442,7 +454,7 @@ async function readUndo(store: Store, rootId: string, project: { repo: string; c
   const landed = landingOf(store, rootId);
   if (landed === null || landed.undone) return refuse("nothing", landed === null ? "This task hasn't landed, so there's nothing to undo." : "This landing was already undone.");
   const destination = { ref: landed.intent.ref, recorded: true };
-  return planFor(git, project, destination, { kind: "undo", taskId: landed.intent.task, rootId, runId: landed.intent.run, receipt: landed.intent.key, candidate: null, checks: "none",
+  return planFor(git, project, destination, { kind: "undo", taskId: landed.intent.task, rootId, runId: landed.intent.run, receipt: landed.intent.key, completion: landed.intent.key, candidate: null, checks: "none",
     reverts: { intent: landed.intent.id, old: landed.intent.old, landed: landed.intent.commit }, bindings: checkBindingsOf(store, project.repo) });
 }
 
@@ -582,7 +594,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
       if (publishesThroughPullRequests(store, plan.repo)) return refuse("pull-requests", PULL_REQUESTS_INSTEAD);
       if (plan.kind === "land") {
         const again = assignmentOf(store, taskId, now, { principal: "operator", repos: access.repos }, options.root);
-        if (again?.state !== "complete" || again.receipt?.digest !== plan.receipt || again.completion?.digest !== plan.receipt) return refuse("stale", "This result changed since you looked. Look again, then land it.");
+        if (again?.state !== "complete" || again.receipt?.digest !== plan.receipt || again.completion?.digest !== plan.completion) return refuse("stale", "This result changed since you looked. Look again, then land it.");
       } else {
         const landed = landingOf(store, plan.rootId);
         if (landed === null || landed.undone || landed.intent.id !== plan.reverts?.intent) return refuse("stale", "That landing changed since you looked. Look again.");
