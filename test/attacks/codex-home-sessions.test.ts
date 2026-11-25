@@ -74,11 +74,13 @@ describe("attack: a Codex build reaching other sessions or the operator's sign-i
       `cat "${ownTask}/2026/rollout-own.jsonl" 2>/dev/null || echo kept-folder-read-refused`,
       `cat "${codex}/sessions/2026/11/25/rollout-operator.jsonl" 2>/dev/null || echo operator-session-read-refused`,
       `touch "${codex}/sessions/2026/11/25/planted.jsonl" 2>/dev/null || echo operator-session-write-refused`,
-      `printf x >> "${codex}/auth.json" 2>/dev/null || echo operator-sign-in-write-refused`,
+      `printf x >> "${codex}/auth.json" 2>/dev/null && echo operator-sign-in-write-masked || echo operator-sign-in-write-refused`,
     ].join("\n"), fence, grants, { cwd: dir });
+    // On Linux the runtime hides the read-denied Codex home under an empty in-memory folder of the launch's own: the write
+    // lands there and reaches nothing (the real sign-in is proved unchanged below). On a Mac it is refused outright.
     expect(lines(result), result.stderr).toEqual([
       "own-earlier-session", "own-written", "other-task-read-refused", "other-task-write-refused", "kept-folder-read-refused",
-      "operator-session-read-refused", "operator-session-write-refused", "operator-sign-in-write-refused",
+      "operator-session-read-refused", "operator-session-write-refused", process.platform === "linux" ? "operator-sign-in-write-masked" : "operator-sign-in-write-refused",
     ]);
     expect(readFileSync(join(codex, "auth.json"), "utf8")).toBe('{"operator":"sign-in"}');
   });
