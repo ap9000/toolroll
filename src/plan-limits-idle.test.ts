@@ -93,4 +93,28 @@ describe("no idle model spend (everyday 9, B3)", () => {
     expect(loop.total()).toBe(quiet);
     loop.stop();
   });
+
+  test("work that ends while Codex's limits are read starts no Claude probe afterwards (round 1, finding 5)", async () => {
+    vi.useFakeTimers({ now: START });
+    store = openStore(":memory:");
+    let release: (reading: LimitReading | null) => void = () => {};
+    let claude = 0, codex = 0;
+    const stop = scheduleLimitsLoop(store, {
+      signedIn: async () => true,
+      readCodex: () => { codex += 1; return new Promise(resolve => { release = resolve; }); },
+      readers: { claude: async () => { claude += 1; return null; }, gemini: async now => ({ connected: false, provider: "antigravity", topModel: null, modelCount: 0, observedAt: now.toISOString(), note: null }) },
+      clock: () => new Date(),
+    });
+    const at = new Date().toISOString();
+    store.handle.prepare("INSERT INTO task (id, title, state, created_at, updated_at) VALUES ('t3', 'Short job', 'running', ?, ?)").run(at, at);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(codex).toBe(1);
+    // The work ends while Codex's read is still out; then the read comes back.
+    store.handle.prepare("UPDATE task SET state = 'done', updated_at = ? WHERE id = 't3'").run(new Date().toISOString());
+    release(null);
+    await vi.advanceTimersByTimeAsync(6 * HOUR);
+    expect(claude).toBe(0);
+    expect(codex).toBe(1);
+    stop();
+  });
 });

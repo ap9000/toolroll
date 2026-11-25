@@ -227,18 +227,22 @@ function geminiNeedsRefresh(databaseFile: string | null, now: Date): boolean {
 export async function refreshSubscriptions(
   store: Store,
   databaseFile: string | null,
-  options: { forceClaude?: boolean; forceGemini?: boolean; skipCodex?: boolean; now?: Date; readers?: SubscriptionReaders } = {},
+  options: { forceClaude?: boolean; forceGemini?: boolean; skipCodex?: boolean; now?: Date; readers?: SubscriptionReaders;
+    /** The limits loop's demand, asked right before each provider starts: false starts nothing (plan-limits-demand.ts). */
+    stillWanted?: () => boolean } = {},
 ): Promise<SubscriptionRefreshResult> {
   const readers = options.readers ?? {};
+  const gate = <T>(read: () => Promise<T>, otherwise: () => Promise<T>): Promise<T> => options.stillWanted?.() === false ? otherwise() : read();
   const now = options.now ?? new Date();
   const shouldCodex = options.skipCodex !== true && billingOf("codex") === "subscription";
   const shouldClaude = options.forceClaude === true || claudeNeedsRefresh(store, now);
   const shouldGemini = options.forceGemini === true || geminiNeedsRefresh(databaseFile, now);
+  const readGemini = shouldGemini && options.stillWanted?.() !== false;
 
   const [codex, claude, gemini] = await Promise.all([
-    shouldCodex ? (readers.codex ?? (() => readCodexLimits()))() : Promise.resolve(null),
-    shouldClaude ? (readers.claude ?? (() => readClaudeLimits()))() : Promise.resolve(null),
-    shouldGemini
+    shouldCodex ? gate(() => (readers.codex ?? (() => readCodexLimits()))(), () => Promise.resolve(null)) : Promise.resolve(null),
+    shouldClaude ? gate(() => (readers.claude ?? (() => readClaudeLimits()))(), () => Promise.resolve(null)) : Promise.resolve(null),
+    readGemini
       ? (readers.gemini ?? (at => readGeminiSubscription({ now: at })))(now)
       : Promise.resolve(
           (databaseFile !== null ? readStoredGeminiStatus(databaseFile) : null) ?? {
@@ -254,7 +258,7 @@ export async function refreshSubscriptions(
 
   if (codex !== null) store.recordProviderLimits(codex, now);
   if (claude !== null) store.recordProviderLimits(claude, now);
-  if (databaseFile !== null && shouldGemini) writeStoredGeminiStatus(databaseFile, gemini);
+  if (databaseFile !== null && readGemini) writeStoredGeminiStatus(databaseFile, gemini);
 
   return { claude, codex, gemini, refreshedAt: now.toISOString() };
 }

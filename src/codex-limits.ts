@@ -110,12 +110,15 @@ export function startCodexLimits(store: Store, signedIn: () => Promise<boolean>,
  * command, at most every few minutes while signed out: provider-connection.ts), asked only once nothing else stands in
  * the way. A Codex run started in the last few hours and not finished keeps the sign-in to itself.
  */
-export async function codexLimitsPass(store: Store, seams: { signedIn: () => Promise<boolean>; stopped?: () => boolean; read?: () => Promise<LimitReading | null> }): Promise<"read" | "skipped"> {
+export async function codexLimitsPass(store: Store, seams: { signedIn: () => Promise<boolean>; stopped?: () => boolean; read?: () => Promise<LimitReading | null>;
+  /** Asked again right before the read (the sign-in check awaits): false (the work ended meanwhile) starts nothing. */
+  stillWanted?: () => boolean }): Promise<"read" | "skipped"> {
   if (billingOf("codex") !== "subscription") return "skipped";
   const recent = new Date(Date.now() - 6 * 3_600_000).toISOString();
   if (store.handle.prepare("SELECT 1 AS live FROM run WHERE provider = 'codex' AND outcome IS NULL AND started_at > ? LIMIT 1").get(recent) !== undefined) return "skipped";
   if (directChatRunning(store, "codex", new Date())) return "skipped";
   if (!(await seams.signedIn())) return "skipped";
+  if (seams.stillWanted?.() === false) return "skipped";
   const reading = await (seams.read ?? (() => readCodexLimits()))();
   if (reading !== null && seams.stopped?.() !== true) store.recordProviderLimits(reading, new Date());
   return "read";
@@ -146,9 +149,12 @@ export function scheduleLimitsLoop(store: Store, seams: { signedIn: () => Promis
     busy = true;
     lastPass = now.getTime();
     try {
-      await codexLimitsPass(store, { signedIn: seams.signedIn, stopped: () => stopped, ...(seams.readCodex === undefined ? {} : { read: seams.readCodex }) });
-      if (!stopped) {
-        await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true, now: clock(), ...(seams.readers === undefined ? {} : { readers: seams.readers }) });
+      // Demand is read again after every await and right before each provider starts (B3 round 1, finding 5): work that
+      // ended while Codex's sign-in or limits were read starts no Claude probe.
+      const stillWanted = () => !stopped && planLimitsWanted(store, clock());
+      await codexLimitsPass(store, { signedIn: seams.signedIn, stopped: () => stopped, stillWanted, ...(seams.readCodex === undefined ? {} : { read: seams.readCodex }) });
+      if (stillWanted()) {
+        await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true, now: clock(), stillWanted, ...(seams.readers === undefined ? {} : { readers: seams.readers }) });
       }
     } catch {
       // The next pass tries again.
