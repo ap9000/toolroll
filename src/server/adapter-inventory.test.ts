@@ -70,7 +70,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.project-network=project-network",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
-    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
+    "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan", "task.act.land=land-task",
     "task.act.pause=pause-run", "task.act.plan=request-plan", "task.act.reply=answer-question", "task.act.requeue=retry-build", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
     // The Mac app's Change Models for one task (local-owner-acts.ts localOwnerChangeAgents re-checks this exact act; an
     // approved task stays approved only when nothing but the picked agent changed).

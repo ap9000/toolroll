@@ -122,7 +122,8 @@ import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,
 import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
 import { releaseSheetPage } from "./render-release.js";
-import { approvalFactsNow } from "./kit.js";
+import { approvalFactsNow, btn } from "./kit.js";
+import { land, landingWords, readLanding } from "../local-landing.js";
 import { localOwnerRefusal } from "../local-owner.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
@@ -3089,6 +3090,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.retry-review": taskAct("retry-review"),
     "task.act.complete": taskAct("complete"),
     "task.act.merge": taskMerge,
+    "task.act.land": taskLand,
     "task.act.recheck-stopped": taskRecheckStopped,
     "task.act.stop": taskAct("stop"),
     "task.act.stop-carrying": taskAct("stop-carrying"),
@@ -3224,6 +3226,44 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       default: return refused("Reload the page and try again.");
     }
+  }
+
+  /**
+   * Land on main (everyday-8 #1, local-landing.ts): accepted work onto the project's own branch. Without a key the page
+   * shows exactly what would land where, and its one button posts that key back; with the key it lands exactly that, or
+   * says what changed. The same authority as Accept: an approver's browser session, or this computer's local owner
+   * acting as exactly land-task (the route admits that act; the writer checks it again).
+   */
+  async function taskLand(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, posted, now } = ctx;
+    const act = matchTaskPath(url.pathname, "/land$");
+    if (act === null) return noPage(who, response);
+    const body = readForm(posted, CONSOLE_FORMS.taskLand);
+    if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo lands nothing.", 403);
+    const ref = store.lookupRef(act.taskId);
+    if (ref === null || !visible(ref.repo) || who.via !== "cookie") return refuse(response, who, 404, "no such task", "/");
+    const local = who.authority === "local-owner";
+    const principal = local ? null : leadPrincipal(who);
+    if (!local && principal === null) return taskScreen(response, who, act.taskId, "Your access changed. Sign in again.", 403);
+    const access = { repos: principal !== null ? principal.repos : store.knownRepos().filter(repo => store.accountCanAccess(who.name, repo)) };
+    const undo = body.get("undo") === "1";
+    const into = (body.get("into") ?? "").trim();
+    const options = { root: evidenceRoot, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) };
+    const key = body.get("key") ?? "";
+    if (key === "") {
+      const read = await readLanding(store, act.taskId, access, now, options);
+      if (!read.ok) return taskScreen(response, who, act.taskId, read.message, 409);
+      if (!("plan" in read)) return redirect(response, taskHref(act.taskId));
+      const plan = read.plan;
+      const title = undo ? "Undo landing" : `Land on ${plan.branch}`;
+      return sendScreen(response, 200, screen(title, html`<h1>${title}</h1>${landingWords(plan).map(line => html`<p>${line}</p>`)}${postForm(`${taskHref(act.taskId)}/land`,
+        html`${btn(undo ? "Undo it" : "Land it", { variant: "primary", type: "submit" })} ${btn("Cancel", { variant: "ghost", href: taskHref(act.taskId) })}`,
+        { hidden: { key: plan.key, ...(into === "" ? {} : { into }), ...(undo ? { undo: "1" } : {}) } })}`, { chrome: chromeFor(ref.repo, "tasks") }));
+    }
+    const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
+    if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
+    if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
+    return redirect(response, taskHref(act.taskId));
   }
 
   return { registrations, workListFor, showOrder, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };

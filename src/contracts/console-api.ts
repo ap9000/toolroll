@@ -305,6 +305,8 @@ export const CONSOLE_FORMS = {
   taskApprove: formContract("POST /t/<task>/approve", ["return", "digest", "token", "nonce", "rebuild", "sheet"]),
   taskAcceptProof: formContract("POST /t/<task>/accept-proof", ["run", "note", "return"]),
   taskComplete: formContract("POST /t/<task>/complete", ["receipt", "run", "accept", "note", "publish", "return"]),
+  // Land on main (everyday-8 #1): the key the page showed (absent: show what lands), another branch, or an undo.
+  taskLand: formContract("POST /t/<task>/land", ["key", "into", "undo"]),
   taskStop: formContract("POST /t/<task>/stop", ["run", "return"]),
   // Pause, or Pause and steer when a note rides along, or Resume (mode=resume): the exact run shown, and the page's own
   // request id.

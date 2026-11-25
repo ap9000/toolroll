@@ -159,6 +159,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
+import { land, landingWords, readLanding, settleUnfinished, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -934,7 +935,7 @@ export const TASK_ACTIONS = [
   "add", "new", "keep", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
-  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first",
+  "checks", "add-tests", "archive", "restore", "tidy", "ship", "ready", "handover", "before-after", "failing-first", "land",
 ] as const;
 export const PUBLISH_ACTIONS = ["setup", "grant", "revoke", "status", "unblock", "rearm", "merge", "refire"] as const;
 export const CONFIG_ACTIONS = ["show", "set", "clear"] as const;
@@ -9677,6 +9678,8 @@ function taskAction(
       return reviewTaskCommand(rest, flags, context);
     case "accept":
       return acceptTaskProof(rest, flags, context);
+    case "land":
+      return landTaskCommand(rest, flags, context);
     case "repair":
       return repairTaskCommand(rest, flags, context);
     case "route":
@@ -15891,4 +15894,58 @@ async function requestCommand(
   }
 
   return fail(context.write, context.json, "request", "usage", "Use `toolroll request [list [--all]|show <id>|wait <id>|decline <id>|clear]`.", EXIT.usage);
+}
+
+/**
+ * `task land <id>` (everyday-8 #1, local-landing.ts): accepted work onto the project's own branch, for a project with no
+ * pull requests. Bare, it says exactly what would happen (the branch, the folder, the commits, the check) and the key
+ * that pins it; `--yes --key <k>` does exactly that, refused when anything changed since. `--undo` reverts a landing with
+ * a new commit. The same authority as Accept: a password typed now, or this computer's local owner in the workbench.
+ */
+async function landTaskCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, now } = context;
+  const command = "task land";
+  const allowed = new Set(["json", "db", "into", "undo", "yes", "key", "as", "token", "token-file", "token-env"]);
+  for (const key of flags.keys()) if (!allowed.has(key)) return fail(write, json, command, "usage", `--${key} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0] === undefined ? undefined : resolveTaskId(store, positional[0]);
+  if (id === undefined || positional.length !== 1) return fail(write, json, command, "usage", "Use `toolroll task land <id>` to see what landing does, then `--yes --key <key>` to land it.", EXIT.usage);
+  const into = text(flags, "into"), undo = flags.get("undo") === true, yes = flags.get("yes") === true, key = text(flags, "key");
+  if (flags.has("into") && into === undefined) return fail(write, json, command, "usage", "--into needs a branch name.", EXIT.usage);
+  if (undo && into !== undefined) return fail(write, json, command, "usage", "--undo lands on the branch the work landed on; it takes no --into.", EXIT.usage);
+  const local = currentLocalOwner();
+  const localRepos = local === null ? null : store.knownRepos().filter(repo => store.accountCanAccess(local.account, repo));
+  const options = { root: context.evidenceRoot, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) };
+  if (!yes) {
+    if (key !== undefined) return fail(write, json, command, "usage", "--key goes with --yes.", EXIT.usage);
+    const read = await readLanding(store, id, { repos: localRepos }, now, options);
+    if (!read.ok) return fail(write, json, command, read.reason, read.message, EXIT.refused);
+    if (!("plan" in read)) return succeed(write, json, command, { landed: read.landed }, () => [`${id} · Landed on ${read.landed.ref.replace(/^refs\/heads\//, "")} (${read.landed.commit.slice(0, 7)}).`]);
+    const plan = read.plan;
+    return succeed(write, json, command, { plan }, () => [...landingWords(plan),
+      `To ${undo ? "undo it" : "land it"}: toolroll task land ${id}${into === undefined ? "" : ` --into ${into}`}${undo ? " --undo" : ""} --yes --key ${plan.key}`]);
+  }
+  if (key === undefined || !/^[0-9a-f]{16}$/.test(key)) return fail(write, json, command, "usage", "--yes needs the --key `toolroll task land` showed you, so what lands is what you read.", EXIT.usage);
+  let authority: LandAuthority;
+  if (local !== null) authority = { kind: "local" };
+  else {
+    const acting = await askCredentials(flags, context);
+    const ref = store.lookupRef(id);
+    const repos = store.knownRepos().filter(repo => acting !== null && store.accountCanAccess(acting.name, repo));
+    const proved = acting === null || ref === null ? null : verifyApproverByPassword(store, acting.name, acting.token, repos);
+    if (proved === null || !proved.ok) return fail(write, json, command, "unauthenticated", "Landing work is a person's act: it takes `--as <you>` and your password.", EXIT.refused);
+    authority = { kind: "person", who: proved.who };
+  }
+  const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
+  await settleUnfinished(store, store.lookupRef(id)?.repo ?? "", now, { root: context.evidenceRoot });
+  const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
+  if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
+  return succeed(write, json, command, { landing: result }, () => [
+    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : ""}.`,
+    ...(result.warning === null ? [] : [result.warning])]);
+}
+
+/** A task id as typed: exact first, else the one generated `task-` id it names (everyday-8 #9). Never a prefix match. */
+function resolveTaskId(store: Store, typed: string): string {
+  if (store.getTask(typed) !== null || typed.startsWith("task-")) return typed;
+  return store.getTask(`task-${typed}`) !== null ? `task-${typed}` : typed;
 }

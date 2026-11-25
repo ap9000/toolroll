@@ -189,6 +189,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.resume-arm": "resume-run",
   "task.act.resume": "resume-run",
   "task.act.complete": "complete-task",
+  "task.act.land": "land-task",
   // Local-owner slice 2: the plan button, on its own road (tasks.ts localOwnerPlan; the writer checks this exact act).
   "task.act.plan": "request-plan",
   // Local-owner slice 3: Retry, on its own road (tasks.ts localOwnerRetry; the writer checks this exact act).
@@ -884,6 +885,8 @@ post("tasks", "task.act.route", `^\\/t\\/${TASK}\\/route$`, { project: "task", l
 post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { project: "task", limited: "resource", sample: "/t/one/retry-review" });
 post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
+// Land on main (everyday-8 #1, local-landing.ts): a person's act from a browser, the same authority as Accept.
+post("tasks", "task.act.land", `^\\/t\\/${TASK}\\/land$`, { project: "task", limited: "resource", sample: "/t/one/land", ...approver("Only an approver can land work.") });
 // Check again: Toolroll looks at this computer's processes for a finished build once more (stop-proof.ts). Nobody
 // vouches that a build stopped, so no password: it only asks for the look the worker makes on its own anyway.
 post("tasks", "task.act.recheck-stopped", `^\\/t\\/${TASK}\\/recheck-stopped$`, { project: "task", limited: "resource", sample: "/t/one/recheck-stopped", ...approver("Only an approver can have Toolroll check a build again.") });

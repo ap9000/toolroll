@@ -1079,7 +1079,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(first.panel!.requirements).toMatchObject({ met: 0, total: 1, yours: 1, missed: 0 });
     // Checks didn't run and the item is still the person's: Accept without your check, naming it, and that it finishes the task.
     expect(first.decision).toEqual({ label: "Accept without your check", ready: false, why: `Not checked yet: “${statement}”.`,
-      effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or send it back.",
+      effect: "Finishes the task. Then you can land it on your project's branch.", sentence: "Review the change, then accept it or send it back.",
       base: { label: "Accept without checks", ready: false, why: "Checks didn't run." } });
     // One request: the completion carries the acceptance the person's check owes.
     expect(first.complete).toMatchObject({ action: "/t/t-look/complete", run, accept: { note: null } });

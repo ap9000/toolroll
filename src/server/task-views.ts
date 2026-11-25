@@ -1,4 +1,6 @@
 import { localOwnerRefusal } from "../local-owner.js";
+import { landedWords, landingOf } from "../local-landing.js";
+import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
 import { familyInWebReach } from "../findings.js";
@@ -762,6 +764,19 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     return { taskId: rootId, view: null, offer: { taskId: receipt.taskId, runId: receipt.runId, digest: receipt.digest }, target };
   }
 
+  /** Land on main (everyday-8 #1): for a project with no pull requests, whether this task's accepted work landed on its
+   * branch, and whether this viewer may land or undo it now. Null when neither applies. */
+  function taskLandingOf(taskId: string, who: Who): TaskLanding | null {
+    const repo = runtime.store.lookupRef(taskId)?.repo ?? null;
+    if (repo === null || publishingOf(runtime.store, repo).on) return null;
+    const rootId = runtime.familyOf(taskId)?.root.id ?? taskId;
+    const record = landingOf(runtime.store, rootId);
+    const complete = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot)?.state === "complete";
+    if (!complete && record === null) return null;
+    const person = who.via === "cookie" && who.role === "approver";
+    return { taskId: rootId, landed: landedWords(runtime.store, rootId), canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone };
+  }
+
   /** What went wrong with the latest finished attempt (whatever its outcome, never an older failure). */
   function failureOf(runs: readonly Run[], assignment: AssignmentSnapshot | null, readLog = true): FailureExplanation {
     const last = latestFinishedAttempt(runs);
@@ -917,6 +932,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       : html`<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="${extras.result.selected.taskId}">${extras.result.html}</section>`;
     if (resultSection !== null && extras.result!.current) (presentedData as { resultSection?: Html | null }).resultSection = resultSection;
     (presentedData as { pullRequest?: TaskPullRequest | null }).pullRequest = taskPullRequestOf(taskId, who);
+    (presentedData as { landing?: TaskLanding | null }).landing = taskLandingOf(taskId, who);
     // The thread reads the whole family: the original, its revisions, and every attempt across them.
     if (family !== null && family.problem === null) {
       presentedData.family = { root: { id: family.root.id, title: family.root.title, createdAt: family.root.createdAt, goal: runtime.store.getScope(family.root.id)?.goal ?? null },
