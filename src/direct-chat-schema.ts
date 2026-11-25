@@ -86,3 +86,75 @@ export const V181_TABLE_DDLS = Object.freeze({
 } as const);
 
 export const V181_STEPS = Object.freeze(["direct-chat-tables"] as const);
+
+export const V182_ARTIFACT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS direct_chat_artifact (
+  id           TEXT PRIMARY KEY,
+  thread_id    TEXT NOT NULL REFERENCES direct_chat_thread(id) ON DELETE CASCADE,
+  turn_id      TEXT REFERENCES direct_chat_turn(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL CHECK (kind IN ('output', 'attachment')),
+  filename     TEXT NOT NULL,
+  mime_type    TEXT NOT NULL,
+  byte_size    INTEGER NOT NULL,
+  sha256       TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  source_path  TEXT,
+  created_at   TEXT NOT NULL
+);
+`;
+
+export const V182_SHIP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS direct_chat_ship (
+  id                  TEXT PRIMARY KEY,
+  thread_id           TEXT NOT NULL REFERENCES direct_chat_thread(id) ON DELETE CASCADE,
+  seq                 INTEGER NOT NULL,
+  repo                TEXT NOT NULL,
+  mode                TEXT NOT NULL CHECK (mode IN ('ship', 'keep-branch')),
+  base_sha            TEXT NOT NULL,
+  candidate_sha       TEXT NOT NULL,
+  branch              TEXT NOT NULL,
+  terms_json          TEXT NOT NULL,
+  approved_by         TEXT NOT NULL,
+  approved_generation INTEGER NOT NULL,
+  local_generation    INTEGER,
+  proof               TEXT NOT NULL CHECK (proof IN ('password-now', 'solo-session', 'local-owner')),
+  state               TEXT NOT NULL CHECK (state IN ('kept', 'imported', 'armed', 'completed', 'merging', 'merged', 'cancelled', 'failed')),
+  task_id             TEXT,
+  scope_digest        TEXT,
+  pr_url              TEXT,
+  detail              TEXT,
+  created_at          TEXT NOT NULL,
+  state_at            TEXT NOT NULL,
+  UNIQUE (thread_id, seq)
+);
+`;
+
+export const V182_INDEX_SCHEMA = `
+CREATE INDEX IF NOT EXISTS idx_direct_chat_artifact_thread
+  ON direct_chat_artifact(thread_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_direct_chat_artifact_turn
+  ON direct_chat_artifact(turn_id)
+  WHERE turn_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_direct_chat_ship_thread
+  ON direct_chat_ship(thread_id, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_direct_chat_ship_active
+  ON direct_chat_ship(state)
+  WHERE state IN ('armed', 'completed', 'merging');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_chat_ship_task
+  ON direct_chat_ship(task_id)
+  WHERE task_id IS NOT NULL;
+`;
+
+export const V182_SCHEMA = `${V182_ARTIFACT_SCHEMA}${V182_SHIP_SCHEMA}${V182_INDEX_SCHEMA}`;
+
+export const V182_TABLES = Object.freeze([
+  "direct_chat_artifact",
+  "direct_chat_ship",
+] as const);
+
+export const V182_TABLE_DDLS = Object.freeze({
+  direct_chat_artifact: V182_ARTIFACT_SCHEMA,
+  direct_chat_ship: V182_SHIP_SCHEMA,
+} as const);
+
+export const V182_STEPS = Object.freeze(["direct-chat-phase1b-tables"] as const);

@@ -1504,6 +1504,35 @@ pub struct DirectChatTool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatArtifact {
+    pub id: String,
+    pub kind: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub url: String,
+    pub source_path: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatShipSummary {
+    pub id: String,
+    pub seq: i64,
+    pub mode: String,
+    pub branch: String,
+    pub candidate_sha: String,
+    pub state: String,
+    pub task_id: Option<String>,
+    pub pr_url: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
+    pub state_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DirectChatTurn {
     pub id: String,
     pub seq: i64,
@@ -1515,6 +1544,7 @@ pub struct DirectChatTurn {
     pub created_at: String,
     pub finished_at: Option<String>,
     pub tools: Vec<DirectChatTool>,
+    pub artifacts: Vec<DirectChatArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1560,7 +1590,60 @@ pub struct DirectChatDetail {
     pub room: String,
     pub thread: DirectChatSummary,
     pub turns: Vec<DirectChatTurn>,
+    pub attachments: Vec<DirectChatArtifact>,
+    pub ships: Vec<DirectChatShipSummary>,
     pub diff: DirectChatDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatShipPreview {
+    pub version: u32,
+    pub thread_id: String,
+    pub mode: String,
+    pub can_auto_merge: bool,
+    pub auto_merge_reason: Option<String>,
+    pub terms_digest: String,
+    pub title: String,
+    pub goal: String,
+    pub base_sha: String,
+    pub branch: String,
+    pub changed_files: Vec<String>,
+    pub check_command: Option<String>,
+    pub github_repo: Option<String>,
+    pub github_base: Option<String>,
+    pub merge_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatShipped {
+    Ok {
+        ok: TrueOnly,
+        ship: DirectChatShipSummary,
+        said: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatAttached {
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        ok: TrueOnly,
+        artifact: DirectChatArtifact,
+        clone_relative_path: Option<String>,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

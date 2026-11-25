@@ -9,6 +9,17 @@ import { type CustodyIO, type ProcessWitness } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
 import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
 import { projectName } from "./project.js";
+import {
+  captureNewWorkspaceArtifacts,
+  extractBase64ImagesFromLine,
+  getDirectChatArtifact,
+  listArtifactsForThread,
+  saveDirectChatArtifact,
+  snapshotWorkspaceImages,
+  type DirectChatArtifactRow,
+  type WorkspaceImageSnapshot,
+} from "./direct-chat-artifacts.js";
+import { applyMainDirtyPatch, cloneSafeNodeModules, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
 import type { Store } from "./store.js";
 
 export type DirectChatProvider = "claude" | "codex" | "gemini";
@@ -86,6 +97,7 @@ export type DirectChatTurnRow = {
   createdAt: string;
   finishedAt: string | null;
   tools: DirectChatToolRow[];
+  artifacts: DirectChatArtifactRow[];
 };
 
 export type DirectChatThreadRow = {
@@ -540,6 +552,7 @@ function defaultPrepareClone(input: { repo: string; clonePath: string; branch: s
     // clone may have no origin
   }
   hardenedGit(["checkout", "-b", input.branch, baseSha], input.clonePath);
+  cloneSafeNodeModules({ repo: input.repo, clonePath: input.clonePath });
   return { baseSha, mainDirtyFiles };
 }
 
@@ -618,6 +631,7 @@ export class DirectChatHost {
   private readonly partialLineByTurn = new Map<string, string>();
   private readonly sawTerminalByTurn = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
+  private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(store: Store, seams: DirectChatHostSeams) {
@@ -674,7 +688,7 @@ export class DirectChatHost {
     return out;
   }
 
-  getThread(owner: string, threadId: string): { thread: DirectChatThreadRow; turns: DirectChatTurnRow[]; diff: DirectChatDiffSummary; running: boolean } | null {
+  getThread(owner: string, threadId: string): { thread: DirectChatThreadRow; turns: DirectChatTurnRow[]; attachments: DirectChatArtifactRow[]; diff: DirectChatDiffSummary; running: boolean } | null {
     if (!HEX32.test(threadId)) return null;
     const raw = this.store.handle
       .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
@@ -682,9 +696,70 @@ export class DirectChatHost {
     if (!raw) return null;
     const thread = this.mapThread(raw);
     const turns = this.loadTurns(thread.id);
+    const attachments = listArtifactsForThread(this.store, thread.id).filter(a => a.kind === "attachment");
     const diff = this.readDiffFn({ clonePath: thread.clonePath, baseSha: thread.baseSha });
     const running = turns.some(t => t.status === "running");
-    return { thread, turns, diff, running };
+    return { thread, turns, attachments, diff, running };
+  }
+
+  attachFile(input: {
+    owner: string;
+    threadId: string;
+    filename: string;
+    mimeType?: string | undefined;
+    bytes: Buffer;
+  }): { ok: true; artifact: DirectChatArtifactRow; cloneRelativePath: string | null } | { ok: false; status: number; error: string } {
+    if (!HEX32.test(input.threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
+    const raw = this.store.handle
+      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
+      .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
+    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
+    const thread = this.mapThread(raw);
+    const saved = saveDirectChatArtifact(this.store, {
+      stateRoot: this.stateRoot,
+      threadId: thread.id,
+      turnId: null,
+      kind: "attachment",
+      filename: input.filename,
+      mimeType: input.mimeType,
+      bytes: input.bytes,
+      clonePath: thread.clonePath,
+      now: this.now(),
+    });
+    if (saved.ok) {
+      this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(this.now().toISOString(), thread.id);
+      this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
+    }
+    return saved;
+  }
+
+  getArtifact(owner: string, threadId: string, artifactId: string): { row: DirectChatArtifactRow; bytes: Buffer } | null {
+    if (!HEX32.test(threadId) || !HEX32.test(artifactId)) return null;
+    const raw = this.store.handle
+      .prepare(`SELECT id FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
+      .get(threadId, owner) as Record<string, unknown> | undefined;
+    if (!raw) return null;
+    return getDirectChatArtifact(this.store, this.stateRoot, threadId, artifactId);
+  }
+
+  applyMainEdits(owner: string, threadId: string): ApplyMainDirtyPatchResult {
+    if (!HEX32.test(threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
+    const raw = this.store.handle
+      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
+      .get(threadId, owner) as Record<string, unknown> | undefined;
+    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
+    const thread = this.mapThread(raw);
+    const active = this.store.handle
+      .prepare(`SELECT id FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
+      .get(thread.id) as Record<string, unknown> | undefined;
+    if (active) return { ok: false, status: 409, error: "Stop the running turn before bringing in uncommitted edits." };
+    const res = applyMainDirtyPatch({ repo: thread.repo, clonePath: thread.clonePath });
+    if (res.ok) {
+      const stamp = this.now().toISOString();
+      this.store.handle.prepare(`UPDATE direct_chat_thread SET main_dirty_files = NULL, updated_at = ? WHERE id = ?`).run(stamp, thread.id);
+      this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
+    }
+    return res;
   }
 
   createThread(input: {
@@ -831,6 +906,7 @@ export class DirectChatHost {
       sessionId: thread.providerSessionId,
     });
     const stamp = this.now().toISOString();
+    const beforeImages = snapshotWorkspaceImages(thread.clonePath);
 
     let launched: { pid: number; pgid: number; startIdentity: string | null };
     try {
@@ -845,6 +921,7 @@ export class DirectChatHost {
     } catch (error) {
       return { ok: false, status: 500, error: `Could not launch ${thread.provider}: ${error instanceof Error ? error.message : String(error)}` };
     }
+    this.preTurnImages.set(turnId, beforeImages);
 
     const switchedFrom = this.pendingSwitchFrom.get(thread.id) ?? null;
     this.pendingSwitchFrom.delete(thread.id);
@@ -995,6 +1072,17 @@ export class DirectChatHost {
     // Drain once more after exit so the tail is never missed.
     this.drainTurnLog(thread, this.reloadTurn(turn.id) ?? turn, true);
     const latest = this.reloadTurn(turn.id) ?? turn;
+    const preImages = this.preTurnImages.get(turn.id);
+    if (preImages !== undefined) {
+      captureNewWorkspaceArtifacts(this.store, {
+        stateRoot: this.stateRoot,
+        threadId: thread.id,
+        turnId: turn.id,
+        clonePath: thread.clonePath,
+        before: preImages,
+        now: this.now(),
+      });
+    }
     if (latest.status !== "running") {
       this.cleanupTurnState(turn.id);
       this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
@@ -1076,6 +1164,19 @@ export class DirectChatHost {
 
     for (const line of parts) {
       if (line.trim() === "") continue;
+      const embeddedImages = extractBase64ImagesFromLine(line, thread.provider);
+      for (const img of embeddedImages) {
+        saveDirectChatArtifact(this.store, {
+          stateRoot: this.stateRoot,
+          threadId: thread.id,
+          turnId: turn.id,
+          kind: "output",
+          filename: img.filename,
+          bytes: img.bytes,
+          now: this.now(),
+        });
+        changed = true;
+      }
       const events = parseDirectChatLine(line, thread.provider);
       for (const ev of events) {
         changed = true;
@@ -1192,6 +1293,7 @@ export class DirectChatHost {
   private cleanupTurnState(turnId: string): void {
     this.partialLineByTurn.delete(turnId);
     this.sawTerminalByTurn.delete(turnId);
+    this.preTurnImages.delete(turnId);
   }
 
   private reloadTurn(turnId: string): DirectChatTurnRow | null {
@@ -1210,6 +1312,9 @@ export class DirectChatHost {
     const turnId = String(raw["id"]);
     const toolRows = this.store.handle
       .prepare(`SELECT * FROM direct_chat_tool WHERE turn_id = ? ORDER BY ordinal ASC`)
+      .all(turnId) as Record<string, unknown>[];
+    const artifactRows = this.store.handle
+      .prepare(`SELECT * FROM direct_chat_artifact WHERE turn_id = ? ORDER BY created_at ASC`)
       .all(turnId) as Record<string, unknown>[];
     return {
       id: turnId,
@@ -1237,6 +1342,19 @@ export class DirectChatHost {
         detail: String(t["detail"] ?? ""),
         status: String(t["status"]) as DirectChatToolStatus,
         updatedAt: String(t["updated_at"]),
+      })),
+      artifacts: artifactRows.map(a => ({
+        id: String(a["id"]),
+        threadId: String(a["thread_id"]),
+        turnId: typeof a["turn_id"] === "string" ? a["turn_id"] : null,
+        kind: a["kind"] === "attachment" ? "attachment" : "output",
+        filename: String(a["filename"]),
+        mimeType: String(a["mime_type"]),
+        byteSize: Number(a["byte_size"]),
+        sha256: String(a["sha256"]),
+        storagePath: String(a["storage_path"]),
+        sourcePath: typeof a["source_path"] === "string" ? a["source_path"] : null,
+        createdAt: String(a["created_at"]),
       })),
     };
   }

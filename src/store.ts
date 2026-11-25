@@ -38,7 +38,7 @@ import { V175_OBJECTS, V175_SCHEMA, V175_STEPS } from "./flexible-interactive-sc
 import { V176_ADDED_COLUMNS, V176_STEPS, V176_SCHEMA, V176_OBJECTS } from "./subagent-backup-schema.js";
 import { V178_STEPS, V178_SCHEMA, V178_INDEX } from "./check-recovery-index-schema.js";
 import { V180_SCHEMA, V180_STEPS } from "./agent-change-schema.js";
-import { V181_SCHEMA, V181_STEPS, V181_TABLE_DDLS, V181_TABLES } from "./direct-chat-schema.js";
+import { V181_SCHEMA, V181_STEPS, V181_TABLE_DDLS, V181_TABLES, V182_SCHEMA, V182_STEPS, V182_TABLE_DDLS, V182_TABLES } from "./direct-chat-schema.js";
 import { V177_STEPS, V177_SCHEMA, V177_OBJECTS, WORKSPACE_ID_PATTERN, RECOVERY_GENERATION_PATTERN, type WorkspaceIdentity } from "./workspace-identity-schema.js";
 import { V174_OBJECTS, V174_SCHEMA, V174_STEPS } from "./flexible-everyday-schema.js";
 import { endThreadAuthorityFor } from "./flexible-authority-end.js";
@@ -1288,7 +1288,7 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // carries over untouched and indexes are restored in place.
 // v180 adds, and changes no saved row (docs/plans/mac-change-models.md): a task's pending model change, picked by the
 // laptop owner while a run held it (pending_agent_change, a new table; agent-change-schema.ts). V180_SCHEMA.
-export const SCHEMA_VERSION = 181;
+export const SCHEMA_VERSION = 182;
 export const V179_STEPS = Object.freeze(["antigravity-provider"] as const);
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
@@ -1430,7 +1430,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
 // v178 adds only the action/id ledger index; saved rows, IDs, identity and authority are unchanged.
 // v179 widens provider CHECK constraints to include 'antigravity'; saved rows, IDs, identity and authority are unchanged.
 // v180 adds only a new table (pending_agent_change); saved rows, IDs, identity and authority are unchanged.
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1694,7 +1694,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number] | (typeof V178_STEPS)[number] | (typeof V179_STEPS)[number] | (typeof V180_STEPS)[number] | (typeof V181_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number] | (typeof V178_STEPS)[number] | (typeof V179_STEPS)[number] | (typeof V180_STEPS)[number] | (typeof V181_STEPS)[number] | (typeof V182_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2104,7 +2104,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS, V178_STEPS, V180_STEPS, V181_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS, V178_STEPS, V180_STEPS, V181_STEPS, V182_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6103,7 +6103,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db) ?? pendingAgentChangeShapeProblem(db) ?? directChatShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db) ?? pendingAgentChangeShapeProblem(db) ?? directChatShapeProblem(db) ?? directChatPhase1bShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6650,6 +6650,10 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const directChatDamaged = directChatShapeProblem(db);
   if (directChatDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatDamaged}`);
   step("direct-chat-tables");
+  db.exec(V182_SCHEMA);
+  const directChatPhase1bDamaged = directChatPhase1bShapeProblem(db);
+  if (directChatPhase1bDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatPhase1bDamaged}`);
+  step("direct-chat-phase1b-tables");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -28364,6 +28368,17 @@ function directChatShapeProblem(db: Database): string | null {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
     if (row === undefined) return `the direct chat table ${name} is missing`;
     if (canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(V181_TABLE_DDLS[name].trim().replace(/;$/, "")).trim()) {
+      return `the direct chat table ${name} has an unknown shape`;
+    }
+  }
+  return null;
+}
+
+function directChatPhase1bShapeProblem(db: Database): string | null {
+  for (const name of V182_TABLES) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+    if (row === undefined) return `the direct chat table ${name} is missing`;
+    if (canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(V182_TABLE_DDLS[name].trim().replace(/;$/, "")).trim()) {
       return `the direct chat table ${name} has an unknown shape`;
     }
   }

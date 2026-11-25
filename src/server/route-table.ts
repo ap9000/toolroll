@@ -215,6 +215,10 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.stop": "direct-chat-stop",
   "direct-chat.model": "direct-chat-manage",
   "direct-chat.delete": "direct-chat-manage",
+  "direct-chat.attach": "direct-chat-send",
+  "direct-chat.apply-main": "direct-chat-manage",
+  "direct-chat.ship": "direct-chat-ship",
+  "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
   "term.agent-sign-in": "agent-sign-in",
@@ -442,6 +446,8 @@ get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sampl
 const DIRECT_CHAT = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Direct chat is for local solo operators.", "/") } as const;
 get("tasks", "direct-chat.list", "/engine/direct-chats", DIRECT_CHAT);
 get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}` });
+get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
+get("tasks", "direct-chat.ship-preview", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-preview$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-preview` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
 // approver's read from a browser; a GET that writes nothing.
@@ -661,6 +667,10 @@ post("tasks", "direct-chat.send", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/mes
 post("tasks", "direct-chat.stop", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/stop$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/stop` });
 post("tasks", "direct-chat.model", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/model$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/model` });
 post("tasks", "direct-chat.delete", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/delete$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/delete` });
+post("tasks", "direct-chat.attach", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/attachments$`, { ...DIRECT_CHAT, bodyCap: 16 * 1024 * 1024, sample: `/engine/direct-chats/${"a".repeat(32)}/attachments` });
+post("tasks", "direct-chat.apply-main", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/apply-main-edits$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/apply-main-edits` });
+post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/ship` });
+post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
 // visit (docs/plans/get-side-effects.md): the session's changes, and the review-for-shipping preview.

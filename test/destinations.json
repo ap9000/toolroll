@@ -35,6 +35,8 @@
     "engine.chat": {"kind":"data","path":"/engine/chat","what":"Lead chat history and state (JSON, the engine API)"},
     "direct-chat.list": {"kind":"data","path":"/engine/direct-chats","what":"the person's own direct-chat threads on this computer (JSON, the engine API)"},
     "direct-chat.detail": {"kind":"data","path":"/engine/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","what":"one direct-chat thread's turns, tools, and isolated clone diff (JSON, the engine API)"},
+    "direct-chat.artifact": {"kind":"data","path":"/engine/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/artifacts/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","what":"a direct-chat captured image or user attachment (binary/text, sandboxed CSP)"},
+    "direct-chat.ship-preview": {"kind":"data","path":"/engine/direct-chats/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ship-preview","what":"hashed Ship terms preview for a direct-chat thread's isolated clone (JSON, the engine API)"},
     "search": {"kind":"page","path":"/search"},
     "inbox": {"kind":"alias","path":"/inbox","to":"/"},
     "work": {"kind":"alias","path":"/work","to":"/"},

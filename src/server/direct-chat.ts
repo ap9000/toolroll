@@ -1,7 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { checkEngineResponse, ENGINE_API_VERSION, type DirectChatDetail, type DirectChatMutated, type DirectChatsList, type DirectChatStarted, type EngineResponseName } from "../contracts/engine-api.js";
+import {
+  checkEngineResponse,
+  ENGINE_API_VERSION,
+  type DirectChatAttached,
+  type DirectChatDetail,
+  type DirectChatMutated,
+  type DirectChatShipped,
+  type DirectChatShipPreviewRead,
+  type DirectChatsList,
+  type DirectChatStarted,
+  type EngineResponseName,
+} from "../contracts/engine-api.js";
 import {
   DirectChatHost,
   directChatPostureOf,
@@ -11,6 +22,15 @@ import {
   type DirectChatProvider,
   type DirectChatThreadRow,
 } from "../direct-chat.js";
+import { imageContentHeaders, type DirectChatArtifactRow } from "../direct-chat-artifacts.js";
+import {
+  cancelDirectChatShip,
+  executeDirectChatShip,
+  listDirectChatShips,
+  previewDirectChatShip,
+  type DirectChatShipMode,
+  type DirectChatShipRow,
+} from "../direct-chat-ship.js";
 import { soloNow } from "../install-mode.js";
 import { compareInstalled, laptopServiceDefinition } from "../laptop-service.js";
 import type { LiveBus } from "../live-bus.js";
@@ -23,7 +43,8 @@ import { rereadBrowser } from "./live.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
 
-const THREAD_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})(?:\/(messages|stop|model|delete))?$/;
+const THREAD_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})(?:\/(messages|stop|model|delete|attachments|apply-main-edits|ship-preview|ship|ship-cancel))?$/;
+const ARTIFACT_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})\/artifacts\/([a-f0-9]{32})$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 type CookieWho = Extract<Who, { via: "cookie" }>;
@@ -157,6 +178,35 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     };
   }
 
+  function toArtifactView(row: DirectChatArtifactRow) {
+    return {
+      id: row.id,
+      kind: row.kind,
+      filename: row.filename,
+      mimeType: row.mimeType,
+      byteSize: row.byteSize,
+      url: `/engine/direct-chats/${row.threadId}/artifacts/${row.id}`,
+      sourcePath: row.sourcePath,
+      createdAt: row.createdAt,
+    };
+  }
+
+  function toShipSummary(row: DirectChatShipRow) {
+    return {
+      id: row.id,
+      seq: row.seq,
+      mode: row.mode,
+      branch: row.branch,
+      candidateSha: row.candidateSha,
+      state: row.state,
+      taskId: row.taskId,
+      prUrl: row.prUrl,
+      detail: row.detail,
+      createdAt: row.createdAt,
+      stateAt: row.stateAt,
+    };
+  }
+
   async function list(ctx: HandlerContext): Promise<void> {
     const gate = admit(ctx, null);
     if (!gate.ok) {
@@ -196,6 +246,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       return checked(ctx, 403, "refusal", { error: "Your sign-in changed. Sign in again." });
     }
     const lastStatus = found.turns.at(-1)?.status ?? null;
+    const ships = listDirectChatShips(store, found.thread.id).map(toShipSummary);
     return checked(ctx, 200, "directChatDetail", {
       version: ENGINE_API_VERSION,
       room: `direct-chat:${found.thread.id}`,
@@ -216,7 +267,10 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
         createdAt: turn.createdAt,
         finishedAt: turn.finishedAt,
         tools: turn.tools,
+        artifacts: turn.artifacts.map(toArtifactView),
       })),
+      attachments: found.attachments.map(toArtifactView),
+      ships,
       diff: found.diff,
     } satisfies DirectChatDetail);
   }
@@ -346,6 +400,184 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     return checked(ctx, 200, "directChatMutated", { ok: true, said: "Chat removed." } satisfies DirectChatMutated);
   }
 
+  async function artifact(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return checked(ctx, gate.status, "refusal", { error: gate.error });
+    const match = ARTIFACT_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const artifactId = match?.[2] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "refusal", { error: "Artifact not found." });
+    }
+    const loaded = host.getArtifact(gate.who.name, threadId, artifactId);
+    if (loaded === null) {
+      return checked(ctx, 404, "refusal", { error: "Artifact not found." });
+    }
+    ctx.response.writeHead(200, {
+      ...imageContentHeaders(loaded.row),
+      "content-length": String(loaded.bytes.length),
+    });
+    ctx.response.end(loaded.bytes);
+  }
+
+  async function attach(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-send");
+    if (!gate.ok) return checked(ctx, gate.status, "directChatAttached", { ok: false, error: gate.error } satisfies DirectChatAttached);
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "directChatAttached", { ok: false, error: "Chat thread not found." } satisfies DirectChatAttached);
+    }
+    const filename = ctx.posted.get("filename") ?? "attachment";
+    const mimeType = ctx.posted.get("mimeType") ?? undefined;
+    const dataBase64 = ctx.posted.get("dataBase64") ?? "";
+    if (dataBase64.trim() === "") {
+      return checked(ctx, 400, "directChatAttached", { ok: false, error: "Missing attachment payload." } satisfies DirectChatAttached);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(dataBase64, "base64");
+    } catch {
+      return checked(ctx, 400, "directChatAttached", { ok: false, error: "Invalid base64 attachment payload." } satisfies DirectChatAttached);
+    }
+    const saved = host.attachFile({
+      owner: gate.who.name,
+      threadId,
+      filename,
+      mimeType,
+      bytes,
+    });
+    if (!saved.ok) {
+      return checked(ctx, saved.status, "directChatAttached", { ok: false, error: saved.error } satisfies DirectChatAttached);
+    }
+    return checked(ctx, 200, "directChatAttached", {
+      ok: true,
+      artifact: toArtifactView(saved.artifact),
+      cloneRelativePath: saved.cloneRelativePath,
+    } satisfies DirectChatAttached);
+  }
+
+  async function applyMain(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-manage");
+    if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
+    }
+    const res = host.applyMainEdits(gate.who.name, threadId);
+    if (!res.ok) {
+      return checked(ctx, res.status, "directChatMutated", { ok: false, error: res.error } satisfies DirectChatMutated);
+    }
+    return checked(ctx, 200, "directChatMutated", { ok: true, said: res.said } satisfies DirectChatMutated);
+  }
+
+  async function shipPreview(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, null);
+    if (!gate.ok) return checked(ctx, gate.status, "refusal", { error: gate.error });
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "refusal", { error: "Chat thread not found." });
+    }
+    const modeParam = ctx.url.searchParams.get("mode");
+    const mode: DirectChatShipMode | undefined = modeParam === "ship" || modeParam === "keep-branch" ? modeParam : undefined;
+    const title = ctx.url.searchParams.get("title") ?? undefined;
+    const goal = ctx.url.searchParams.get("goal") ?? undefined;
+    const res = previewDirectChatShip(store, { owner: gate.who.name, threadId, mode, title, goal });
+    if (!res.ok) return checked(ctx, res.status, "refusal", { error: res.error });
+    const { preview } = res;
+    return checked(ctx, 200, "directChatShipPreview", {
+      version: ENGINE_API_VERSION,
+      threadId: preview.threadId,
+      mode: preview.mode,
+      canAutoMerge: preview.canAutoMerge,
+      autoMergeReason: preview.autoMergeReason,
+      termsDigest: preview.termsDigest,
+      title: preview.title,
+      goal: preview.goal,
+      baseSha: preview.baseSha,
+      branch: preview.branch,
+      changedFiles: preview.changedFiles,
+      checkCommand: preview.checkCommand,
+      githubRepo: preview.githubRepo,
+      githubBase: preview.githubBase,
+      mergeSummary: preview.mergeSummary,
+    } satisfies DirectChatShipPreviewRead);
+  }
+
+  async function ship(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-ship");
+    if (!gate.ok) return checked(ctx, gate.status, "directChatShipped", { ok: false, error: gate.error } satisfies DirectChatShipped);
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "directChatShipped", { ok: false, error: "Chat thread not found." } satisfies DirectChatShipped);
+    }
+    const modeRaw = ctx.posted.get("mode") ?? "keep-branch";
+    if (modeRaw !== "ship" && modeRaw !== "keep-branch") {
+      return checked(ctx, 400, "directChatShipped", { ok: false, error: "Choose ship or keep-branch." } satisfies DirectChatShipped);
+    }
+    const termsDigest = ctx.posted.get("termsDigest") ?? "";
+    if (!HEX32.test(termsDigest)) {
+      return checked(ctx, 400, "directChatShipped", { ok: false, error: "Missing Ship terms digest." } satisfies DirectChatShipped);
+    }
+    const title = ctx.posted.get("title") ?? undefined;
+    const goal = ctx.posted.get("goal") ?? undefined;
+    const password = ctx.posted.get("password") ?? undefined;
+    const localOwner = gate.who.authority === "local-owner" && gate.who.session.localGeneration !== null
+      ? { localGeneration: gate.who.session.localGeneration }
+      : null;
+
+    const res = executeDirectChatShip(store, {
+      owner: gate.who.name,
+      threadId,
+      mode: modeRaw,
+      termsDigest,
+      title,
+      goal,
+      password,
+      localOwner,
+    });
+    if (!res.ok) {
+      return checked(ctx, res.status, "directChatShipped", {
+        ok: false,
+        error: res.error,
+        ...(res.code ? { code: res.code } : {}),
+      } satisfies DirectChatShipped);
+    }
+    deps.bus.publish({ revision: `dc:${threadId}:ship:${Date.now()}` });
+    const said = res.ship.mode === "keep-branch"
+      ? `Saved branch ${res.ship.branch} (${res.ship.candidateSha.slice(0, 8)}).`
+      : `Shipped snapshot ${res.ship.candidateSha.slice(0, 8)} — verifying checks before auto-merge.`;
+    return checked(ctx, 200, "directChatShipped", {
+      ok: true,
+      ship: toShipSummary(res.ship),
+      said,
+    } satisfies DirectChatShipped);
+  }
+
+  async function shipCancel(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-manage");
+    if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const found = host.getThread(gate.who.name, threadId);
+    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+      return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
+    }
+    const shipId = ctx.posted.get("shipId") ?? "";
+    const res = cancelDirectChatShip(store, { owner: gate.who.name, threadId, shipId });
+    if (!res.ok) return checked(ctx, res.status, "directChatMutated", { ok: false, error: res.error } satisfies DirectChatMutated);
+    deps.bus.publish({ revision: `dc:${threadId}:ship-cancel:${Date.now()}` });
+    return checked(ctx, 200, "directChatMutated", { ok: true, said: "Auto-merge cancelled." } satisfies DirectChatMutated);
+  }
+
   return {
     host,
     registrations: handlersOf("tasks", {
@@ -356,6 +588,12 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       "direct-chat.stop": stop,
       "direct-chat.model": switchModel,
       "direct-chat.delete": remove,
+      "direct-chat.artifact": artifact,
+      "direct-chat.attach": attach,
+      "direct-chat.apply-main": applyMain,
+      "direct-chat.ship-preview": shipPreview,
+      "direct-chat.ship": ship,
+      "direct-chat.ship-cancel": shipCancel,
     }),
     close(): void {
       host.close();

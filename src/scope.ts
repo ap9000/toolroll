@@ -5,6 +5,7 @@ import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { sessionStandsIn } from "./install-mode.js";
 import { laptopShipSealAllowed } from "./flexible-laptop.js";
+import { directChatShipSealAllowed } from "./direct-chat-laptop.js";
 import { agentOnlyChange } from "./agent-change-check.js";
 import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
@@ -1587,12 +1588,14 @@ export function approve(
       // password (flexible-laptop.ts, read here in the seal's transaction); every rule below still applies.
       const laptopShip = local !== null && local.act === "ship-thread" && chat === undefined && fastStart === undefined
         && laptopShipSealAllowed(store, { by, taskId, candidate: store.getScope(taskId)?.candidate ?? null });
+      const directChatShip = local !== null && local.act === "direct-chat-ship" && chat === undefined && fastStart === undefined
+        && directChatShipSealAllowed(store, { by, taskId, candidate: store.getScope(taskId)?.candidate ?? null });
       // The Mac app's model pick (docs/plans/mac-change-models.md): the change-task-agents act re-seals only this
       // person's own standing yes that the pick itself staled, and only when nothing but the picked agent changed since.
       const agentChange = local !== null && local.act === "change-task-agents" && chat === undefined && fastStart === undefined
         && agentChangeSealAllowed(store, by, taskId);
-      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined) && !laptopShip && !agentChange)) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
-      const eligible = laptopShip ? localWorkEligible(store, by, taskId, { act: "ship" }) : localApprovalEligible(store, by, taskId);
+      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined) && !laptopShip && !directChatShip && !agentChange)) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
+      const eligible = (laptopShip || directChatShip) ? localWorkEligible(store, by, taskId, { act: "ship" }) : localApprovalEligible(store, by, taskId);
       if (!eligible.ok) return { ok: false as const, reason: "policy" as const, message: eligible.message };
     }
 

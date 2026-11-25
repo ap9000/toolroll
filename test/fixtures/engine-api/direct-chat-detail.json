@@ -40,7 +40,46 @@
           "status": "done",
           "updatedAt": "2026-10-20T10:00:45.000Z"
         }
+      ],
+      "artifacts": [
+        {
+          "id": "11111111111111111111111111111111",
+          "kind": "output",
+          "filename": "navbar-after.png",
+          "mimeType": "image/png",
+          "byteSize": 4210,
+          "url": "/engine/direct-chats/0123456789abcdef0123456789abcdef/artifacts/11111111111111111111111111111111",
+          "sourcePath": "screenshots/navbar-after.png",
+          "createdAt": "2026-10-20T10:01:20.000Z"
+        }
       ]
+    }
+  ],
+  "attachments": [
+    {
+      "id": "22222222222222222222222222222222",
+      "kind": "attachment",
+      "filename": "mockup.png",
+      "mimeType": "image/png",
+      "byteSize": 8192,
+      "url": "/engine/direct-chats/0123456789abcdef0123456789abcdef/artifacts/22222222222222222222222222222222",
+      "sourcePath": ".toolroll-attachments/22222222-mockup.png",
+      "createdAt": "2026-10-20T09:59:50.000Z"
+    }
+  ],
+  "ships": [
+    {
+      "id": "33333333333333333333333333333333",
+      "seq": 1,
+      "mode": "keep-branch",
+      "branch": "toolroll/chat-01234567",
+      "candidateSha": "9999999999999999999999999999999999999999",
+      "state": "kept",
+      "taskId": null,
+      "prUrl": null,
+      "detail": null,
+      "createdAt": "2026-10-20T10:02:00.000Z",
+      "stateAt": "2026-10-20T10:02:00.000Z"
     }
   ],
   "diff": {

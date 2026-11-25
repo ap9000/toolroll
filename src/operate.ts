@@ -3,6 +3,7 @@ import { clearResolvedAgentRequests, fileAgentRequest, listAgentRequests, resolv
 import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usage.js";
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
+import { directChatArmedPass } from "./direct-chat-ship.js";
 import { closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -7181,6 +7182,13 @@ async function runWatchLoop(args: {
           if (shipped.ok && shipped.cancelled > 0) progress(`watch: stopped ${shipped.cancelled} Flexible merge(s) whose terms no longer held`);
         } catch (error) {
           progress(`watch: the Flexible ship pass failed — ${describe(error)}; retrying on its next interval`);
+        }
+        try {
+          const dcShipped = await directChatArmedPass(store, { root: context.evidenceRoot, ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
+          if (dcShipped.merged > 0) progress(`watch: merged ${dcShipped.merged} Direct Chat result(s) whose checks passed`);
+          if (dcShipped.cancelled > 0) progress(`watch: stopped ${dcShipped.cancelled} Direct Chat merge(s) whose terms no longer held`);
+        } catch (error) {
+          progress(`watch: the Direct Chat ship pass failed — ${describe(error)}; retrying on its next interval`);
         }
       }
       if (!stopping() && store.openedPublications().length > 0) {

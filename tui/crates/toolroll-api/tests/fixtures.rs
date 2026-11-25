@@ -61,6 +61,11 @@ const FIXTURES: &[(&str, &str)] = &[
     ("direct-chat-start-refused.json", "directChatStarted"),
     ("direct-chat-mutated.json", "directChatMutated"),
     ("direct-chat-mutate-refused.json", "directChatMutated"),
+    ("direct-chat-ship-preview.json", "directChatShipPreview"),
+    ("direct-chat-shipped.json", "directChatShipped"),
+    ("direct-chat-ship-refused.json", "directChatShipped"),
+    ("direct-chat-attached.json", "directChatAttached"),
+    ("direct-chat-attach-refused.json", "directChatAttached"),
 ];
 
 #[test]
@@ -120,6 +125,9 @@ fn every_fixture_round_trips_exactly() {
             "directChatDetail" => drop(round_trip::<DirectChatDetail>(name)),
             "directChatStarted" => drop(round_trip::<DirectChatStarted>(name)),
             "directChatMutated" => drop(round_trip::<DirectChatMutated>(name)),
+            "directChatShipPreview" => drop(round_trip::<DirectChatShipPreview>(name)),
+            "directChatShipped" => drop(round_trip::<DirectChatShipped>(name)),
+            "directChatAttached" => drop(round_trip::<DirectChatAttached>(name)),
             other => panic!("no model for {other}"),
         }
     }

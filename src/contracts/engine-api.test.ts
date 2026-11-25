@@ -46,6 +46,11 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "direct-chat-start-refused.json": "directChatStarted",
   "direct-chat-mutated.json": "directChatMutated",
   "direct-chat-mutate-refused.json": "directChatMutated",
+  "direct-chat-ship-preview.json": "directChatShipPreview",
+  "direct-chat-shipped.json": "directChatShipped",
+  "direct-chat-ship-refused.json": "directChatShipped",
+  "direct-chat-attached.json": "directChatAttached",
+  "direct-chat-attach-refused.json": "directChatAttached",
 };
 /** Not a response: every schema as JSON Schema, with the contract's digest (what a client generates its models from). */
 const SCHEMAS = "schemas.json";

@@ -667,6 +667,29 @@ export const directChatToolSchema = z.object({
   status: z.enum(["running", "done", "error"]),
   updatedAt: iso,
 });
+export const directChatArtifactSchema = z.object({
+  id: hex32,
+  kind: z.enum(["output", "attachment"]),
+  filename: z.string(),
+  mimeType: z.string(),
+  byteSize: z.number().int(),
+  url: z.string(),
+  sourcePath: z.string().nullable(),
+  createdAt: iso,
+});
+export const directChatShipSummarySchema = z.object({
+  id: hex32,
+  seq: z.number().int(),
+  mode: z.enum(["ship", "keep-branch"]),
+  branch: z.string(),
+  candidateSha: z.string(),
+  state: z.enum(["kept", "imported", "armed", "completed", "merging", "merged", "cancelled", "failed"]),
+  taskId: z.string().nullable(),
+  prUrl: z.string().nullable(),
+  detail: z.string().nullable(),
+  createdAt: iso,
+  stateAt: iso,
+});
 export const directChatTurnSchema = z.object({
   id: hex32,
   seq: z.number().int(),
@@ -678,6 +701,7 @@ export const directChatTurnSchema = z.object({
   createdAt: iso,
   finishedAt: iso.nullable(),
   tools: z.array(directChatToolSchema),
+  artifacts: z.array(directChatArtifactSchema),
 });
 export const directChatSummarySchema = z.object({
   id: hex32,
@@ -706,12 +730,47 @@ export const directChatDetailSchema = z.object({
   room: z.string(),
   thread: directChatSummarySchema,
   turns: z.array(directChatTurnSchema),
+  attachments: z.array(directChatArtifactSchema),
+  ships: z.array(directChatShipSummarySchema),
   diff: z.object({
     changedFiles: z.array(z.string()),
     diffText: z.string(),
     dirty: z.boolean(),
   }),
 });
+export const directChatShipPreviewSchema = z.object({
+  version,
+  threadId: hex32,
+  mode: z.enum(["ship", "keep-branch"]),
+  canAutoMerge: z.boolean(),
+  autoMergeReason: z.string().nullable(),
+  termsDigest: hex32,
+  title: z.string(),
+  goal: z.string(),
+  baseSha: z.string(),
+  branch: z.string(),
+  changedFiles: z.array(z.string()),
+  checkCommand: z.string().nullable(),
+  githubRepo: z.string().nullable(),
+  githubBase: z.string().nullable(),
+  mergeSummary: z.string(),
+});
+export const directChatShippedSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    ship: directChatShipSummarySchema,
+    said: z.string(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+export const directChatAttachedSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    artifact: directChatArtifactSchema,
+    cloneRelativePath: z.string().nullable(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
 export const directChatStartedSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), threadId: hex32, turnId: hex32, room: z.string() }),
   z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
@@ -774,7 +833,10 @@ export const ENGINE_RESPONSES = {
   directChatsList: { route: "GET /engine/direct-chats", schema: directChatsListSchema },
   directChatDetail: { route: "GET /engine/direct-chats/<id>", schema: directChatDetailSchema },
   directChatStarted: { route: "POST /engine/direct-chats, /engine/direct-chats/<id>/messages", schema: directChatStartedSchema },
-  directChatMutated: { route: "POST /engine/direct-chats/<id>/{stop,model,delete}", schema: directChatMutatedSchema },
+  directChatMutated: { route: "POST /engine/direct-chats/<id>/{stop,model,delete,apply-main-edits,ship-cancel}", schema: directChatMutatedSchema },
+  directChatShipPreview: { route: "GET /engine/direct-chats/<id>/ship-preview", schema: directChatShipPreviewSchema },
+  directChatShipped: { route: "POST /engine/direct-chats/<id>/ship", schema: directChatShippedSchema },
+  directChatAttached: { route: "POST /engine/direct-chats/<id>/attachments", schema: directChatAttachedSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -800,6 +862,9 @@ export type DirectChatsList = z.infer<typeof directChatsListSchema>;
 export type DirectChatDetail = z.infer<typeof directChatDetailSchema>;
 export type DirectChatStarted = z.infer<typeof directChatStartedSchema>;
 export type DirectChatMutated = z.infer<typeof directChatMutatedSchema>;
+export type DirectChatShipPreviewRead = z.infer<typeof directChatShipPreviewSchema>;
+export type DirectChatShipped = z.infer<typeof directChatShippedSchema>;
+export type DirectChatAttached = z.infer<typeof directChatAttachedSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

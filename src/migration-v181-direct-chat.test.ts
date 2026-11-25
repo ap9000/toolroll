@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V181_STEPS } from "./store.js";
-import { V181_TABLES } from "./direct-chat-schema.js";
+import { V181_TABLES, V182_TABLES } from "./direct-chat-schema.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -19,6 +19,7 @@ function v180File(): string {
   made.createTask({ id: "kept", title: "kept" }, T0);
   made.close();
   const raw = new DatabaseSync(file);
+  for (const table of [...V182_TABLES].reverse()) raw.exec(`DROP TABLE IF EXISTS ${table}`);
   for (const table of [...V181_TABLES].reverse()) raw.exec(`DROP TABLE IF EXISTS ${table}`);
   raw.exec("UPDATE schema_version SET version = 180");
   raw.close();
@@ -35,7 +36,7 @@ describe("v181", () => {
     expect(UPDATE_SAFE_MIGRATIONS).toContain(181);
     expect(updateSafeSchema(180)).toBe(true);
     expect(V181_STEPS).toEqual(["direct-chat-tables"]);
-    expect(SCHEMA_VERSION).toBe(181);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(181);
     const fresh = openStore(":memory:");
     try { expect(threadCount(fresh)).toBe(0); } finally { fresh.close(); }
   });

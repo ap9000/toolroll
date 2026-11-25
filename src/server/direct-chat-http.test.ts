@@ -360,9 +360,56 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect(followUpRes.status).toBe(200);
     expect(JSON.parse(followUpRes.body)).toMatchObject({ ok: true, threadId: started.threadId });
 
-    // Stop and delete the chat.
+    // Stop, test Phase 1b attachment upload + artifact serving, apply-main-edits, and keep-branch Ship!
     await world.post(`/engine/direct-chats/${started.threadId}/stop`, {});
-    const delRes = await world.post(`/engine/direct-chats/${started.threadId}/delete`, {});
+
+    const tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const attachRes = await world.post(`/engine/direct-chats/${started.threadId}/attachments`, {
+      filename: "screen.png",
+      mimeType: "image/png",
+      dataBase64: tinyPngBase64,
+    });
+    expect(attachRes.status).toBe(200);
+    const attached = JSON.parse(attachRes.body) as { ok: true; artifact: { id: string; url: string }; cloneRelativePath: string };
+    expect(attached.ok).toBe(true);
+    expect(attached.cloneRelativePath).toContain(".toolroll-attachments/");
+
+    // Fetch artifact with sandboxed CSP and nosniff.
+    const artRes = await world.send(attached.artifact.url, "GET", { cookie: world.cookie });
+    expect(artRes.status).toBe(200);
+    expect(artRes.headers["content-type"]).toBe("image/png");
+    expect(artRes.headers["x-content-type-options"]).toBe("nosniff");
+    expect(String(artRes.headers["content-security-policy"] ?? "")).toContain("sandbox");
+
+    // Reject SVG attachment upload (415).
+    const badAttach = await world.post(`/engine/direct-chats/${started.threadId}/attachments`, {
+      filename: "bad.svg",
+      mimeType: "image/svg+xml",
+      dataBase64: Buffer.from("<svg></svg>").toString("base64"),
+    });
+    expect(badAttach.status).toBe(415);
+
+    // Dirty main checkout -> bring uncommitted changes into clone -> preview + keep-branch Ship!
+    writeFileSync(join(world.repo, "README.md"), "# Payments\nMain uncommitted edit\n");
+    const applyMainRes = await world.post(`/engine/direct-chats/${started.threadId}/apply-main-edits`, {});
+    expect(applyMainRes.status).toBe(200);
+    expect(JSON.parse(applyMainRes.body)).toMatchObject({ ok: true });
+
+    const previewRes = await world.send(`/engine/direct-chats/${started.threadId}/ship-preview`, "GET", { cookie: world.cookie });
+    expect(previewRes.status).toBe(200);
+    const preview = JSON.parse(previewRes.body) as { termsDigest: string; mode: string; changedFiles: string[] };
+    expect(preview.mode).toBe("keep-branch");
+    expect(preview.changedFiles).toContain("README.md");
+
+    const shipRes = await world.post(`/engine/direct-chats/${started.threadId}/ship`, {
+      mode: "keep-branch",
+      termsDigest: preview.termsDigest,
+    });
+    expect(shipRes.status).toBe(200);
+    expect(JSON.parse(shipRes.body)).toMatchObject({ ok: true, ship: { state: "kept" } });
+
+    // Delete the chat (now clean after snapshot commit, or discard).
+    const delRes = await world.post(`/engine/direct-chats/${started.threadId}/delete`, { discard: "1" });
     expect(delRes.status).toBe(200);
     expect(JSON.parse(delRes.body)).toMatchObject({ ok: true });
 

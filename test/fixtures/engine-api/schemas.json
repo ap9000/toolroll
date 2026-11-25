@@ -1,5 +1,5 @@
 {
-  "digest": "ba63710ae57d7a3afa79b583f696e3f58013a1bec6a6ccb94bb1e4a0c673fc3f",
+  "digest": "b48ceb87b43fc35aea7aa345780ea211b0b2ac0e64f70ca78b9a09237d10d076",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -4850,6 +4850,59 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "artifacts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "output",
+                        "attachment"
+                      ]
+                    },
+                    "filename": {
+                      "type": "string"
+                    },
+                    "mimeType": {
+                      "type": "string"
+                    },
+                    "byteSize": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "sourcePath": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "filename",
+                    "mimeType",
+                    "byteSize",
+                    "url",
+                    "sourcePath",
+                    "createdAt"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -4862,7 +4915,142 @@
               "errorText",
               "createdAt",
               "finishedAt",
-              "tools"
+              "tools",
+              "artifacts"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "output",
+                  "attachment"
+                ]
+              },
+              "filename": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "byteSize": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "url": {
+                "type": "string"
+              },
+              "sourcePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "filename",
+              "mimeType",
+              "byteSize",
+              "url",
+              "sourcePath",
+              "createdAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "ships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "seq": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "ship",
+                  "keep-branch"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "candidateSha": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "kept",
+                  "imported",
+                  "armed",
+                  "completed",
+                  "merging",
+                  "merged",
+                  "cancelled",
+                  "failed"
+                ]
+              },
+              "taskId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "stateAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "seq",
+              "mode",
+              "branch",
+              "candidateSha",
+              "state",
+              "taskId",
+              "prUrl",
+              "detail",
+              "createdAt",
+              "stateAt"
             ],
             "additionalProperties": false
           }
@@ -4896,6 +5084,8 @@
         "room",
         "thread",
         "turns",
+        "attachments",
+        "ships",
         "diff"
       ],
       "additionalProperties": false
@@ -4981,6 +5171,308 @@
               "type": "string"
             },
             "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "directChatShipPreview": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "threadId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ship",
+            "keep-branch"
+          ]
+        },
+        "canAutoMerge": {
+          "type": "boolean"
+        },
+        "autoMergeReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "termsDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checkCommand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "githubRepo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "githubBase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mergeSummary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "threadId",
+        "mode",
+        "canAutoMerge",
+        "autoMergeReason",
+        "termsDigest",
+        "title",
+        "goal",
+        "baseSha",
+        "branch",
+        "changedFiles",
+        "checkCommand",
+        "githubRepo",
+        "githubBase",
+        "mergeSummary"
+      ],
+      "additionalProperties": false
+    },
+    "directChatShipped": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "ship": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "ship",
+                    "keep-branch"
+                  ]
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "candidateSha": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "kept",
+                    "imported",
+                    "armed",
+                    "completed",
+                    "merging",
+                    "merged",
+                    "cancelled",
+                    "failed"
+                  ]
+                },
+                "taskId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "prUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "stateAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "seq",
+                "mode",
+                "branch",
+                "candidateSha",
+                "state",
+                "taskId",
+                "prUrl",
+                "detail",
+                "createdAt",
+                "stateAt"
+              ],
+              "additionalProperties": false
+            },
+            "said": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "ship",
+            "said"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "error": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "directChatAttached": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "artifact": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "output",
+                    "attachment"
+                  ]
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "byteSize": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "url": {
+                  "type": "string"
+                },
+                "sourcePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "filename",
+                "mimeType",
+                "byteSize",
+                "url",
+                "sourcePath",
+                "createdAt"
+              ],
+              "additionalProperties": false
+            },
+            "cloneRelativePath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "ok",
+            "artifact",
+            "cloneRelativePath"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "error": {
               "type": "string"
             }
           },
