@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
+private struct TaskEvidenceShotPreview: Identifiable, Equatable {
+    let id = UUID()
+    let caption: String
+    let urlPath: String
+}
+
 public struct TaskCockpitView: View {
     @Bindable var store: WorkbenchStore
     @State private var isComposerDropTargeted: Bool = false
@@ -23,6 +29,9 @@ public struct TaskCockpitView: View {
     @State private var setupCommandDraft: String = ""
     @State private var setupPasswordDraft: String = ""
     @State private var showInlineSetupForm: Bool = false
+    @State private var showAgentWorkLog: Bool = false
+    @State private var filedFollowUpTitles: Set<String> = []
+    @State private var selectedEvidenceShot: TaskEvidenceShotPreview? = nil
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -56,7 +65,14 @@ public struct TaskCockpitView: View {
                                         .id("question-card")
                                 }
 
-                                if let review = store.stepCards?.review {
+                                if let result = store.taskResult, let report = result.report {
+                                    scoutReportSection(row: row, result: result, report: report)
+                                        .id("review-card")
+                                } else if let result = store.taskResult,
+                                          result.handoff != nil || !result.screenshots.isEmpty {
+                                    codeResultSection(row: row, result: result)
+                                        .id("review-card")
+                                } else if let review = store.stepCards?.review {
                                     resultReviewCard(review)
                                         .id("review-card")
                                 }
@@ -75,6 +91,7 @@ public struct TaskCockpitView: View {
                                 } else if row.status == .needs,
                                           row.need?.question == nil,
                                           store.stepCards?.review == nil,
+                                          store.taskResult?.report == nil,
                                           store.stepCards?.planStopped == nil {
                                     fallbackApprovalCard(taskId: row.id, summary: row.ask ?? row.need?.ask ?? "Approval waiting on this task.")
                                         .id("approval-card")
@@ -100,9 +117,11 @@ public struct TaskCockpitView: View {
                                         .id("candidates-card")
                                 }
                             }
-                            .padding(.horizontal, 18)
-                            .padding(.top, 16)
-                            .padding(.bottom, 16)
+                            .padding(.horizontal, 22)
+                            .padding(.top, 18)
+                            .padding(.bottom, 22)
+                            .frame(maxWidth: 860, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
                         }
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             composerBar(taskId: row.id)
@@ -131,6 +150,13 @@ public struct TaskCockpitView: View {
             showStandardSandboxDetails = false
             expandedCheckIds.removeAll()
             selectedAgentStepKey = nil
+            showAgentWorkLog = false
+            filedFollowUpTitles.removeAll()
+            selectedEvidenceShot = nil
+        }
+        .sheet(item: $selectedEvidenceShot) { shot in
+            TaskEvidenceLightbox(store: store, caption: shot.caption, urlPath: shot.urlPath)
+                .dismissSheetOnOutsideClick()
         }
     }
 
@@ -847,6 +873,386 @@ public struct TaskCockpitView: View {
         )
     }
 
+    private var hasHumanDeliverable: Bool {
+        if let result = store.taskResult {
+            return result.report != nil || result.handoff != nil || !result.screenshots.isEmpty
+        }
+        return false
+    }
+
+    private func scoutReportSection(row: WorkRow, result: TaskResultResponse, report: TaskResultReport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 8) {
+                StatusChip(
+                    tone: store.stepCards?.review != nil ? .needs : (row.status == .finished ? .finished : .running),
+                    label: store.stepCards?.review != nil ? "Ready for review" : "Research Report"
+                )
+                if let runId = result.run {
+                    Text("Run #\(runId)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                Spacer(minLength: 8)
+                if let review = store.stepCards?.review {
+                    Button(sendBackOpen ? "Close Note" : "Send Back…") {
+                        sendBackOpen.toggle()
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    Button("Accept Report") {
+                        Task { await store.acceptSelectedResult() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(!review.accept.blockers.isEmpty)
+                }
+            }
+
+            if let review = store.stepCards?.review, !review.accept.blockers.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(review.accept.blockers, id: \.self) { blocker in
+                        Text("• \(blocker)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(ToolrollPalette.warning)
+                    }
+                }
+            }
+
+            if sendBackOpen {
+                HStack(spacing: 8) {
+                    TextField("Tell the agent what to revise or investigate further…", text: $sendBackNote)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        .onSubmit { submitSendBack() }
+                    Button("Send Back") { submitSendBack() }
+                        .buttonStyle(KitButtonStyle(.danger, compact: true))
+                        .disabled(sendBackNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+
+            if !report.ok {
+                Text(report.problem ?? "The saved report could not be read.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ToolrollPalette.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                if let title = report.title, !title.isEmpty {
+                    Text(title)
+                        .font(.system(size: 18, weight: .bold))
+                        .tracking(-0.3)
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let summary = report.summary, !summary.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("SUMMARY")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text(summary)
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(ToolrollPalette.ink.opacity(0.94))
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(13)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ToolrollPalette.ground.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+
+                if !report.items.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("KEY FINDINGS")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(ToolrollPalette.muted)
+                        ForEach(Array(report.items.enumerated()), id: \.element.id) { idx, item in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text("\(idx + 1)")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .frame(width: 18, height: 18)
+                                        .background(ToolrollPalette.raised, in: Circle())
+                                        .overlay(Circle().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                                    Text(item.title)
+                                        .font(.system(size: 13.5, weight: .semibold))
+                                        .foregroundStyle(ToolrollPalette.ink)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Text(item.why)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(ToolrollPalette.ink.opacity(0.86))
+                                    .lineSpacing(3.5)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.leading, 26)
+                                if !item.url.isEmpty {
+                                    Button {
+                                        store.openExternalURL(item.url)
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "link")
+                                                .font(.system(size: 10))
+                                            Text(item.url)
+                                                .font(.system(size: 11.5, design: .monospaced))
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                        .foregroundStyle(ToolrollPalette.live)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.leading, 26)
+                                }
+                                if let imgName = item.image,
+                                   let shot = report.shots.first(where: { $0.file == imgName }),
+                                   let artifactUrl = shot.artifactUrl {
+                                    TaskEvidenceThumb(store: store, caption: shot.caption, urlPath: artifactUrl) {
+                                        selectedEvidenceShot = TaskEvidenceShotPreview(caption: shot.caption, urlPath: artifactUrl)
+                                    }
+                                    .padding(.leading, 26)
+                                    .padding(.top, 2)
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(ToolrollPalette.ground.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        }
+                    }
+                }
+
+                let shownImages = Set(report.items.compactMap(\.image))
+                let looseShots = report.shots.filter { !shownImages.contains($0.file) && $0.artifactUrl != nil }
+                if !looseShots.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SCREENSHOTS")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(ToolrollPalette.muted)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(looseShots) { shot in
+                                    if let artifactUrl = shot.artifactUrl {
+                                        TaskEvidenceThumb(store: store, caption: shot.caption, urlPath: artifactUrl) {
+                                            selectedEvidenceShot = TaskEvidenceShotPreview(caption: shot.caption, urlPath: artifactUrl)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let doc = report.document, !doc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HairlineDivider()
+                        NativeMarkdownView(markdown: doc, compact: false, bodyFontSize: 13.5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if !report.followUps.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HairlineDivider()
+                        Text("RECOMMENDED NEXT STEPS")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.top, 2)
+                        ForEach(report.followUps) { followUp in
+                            let alreadyFiled = filedFollowUpTitles.contains(followUp.title)
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(followUp.title)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(ToolrollPalette.ink)
+                                        .textSelection(.enabled)
+                                    Text(followUp.goal)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .lineSpacing(3)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 8)
+                                Button {
+                                    filedFollowUpTitles.insert(followUp.title)
+                                    Task {
+                                        await store.createTask(
+                                            title: followUp.title,
+                                            project: row.project,
+                                            body: followUp.goal,
+                                            planFirst: true
+                                        )
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: alreadyFiled ? "checkmark" : "plus")
+                                            .font(.system(size: 9.5, weight: .semibold))
+                                        Text(alreadyFiled ? "Filed" : "Create Task")
+                                    }
+                                }
+                                .buttonStyle(KitButtonStyle(alreadyFiled ? .ghost : .primary, compact: true))
+                                .disabled(alreadyFiled)
+                            }
+                            .padding(11)
+                            .background(ToolrollPalette.ground.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(ToolrollPalette.line, lineWidth: 1)
+        )
+    }
+
+    private func codeResultSection(row: WorkRow, result: TaskResultResponse) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                StatusChip(
+                    tone: store.stepCards?.review != nil ? .needs : (row.status == .finished ? .finished : .running),
+                    label: store.stepCards?.review != nil ? "Ready for review" : "Result Summary"
+                )
+                if let runId = result.run {
+                    Text("Run #\(runId)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                if let verdict = result.verdict, !verdict.isEmpty {
+                    Text("· \(verdict)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(verdict == "verified" ? ToolrollPalette.success : ToolrollPalette.warning)
+                }
+                Spacer()
+                if let diff = store.diffResponse, !diff.files.isEmpty {
+                    Button("Inspect Diff (\(diff.files.count))") {
+                        store.isInspectorVisible = true
+                        store.inspectorTab = .diff
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                }
+                if store.stepCards?.review != nil {
+                    Button(sendBackOpen ? "Close Note" : "Send Back…") {
+                        sendBackOpen.toggle()
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    Button("Accept Result") {
+                        Task { await store.acceptSelectedResult() }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                }
+            }
+
+            if let review = store.stepCards?.review, !review.accept.blockers.isEmpty {
+                ForEach(review.accept.blockers, id: \.self) { blocker in
+                    Text("• \(blocker)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(ToolrollPalette.warning)
+                }
+            }
+
+            if sendBackOpen {
+                HStack(spacing: 8) {
+                    TextField("Tell the agent what to change…", text: $sendBackNote)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                        .onSubmit { submitSendBack() }
+                    Button("Send Back") { submitSendBack() }
+                        .buttonStyle(KitButtonStyle(.danger, compact: true))
+                        .disabled(sendBackNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+
+            if let handoff = result.handoff {
+                Text(handoff.conclusion)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !handoff.changes.isEmpty {
+                    handoffBulletGroup(title: "WHAT CHANGED", items: handoff.changes)
+                }
+                if !handoff.verification.isEmpty {
+                    handoffBulletGroup(title: "VERIFICATION", items: handoff.verification)
+                }
+                if !handoff.decisions.isEmpty {
+                    handoffBulletGroup(title: "DECISIONS", items: handoff.decisions)
+                }
+                if !handoff.risks.isEmpty {
+                    handoffBulletGroup(title: "RISKS & CAVEATS", items: handoff.risks)
+                }
+                if !handoff.notDone.isEmpty {
+                    handoffBulletGroup(title: "NOT DONE", items: handoff.notDone)
+                }
+            }
+
+            if !result.screenshots.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SCREENSHOTS")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(ToolrollPalette.muted)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(result.screenshots) { shot in
+                                TaskEvidenceThumb(store: store, caption: shot.caption, urlPath: shot.url) {
+                                    selectedEvidenceShot = TaskEvidenceShotPreview(caption: shot.caption, urlPath: shot.url)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(ToolrollPalette.line, lineWidth: 1)
+        )
+    }
+
+    private func handoffBulletGroup(title: String, items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(ToolrollPalette.muted)
+            ForEach(items, id: \.self) { line in
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("•")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Text(line)
+                        .font(.system(size: 13))
+                        .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func resultReviewCard(_ review: TaskReview) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -1256,57 +1662,79 @@ public struct TaskCockpitView: View {
     }
 
     private func pipelineStepperBar(cards: [StepCard], proxy: ScrollViewProxy) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
-                    let isAttention = card.needsYou
-                    let isDone = (card.mark.isEmpty ? card.state : card.mark).lowercased().contains("done")
-                    let isRunning = card.state.lowercased().contains("run") || card.mark.lowercased().contains("run")
-                    let isSelectedAgentStep = selectedAgentStepKey == card.key
-                    let iconColor: Color = isAttention ? ToolrollPalette.ink : (isRunning ? ToolrollPalette.live : (isDone ? ToolrollPalette.ink.opacity(0.65) : ToolrollPalette.muted.opacity(0.6)))
-                    Button {
-                        handlePipelineStepTap(card, proxy: proxy)
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: stepSymbol(for: card))
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(iconColor)
-                            Text(card.label)
-                                .font(.system(size: 11.5, weight: isAttention || isRunning || isSelectedAgentStep ? .semibold : .medium))
-                                .foregroundStyle(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                .lineLimit(1)
-                            if let agent = card.agent {
-                                Text("· \(agent.displayLabel)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(Array(cards.enumerated()), id: \.element.id) { idx, card in
+                        let isAttention = card.needsYou
+                        let isDone = (card.mark.isEmpty ? card.state : card.mark).lowercased().contains("done")
+                        let isRunning = card.state.lowercased().contains("run") || card.mark.lowercased().contains("run")
+                        let isSelectedAgentStep = selectedAgentStepKey == card.key
+                        let iconColor: Color = isAttention ? ToolrollPalette.warning : (isRunning ? ToolrollPalette.live : (isDone ? ToolrollPalette.success : ToolrollPalette.muted.opacity(0.6)))
+                        Button {
+                            handlePipelineStepTap(card, proxy: proxy)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: stepSymbol(for: card))
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(iconColor)
+                                Text(card.label)
+                                    .font(.system(size: 11.5, weight: isAttention || isRunning || isSelectedAgentStep ? .semibold : .medium))
+                                    .foregroundStyle(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.ink : ToolrollPalette.muted)
                                     .lineLimit(1)
+                                if let agent = card.agent {
+                                    Text("· \(agent.displayLabel)")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .lineLimit(1)
+                                }
                             }
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4.5)
+                            .background(
+                                isAttention || isRunning || isSelectedAgentStep ? Color.white.opacity(0.08) : Color.clear,
+                                in: Capsule()
+                            )
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.inputLine : Color.clear, lineWidth: 1)
+                            )
+                            .toolrollHoverSurface(cornerRadius: 12, isSelected: false)
                         }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4.5)
-                        .background(
-                            isAttention || isRunning || isSelectedAgentStep ? Color.white.opacity(0.08) : Color.clear,
-                            in: Capsule()
-                        )
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(isAttention || isRunning || isSelectedAgentStep ? ToolrollPalette.inputLine : Color.clear, lineWidth: 1)
-                        )
-                        .toolrollHoverSurface(cornerRadius: 12, isSelected: false)
-                    }
-                    .buttonStyle(.plain)
-                    .help(stepTooltip(for: card))
+                        .buttonStyle(.plain)
+                        .help(stepTooltip(for: card))
 
-                    if idx < cards.count - 1 {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.muted.opacity(0.4))
+                        if idx < cards.count - 1 {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted.opacity(0.4))
+                        }
                     }
                 }
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+
+            Button {
+                modelPickerInitialRole = "build"
+                isModelPickerOpen = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 9.5))
+                    Text("Models")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(ToolrollPalette.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .toolrollHoverSurface(cornerRadius: 6)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help("View or change Plan, Build, and Review models for this task")
         }
+        .padding(.horizontal, 14)
         .background(ToolrollPalette.paper)
     }
 
@@ -1329,24 +1757,28 @@ public struct TaskCockpitView: View {
         let targetId: String
         if label.contains("approv") {
             targetId = "approval-card"
+        } else if label.contains("ready") || label.contains("review") {
+            if store.stepCards?.review != nil || hasHumanDeliverable {
+                targetId = "review-card"
+            } else {
+                selectedAgentStepKey = card.key
+                showAgentWorkLog = true
+                targetId = "agent-activity"
+            }
         } else if !card.runs.isEmpty || card.agent != nil {
             selectedAgentStepKey = card.key
+            showAgentWorkLog = true
             if let latestRun = card.runs.max() {
                 Task { await store.selectLiveRun(latestRun) }
             }
             targetId = "agent-activity"
-        } else if label.contains("ready") || label.contains("review") {
-            if store.stepCards?.review != nil {
-                targetId = "review-card"
-            } else {
-                selectedAgentStepKey = card.key
-                targetId = "agent-activity"
-            }
         } else if label.contains("build") {
             selectedAgentStepKey = card.key
+            showAgentWorkLog = true
             targetId = store.approvalCard != nil ? "approval-card" : "agent-activity"
         } else {
             selectedAgentStepKey = card.key
+            showAgentWorkLog = true
             targetId = "agent-activity"
         }
 
@@ -1382,132 +1814,79 @@ public struct TaskCockpitView: View {
         let hasStreamForSelectedRun = selectedRunId != nil
             && selectedRunId == store.selectedLiveRunId
             && !store.liveRunRecords.isEmpty
+        let shouldCollapseByDefault = hasHumanDeliverable && row.status != .running
+        let isLogExpanded = !shouldCollapseByDefault || showAgentWorkLog
 
         return VStack(alignment: .leading, spacing: 10) {
-            activeAgentStatusBanner(row: row)
-
-            if !agentSteps.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(agentSteps) { step in
-                            let isSelected = selectedStep?.key == step.key
-                            let agentLabel = step.agent?.displayLabel ?? assignedModelLabel(forStep: step.label)
-                            let isRunning = step.state.lowercased().contains("run") || step.mark.lowercased().contains("run")
-                            let isDone = (step.mark.isEmpty ? step.state : step.mark).lowercased().contains("done")
-
-                            HStack(spacing: 0) {
-                                Button {
-                                    selectedAgentStepKey = step.key
-                                    if let runId = step.runs.max() {
-                                        Task { await store.selectLiveRun(runId) }
-                                    }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Circle()
-                                            .fill(
-                                                isRunning ? ToolrollPalette.live
-                                                    : (isDone ? ToolrollPalette.success
-                                                        : (step.state.lowercased().contains("fail") || step.state.lowercased().contains("stuck")
-                                                            ? ToolrollPalette.danger : ToolrollPalette.muted.opacity(0.45)))
-                                            )
-                                            .frame(width: 6, height: 6)
-
-                                        Text(step.label)
-                                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-                                            .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                                            .lineLimit(1)
-
-                                        if let agentLabel, !agentLabel.isEmpty {
-                                            Text(agentLabel)
-                                                .font(.system(size: 10, design: .monospaced))
-                                                .foregroundStyle(isSelected ? ToolrollPalette.ink.opacity(0.8) : ToolrollPalette.muted.opacity(0.8))
-                                                .lineLimit(1)
-                                        }
-
-                                        if step.runs.count == 1, let onlyRun = step.runs.max() {
-                                            Text("#\(onlyRun)")
-                                                .font(.system(size: 9.5, design: .monospaced))
-                                                .foregroundStyle(ToolrollPalette.muted)
-                                        }
-                                    }
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 5)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .help(stepTooltip(for: step))
-
-                                if step.runs.count > 1 {
-                                    let sortedRuns = step.runs.sorted(by: >)
-                                    let latestRun = sortedRuns.first ?? 0
-                                    let activeForStep = (isSelected ? selectedRunId : nil) ?? latestRun
-                                    Menu {
-                                        ForEach(sortedRuns, id: \.self) { runId in
-                                            Button {
-                                                selectedAgentStepKey = step.key
-                                                Task { await store.selectLiveRun(runId) }
-                                            } label: {
-                                                HStack {
-                                                    Text("Attempt #\(runId)\(runId == latestRun ? " (latest)" : "")")
-                                                    if store.selectedLiveRunId == runId {
-                                                        Image(systemName: "checkmark")
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } label: {
-                                        HStack(spacing: 2) {
-                                            Text("#\(activeForStep)")
-                                                .font(.system(size: 9.5, design: .monospaced))
-                                            Image(systemName: "chevron.down")
-                                                .font(.system(size: 7.5, weight: .semibold))
-                                        }
-                                        .foregroundStyle(ToolrollPalette.muted)
-                                    }
-                                    .menuStyle(.borderlessButton)
-                                    .menuIndicator(.hidden)
-                                    .fixedSize()
-                                    .padding(.trailing, 8)
-                                    .padding(.vertical, 5)
-                                    .help("Switch between \(step.runs.count) attempts for \(step.label)")
-                                }
-                            }
-                            .background(
-                                isSelected ? ToolrollPalette.raised : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(isSelected ? ToolrollPalette.inputLine : ToolrollPalette.line.opacity(0.75), lineWidth: 1)
-                            )
-                        }
-                    }
-                }
+            if let pending = store.stepCards?.pendingAgentChange {
+                pendingAgentChangeLine(pending)
             }
 
-            if store.isLoadingLiveRun && !hasStreamForSelectedRun {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(selectedRunId.map { "Loading Run #\($0) activity…" } ?? "Loading agent activity…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(ToolrollPalette.muted)
-                    Spacer()
+            if shouldCollapseByDefault {
+                Button {
+                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                        showAgentWorkLog.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isLogExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Text("Agent work log")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
+                        if let step = selectedStep {
+                            Text("· \(step.label)\(step.agent.map { " · \($0.displayLabel)" } ?? "")")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .lineLimit(1)
+                        }
+                        if let runId = selectedRunId {
+                            Text("Run #\(runId)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                        Spacer()
+                        if let at = selectedStep?.at {
+                            Text(formatStepTimestamp(at))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(ToolrollPalette.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    .contentShape(Rectangle())
                 }
-                .padding(14)
-                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-            } else if hasStreamForSelectedRun {
-                liveStreamSection(
-                    records: store.liveRunRecords,
-                    step: selectedStep,
-                    runId: selectedRunId
-                )
-                if showsOfflineDependencyHint(records: store.liveRunRecords) {
-                    offlineDependencyFixCallout(row: row)
+                .buttonStyle(.plain)
+            }
+
+            if isLogExpanded {
+                if store.isLoadingLiveRun && !hasStreamForSelectedRun {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(selectedRunId.map { "Loading Run #\($0) activity…" } ?? "Loading agent activity…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(ToolrollPalette.muted)
+                        Spacer()
+                    }
+                    .padding(14)
+                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                } else if hasStreamForSelectedRun {
+                    liveStreamSection(
+                        records: store.liveRunRecords,
+                        step: selectedStep,
+                        runId: selectedRunId
+                    )
+                    if showsOfflineDependencyHint(records: store.liveRunRecords) {
+                        offlineDependencyFixCallout(row: row)
+                    }
+                } else {
+                    emptyStepAgentCard(row: row, step: selectedStep, runId: selectedRunId)
                 }
-            } else {
-                emptyStepAgentCard(row: row, step: selectedStep, runId: selectedRunId)
             }
         }
     }
@@ -1886,7 +2265,36 @@ public struct TaskCockpitView: View {
                                 .foregroundStyle(ToolrollPalette.muted)
                                 .lineLimit(1)
                         }
-                        if let runId {
+                        if let step, step.runs.count > 1, let activeRun = runId {
+                            let sortedRuns = step.runs.sorted(by: >)
+                            let latestRun = sortedRuns.first ?? activeRun
+                            Menu {
+                                ForEach(sortedRuns, id: \.self) { candidateId in
+                                    Button {
+                                        selectedAgentStepKey = step.key
+                                        Task { await store.selectLiveRun(candidateId) }
+                                    } label: {
+                                        HStack {
+                                            Text("Attempt #\(candidateId)\(candidateId == latestRun ? " (latest)" : "")")
+                                            if store.selectedLiveRunId == candidateId {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text("Run #\(activeRun)")
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 7.5, weight: .semibold))
+                                }
+                                .foregroundStyle(ToolrollPalette.muted)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                        } else if let runId {
                             Text("Run #\(runId)")
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(ToolrollPalette.muted)
@@ -1910,11 +2318,8 @@ public struct TaskCockpitView: View {
                 ForEach(Array(timeline.items.suffix(40))) { item in
                     switch item {
                     case .message(_, let text):
-                        Text(text)
-                            .font(.system(size: 13))
-                            .foregroundStyle(ToolrollPalette.ink)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                        NativeMarkdownView(markdown: text, compact: true, bodyFontSize: 13)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                     case .step(_, let kind, let summary, let status, let outputPreview):
                         VStack(alignment: .leading, spacing: 4) {
@@ -2016,8 +2421,8 @@ public struct TaskCockpitView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
 
@@ -2392,5 +2797,101 @@ public struct TaskCockpitView: View {
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct TaskEvidenceThumb: View {
+    @Bindable var store: WorkbenchStore
+    let caption: String
+    let urlPath: String
+    let onTap: () -> Void
+
+    @State private var imageData: Data? = nil
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 5) {
+                Group {
+                    if let data = imageData ?? store.taskEvidenceImages[urlPath], let nsImage = NSImage(data: data) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 210, height: 126)
+                            .clipped()
+                    } else {
+                        ZStack {
+                            ToolrollPalette.ground
+                            ProgressView().controlSize(.small)
+                        }
+                        .frame(width: 210, height: 126)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+                if !caption.isEmpty {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: 210, alignment: .leading)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .task(id: urlPath) {
+            if imageData == nil {
+                imageData = await store.loadTaskEvidenceImage(urlPath: urlPath)
+            }
+        }
+    }
+}
+
+private struct TaskEvidenceLightbox: View {
+    @Bindable var store: WorkbenchStore
+    let caption: String
+    let urlPath: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var imageData: Data? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(caption.isEmpty ? "Screenshot" : caption)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                Spacer()
+                Button("Close") { dismiss() }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(ToolrollPalette.raised)
+
+            HairlineDivider()
+
+            ZStack {
+                ToolrollPalette.ground
+                if let data = imageData ?? store.taskEvidenceImages[urlPath], let nsImage = NSImage(data: data) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(16)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 720, idealWidth: 880, minHeight: 500, idealHeight: 620)
+        .background(ToolrollPalette.ground)
+        .task(id: urlPath) {
+            if imageData == nil {
+                imageData = await store.loadTaskEvidenceImage(urlPath: urlPath)
+            }
+        }
     }
 }

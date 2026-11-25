@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "task": "review-the-homepage",
+  "deliverable": "report",
+  "run": 27,
+  "role": "scout",
+  "outcome": "built",
+  "verdict": null,
+  "summary": "Homepage review completed.",
+  "report": {
+    "ok": true,
+    "title": "Homepage review: clarify positioning and show real work",
+    "summary": "The homepage interaction craft is strong, but visitors cannot quickly tell Alex's role or see a real shipped project.",
+    "document": "## Findings\n\n- Replace placeholder case studies with one real project.\n- Clarify the role line in the hero.",
+    "truncated": false,
+    "items": [
+      {
+        "title": "Hero rotates without stating a concrete role",
+        "why": "Visitors need a clear one-line statement of what Alex builds before clicking deeper.",
+        "url": "https://example.com/",
+        "image": null
+      }
+    ],
+    "followUps": [
+      {
+        "title": "Add a concrete role line to the homepage hero",
+        "goal": "State Alex's role and focus clearly in the initial hero copy."
+      }
+    ],
+    "shots": []
+  },
+  "handoff": null,
+  "screenshots": []
+}

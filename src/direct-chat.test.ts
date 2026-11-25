@@ -664,8 +664,10 @@ describe("DirectChatHost & helpers", () => {
       expect(host.getThread("alex", started.thread.id)?.running).toBe(false);
       expect(host.getThread("alex", started.thread.id)?.turns.at(-1)?.status).toBe("stopped");
 
-      // 4. Verify CLI prompt flag safety & Codex resume sandbox flags.
-      expect(buildProviderCommand({ provider: "claude", modelId: "opus", prompt: "--danger", sessionId: null }).slice(-2)).toEqual(["--", "--danger"]);
+      // 4. Verify CLI prompt flag safety, Claude partial streaming flag, & Codex resume sandbox flags.
+      const claudeCmd = buildProviderCommand({ provider: "claude", modelId: "opus", prompt: "--danger", sessionId: null });
+      expect(claudeCmd).toContain("--include-partial-messages");
+      expect(claudeCmd.slice(-2)).toEqual(["--", "--danger"]);
       const codexResume = buildProviderCommand({ provider: "codex", modelId: "gpt-5.4", prompt: "-foo", sessionId: "thr_1" });
       expect(codexResume).toContain("resume");
       expect(codexResume).toContain('sandbox_mode="workspace-write"');
@@ -707,6 +709,92 @@ describe("DirectChatHost & helpers", () => {
       expect(missingIdHost.getThread("alex", started.thread.id)?.running).toBe(false);
       expect(missingIdHost.getThread("alex", started.thread.id)?.turns.at(-1)?.status).toBe("interrupted");
       missingIdHost.close();
+    } finally {
+      host.close();
+      store.close();
+    }
+  });
+
+  test("Claude stream_event partial deltas stream token-by-token, surface tool_use early, and reset cleanly across steps", async () => {
+    const root = tempDir("dc-stream-");
+    const repo = makeTempRepo(root, "stream-repo");
+    const store = openStore(join(root, "state.db"));
+    const stateRoot = join(root, "state");
+    const custody = new FakeCustody();
+    let turnLogPath = "";
+
+    const host = new DirectChatHost(store, {
+      stateRoot,
+      custody,
+      bootId: () => "boot-1",
+      locateBinary: () => "/fake/claude",
+      spawnTurn: input => {
+        turnLogPath = input.logPath;
+        mkdirSync(dirname(input.logPath), { recursive: true });
+        writeFileSync(input.logPath, "", { mode: 0o600 });
+        custody.add(7701, 7701, "start-stream");
+        return { pid: 7701, pgid: 7701, startIdentity: "start-stream" };
+      },
+    });
+
+    try {
+      const started = await host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "a".repeat(32),
+        repo,
+        provider: "claude",
+        modelId: "opus",
+        prompt: "Review the site",
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+
+      // Step 1 streams text deltas and starts a tool_use before the full assistant block arrives.
+      appendFileSync(
+        turnLogPath,
+        [
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start" } }),
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "Let me " } } }),
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "check." } } }),
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", content_block: { type: "tool_use", id: "toolu_1", name: "Read" } } }),
+          // Subagent stream_event must be ignored.
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: "sub_9", event: { type: "content_block_delta", delta: { type: "text_delta", text: "SUBAGENT NOISE" } } }),
+        ].join("\n") + "\n",
+      );
+      host.drainRunningTurnLogs();
+      let detail = host.getThread("alex", started.thread.id)!;
+      expect(detail.turns[0]?.assistantText).toBe("Let me check.");
+      expect(detail.turns[0]?.tools).toHaveLength(1);
+      expect(detail.turns[0]?.tools[0]).toMatchObject({ id: "toolu_1", name: "Read", status: "running" });
+
+      // Tool input arrives on full assistant block, then tool completes, then step 2 streams final markdown.
+      appendFileSync(
+        turnLogPath,
+        [
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "README.md" } }] } }),
+          JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: false }] } }),
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start" } }),
+        ].join("\n") + "\n",
+      );
+      host.drainRunningTurnLogs();
+      detail = host.getThread("alex", started.thread.id)!;
+      // Still keeps prior text until first delta of step 2 arrives (no blank flash!).
+      expect(detail.turns[0]?.assistantText).toBe("Let me check.");
+      expect(detail.turns[0]?.tools[0]).toMatchObject({ id: "toolu_1", detail: "README.md", status: "done" });
+
+      // Now step 2 streams markdown line-by-line!
+      appendFileSync(
+        turnLogPath,
+        [
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "## Summary\n\n" } } }),
+          JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", delta: { type: "text_delta", text: "- Looks great!" } } }),
+        ].join("\n") + "\n",
+      );
+      host.drainRunningTurnLogs();
+      detail = host.getThread("alex", started.thread.id)!;
+      expect(detail.turns[0]?.assistantText).toBe("## Summary\n\n- Looks great!");
     } finally {
       host.close();
       store.close();

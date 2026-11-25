@@ -142,6 +142,7 @@ export type DirectChatDiffSummary = {
 
 export type DirectChatStreamEvent =
   | { kind: "session_id"; sessionId: string }
+  | { kind: "message_start" }
   | { kind: "text_delta"; delta: string }
   | { kind: "text_replace"; text: string }
   | { kind: "tool"; id: string; name: string; detail: string; status: DirectChatToolStatus }
@@ -270,6 +271,26 @@ function parseClaudeJson(json: Record<string, unknown>): DirectChatStreamEvent[]
     events.push({ kind: "session_id", sessionId: json["session_id"] });
   }
   const type = typeof json["type"] === "string" ? json["type"] : "";
+  if (type === "stream_event" && json["parent_tool_use_id"] == null && json["event"] && typeof json["event"] === "object" && !Array.isArray(json["event"])) {
+    const inner = json["event"] as Record<string, unknown>;
+    const innerType = typeof inner["type"] === "string" ? inner["type"] : "";
+    if (innerType === "message_start") {
+      events.push({ kind: "message_start" });
+    } else if (innerType === "content_block_start" && inner["content_block"] && typeof inner["content_block"] === "object") {
+      const block = inner["content_block"] as Record<string, unknown>;
+      if (block["type"] === "tool_use") {
+        const name = typeof block["name"] === "string" ? block["name"] : "Tool";
+        const id = typeof block["id"] === "string" && block["id"] !== "" ? block["id"] : randomBytes(8).toString("hex");
+        events.push({ kind: "tool", id, name, detail: "", status: "running" });
+      }
+    } else if (innerType === "content_block_delta" && inner["delta"] && typeof inner["delta"] === "object") {
+      const delta = inner["delta"] as Record<string, unknown>;
+      if (delta["type"] === "text_delta" && typeof delta["text"] === "string" && delta["text"] !== "") {
+        events.push({ kind: "text_delta", delta: delta["text"] });
+      }
+    }
+    return events;
+  }
   if (type === "assistant" && json["message"] && typeof json["message"] === "object") {
     const message = json["message"] as Record<string, unknown>;
     const content = Array.isArray(message["content"]) ? message["content"] : [];
@@ -432,7 +453,7 @@ export function buildProviderCommand(input: {
   const { provider, modelId, prompt, sessionId } = input;
   switch (provider) {
     case "claude": {
-      const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"];
+      const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "auto"];
       if (modelId !== "") args.push("--model", modelId);
       if (sessionId !== null && sessionId !== "") args.push("--resume", sessionId);
       args.push("--", prompt);
@@ -639,10 +660,12 @@ export class DirectChatHost {
   private readonly readDiffFn: NonNullable<DirectChatHostSeams["readDiff"]>;
   private readonly onNotify: (note: DirectChatNotification) => void;
   private readonly sawTerminalByTurn = new Set<string>();
+  private readonly resetOnNextTextDelta = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
   private readonly inFlightCreates = new Map<string, Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }>>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTicks = 0;
 
   constructor(store: Store, seams: DirectChatHostSeams) {
     this.store = store;
@@ -658,11 +681,18 @@ export class DirectChatHost {
     this.onNotify = seams.onNotify ?? (() => {});
   }
 
-  startPolling(intervalMs = 250): void {
+  startPolling(intervalMs = 80): void {
     if (this.pollTimer !== null) return;
+    this.pollTicks = 0;
+    const custodyEvery = Math.max(1, Math.round(500 / Math.max(20, intervalMs)));
     this.reconcileRunningTurns();
     this.pollTimer = setInterval(() => {
-      this.reconcileRunningTurns();
+      this.pollTicks += 1;
+      if (this.pollTicks % custodyEvery === 0) {
+        this.reconcileRunningTurns();
+      } else {
+        this.drainRunningTurnLogs();
+      }
     }, intervalMs);
     this.pollTimer.unref?.();
   }
@@ -1201,6 +1231,41 @@ export class DirectChatHost {
     return { ok: true, removedClone };
   }
 
+  drainRunningTurnLogs(): void {
+    const runningRows = this.store.handle
+      .prepare(`SELECT t.* FROM direct_chat_turn t JOIN direct_chat_thread th ON th.id = t.thread_id WHERE t.status = 'running' AND th.archived_at IS NULL`)
+      .all() as Record<string, unknown>[];
+    if (runningRows.length === 0) return;
+    for (const rawTurn of runningRows) {
+      const turn = this.mapTurn(rawTurn);
+      const rawThread = this.store.handle
+        .prepare(`SELECT * FROM direct_chat_thread WHERE id = ?`)
+        .get(turn.threadId) as Record<string, unknown> | undefined;
+      if (!rawThread) continue;
+      const thread = this.mapThread(rawThread);
+      const advanced = this.drainTurnLog(thread, turn, false);
+      if (!advanced) continue;
+      const latest = this.reloadTurn(turn.id) ?? turn;
+      if (latest.status !== "running") {
+        const preImages = this.preTurnImages.get(turn.id);
+        const sinceMs = Date.parse(turn.createdAt);
+        captureNewWorkspaceArtifacts(this.store, {
+          stateRoot: this.stateRoot,
+          threadId: thread.id,
+          turnId: turn.id,
+          clonePath: thread.clonePath,
+          ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
+          now: this.now(),
+        });
+        this.refreshDiffCache(thread);
+        this.cleanupTurnState(turn.id);
+        this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
+      } else {
+        this.onNotify({ threadId: thread.id, turnId: turn.id, event: "turn" });
+      }
+    }
+  }
+
   reconcileRunningTurns(): void {
     const runningRows = this.store.handle
       .prepare(`SELECT t.* FROM direct_chat_turn t JOIN direct_chat_thread th ON th.id = t.thread_id WHERE t.status = 'running' AND th.archived_at IS NULL`)
@@ -1433,11 +1498,21 @@ export class DirectChatHost {
           case "session_id":
             nextSessionId = ev.sessionId;
             break;
+          case "message_start":
+            if (assistantText !== "") {
+              this.resetOnNextTextDelta.add(turn.id);
+            }
+            break;
           case "text_delta":
+            if (this.resetOnNextTextDelta.has(turn.id)) {
+              assistantText = "";
+              this.resetOnNextTextDelta.delete(turn.id);
+            }
             // Run redaction across the full accumulated text so secrets split across deltas are caught.
             assistantText = sanitizeDisplay(assistantText + ev.delta);
             break;
           case "text_replace":
+            this.resetOnNextTextDelta.delete(turn.id);
             assistantText = sanitizeDisplay(ev.text);
             break;
           case "tool": {
@@ -1508,6 +1583,7 @@ export class DirectChatHost {
 
   private cleanupTurnState(turnId: string): void {
     this.sawTerminalByTurn.delete(turnId);
+    this.resetOnNextTextDelta.delete(turnId);
     this.preTurnImages.delete(turnId);
   }
 

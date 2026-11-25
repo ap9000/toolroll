@@ -561,8 +561,9 @@ public struct AgentChatView: View {
 
     private func liveActivityRow(for msg: AgentChatMessage) -> some View {
         let isExpanded = expandedToolMessageIds.contains(msg.id)
-        let currentTool = msg.tools.last(where: { $0.status == "running" }) ?? msg.tools.last
+        let runningTool = msg.tools.last(where: { $0.status == "running" })
         let hasSteps = !msg.tools.isEmpty
+        let isWritingText = msg.isStreaming && !msg.text.isEmpty && runningTool == nil
 
         return VStack(alignment: .leading, spacing: 6) {
             if hasSteps {
@@ -579,13 +580,13 @@ public struct AgentChatView: View {
                         if msg.isStreaming {
                             ToolrollKineticLoader(provider: thread.provider.rawValue, height: 11)
                                 .frame(width: 12, height: 12)
-                            Text(liveStepHeadline(tool: currentTool))
+                            Text(isWritingText ? "Writing reply…" : liveStepHeadline(tool: runningTool ?? msg.tools.last))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            if msg.tools.count > 1 {
-                                Text("· \(msg.tools.count) steps")
+                            if msg.tools.count > 1 || isWritingText {
+                                Text("· \(msg.tools.count) \(msg.tools.count == 1 ? "step" : "steps")")
                                     .font(.system(size: 11.5))
                                     .monospacedDigit()
                                     .foregroundStyle(ToolrollPalette.muted)
@@ -645,7 +646,7 @@ public struct AgentChatView: View {
                     }
                 }
             } else if msg.isStreaming {
-                KineticThinkingRow(provider: thread.provider.rawValue, label: "Thinking…")
+                KineticThinkingRow(provider: thread.provider.rawValue, label: msg.text.isEmpty ? "Thinking…" : "Writing reply…")
             }
         }
     }

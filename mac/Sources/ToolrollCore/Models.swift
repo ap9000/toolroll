@@ -1007,6 +1007,195 @@ public struct StepCardsResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct TaskResultReportItem: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { "\(title)-\(url)" }
+    public let title: String
+    public let why: String
+    public let url: String
+    public let image: String?
+
+    public init(title: String, why: String, url: String, image: String? = nil) {
+        self.title = title
+        self.why = why
+        self.url = url
+        self.image = image
+    }
+}
+
+public struct TaskResultReportFollowUp: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { title }
+    public let title: String
+    public let goal: String
+
+    public init(title: String, goal: String) {
+        self.title = title
+        self.goal = goal
+    }
+}
+
+public struct TaskResultReportShot: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { file }
+    public let file: String
+    public let caption: String
+    public let url: String
+    public let artifactUrl: String?
+    public let problem: String?
+
+    public init(file: String, caption: String, url: String, artifactUrl: String? = nil, problem: String? = nil) {
+        self.file = file
+        self.caption = caption
+        self.url = url
+        self.artifactUrl = artifactUrl
+        self.problem = problem
+    }
+}
+
+public struct TaskResultReport: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public let title: String?
+    public let summary: String?
+    public let document: String?
+    public let truncated: Bool
+    public let items: [TaskResultReportItem]
+    public let followUps: [TaskResultReportFollowUp]
+    public let shots: [TaskResultReportShot]
+    public let problem: String?
+
+    public init(
+        ok: Bool,
+        title: String? = nil,
+        summary: String? = nil,
+        document: String? = nil,
+        truncated: Bool = false,
+        items: [TaskResultReportItem] = [],
+        followUps: [TaskResultReportFollowUp] = [],
+        shots: [TaskResultReportShot] = [],
+        problem: String? = nil
+    ) {
+        self.ok = ok
+        self.title = title
+        self.summary = summary
+        self.document = document
+        self.truncated = truncated
+        self.items = items
+        self.followUps = followUps
+        self.shots = shots
+        self.problem = problem
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? false
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        document = try c.decodeIfPresent(String.self, forKey: .document)
+        truncated = try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        items = try c.decodeIfPresent([TaskResultReportItem].self, forKey: .items) ?? []
+        followUps = try c.decodeIfPresent([TaskResultReportFollowUp].self, forKey: .followUps) ?? []
+        shots = try c.decodeIfPresent([TaskResultReportShot].self, forKey: .shots) ?? []
+        problem = try c.decodeIfPresent(String.self, forKey: .problem)
+    }
+}
+
+public struct TaskResultHandoff: Codable, Sendable, Equatable {
+    public let conclusion: String
+    public let changes: [String]
+    public let verification: [String]
+    public let followUps: [String]
+    public let decisions: [String]
+    public let assumptions: [String]
+    public let notDone: [String]
+    public let risks: [String]
+
+    public init(
+        conclusion: String,
+        changes: [String] = [],
+        verification: [String] = [],
+        followUps: [String] = [],
+        decisions: [String] = [],
+        assumptions: [String] = [],
+        notDone: [String] = [],
+        risks: [String] = []
+    ) {
+        self.conclusion = conclusion
+        self.changes = changes
+        self.verification = verification
+        self.followUps = followUps
+        self.decisions = decisions
+        self.assumptions = assumptions
+        self.notDone = notDone
+        self.risks = risks
+    }
+}
+
+public struct TaskResultScreenshot: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { url }
+    public let caption: String
+    public let path: String
+    public let url: String
+
+    public init(caption: String, path: String, url: String) {
+        self.caption = caption
+        self.path = path
+        self.url = url
+    }
+}
+
+public struct TaskResultResponse: Codable, Sendable, Equatable {
+    public let version: Int
+    public let task: String
+    public let deliverable: String
+    public let run: Int?
+    public let role: String?
+    public let outcome: String?
+    public let verdict: String?
+    public let summary: String?
+    public let report: TaskResultReport?
+    public let handoff: TaskResultHandoff?
+    public let screenshots: [TaskResultScreenshot]
+
+    public init(
+        version: Int = 1,
+        task: String,
+        deliverable: String = "code",
+        run: Int? = nil,
+        role: String? = nil,
+        outcome: String? = nil,
+        verdict: String? = nil,
+        summary: String? = nil,
+        report: TaskResultReport? = nil,
+        handoff: TaskResultHandoff? = nil,
+        screenshots: [TaskResultScreenshot] = []
+    ) {
+        self.version = version
+        self.task = task
+        self.deliverable = deliverable
+        self.run = run
+        self.role = role
+        self.outcome = outcome
+        self.verdict = verdict
+        self.summary = summary
+        self.report = report
+        self.handoff = handoff
+        self.screenshots = screenshots
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
+        deliverable = try c.decodeIfPresent(String.self, forKey: .deliverable) ?? "code"
+        run = try c.decodeIfPresent(Int.self, forKey: .run)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        outcome = try c.decodeIfPresent(String.self, forKey: .outcome)
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        report = try c.decodeIfPresent(TaskResultReport.self, forKey: .report)
+        handoff = try c.decodeIfPresent(TaskResultHandoff.self, forKey: .handoff)
+        screenshots = try c.decodeIfPresent([TaskResultScreenshot].self, forKey: .screenshots) ?? []
+    }
+}
+
 public struct TaskPresence: Codable, Sendable, Equatable {
     public let viewers: [String]
     public let terminalController: String?

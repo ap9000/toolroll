@@ -41,7 +41,7 @@ import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
-import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
+import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf, taskResultOf } from "../engine-reads.js";
 import { leadChatOf } from "../engine-chat.js";
 import { remoteAllows } from "../operate-remote.js";
 import { verifyApproverStanding } from "../principal.js";
@@ -446,6 +446,29 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }
 
+  /** GET /t/<task>/result[?run=<id>]: the task's verified human-readable result (scout report, builder handoff, and screenshots). */
+  async function taskResult(ctx: HandlerContext): Promise<void> {
+    const { url, request, response, who } = ctx;
+    const params = url.searchParams, runParam = params.get("run");
+    if ([...params.keys()].some(key => key !== "run")
+      || params.getAll("run").length > 1
+      || (runParam !== null && !/^[1-9][0-9]{0,14}$/.test(runParam))) {
+      return refusal(response, 400, "request");
+    }
+    const family = familyAt(url, "result");
+    if (family === null) return refusal(response, 404, "task");
+    const results = resultRunsOf(store, family).filter(run => runtime.runVisible(run));
+    const run = runParam === null ? results[0] ?? null : results.find(one => one.id === Number(runParam)) ?? null;
+    if (runParam !== null && run === null) return refusal(response, 404, "run");
+    const payload = taskResultOf(store, evidenceRoot, family, run);
+    if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
+      const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);
+      if (familyAt(url, "result") === null) return refusal(response, 404, "task");
+    }
+    return sendChecked(response, 200, "taskResult", payload);
+  }
+
   /**
    * POST /login/once: the local owner's one-time link, redeemed for a terminal client. The same link the console's
    * socket mints (`toolroll open`'s link verb), the same map and the same local-owner session as GET /login/once/<code>,
@@ -772,7 +795,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "engine.chat": leadChat, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart, "agents.live.thread.turn": threadTurn, "agents.live.thread.stop": threadClose("stop"), "agents.live.thread.end": threadClose("end"), "agents.live.thread.ship": threadShip, "agents.live.thread.ship-cancel": threadShipCancel, "agents.live.thread.ship-send-back": threadShipSendBack }),
-      ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff }),
+      ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff, "task.result": taskResult }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],
   };

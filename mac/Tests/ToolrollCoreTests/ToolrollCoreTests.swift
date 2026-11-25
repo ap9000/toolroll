@@ -1154,4 +1154,45 @@ struct ToolrollCoreTests {
         #expect(DemoFixtures.directChatDiffs[thread.id]?.changedFiles.count == 2)
         #expect(DemoFixtures.demoArtifactPngData.starts(with: [0x89, 0x50, 0x4E, 0x47]))
     }
+
+    @Test("TaskResultResponse decodes verified Scout report payload with findings and follow-ups")
+    func taskResultReportDecodesCleanly() throws {
+        let payload = """
+        {
+          "version": 1,
+          "task": "review-the-homepage",
+          "deliverable": "report",
+          "run": 27,
+          "role": "scout",
+          "outcome": "built",
+          "verdict": null,
+          "summary": "Clarify Alex's role and feature real work.",
+          "report": {
+            "ok": true,
+            "title": "Homepage review",
+            "summary": "Clarify Alex's role and feature real work.",
+            "document": "## Findings\\n\\n- Show real work.",
+            "truncated": false,
+            "items": [
+              { "title": "Rotating hero", "why": "Hard to tell role", "url": "https://example.com/", "image": null }
+            ],
+            "followUps": [
+              { "title": "Update hero copy", "goal": "State role clearly" }
+            ],
+            "shots": []
+          },
+          "handoff": null,
+          "screenshots": []
+        }
+        """
+        let decoded = try JSONDecoder().decode(TaskResultResponse.self, from: Data(payload.utf8))
+        #expect(decoded.deliverable == "report")
+        #expect(decoded.run == 27)
+        let report = try #require(decoded.report)
+        #expect(report.ok == true)
+        #expect(report.title == "Homepage review")
+        #expect(report.items.count == 1)
+        #expect(report.followUps.count == 1)
+        #expect(report.followUps[0].title == "Update hero copy")
+    }
 }

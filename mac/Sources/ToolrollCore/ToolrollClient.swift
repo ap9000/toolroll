@@ -337,6 +337,22 @@ public actor ToolrollClient {
         return try await send(try makeRequest(path: "/t/\(enc)/diff\(q)"), as: ResultDiffResponse.self)
     }
 
+    public func fetchTaskResult(taskId: String, runId: Int? = nil) async throws -> TaskResultResponse {
+        let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
+        let q = runId.map { "?run=\($0)" } ?? ""
+        return try await send(try makeRequest(path: "/t/\(enc)/result\(q)"), as: TaskResultResponse.self)
+    }
+
+    public func fetchAuthenticatedBytes(path: String) async throws -> Data {
+        let req = try makeRequest(path: path, accept: "*/*")
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolrollClientError.httpStatus(status, "Could not load evidence (\(status)).")
+        }
+        return data
+    }
+
     public func fetchDiffFile(taskId: String, fileIndex: Int, runId: Int? = nil) async throws -> ResultDiffFileResponse {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
         var comps = URLComponents()

@@ -1678,3 +1678,86 @@ pub enum DirectChatMutated {
         code: Option<String>,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportItem {
+    pub title: String,
+    pub why: String,
+    pub url: String,
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportFollowUp {
+    pub title: String,
+    pub goal: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultReportShot {
+    pub file: String,
+    pub caption: String,
+    pub url: String,
+    pub artifact_url: Option<String>,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskResultReport {
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        ok: TrueOnly,
+        title: String,
+        summary: String,
+        document: String,
+        truncated: bool,
+        items: Vec<TaskResultReportItem>,
+        follow_ups: Vec<TaskResultReportFollowUp>,
+        shots: Vec<TaskResultReportShot>,
+    },
+    Problem {
+        ok: FalseOnly,
+        problem: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultHandoff {
+    pub conclusion: String,
+    pub changes: Vec<String>,
+    pub verification: Vec<String>,
+    pub follow_ups: Vec<String>,
+    pub decisions: Vec<String>,
+    pub assumptions: Vec<String>,
+    pub not_done: Vec<String>,
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResultScreenshot {
+    pub caption: String,
+    pub path: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskResult {
+    pub version: u32,
+    pub task: String,
+    pub deliverable: String,
+    pub run: Option<i64>,
+    pub role: Option<String>,
+    pub outcome: Option<String>,
+    pub verdict: Option<String>,
+    pub summary: Option<String>,
+    pub report: Option<TaskResultReport>,
+    pub handoff: Option<TaskResultHandoff>,
+    pub screenshots: Vec<TaskResultScreenshot>,
+}

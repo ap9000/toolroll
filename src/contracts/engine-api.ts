@@ -780,6 +780,75 @@ export const directChatMutatedSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
 ]);
 
+export const taskResultReportItemSchema = z.object({
+  title: z.string(),
+  why: z.string(),
+  url: z.string(),
+  image: z.string().nullable(),
+});
+
+export const taskResultReportFollowUpSchema = z.object({
+  title: z.string(),
+  goal: z.string(),
+});
+
+export const taskResultReportShotSchema = z.object({
+  file: z.string(),
+  caption: z.string(),
+  url: z.string(),
+  artifactUrl: z.string().nullable(),
+  problem: z.string().nullable(),
+});
+
+export const taskResultReportSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    title: z.string(),
+    summary: z.string(),
+    document: z.string(),
+    truncated: z.boolean(),
+    items: z.array(taskResultReportItemSchema),
+    followUps: z.array(taskResultReportFollowUpSchema),
+    shots: z.array(taskResultReportShotSchema),
+  }),
+  z.object({
+    ok: z.literal(false),
+    problem: z.string(),
+  }),
+]);
+
+export const taskResultHandoffSchema = z.object({
+  conclusion: z.string(),
+  changes: z.array(z.string()),
+  verification: z.array(z.string()),
+  followUps: z.array(z.string()),
+  decisions: z.array(z.string()),
+  assumptions: z.array(z.string()),
+  notDone: z.array(z.string()),
+  risks: z.array(z.string()),
+});
+
+export const taskResultScreenshotSchema = z.object({
+  caption: z.string(),
+  path: z.string(),
+  url: z.string(),
+});
+
+/** `GET /t/<task>/result[?run=<id>]`: the task's human-readable verified deliverable (scout report, builder handoff, and verified screenshots). */
+export const taskResultSchema = z.object({
+  version,
+  task: z.string(),
+  deliverable: z.enum(["code", "report"]),
+  run: z.number().int().nullable(),
+  role: z.string().nullable(),
+  outcome: z.string().nullable(),
+  verdict: z.string().nullable(),
+  summary: z.string().nullable(),
+  report: taskResultReportSchema.nullable(),
+  handoff: taskResultHandoffSchema.nullable(),
+  screenshots: z.array(taskResultScreenshotSchema),
+});
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -820,6 +889,7 @@ export const ENGINE_RESPONSES = {
   resultDiff: { route: "GET /t/<task>/diff", schema: resultDiffSchema },
   resultDiffFile: { route: "GET /t/<task>/diff?run=&file=", schema: resultDiffFileSchema },
   resultDiffContext: { route: "GET /t/<task>/diff?run=&file=&from=&count=", schema: resultDiffContextSchema },
+  taskResult: { route: "GET /t/<task>/result", schema: taskResultSchema },
   linkRedemption: { route: "POST /login/once", schema: linkRedemptionSchema },
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
@@ -849,6 +919,7 @@ export type ApprovalCard = z.infer<typeof approvalCardSchema>;
 export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
+export type TaskResult = z.infer<typeof taskResultSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
 export type ModelsRead = z.infer<typeof modelsReadSchema>;

@@ -74,6 +74,7 @@
     "task.steps": {"kind":"data","path":"/t/one/steps","what":"a task's step cards (JSON, the engine API)"},
     "task.approval": {"kind":"data","path":"/t/one/approval","what":"the approval waiting on a task (JSON, the engine API), its form's nonce minted as the task page mints one"},
     "task.diff": {"kind":"data","path":"/t/one/diff","what":"a result's changed files, or one file's hunks (JSON, the engine API)"},
+    "task.result": {"kind":"data","path":"/t/one/result","what":"a task's verified report, handoff summary, and screenshots (JSON, the engine API)"},
     "task.release": {"kind":"ceremony","path":"/t/one/release","why":"the release sheet: one release's exact terms and the approval (password, or a one-time nonce under a fresh session); its own document"},
     "release.locate": {"kind":"alias","path":"/approve/1","to":"/t/:task/release"},
     "ledger.export": {"kind":"data","path":"/ledger/export","what":"the audit log as CSV"},

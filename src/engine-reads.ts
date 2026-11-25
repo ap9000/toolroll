@@ -19,12 +19,13 @@ import { stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { approvalOf } from "./scope.js";
 import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
-import { terminalDiffView } from "./result-evidence-readers.js";
-import { parseReviewDiff } from "./server/render-results.js";
+import { structuredHandoffView, terminalDiffView } from "./result-evidence-readers.js";
+import { parseReviewDiff, proofBundleView } from "./server/render-results.js";
+import { parseReport } from "./scout-report.js";
 import { revisionSourceOf } from "./result-review.js";
-import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards, type TaskResult } from "./contracts/engine-api.js";
 import { agentSetupOf, detectionLines, NO_AGENT_YET, npmRegistryOf, type AgentDetection } from "./agent-detect.js";
-import { scanPatchForSecrets } from "./evidence.js";
+import { readVerifiedArtifact, reportShotsOf, scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
 import { wasInterrupted } from "./run-ending.js";
@@ -455,6 +456,103 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
     return { newLine: from + index, text: name === undefined ? line.slice(0, CONTEXT_LINE_CHARS) : `[redacted: ${name} detected on this line]` };
   });
   return answer(lines, lineCount, null);
+}
+
+/** `GET /t/<task>/result[?run=<id>]`: the task's human-readable verified deliverable (scout report, builder handoff, and verified screenshots). */
+export function taskResultOf(store: Store, evidenceRoot: string, family: TaskFamily, run: Run | null): TaskResult {
+  const ref = store.lookupRef(family.current.id);
+  const deliverable: "code" | "report" = ref?.deliverable === "report" || run?.role === "scout" ? "report" : "code";
+  if (run === null) {
+    return {
+      version: ENGINE_API_VERSION,
+      task: family.root.id,
+      deliverable,
+      run: null,
+      role: null,
+      outcome: null,
+      verdict: null,
+      summary: null,
+      report: null,
+      handoff: null,
+      screenshots: [],
+    };
+  }
+  const artifacts = store.artifactsFor(run.id);
+  const reportArtifact = [...artifacts].reverse().find(one => one.kind === "report");
+  let report: TaskResult["report"] = null;
+  if (reportArtifact !== undefined) {
+    let read: ReturnType<typeof readVerifiedArtifact>;
+    try {
+      read = readVerifiedArtifact(evidenceRoot, reportArtifact);
+    } catch {
+      read = { ok: false, problem: "the report file could not be read" };
+    }
+    if (!read.ok) {
+      report = { ok: false, problem: read.problem };
+    } else {
+      const parsed = parseReport(read.content.toString("utf8"), { stored: true });
+      if (!parsed.ok) {
+        report = {
+          ok: false,
+          problem: reportArtifact.truncated
+            ? "the report was shortened at storage and cannot be read; the missing part was never captured"
+            : "the stored report is not a report this console can read",
+        };
+      } else {
+        const shots = reportShotsOf(artifacts, evidenceRoot, run.id, parsed.report.images).map(shot => ({
+          file: shot.file,
+          caption: shot.caption,
+          url: shot.url,
+          artifactUrl: shot.artifactId === null ? null : `/r/${run.id}/evidence/${shot.artifactId}`,
+          problem: shot.problem,
+        }));
+        report = {
+          ok: true,
+          title: parsed.report.title,
+          summary: parsed.report.summary,
+          document: parsed.report.report,
+          truncated: reportArtifact.truncated,
+          items: parsed.report.items,
+          followUps: parsed.report.followUps,
+          shots,
+        };
+      }
+    }
+  }
+  const handoffView = structuredHandoffView(artifacts, evidenceRoot);
+  const handoff: TaskResult["handoff"] = handoffView === null ? null : {
+    conclusion: handoffView.conclusion,
+    changes: handoffView.changes,
+    verification: handoffView.verification,
+    followUps: handoffView.followUps,
+    decisions: handoffView.report.decisions,
+    assumptions: handoffView.report.assumptions,
+    notDone: handoffView.report.notDone,
+    risks: handoffView.report.risks,
+  };
+  const proof = proofBundleView(store, run, artifacts, evidenceRoot);
+  const screenshots = (proof?.screenshots ?? [])
+    .filter(one => one.problem === null)
+    .map(one => ({
+      caption: one.caption,
+      path: one.path,
+      url: `/r/${run.id}/evidence/${one.artifactId}`,
+    }));
+  const verdictRow = store.proofVerdictFor(run.id);
+  const summary = (report !== null && report.ok ? report.summary : null) ?? handoff?.conclusion ?? null;
+  return {
+    version: ENGINE_API_VERSION,
+    task: family.root.id,
+    deliverable,
+    run: run.id,
+    role: run.role,
+    outcome: run.outcome,
+    verdict: verdictRow?.verdict ?? null,
+    summary,
+    report,
+    handoff,
+    screenshots,
+  };
 }
 
 /** An agent's setup as the agents read says it: Toolroll's own commands (agent-detect.ts AGENT_SETUP). */

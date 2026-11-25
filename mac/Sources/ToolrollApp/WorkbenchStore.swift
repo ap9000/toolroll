@@ -177,6 +177,8 @@ public final class WorkbenchStore {
     public private(set) var modelsRead: ModelsReadResponse = ModelsReadResponse()
     public private(set) var selectedTaskId: String?
     public private(set) var stepCards: StepCardsResponse?
+    public private(set) var taskResult: TaskResultResponse? = nil
+    public private(set) var taskEvidenceImages: [String: Data] = [:]
     public private(set) var selectedLiveRunId: Int? = nil
     public private(set) var liveRunRecords: [LiveAgentRecord] = []
     public private(set) var liveRunRecordsById: [Int: [LiveAgentRecord]] = [:]
@@ -1095,7 +1097,8 @@ public final class WorkbenchStore {
         guard directChatPollTask == nil else { return }
         directChatPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(700))
+                let connected = self?.sseConnected ?? false
+                try? await Task.sleep(for: .milliseconds(connected ? 1500 : 350))
                 guard let self, !Task.isCancelled else { break }
                 if self.runningChatThreadIds.isEmpty { break }
                 if let sel = self.selectedChatThreadId, self.runningChatThreadIds.contains(sel) {
@@ -2434,6 +2437,7 @@ public final class WorkbenchStore {
         guard selectedTaskId != taskId || stepCards?.task.id != taskId else { return }
         selectedTaskId = taskId
         taskViewMode = .activity
+        taskResult = nil
         selectedLiveRunId = nil
         liveRunRecords = []
         liveRunRecordsById = [:]
@@ -2485,6 +2489,7 @@ public final class WorkbenchStore {
         async let stepsReq = client.fetchSteps(taskId: taskId)
         async let candsReq = client.fetchCandidates(taskId: taskId)
         async let diffReq = client.fetchDiff(taskId: taskId)
+        async let resultReq = client.fetchTaskResult(taskId: taskId)
 
         if let steps = try? await stepsReq {
             stepCards = steps
@@ -2515,6 +2520,13 @@ public final class WorkbenchStore {
                 approvalCard = nil
             }
         }
+        if let result = try? await resultReq {
+            if selectedTaskId == taskId {
+                taskResult = result
+            }
+        } else if selectedTaskId == taskId {
+            taskResult = nil
+        }
         if let cands = try? await candsReq { candidatesResponse = cands }
         if let diff = try? await diffReq {
             diffResponse = diff
@@ -2523,6 +2535,18 @@ public final class WorkbenchStore {
             }
         }
         syncTaskArtifacts()
+    }
+
+    public func loadTaskEvidenceImage(urlPath: String) async -> Data? {
+        if let cached = taskEvidenceImages[urlPath] {
+            return cached
+        }
+        guard !activeProfile.isDemo, let client else { return nil }
+        if let bytes = try? await client.fetchAuthenticatedBytes(path: urlPath) {
+            taskEvidenceImages[urlPath] = bytes
+            return bytes
+        }
+        return nil
     }
 
     public func addInlineDiffComment(path: String, line: Int, text: String) async {
@@ -3648,7 +3672,7 @@ public final class WorkbenchStore {
     }
 
     private func restartSSE() {
-        var rooms = ["home", "chat"]
+        var rooms = ["workspace", "chat"]
         if let taskId = selectedTaskId {
             rooms.append("task:\(taskId)")
         }
@@ -3693,7 +3717,7 @@ public final class WorkbenchStore {
     }
 
     private func handleLiveSignal(room: String) async {
-        if room == "home" {
+        if room == "workspace" || room == "home" {
             await refreshAll()
         } else if room == "chat" || room.hasPrefix("chat?"), let client {
             if let chat = try? await client.fetchLeadChat(project: selectedProject) {
