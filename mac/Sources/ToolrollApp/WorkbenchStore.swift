@@ -168,6 +168,8 @@ public final class WorkbenchStore {
     public private(set) var canvasBaseURL: String = ""
     public private(set) var hydratingBoardIds: Set<String> = []
     public private(set) var activeAgentSetupTitle: String? = nil
+    public private(set) var missingRuntimeInstallCommand: String? = nil
+    private var attemptedAutoBootstrap: Bool = false
     public private(set) var localSessionCookie: (name: String, value: String, origin: String)? = nil
 
     private var backStack: [String?] = []
@@ -313,39 +315,28 @@ public final class WorkbenchStore {
         isInspectorVisible = inspector
     }
 
-    public func startLocalEngine() async {
-        busyLabel = "Starting Local Toolroll Engine…"
+    public func startLocalEngine(silent: Bool = false, allowNpxFallback: Bool = true) async {
+        busyLabel = silent ? "Connecting to Local Toolroll…" : "Starting Local Toolroll Engine…"
         defer { busyLabel = nil }
 
-        let candidates = ["/opt/homebrew/bin/toolroll", "/usr/local/bin/toolroll"]
-        guard let binPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            notice = WorkbenchNotice(kind: .refusal, message: "Could not locate local `toolroll` binary to start.")
+        let result = await LocalDaemonBootstrapper.startAndConnect(
+            allowNpxFallback: allowNpxFallback,
+            timeoutSeconds: silent ? 8.0 : 12.0
+        )
+        if let proc = result.process {
+            managedLocalEngineProcess = proc
+        }
+        missingRuntimeInstallCommand = result.installCommand
+
+        if let creds = result.credentials {
+            missingRuntimeInstallCommand = nil
+            await adoptConnectedLocalSession(creds, silent: silent)
+            await refreshSetupState()
             return
         }
-        do {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: binPath)
-            let dbPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/nightorders/orders.db").path
-            if FileManager.default.fileExists(atPath: dbPath) {
-                proc.arguments = ["up", "--laptop", "--no-open", "--db", dbPath, "--port", "4180"]
-            } else {
-                proc.arguments = ["up", "--laptop", "--no-open"]
-            }
-            proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
-            try proc.run()
-            managedLocalEngineProcess = proc
-            for _ in 0..<12 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if await connectToLocalConsoleIfAvailable(silent: true) {
-                    await refreshSetupState()
-                    return
-                }
-            }
-            notice = WorkbenchNotice(kind: .info, message: "Engine starting… click Rescan in a moment.")
-        } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: "Could not start local engine: \(error.localizedDescription)")
+        if !silent {
+            let kind: WorkbenchNotice.Kind = result.process != nil ? .info : .refusal
+            notice = WorkbenchNotice(kind: kind, message: result.message)
         }
     }
 
@@ -2325,6 +2316,17 @@ public final class WorkbenchStore {
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
             }
+            if !attemptedAutoBootstrap {
+                attemptedAutoBootstrap = true
+                if LocalDaemonBootstrapper.canAutoStart() {
+                    await startLocalEngine(silent: true, allowNpxFallback: false)
+                    if isLocalSession {
+                        return
+                    }
+                } else if case .missingRuntime(let installCmd) = LocalDaemonBootstrapper.resolvePlan() {
+                    missingRuntimeInstallCommand = installCmd
+                }
+            }
         }
         await refreshAll()
         if selectedTaskId == nil, let first = needsRows.first ?? runningRows.first ?? failedRows.first ?? workRowsResponse.rows.first {
@@ -2459,41 +2461,46 @@ public final class WorkbenchStore {
         localSessionCookie = (name, value, creds.origin)
     }
 
+    private func adoptConnectedLocalSession(_ creds: LocalSessionCredentials, silent: Bool) async {
+        let localProf = ConnectionProfile(
+            name: "local",
+            origin: creds.origin,
+            account: creds.account,
+            token: "",
+            label: "Local Toolroll (\(creds.origin.replacingOccurrences(of: "http://", with: "")))",
+            isDemo: false
+        )
+        let loaded = profileStore.load()
+        self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
+        self.activeProfile = localProf
+        self.isLocalSession = true
+        self.localDatabasePath = creds.databasePath
+        self.missingRuntimeInstallCommand = nil
+        let fresh = ToolrollClient(localSession: creds)
+        self.client = fresh
+        await fresh.onSessionRenewed { [weak self] renewed in
+            Task { @MainActor in self?.adoptRenewedSession(renewed) }
+        }
+        self.passwordSet = creds.passwordSet
+        refreshTouchIDState()
+        refreshAgentRequests(notifyNew: false)
+        startAgentRequestPolling()
+        if let eq = creds.cookieHeader.firstIndex(of: "=") {
+            let cname = String(creds.cookieHeader[..<eq])
+            let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
+            self.localSessionCookie = (cname, cval, creds.origin)
+        }
+        self.terminalSession.disconnect(clearOutput: true)
+        self.selectedTaskId = nil
+        self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
+        await refreshAll()
+        restartSSE()
+    }
+
     @discardableResult
     public func connectToLocalConsoleIfAvailable(silent: Bool = false) async -> Bool {
         if let creds = await LocalConsoleConnector.discoverAndConnect() {
-            let localProf = ConnectionProfile(
-                name: "local",
-                origin: creds.origin,
-                account: creds.account,
-                token: "",
-                label: "Local Toolroll (\(creds.origin.replacingOccurrences(of: "http://", with: "")))",
-                isDemo: false
-            )
-            let loaded = profileStore.load()
-            self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
-            self.activeProfile = localProf
-            self.isLocalSession = true
-            self.localDatabasePath = creds.databasePath
-            let fresh = ToolrollClient(localSession: creds)
-            self.client = fresh
-            await fresh.onSessionRenewed { [weak self] renewed in
-                Task { @MainActor in self?.adoptRenewedSession(renewed) }
-            }
-            self.passwordSet = creds.passwordSet
-            refreshTouchIDState()
-            refreshAgentRequests(notifyNew: false)
-            startAgentRequestPolling()
-            if let eq = creds.cookieHeader.firstIndex(of: "=") {
-                let cname = String(creds.cookieHeader[..<eq])
-                let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
-                self.localSessionCookie = (cname, cval, creds.origin)
-            }
-            self.terminalSession.disconnect(clearOutput: true)
-            self.selectedTaskId = nil
-            self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
-            await refreshAll()
-            restartSSE()
+            await adoptConnectedLocalSession(creds, silent: silent)
             return true
         }
         if !silent {

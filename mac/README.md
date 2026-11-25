@@ -17,7 +17,7 @@ A native macOS desktop workbench for Toolroll's central multiplayer Engine — b
   - **Menu Bar Extra**: live `Needs you` counter with instant activation.
   - **Native Browser-Assisted Pairing** (`PairWorkspaceSheet.swift`): pairs via `/api/connect/pair/start` + `/api/connect/pair/poll` or manual Bearer token.
 
-## Build, Test & Launch
+## Build, Test & Package
 
 ```bash
 cd mac
@@ -26,14 +26,16 @@ cd mac
 swift test
 
 # Build & package Toolroll.app
-chmod +x build-app.sh
 ./build-app.sh
+
+# Package compressed Toolroll-<version>-macos.dmg (+ .sha256)
+./build-dmg.sh
 
 # Launch the native app
 open build/Toolroll.app
 ```
 
-If no remote profile exists in `~/.config/toolroll/remote/profiles.json` yet, `Toolroll.app` opens in an interactive **Demo Workspace** so you can inspect the full 3-pane workbench immediately and click **Connect Workspace…** (`⌘⇧P`) whenever you are ready to pair.
+On launch, `Toolroll.app` automatically discovers a running local Toolroll daemon or starts one cleanly via `LocalDaemonBootstrapper` (inheriting Homebrew/nvm/fnm/pnpm/volta PATHs and logging to `~/Library/Logs/Toolroll/daemon.log`). For signed/notarized `.dmg` releases and Homebrew Cask setup, see [`docs/guide/mac-release.md`](../docs/guide/mac-release.md).
 
 ## Keyboard Shortcuts
 

@@ -29,7 +29,32 @@ For Claude Code, Codex, and Gemini — using the subscriptions already on your m
 
 ## Quick start
 
-macOS or Linux, Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux, also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
+### Native macOS app (recommended on Mac)
+
+Install the native SwiftUI macOS app and local CLI together via Homebrew Cask (macOS 14 Sonoma+, Apple Silicon & Intel):
+
+```sh
+brew install --cask ap9000/toolroll/toolroll
+```
+
+Or download the signed, notarized `Toolroll-<version>-macos.dmg` directly from [GitHub Releases](https://github.com/ap9000/toolroll/releases/latest) and drag **Toolroll.app** to Applications. On launch, Toolroll automatically discovers or starts your local engine — no manual terminal setup required.
+
+<details>
+<summary>Building the native Mac app from source</summary>
+
+```sh
+cd mac && bash build-app.sh && open build/Toolroll.app
+# Or package a local .dmg:
+cd mac && bash build-dmg.sh
+```
+
+See [macOS release & signing guide](docs/guide/mac-release.md) for Developer ID signing, notarization, and Homebrew Cask automation.
+
+</details>
+
+### CLI & Terminal Workbench (macOS or Linux)
+
+Requires Node.js 22.20+, git 2.41+, and Claude Code (`claude`), Codex (`codex`), or Gemini signed in on this computer. On Linux, also install the sandbox tools: `sudo apt update && sudo apt install bubblewrap socat ripgrep`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
@@ -41,16 +66,6 @@ Or with Homebrew / npm:
 brew install ap9000/toolroll/toolroll   # or: npm install -g toolroll
 toolroll
 ```
-
-### Native macOS app (SwiftUI)
-
-Toolroll includes a native SwiftUI Mac app (`mac/`) with Direct Chats, Lead ("Since you were away" continuity, vision on pasted screenshots, and instant local actions), live streaming diffs, and one-keystroke Ship (`⌘⏎`).
-
-```sh
-cd mac && bash build-app.sh && open build/Toolroll.app
-```
-
-> Signed macOS `.app` / `.dmg` downloads will be published on [GitHub Releases](https://github.com/ap9000/toolroll/releases).
 
 <details>
 <summary>Upgrading from the older <code>standing-orders</code> npm package</summary>

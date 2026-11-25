@@ -1299,4 +1299,86 @@ struct ToolrollCoreTests {
         #expect(ToolrollClientError.fullSignInNeeded("Sign in with your password to do this.").errorDescription?.contains("browser") == false)
         #expect(DemoFixtures.steps(for: "t-auth-refresh").headline?.contains("browser") == false)
     }
+
+    @Test("LocalDaemonBootstrapper enriches Finder PATH, prefers bundled daemon > CLI > npx, and surfaces install command")
+    func localDaemonBootstrapperResolutionAndArgs() {
+        let enriched = LocalDaemonBootstrapper.enrichedPATH(base: "/usr/bin:/bin", home: "/Users/alex")
+        let dirs = enriched.split(separator: ":").map(String.init)
+        #expect(dirs.first == "/opt/homebrew/bin")
+        #expect(dirs.contains("/Users/alex/.local/bin"))
+        #expect(dirs.contains("/Users/alex/.npm-global/bin"))
+        #expect(dirs.contains("/Users/alex/Library/pnpm"))
+        #expect(dirs.contains("/usr/bin"))
+
+        let bundled = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: "/Applications/Toolroll.app/Contents/Resources",
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { path in
+                path == "/Applications/Toolroll.app/Contents/Resources/daemon/node"
+                    || path == "/opt/homebrew/bin/toolroll"
+            },
+            fileExists: { path in
+                path == "/Applications/Toolroll.app/Contents/Resources/daemon/dist/bin.js"
+            }
+        )
+        #expect(bundled == .bundledScript(
+            nodePath: "/Applications/Toolroll.app/Contents/Resources/daemon/node",
+            cliPath: "/Applications/Toolroll.app/Contents/Resources/daemon/dist/bin.js"
+        ))
+        #expect(bundled.supportsSilentAutoStart == true)
+
+        let cli = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { $0 == "/Users/alex/.npm-global/bin/toolroll" },
+            fileExists: { _ in false }
+        )
+        #expect(cli == .cliBinary(path: "/Users/alex/.npm-global/bin/toolroll"))
+        #expect(cli.supportsSilentAutoStart == true)
+
+        let npx = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { $0 == "/opt/homebrew/bin/npx" || $0 == "/opt/homebrew/bin/node" },
+            fileExists: { _ in false }
+        )
+        #expect(npx == .npxFallback(npxPath: "/opt/homebrew/bin/npx"))
+        #expect(npx.supportsSilentAutoStart == false)
+
+        let missing = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { _ in false },
+            fileExists: { _ in false }
+        )
+        #expect(missing == .missingRuntime(installCommand: LocalDaemonBootstrapper.recommendedInstallCommand))
+        #expect(missing.supportsSilentAutoStart == false)
+
+        let dbPath = LocalDaemonBootstrapper.defaultDatabasePath(
+            home: "/Users/alex",
+            env: [:],
+            fileExists: { $0 == "/Users/alex/.config/toolroll/orders.db" }
+        )
+        #expect(dbPath == "/Users/alex/.config/toolroll/orders.db")
+
+        let cliSpec = LocalDaemonBootstrapper.launchSpec(
+            for: .cliBinary(path: "/opt/homebrew/bin/toolroll"),
+            databasePath: "/Users/alex/.config/nightorders/orders.db",
+            existingDatabase: true
+        )
+        #expect(cliSpec?.executable == "/opt/homebrew/bin/toolroll")
+        #expect(cliSpec?.arguments == ["up", "--laptop", "--no-open", "--db", "/Users/alex/.config/nightorders/orders.db", "--port", "4180"])
+
+        let npxSpec = LocalDaemonBootstrapper.launchSpec(
+            for: .npxFallback(npxPath: "/opt/homebrew/bin/npx"),
+            databasePath: "/Users/alex/.config/nightorders/orders.db",
+            existingDatabase: false
+        )
+        #expect(npxSpec?.executable == "/opt/homebrew/bin/npx")
+        #expect(npxSpec?.arguments == ["--yes", "toolroll", "up", "--laptop", "--no-open"])
+    }
 }

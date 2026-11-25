@@ -292,6 +292,32 @@ public struct SetupWorkbenchView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1))
                     }
 
+                    if !store.isLocalSession, let installCmd = store.missingRuntimeInstallCommand {
+                        HStack(spacing: 10) {
+                            Image(systemName: "terminal")
+                                .font(.system(size: 13))
+                                .foregroundStyle(ToolrollPalette.muted)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Install the local Toolroll CLI once to run agents on this Mac")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                Text(installCmd)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(installCmd, forType: .string)
+                            }
+                            .buttonStyle(KitButtonStyle(.ghost))
+                        }
+                        .padding(12)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
                             if !store.isLocalSession && store.activeProfile.isDemo {
