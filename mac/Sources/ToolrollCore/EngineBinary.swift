@@ -5,14 +5,19 @@ public enum EngineBinary {
 
     public static func trusted(candidates: [String] = candidates, fileManager: FileManager = .default) -> String? {
         for path in candidates where fileManager.isExecutableFile(atPath: path) {
-            let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-            if isInstalledPackage(resolved), !insideWorkTree(resolved, fileManager: fileManager) { return resolved }
+            if let resolved = trustedPath(path, fileManager: fileManager) { return resolved }
         }
         return nil
     }
 
+    public static func trustedPath(_ path: String, fileManager: FileManager = .default) -> String? {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        guard isInstalledPackage(resolved), !insideWorkTree(resolved, fileManager: fileManager) else { return nil }
+        return resolved
+    }
+
     static func isInstalledPackage(_ resolved: String) -> Bool {
-        resolved.contains("/Cellar/toolroll/") || resolved.contains("/lib/node_modules/toolroll/")
+        resolved.contains("/Cellar/toolroll/") || resolved.contains("/node_modules/toolroll/")
     }
 
     static func insideWorkTree(_ resolved: String, fileManager: FileManager) -> Bool {
