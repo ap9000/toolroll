@@ -218,7 +218,7 @@ public final class WorkbenchStore {
     public private(set) var isLoadingChatShipPreview: Bool = false
     public private(set) var isExecutingChatShip: Bool = false
     public var chatShipError: String? = nil
-    public var isFirstChatBackgroundPromptOpen: Bool = false
+    public var showBackgroundServiceBanner: Bool = false
     public var composerFocusTick: Int = 0
     public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "lead" {
         didSet { UserDefaults.standard.set(preferredOrchestrationMode, forKey: "toolroll.orchestrationMode") }
@@ -1012,7 +1012,9 @@ public final class WorkbenchStore {
             activeProject = thread.projectName
         }
         restartSSE()
-        Task { await refreshDirectChatDetail(threadId: id) }
+        if !id.hasPrefix("pending-") {
+            Task { await refreshDirectChatDetail(threadId: id) }
+        }
     }
 
     public func setDefaultChatModel(provider: AgentChatProvider, modelId: String) {
@@ -1044,9 +1046,11 @@ public final class WorkbenchStore {
             directChatProblem = list.problem
             directChatBackgroundOn = list.backgroundOn
             let existingById = Dictionary(uniqueKeysWithValues: chatThreads.map { ($0.id, $0) })
-            chatThreads = list.threads.map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
+            let pendingThreads = chatThreads.filter { $0.id.hasPrefix("pending-") }
+            let serverThreads = list.threads.map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
+            chatThreads = pendingThreads + serverThreads
             runningChatThreadIds = Set(chatThreads.filter(\.running).map(\.id))
-            if let sel = selectedChatThreadId {
+            if let sel = selectedChatThreadId, !sel.hasPrefix("pending-") {
                 await refreshDirectChatDetail(threadId: sel)
             }
             ensureDirectChatPolling()
@@ -1108,10 +1112,14 @@ public final class WorkbenchStore {
 
     private func maybePromptBackgroundOnFirstChat() {
         guard !activeProfile.isDemo, isLocalSession, !directChatBackgroundOn else { return }
-        let key = "toolroll.askedBackgroundOnFirstChatV1"
+        let key = "toolroll.dismissedBackgroundBannerV1"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
-        UserDefaults.standard.set(true, forKey: key)
-        isFirstChatBackgroundPromptOpen = true
+        showBackgroundServiceBanner = true
+    }
+
+    public func dismissBackgroundServiceBanner() {
+        UserDefaults.standard.set(true, forKey: "toolroll.dismissedBackgroundBannerV1")
+        showBackgroundServiceBanner = false
     }
 
     public func startChatThread(
@@ -1163,9 +1171,44 @@ public final class WorkbenchStore {
 
         let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
         let initialPrompt = composed.combinedMessage.isEmpty ? trimmed : composed.combinedMessage
+        let firstLine = initialPrompt.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? initialPrompt
+        let optimisticTitle = String(firstLine.prefix(64))
 
-        busyLabel = "Preparing isolated workspace…"
-        defer { busyLabel = nil }
+        let tempId = "pending-\(DirectChatDateParser.makeHex32RequestId())"
+        let optimisticThread = AgentChatThread(
+            id: tempId,
+            title: optimisticTitle.isEmpty ? "New chat" : optimisticTitle,
+            projectName: projName,
+            branch: "Preparing clone…",
+            provider: chosenProvider,
+            modelId: chosenModel,
+            posture: DirectChatPosture.defaultFor(chosenProvider),
+            running: true,
+            lastStatus: "running",
+            messages: [
+                AgentChatMessage(role: .user, text: initialPrompt),
+                AgentChatMessage(
+                    id: "\(tempId)-assistant",
+                    role: .assistant,
+                    text: "",
+                    tools: [
+                        AgentChatToolEvent(
+                            id: "setup-workspace",
+                            ordinal: 1,
+                            name: "Workspace",
+                            detail: "Creating isolated local clone…",
+                            status: "running"
+                        )
+                    ],
+                    isStreaming: true,
+                    status: "running"
+                ),
+            ]
+        )
+        chatThreads.insert(optimisticThread, at: 0)
+        runningChatThreadIds.insert(tempId)
+        selectChatThread(tempId)
+        maybePromptBackgroundOnFirstChat()
 
         do {
             let started = try await client.startDirectChat(
@@ -1175,15 +1218,65 @@ public final class WorkbenchStore {
                 modelId: chosenModel
             )
             guard started.ok, let threadId = started.threadId else {
-                notice = WorkbenchNotice(kind: .refusal, message: started.error ?? "Could not start chat.")
+                let err = started.error ?? "Could not start chat."
+                if let idx = chatThreads.firstIndex(where: { $0.id == tempId }) {
+                    chatThreads[idx].running = false
+                    chatThreads[idx].lastStatus = "failed"
+                    if let mIdx = chatThreads[idx].messages.lastIndex(where: { $0.role == .assistant }) {
+                        chatThreads[idx].messages[mIdx].isStreaming = false
+                        chatThreads[idx].messages[mIdx].isError = true
+                        chatThreads[idx].messages[mIdx].text = err
+                        chatThreads[idx].messages[mIdx].tools = [
+                            AgentChatToolEvent(id: "setup-workspace", ordinal: 1, name: "Workspace", detail: "Could not prepare clone", status: "error")
+                        ]
+                    }
+                }
+                runningChatThreadIds.remove(tempId)
+                notice = WorkbenchNotice(kind: .refusal, message: err)
                 return
             }
-            await uploadImageAttachments(attachments, to: threadId, client: client)
-            await refreshDirectChats()
-            selectChatThread(threadId)
-            maybePromptBackgroundOnFirstChat()
+
+            if !attachments.isEmpty {
+                await uploadImageAttachments(attachments, to: threadId, client: client)
+            }
+
+            let wasSelected = selectedChatThreadId == tempId
+            chatThreads.removeAll { $0.id == tempId }
+            runningChatThreadIds.remove(tempId)
+            runningChatThreadIds.insert(threadId)
+
+            if let detail = try? await client.fetchDirectChatDetail(threadId: threadId) {
+                let realThread = AgentChatThread(detail: detail)
+                chatThreads.removeAll { $0.id == threadId }
+                chatThreads.insert(realThread, at: 0)
+                chatThreadDiffs[threadId] = AgentChatGitDiff(dto: detail.diff)
+                if realThread.running {
+                    runningChatThreadIds.insert(threadId)
+                } else {
+                    runningChatThreadIds.remove(threadId)
+                }
+            } else {
+                await refreshDirectChats()
+            }
+
+            if wasSelected {
+                selectedChatThreadId = threadId
+                restartSSE()
+            }
+            ensureDirectChatPolling()
         } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            let err = error.localizedDescription
+            if let idx = chatThreads.firstIndex(where: { $0.id == tempId }) {
+                chatThreads[idx].running = false
+                chatThreads[idx].lastStatus = "failed"
+                if let mIdx = chatThreads[idx].messages.lastIndex(where: { $0.role == .assistant }) {
+                    chatThreads[idx].messages[mIdx].isStreaming = false
+                    chatThreads[idx].messages[mIdx].isError = true
+                    chatThreads[idx].messages[mIdx].text = err
+                }
+            }
+            runningChatThreadIds.remove(tempId)
+            notice = WorkbenchNotice(kind: .refusal, message: err)
         }
     }
 
@@ -1223,18 +1316,37 @@ public final class WorkbenchStore {
         let finalPrompt = promptParts.joined(separator: "\n\n")
         guard !finalPrompt.isEmpty else { return }
 
+        let optimisticUserId = "opt-user-\(UUID().uuidString)"
+        let optimisticAssistantId = "opt-assistant-\(UUID().uuidString)"
+        if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+            chatThreads[idx].messages.append(AgentChatMessage(id: optimisticUserId, role: .user, text: finalPrompt))
+            chatThreads[idx].messages.append(AgentChatMessage(id: optimisticAssistantId, role: .assistant, text: "", isStreaming: true, status: "running"))
+            chatThreads[idx].running = true
+            chatThreads[idx].updatedAt = Date()
+        }
+        runningChatThreadIds.insert(threadId)
+
         do {
             let reply = try await client.sendDirectChatMessage(threadId: threadId, prompt: finalPrompt)
             if !reply.ok {
                 let err = reply.error ?? "Could not send message."
+                if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                    chatThreads[idx].messages.removeAll { $0.id == optimisticUserId || $0.id == optimisticAssistantId }
+                    chatThreads[idx].running = false
+                }
+                runningChatThreadIds.remove(threadId)
                 recordChatGitErrorIfRelevant(threadId: threadId, error: err)
                 notice = WorkbenchNotice(kind: .refusal, message: err)
                 return
             }
-            runningChatThreadIds.insert(threadId)
             await refreshDirectChatDetail(threadId: threadId)
             ensureDirectChatPolling()
         } catch {
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                chatThreads[idx].messages.removeAll { $0.id == optimisticUserId || $0.id == optimisticAssistantId }
+                chatThreads[idx].running = false
+            }
+            runningChatThreadIds.remove(threadId)
             recordChatGitErrorIfRelevant(threadId: threadId, error: error.localizedDescription)
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
         }
@@ -3435,6 +3547,9 @@ public final class WorkbenchStore {
         if res.ok {
             directChatBackgroundOn = enabled
             if enabled {
+                showBackgroundServiceBanner = false
+            }
+            if enabled {
                 for _ in 0..<10 {
                     if await connectToLocalConsoleIfAvailable(silent: true) {
                         await refreshDirectChats()
@@ -3537,7 +3652,7 @@ public final class WorkbenchStore {
         if let taskId = selectedTaskId {
             rooms.append("task:\(taskId)")
         }
-        if let chatId = selectedChatThreadId {
+        if let chatId = selectedChatThreadId, !chatId.hasPrefix("pending-") {
             rooms.append("direct-chat:\(chatId)")
         }
         if activeProfile.isDemo {

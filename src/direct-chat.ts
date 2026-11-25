@@ -178,10 +178,13 @@ const STRIPPED_ENV_KEYS = new Set([
 ]);
 
 function sanitizeDisplay(raw: string): string {
-  const cleaned = cleanLiveText(raw);
-  return cleaned
+  return raw
+    .replace(/\r\n/g, "\n")
     .split("\n")
-    .map(line => (liveSecretHit(line) ? HIDDEN_LINE : line))
+    .map(line => {
+      const cleaned = cleanLiveText(line);
+      return liveSecretHit(cleaned) ? HIDDEN_LINE : cleaned;
+    })
     .join("\n");
 }
 

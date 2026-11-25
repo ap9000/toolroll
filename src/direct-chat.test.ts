@@ -448,13 +448,15 @@ describe("DirectChatHost & helpers", () => {
     const claudeEvents = parseDirectChatLine(
       JSON.stringify({
         type: "assistant",
-        message: { content: [{ type: "text", text: "ANTHROPIC_API_KEY=sk-ant-api03-secretvalue1234567890" }] },
+        message: { content: [{ type: "text", text: "## Summary\n\n- Line one\nANTHROPIC_API_KEY=sk-ant-api03-secretvalue1234567890\n- Line two" }] },
       }),
       "claude",
     );
     expect(claudeEvents[0]?.kind).toBe("text_replace");
     if (claudeEvents[0]?.kind === "text_replace") {
       expect(claudeEvents[0].text).not.toContain("sk-ant-api03");
+      expect(claudeEvents[0].text).toContain("## Summary\n\n- Line one\n");
+      expect(claudeEvents[0].text).toContain("\n- Line two");
     }
 
     const codexSession = parseDirectChatLine(JSON.stringify({ type: "thread.started", thread_id: "thr_99" }), "codex");

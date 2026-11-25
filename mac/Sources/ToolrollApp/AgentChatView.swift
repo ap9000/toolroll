@@ -57,6 +57,11 @@ public struct AgentChatView: View {
         VStack(spacing: 0) {
             workspaceStatusStrip
 
+            if store.showBackgroundServiceBanner && !store.directChatBackgroundOn && !store.activeProfile.isDemo {
+                backgroundServiceBanner
+                HairlineDivider()
+            }
+
             if let gitError = store.chatGitBindingErrors[thread.id] {
                 gitRepairBanner(gitError)
                 HairlineDivider()
@@ -112,7 +117,9 @@ public struct AgentChatView: View {
         .background(ToolrollPalette.ground)
         .onAppear {
             replyFocused = true
-            Task { await store.refreshDirectChatDetail(threadId: thread.id) }
+            if !thread.id.hasPrefix("pending-") {
+                Task { await store.refreshDirectChatDetail(threadId: thread.id) }
+            }
         }
         .sheet(item: $lightboxArtifact) { artifact in
             DirectChatArtifactLightbox(store: store, artifact: artifact)
@@ -191,6 +198,36 @@ public struct AgentChatView: View {
         .padding(.vertical, 6)
         .background(ToolrollPalette.ground)
         .overlay(alignment: .bottom) { HairlineDivider() }
+    }
+
+    private var backgroundServiceBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.live)
+            Text("Keep chats running if you close Toolroll by turning on the background service.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
+                .lineLimit(1)
+            Spacer()
+            Button(store.isUpdatingBackgroundService ? "Enabling…" : "Turn On Background") {
+                Task { _ = await store.setBackgroundServiceEnabled(true) }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .disabled(store.isUpdatingBackgroundService)
+            Button {
+                store.dismissBackgroundServiceBanner()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(ToolrollPalette.raised)
     }
 
     private func gitRepairBanner(_ errorText: String) -> some View {
@@ -590,6 +627,9 @@ public struct AgentChatView: View {
 
     private func liveStepHeadline(tool: AgentChatToolEvent?) -> String {
         guard let tool else { return "Thinking…" }
+        if tool.name.lowercased() == "workspace" {
+            return tool.detail.isEmpty ? "Preparing isolated workspace…" : tool.detail
+        }
         let verb: String
         switch tool.name.lowercased() {
         case "read": verb = "Reading"

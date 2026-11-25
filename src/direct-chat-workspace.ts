@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -57,25 +57,20 @@ export function scanNodeModulesSafety(
     if (current.depth > maxDepth) {
       return { safe: false, reason: "Directory nesting exceeds safety depth limit." };
     }
-    let items: string[];
+    let items: Dirent[];
     try {
-      items = readdirSync(current.dir);
+      items = readdirSync(current.dir, { withFileTypes: true });
     } catch {
       return { safe: false, reason: "Unreadable directory inside node_modules." };
     }
-    for (const name of items) {
+    for (const dirent of items) {
+      const name = dirent.name;
       entries += 1;
       if (entries > maxEntries) {
         return { safe: false, reason: "Dependency tree exceeds symlink scan cap." };
       }
       const full = join(current.dir, name);
-      let st;
-      try {
-        st = lstatSync(full);
-      } catch {
-        return { safe: false, reason: "Unreadable entry inside node_modules." };
-      }
-      if (st.isSymbolicLink()) {
+      if (dirent.isSymbolicLink()) {
         let linkTarget: string;
         try {
           linkTarget = readlinkSync(full);
@@ -90,7 +85,7 @@ export function scanNodeModulesSafety(
         if (rel === ".." || rel.startsWith(`..${"/"}`) || rel.startsWith(`..${"\\"}`) || isAbsolute(rel)) {
           return { safe: false, reason: `Relative symlink (${name}) escapes allowed workspace boundary.` };
         }
-      } else if (st.isDirectory()) {
+      } else if (dirent.isDirectory()) {
         stack.push({ dir: full, depth: current.depth + 1 });
       }
     }
@@ -229,28 +224,23 @@ async function scanNodeModulesSafetyAsync(
     if (current.depth > maxDepth) {
       return { safe: false, reason: "Directory nesting exceeds safety depth limit." };
     }
-    let items: string[];
+    let items: Dirent[];
     try {
-      items = readdirSync(current.dir);
+      items = readdirSync(current.dir, { withFileTypes: true });
     } catch {
       return { safe: false, reason: "Unreadable directory inside node_modules." };
     }
-    for (const name of items) {
+    for (const dirent of items) {
+      const name = dirent.name;
       entries += 1;
       if (entries > maxEntries) {
         return { safe: false, reason: "Dependency tree exceeds symlink scan cap." };
       }
-      if (entries % 1_000 === 0) {
+      if (entries % 2_000 === 0) {
         await new Promise<void>(resolveYield => setImmediate(resolveYield));
       }
       const full = join(current.dir, name);
-      let st;
-      try {
-        st = lstatSync(full);
-      } catch {
-        return { safe: false, reason: "Unreadable entry inside node_modules." };
-      }
-      if (st.isSymbolicLink()) {
+      if (dirent.isSymbolicLink()) {
         let linkTarget: string;
         try {
           linkTarget = readlinkSync(full);
@@ -265,7 +255,7 @@ async function scanNodeModulesSafetyAsync(
         if (rel === ".." || rel.startsWith(`..${"/"}`) || rel.startsWith(`..${"\\"}`) || isAbsolute(rel)) {
           return { safe: false, reason: `Relative symlink (${name}) escapes allowed workspace boundary.` };
         }
-      } else if (st.isDirectory()) {
+      } else if (dirent.isDirectory()) {
         stack.push({ dir: full, depth: current.depth + 1 });
       }
     }

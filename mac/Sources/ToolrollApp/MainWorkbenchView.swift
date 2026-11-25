@@ -143,17 +143,6 @@ public struct MainWorkbenchView: View {
         } message: {
             Text("This chat's isolated clone has unmerged edits. Archive while keeping the clone on disk, or discard the clone permanently.")
         }
-        .alert(
-            "Keep chats running when Toolroll is closed?",
-            isPresented: $store.isFirstChatBackgroundPromptOpen
-        ) {
-            Button("Keep Running in Background") {
-                Task { _ = await store.setBackgroundServiceEnabled(true) }
-            }
-            Button("Only While App Is Open", role: .cancel) {}
-        } message: {
-            Text("Enabling Toolroll's background service lets Direct Chats finish cleanly if you close the app or switch windows.")
-        }
         .modifier(CancelConfirmation(store: store))
         .modifier(ModelPickConfirmation(store: store))
         .sheet(isPresented: Binding(get: { store.modelPickerTaskId != nil }, set: { if !$0 { store.modelPickerTaskId = nil } })) {
@@ -383,7 +372,7 @@ public struct MainWorkbenchView: View {
             }
             .buttonStyle(.plain)
             .toolrollGlassCapsule(interactive: true)
-            .disabled(store.runningChatThreadIds.contains(thread.id) || thread.running)
+            .disabled(thread.id.hasPrefix("pending-") || store.runningChatThreadIds.contains(thread.id) || thread.running)
             .help("Freeze a snapshot commit from this chat, run checks, and merge or save a branch")
 
             Menu {
