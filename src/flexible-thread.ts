@@ -34,7 +34,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { flexibleAvailable } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
-import { buildCacheEnv, fenceFor, FLEXIBLE_THREADS_DIR, grantFolder, PROTECTED_DIRS, PROTECTED_FILES, runFolders, srtTermsOf, type FenceGrants, type LaunchFence, type TaskBoundary } from "./agent-fence.js";
+import { buildCacheEnv, fenceFor, FLEXIBLE_THREADS_DIR, grantFolder, plainAgentEnv, PROTECTED_DIRS, PROTECTED_FILES, runFolders, srtTermsOf, type FenceGrants, type LaunchFence, type TaskBoundary } from "./agent-fence.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { confined, ContainmentRefusal, run } from "./exec.js";
 import type { ProtectedStorage } from "./protected-storage.js";
@@ -506,9 +506,8 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
  * own temp and caches, git that asks nobody, and the run's proxy. No SSH agent socket, token, key or provider
  * variable of Toolroll's reaches it. */
 export function flexibleThreadEnv(paths: FlexibleThreadPaths, proxy: Record<string, string>, base: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> {
-  const kept = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM", "TZ", "USER", "LOGNAME", "SHELL", "COLORTERM"];
   return {
-    ...Object.fromEntries(kept.flatMap(name => base[name] === undefined ? [] : [[name, base[name]!]])),
+    ...plainAgentEnv(base),
     HOME: real(homedir()), TMPDIR: paths.tmp, ...buildCacheEnv(paths.cache),
     GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1",
     ...proxy,

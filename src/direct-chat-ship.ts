@@ -652,7 +652,7 @@ export function executeDirectChatShip(
     return { ok: true, ship: sealedShip };
   } catch (error) {
     try {
-      runHardenedMainGit(["branch", "-D", branch], repo);
+      runHardenedMainGit(["branch", "-D", branch], repo, { write: true });
     } catch {
       // Best-effort cleanup of imported branch on rolled-back seal.
     }

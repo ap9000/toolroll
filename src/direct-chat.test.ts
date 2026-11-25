@@ -376,7 +376,7 @@ describe("DirectChatHost & helpers", () => {
       });
       expect(switched.ok).toBe(true);
 
-      const followUp = host.sendMessage({
+      const followUp = await host.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "4".repeat(32),
@@ -472,20 +472,23 @@ describe("DirectChatHost & helpers", () => {
     );
     expect(geminiDenied.some(e => e.kind === "failed" && e.message.includes("push_remote"))).toBe(true);
 
-    // Sanitized env strips push/deploy tokens and disables git prompts.
-    const env = buildSanitizedChildEnv({
+    // The agent's environment is an allowlist: plain settings, home and temp, and where its own CLI keeps its sign-in.
+    // No token, key or other variable of the server's reaches it (test/attacks/direct-chat-env.test.ts).
+    const env = buildSanitizedChildEnv("claude", {
       PATH: "/usr/bin",
+      HOME: "/home/someone",
+      CLAUDE_CONFIG_DIR: "/home/someone/.claude-alt",
+      CODEX_HOME: "/home/someone/.codex",
       GH_TOKEN: "ghp_secret",
-      GITHUB_TOKEN: "gho_secret",
-      NPM_TOKEN: "npm_secret",
-      VERCEL_TOKEN: "vrc_secret",
-      SAFE_VAR: "keep",
+      ANTHROPIC_API_KEY: "sk-ant-secret",
+      SAFE_VAR: "dropped",
     });
     expect(env["GH_TOKEN"]).toBeUndefined();
-    expect(env["GITHUB_TOKEN"]).toBeUndefined();
-    expect(env["NPM_TOKEN"]).toBeUndefined();
-    expect(env["VERCEL_TOKEN"]).toBeUndefined();
-    expect(env["SAFE_VAR"]).toBe("keep");
+    expect(env["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(env["SAFE_VAR"]).toBeUndefined();
+    expect(env["CODEX_HOME"]).toBeUndefined();
+    expect(env["CLAUDE_CONFIG_DIR"]).toBe("/home/someone/.claude-alt");
+    expect(env["HOME"]).toBe("/home/someone");
     expect(env["GIT_TERMINAL_PROMPT"]).toBe("0");
 
     // Plain-English posture copy and handoff prompt helper.
@@ -502,7 +505,7 @@ describe("DirectChatHost & helpers", () => {
     expect(prompt).toContain("Hello");
   });
 
-  test("importLegacyDirectChatJson imports Mac chat-threads.json strictly as archived read-only history and refuses writes", () => {
+  test("importLegacyDirectChatJson imports Mac chat-threads.json strictly as archived read-only history and refuses writes", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const legacyPath = join(root, "chat-threads.json");
@@ -547,7 +550,7 @@ describe("DirectChatHost & helpers", () => {
 
       // Even if someone manually clears archived_at and sets clone_path = repo, every write path refuses!
       store.handle.prepare("UPDATE direct_chat_thread SET archived_at = NULL, clone_path = ? WHERE id = ?").run(repo, "a1b2c3d4e5f64789abcd0123456789ab");
-      const sendBlocked = host.sendMessage({
+      const sendBlocked = await host.sendMessage({
         owner: "alex",
         threadId: "a1b2c3d4e5f64789abcd0123456789ab",
         requestId: "9".repeat(32),
@@ -646,7 +649,7 @@ describe("DirectChatHost & helpers", () => {
 
       // 3. Start a second turn that ignores SIGTERM -> stopThread enters stopping state, deleteThread refuses 409,
       //    and after stopGraceMs elapses reconcileRunningTurns escalates to SIGKILL and settles!
-      const second = host.sendMessage({
+      const second = await host.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "7".repeat(32),
@@ -697,7 +700,7 @@ describe("DirectChatHost & helpers", () => {
           return { pid, pgid: pid, startIdentity: null };
         },
       });
-      const third = missingIdHost.sendMessage({
+      const third = await missingIdHost.sendMessage({
         owner: "alex",
         threadId: started.thread.id,
         requestId: "6".repeat(32),

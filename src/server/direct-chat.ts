@@ -330,7 +330,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     }
     const prompt = ctx.posted.get("prompt") ?? "";
     const requestId = ctx.posted.get("request") ?? "";
-    const res = host.sendMessage({
+    const res = await host.sendMessage({
       owner: gate.who.name,
       threadId,
       requestId,

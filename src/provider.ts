@@ -668,8 +668,8 @@ const codexSandboxArgv = (mode: "read-only" | "workspace-write", resuming: boole
  * config.toml (its MCP servers, model choices, profiles) and execpolicy
  * rules ignored, ChatGPT apps and plugins off (plugins carry their own MCP
  * servers), and hooks off. The gateway gives each launch its own CODEX_HOME
- * linking only the operator's sign-in and sessions (provider-home.ts), so no
- * skills or AGENTS.md of theirs load either. The project's named tools follow
+ * holding a copy of the operator's sign-in and this task's own sessions
+ * (provider-home.ts), so no skills or AGENTS.md of theirs load either. The project's named tools follow
  * as `-c mcp_servers.*` (project-tools.ts).
  */
 export const CODEX_BUILD_ISOLATION_ARGV: readonly string[] = [
@@ -1182,10 +1182,10 @@ const AUDITS: Record<ProviderId, ProviderAudit> = withAcp<KeyedProviderId, Provi
     terminalContract: "none",
     // Builds ignore config.toml and execpolicy rules, with apps, plugins and
     // hooks off (CODEX_BUILD_ISOLATION_ARGV), in a per-launch CODEX_HOME that
-    // links only the sign-in and sessions (provider-home.ts).
+    // holds a copy of the sign-in and the task's own sessions (provider-home.ts).
     // Never --ephemeral: repair resumes sessions.
     isolation: { flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true },
-    configSurface: ["the project's named tools (Settings → Tools)", "repository AGENTS.md", "sign-in and sessions linked from CODEX_HOME (no skills or AGENTS.md)", "your model and reasoning effort, when the route names no model"],
+    configSurface: ["the project's named tools (Settings → Tools)", "repository AGENTS.md", "a copy of your sign-in and the task's own sessions in CODEX_HOME (no skills or AGENTS.md)", "your model and reasoning effort, when the route names no model"],
   },
   openrouter: {
     transport: "streaming-jsonl",

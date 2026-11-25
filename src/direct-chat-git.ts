@@ -4,7 +4,9 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { TEARDOWN_FLAGS } from "./teardown-git.js";
+import { run } from "./exec.js";
+import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
+import { checkoutGit, refusal, TEARDOWN_FLAGS, viewedGitSync } from "./teardown-git.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -233,34 +235,43 @@ export function repairCloneGitBinding(binding: TrustedCloneBinding): { ok: true 
   }
 }
 
-export function runHardenedMainGit(args: readonly string[], repoCwd: string, input?: string): string {
-  return execFileSync(
-    "git",
-    [...EXTRA_DIRECT_CHAT_GIT_FLAGS, ...args],
-    {
-      cwd: repoCwd,
-      encoding: "utf8",
-      env: cleanGitEnv(),
-      input,
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    },
-  );
+/**
+ * Git in the project's own repository (the one the chat was opened on), which builds and other agents can write: its
+ * config, hooks and info are theirs too. Every command runs through the plane's hardened checkout git (teardown-git.ts
+ * viewedGitSync / checkoutGit): a view of the repository whose config is read once and refused when it includes a
+ * file or names a command (filters, an fsmonitor, URL rewrites, diff programs), no hooks, no system or global config,
+ * the repository bound to the project's record. Reads take the read flags (attributes from the empty tree, no
+ * network); `write` is for commands that write only objects and refs (a fetch from the chat's clone, a branch delete).
+ * Throws when git fails or the repository is refused (`status` is git's exit code, null for a refusal).
+ */
+const MAIN_GIT_BUFFER = 16 * 1024 * 1024;
+
+export function runHardenedMainGit(args: readonly string[], repoCwd: string, options: { write?: true } = {}): string {
+  let ran: { status: number | null; stdout: string; stderr: string };
+  try {
+    ran = viewedGitSync(repoCwd, args, { maxBuffer: MAIN_GIT_BUFFER, binding: { repo: repoCwd }, timeoutMs: 120_000, ...(options.write === true ? { write: true as const } : {}) });
+  } catch (error) {
+    throw Object.assign(new Error(`Toolroll won't run git in this project: ${error instanceof Error ? error.message : String(error)}`), { status: null });
+  }
+  if (ran.status !== 0) {
+    const said = ran.stderr.trim().split("\n").find(line => line.trim() !== "") ?? `git ${args[0] ?? ""} failed`;
+    throw Object.assign(new Error(said), { status: ran.status });
+  }
+  return ran.stdout;
 }
 
 export async function runHardenedMainGitAsync(args: readonly string[], repoCwd: string): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "git",
-    [...EXTRA_DIRECT_CHAT_GIT_FLAGS, ...args],
-    {
-      cwd: repoCwd,
-      encoding: "utf8",
-      env: cleanGitEnv(),
-      maxBuffer: 16 * 1024 * 1024,
-    },
-  );
-  return stdout;
+  const ran = await checkoutGit(run, "read", { repo: repoCwd })("git", [...args], { cwd: repoCwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, maxBuffer: MAIN_GIT_BUFFER, timeoutMs: 120_000 });
+  const refused = refusal(ran);
+  if (refused !== null) throw new Error(`Toolroll won't run git in this project: ${refused}`);
+  if (ran.code !== 0) throw new Error(ran.stderr.trim().split("\n").find(line => line.trim() !== "") ?? `git ${args[0] ?? ""} failed`);
+  return ran.stdout;
 }
+
+/** Settings fixed on a local clone of the project, beside the teardown flags: the project's own repository is read by
+ * the clone's upload-pack with its config, so nothing there that names a command may stand (checked just before, by
+ * the hardened rev-parse, and overridden here). */
+const CLONE_SOURCE_FLAGS: readonly string[] = ["-c", "core.alternateRefsCommand=", "-c", "uploadpack.packObjectsHook=", "-c", "protocol.file.allow=always"];
 
 /**
  * Runs hardened `git` against a chat clone ONLY after verifying the separate
@@ -341,7 +352,7 @@ export function cloneIsolatedRepo(input: {
     "git",
     [
       ...EXTRA_DIRECT_CHAT_GIT_FLAGS,
-      "-c", "protocol.file.allow=always",
+      ...CLONE_SOURCE_FLAGS,
       "clone", "--local",
       `--separate-git-dir=${input.gitDir}`,
       "--",
@@ -349,6 +360,7 @@ export function cloneIsolatedRepo(input: {
       input.clonePath,
     ],
     {
+      cwd: dirname(input.clonePath),
       encoding: "utf8",
       env: cleanGitEnv(),
       maxBuffer: 8 * 1024 * 1024,
@@ -411,7 +423,7 @@ export async function cloneIsolatedRepoAsync(input: {
     "git",
     [
       ...EXTRA_DIRECT_CHAT_GIT_FLAGS,
-      "-c", "protocol.file.allow=always",
+      ...CLONE_SOURCE_FLAGS,
       "clone", "--local",
       `--separate-git-dir=${input.gitDir}`,
       "--",
@@ -419,6 +431,7 @@ export async function cloneIsolatedRepoAsync(input: {
       input.clonePath,
     ],
     {
+      cwd: dirname(input.clonePath),
       encoding: "utf8",
       env: cleanGitEnv(),
       maxBuffer: 8 * 1024 * 1024,
@@ -463,14 +476,6 @@ export function fetchTrustedSnapshotIntoMainRepo(input: {
   if (!verified.ok) {
     throw new Error(verified.error);
   }
-  runHardenedMainGit(
-    [
-      "-c", "protocol.file.allow=always",
-      "-c", "transfer.fsckObjects=true",
-      "fetch", "--no-tags",
-      verified.realGitDir,
-      `${input.candidateSha}:${input.targetRef}`,
-    ],
-    input.repo,
-  );
+  // The one fetch shape a synchronous write accepts (teardown-git.ts syncWriteArgv adds its own settings).
+  runHardenedMainGit(["fetch", "--no-tags", "--no-write-fetch-head", verified.realGitDir, `${input.candidateSha}:${input.targetRef}`], input.repo, { write: true });
 }

@@ -1,12 +1,13 @@
 /**
  * What a build keeps of the provider's own home: a no-model build's model
- * choices, and a Codex build's own CODEX_HOME that links (never copies) the
- * operator's sign-in and sessions and holds nothing else — fenced from the
- * agent, removed after the run, fresh and resumed alike.
+ * choices, and a Codex build's own CODEX_HOME holding a copy of the
+ * operator's sign-in and its task's own sessions (never a link to theirs) and
+ * nothing else — fenced from other launches, removed after the run, its
+ * sessions kept for the task, fresh and resumed alike.
  */
 import { macosFenceAvailable } from "./agent-fence.js";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { claudeDefaults, codexDefaults, isolatedCodexHome } from "./provider-home.js";
@@ -45,28 +46,40 @@ describe("what a build keeps of the provider's own home", () => {
     expect(codexDefaults(codex)).toEqual({});
   });
 
-  test("a Codex build's own home links the sign-in and sessions, holds no skills or AGENTS.md, and its removal leaves the originals", () => {
+  test("a Codex build's own home copies the sign-in, keeps only its task's sessions, holds no skills or AGENTS.md, and its removal leaves the originals", () => {
     const source = join(dir, ".codex");
     mkdirSync(join(source, "skills", "mine"), { recursive: true });
-    writeFileSync(join(source, "auth.json"), "{}");
+    mkdirSync(join(source, "sessions", "2026"), { recursive: true });
+    writeFileSync(join(source, "sessions", "2026", "rollout-operator.jsonl"), "{}");
+    writeFileSync(join(source, "auth.json"), '{"synthetic":"sign-in"}');
     writeFileSync(join(source, "AGENTS.md"), "Always do this.");
     writeFileSync(join(source, "config.toml"), 'model = "x"');
-    const home = isolatedCodexHome(source, dir);
+    const kept = join(dir, "state", "codex-sessions", "task-1");
+    const home = isolatedCodexHome(source, dir, { signIn: true, sessions: kept });
     expect(readdirSync(home.dir).sort()).toEqual(["auth.json", "sessions"]);
-    expect(lstatSync(join(home.dir, "auth.json")).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(join(home.dir, "auth.json"))).toBe(join(source, "auth.json"));
-    expect(readlinkSync(join(home.dir, "sessions"))).toBe(join(source, "sessions"));
-    // Sessions written through the link are the operator's: a resumed build finds them.
-    writeFileSync(join(home.dir, "sessions", "rollout-1.jsonl"), "{}");
+    // Copies, never links: nothing in the home leads back to the operator's folder.
+    for (const name of ["auth.json", "sessions"]) expect(lstatSync(join(home.dir, name)).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(home.dir, "auth.json"), "utf8")).toBe('{"synthetic":"sign-in"}');
+    expect(readdirSync(join(home.dir, "sessions"))).toEqual([]);
+    // A refresh the run writes stays in its copy; its sessions are kept for its task, never the operator's.
+    writeFileSync(join(home.dir, "auth.json"), '{"refreshed":"by the run"}');
+    mkdirSync(join(home.dir, "sessions", "2026", "11"), { recursive: true });
+    writeFileSync(join(home.dir, "sessions", "2026", "11", "rollout-1.jsonl"), "{}");
+    home.keep(true);
     home.cleanup();
     expect(existsSync(home.dir)).toBe(false);
-    expect(readdirSync(join(source, "sessions"))).toEqual(["rollout-1.jsonl"]);
-    expect(existsSync(join(source, "auth.json"))).toBe(true);
-    // No sign-in yet (an API-key build): nothing to link, and nothing copied.
+    expect(readFileSync(join(source, "auth.json"), "utf8")).toBe('{"synthetic":"sign-in"}');
+    expect(readdirSync(join(source, "sessions", "2026"))).toEqual(["rollout-operator.jsonl"]);
+    expect(readdirSync(join(kept, "2026", "11"))).toEqual(["rollout-1.jsonl"]);
+    // The task's next launch (a resumed repair) finds its own session, and only its own.
+    const again = isolatedCodexHome(source, dir, { signIn: true, sessions: kept });
+    expect(readdirSync(join(again.dir, "sessions", "2026", "11"))).toEqual(["rollout-1.jsonl"]);
+    again.cleanup();
+    // No sign-in yet (an API-key build): nothing copied.
     const bare = isolatedCodexHome(join(dir, "fresh"), dir);
     expect(readdirSync(bare.dir)).toEqual(["sessions"]);
     bare.cleanup();
-    // An OpenRouter build (its own key): the sessions, never the ChatGPT sign-in.
+    // An OpenRouter build (its own key): its sessions, never the ChatGPT sign-in.
     const keyed = isolatedCodexHome(source, dir, { signIn: false });
     expect(readdirSync(keyed.dir)).toEqual(["sessions"]);
     keyed.cleanup();
@@ -74,8 +87,7 @@ describe("what a build keeps of the provider's own home", () => {
 
   test("failed home setup removes the partial private directory", () => {
     const source = join(dir, "source");
-    mkdirSync(source);
-    writeFileSync(join(source, "sessions"), "not a directory");
+    mkdirSync(join(source, "auth.json"), { recursive: true });
     expect(() => isolatedCodexHome(source, dir)).toThrow();
     expect(readdirSync(dir)).toEqual(["source"]);
   });
@@ -117,7 +129,8 @@ describe("what a build keeps of the provider's own home", () => {
       if (!took.ok) throw new Error("claim");
       const id = store.startRun({ taskRef: ref, leaseId: "lease-failure", runner: "builder-1", branch: "b", worktree, route: { routeDigest: "legacy", phase: "build", provider: "codex", model: null, chosen: "legacy" }, now: T0 });
       if (resumeSession !== null) store.stampRun(id, { sessionId: resumeSession });
-      writeFileSync(join(home, ".codex", "sessions"), "not a directory");
+      rmSync(join(home, ".codex", "auth.json"));
+      mkdirSync(join(home, ".codex", "auth.json"));
       let spawned = false;
       const result = await invokeAgent(store, id, { provider: "codex", model: null }, { phase: resumeSession === null ? "build" : "repair", brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: false, resumeSession }, {
         keyHome: home, env: { CODEX_HOME: join(home, ".codex") }, clock: () => T0, cwd: worktree,
@@ -134,10 +147,12 @@ describe("what a build keeps of the provider's own home", () => {
       store.placeTask(ref, dir);
       const took = acquire(store, ref, "builder-1", { now: T0, token: "tok", newLeaseId: () => "lease-codex", ttlMs: 10 * 365 * 24 * 3600 * 1000 });
       if (!took.ok) throw new Error("claim");
-      const seen: { home: string; contents: string[]; args: readonly string[] }[] = [];
+      const seen: { home: string; contents: string[]; sessions: string[]; args: readonly string[] }[] = [];
       const runner = async (_file: string, args: readonly string[], options?: { env?: Record<string, string | undefined>; onSessionId?: (id: string) => void }) => {
         const codexHome = options?.env?.["CODEX_HOME"] ?? "";
-        seen.push({ home: codexHome, contents: readdirSync(codexHome).sort(), args });
+        seen.push({ home: codexHome, contents: readdirSync(codexHome).sort(), sessions: readdirSync(join(codexHome, "sessions")).sort(), args });
+        // The fresh launch writes its session; the resumed one must find it there (kept for the task, not the operator's).
+        writeFileSync(join(codexHome, "sessions", `rollout-${seen.length}.jsonl`), "{}");
         options?.onSessionId?.("thread-1");
         return { code: 0, stderr: "", timedOut: false, notFound: false, stdout: `${JSON.stringify({ type: "thread.started", thread_id: "thread-1" })}\n${JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } })}\n` };
       };
@@ -163,6 +178,8 @@ describe("what a build keeps of the provider's own home", () => {
         expect(launch.args.join(" ")).toContain('-m gpt-5.6-sol -c model_reasoning_effort="high"');
       }
       expect(seen[1]!.args).toContain("resume");
+      expect(seen.map(one => one.sessions)).toEqual([[], ["rollout-1.jsonl"]]);
+      expect(existsSync(join(home, ".codex", "sessions"))).toBe(false);
     });
   });
 });
