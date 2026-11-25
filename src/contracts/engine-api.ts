@@ -834,7 +834,7 @@ export const ENGINE_RESPONSES = {
   directChatDetail: { route: "GET /engine/direct-chats/<id>", schema: directChatDetailSchema },
   directChatStarted: { route: "POST /engine/direct-chats, /engine/direct-chats/<id>/messages", schema: directChatStartedSchema },
   directChatMutated: { route: "POST /engine/direct-chats/<id>/{stop,model,delete,apply-main-edits,ship-cancel}", schema: directChatMutatedSchema },
-  directChatShipPreview: { route: "GET /engine/direct-chats/<id>/ship-preview", schema: directChatShipPreviewSchema },
+  directChatShipPreview: { route: "POST /engine/direct-chats/<id>/ship-preview", schema: directChatShipPreviewSchema },
   directChatShipped: { route: "POST /engine/direct-chats/<id>/ship", schema: directChatShippedSchema },
   directChatAttached: { route: "POST /engine/direct-chats/<id>/attachments", schema: directChatAttachedSchema },
 } as const;

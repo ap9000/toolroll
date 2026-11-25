@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative } from "node:path";
 import type { DirectChatProvider } from "./direct-chat.js";
+import { assertManagedClonePath } from "./direct-chat-git.js";
 import type { Store } from "./store.js";
 
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
@@ -86,17 +87,18 @@ export function sanitizeArtifactFilename(raw: string, fallbackExt: string): stri
   return extname(base) === "" ? `${base}${fallbackExt}` : base;
 }
 
-function ensureAttachmentsExcludedFromGit(clonePath: string): void {
-  const excludePath = join(clonePath, ".git", "info", "exclude");
+function ensureAttachmentsExcludedFromGit(clonePath: string, gitDir?: string | null): void {
+  const targetGitDir = gitDir && existsSync(gitDir) ? gitDir : join(clonePath, ".git");
+  const excludePath = join(targetGitDir, "info", "exclude");
   try {
-    mkdirSync(join(clonePath, ".git", "info"), { recursive: true });
+    mkdirSync(join(targetGitDir, "info"), { recursive: true });
     const existing = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
     if (!existing.split(/\r?\n/).includes(".toolroll-attachments/")) {
       const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
       appendFileSync(excludePath, `${prefix}.toolroll-attachments/\n`, "utf8");
     }
   } catch {
-    // Best-effort: clone may not have a standard .git/info directory in synthetic tests.
+    // Best-effort: clone may not have a standard info directory in synthetic tests.
   }
 }
 
@@ -112,6 +114,7 @@ export function saveDirectChatArtifact(
     bytes: Buffer;
     sourcePath?: string | null | undefined;
     clonePath?: string | null | undefined;
+    gitDir?: string | null | undefined;
     now?: Date | undefined;
   },
 ): { ok: true; artifact: DirectChatArtifactRow; cloneRelativePath: string | null } | { ok: false; status: number; error: string } {
@@ -159,9 +162,13 @@ export function saveDirectChatArtifact(
   writeFileSync(storageAbs, input.bytes, { mode: 0o600 });
 
   let cloneRelativePath: string | null = null;
-  if (input.kind === "attachment" && input.clonePath && existsSync(input.clonePath)) {
-    ensureAttachmentsExcludedFromGit(input.clonePath);
-    const attDir = join(input.clonePath, ".toolroll-attachments");
+  if (input.kind === "attachment" && input.clonePath) {
+    const managed = assertManagedClonePath(input.stateRoot, input.clonePath);
+    if (!managed.ok) {
+      return { ok: false, status: 409, error: managed.error };
+    }
+    ensureAttachmentsExcludedFromGit(managed.realClone, input.gitDir);
+    const attDir = join(managed.realClone, ".toolroll-attachments");
     mkdirSync(attDir, { recursive: true, mode: 0o700 });
     const cloneFilename = `${id.slice(0, 8)}-${safeName}`;
     writeFileSync(join(attDir, cloneFilename), input.bytes, { mode: 0o600 });
@@ -305,8 +312,9 @@ export function captureNewWorkspaceArtifacts(
     threadId: string;
     turnId: string;
     clonePath: string;
-    before: WorkspaceImageSnapshot;
-    now?: Date;
+    before?: WorkspaceImageSnapshot | undefined;
+    sinceMs?: number | undefined;
+    now?: Date | undefined;
   },
 ): DirectChatArtifactRow[] {
   const after = snapshotWorkspaceImages(input.clonePath);
@@ -320,8 +328,14 @@ export function captureNewWorkspaceArtifacts(
 
   for (const [relPath, meta] of after) {
     if (captured.length >= MAX_ARTIFACTS_PER_TURN) break;
-    const prev = input.before.get(relPath);
-    if (prev && prev.size === meta.size && prev.mtimeMs === meta.mtimeMs) continue;
+    if (input.before !== undefined) {
+      const prev = input.before.get(relPath);
+      if (prev && prev.size === meta.size && prev.mtimeMs === meta.mtimeMs) continue;
+    } else if (input.sinceMs !== undefined) {
+      if (meta.mtimeMs < input.sinceMs) continue;
+    } else {
+      continue;
+    }
     const full = join(rootReal, relPath);
     try {
       const st = lstatSync(full);

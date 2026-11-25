@@ -99,25 +99,33 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     writeFileSync(join(rootNm, "pkg", "cli.js"), "#!/usr/bin/env node\n");
     symlinkSync("../pkg/cli.js", join(rootNm, ".bin", "pkg"));
 
-    // 2. Unsafe nested monorepo node_modules with an escaping relative symlink.
+    // 2. Safe pnpm workspace relative symlink (`../../packages/shared`) inside repo root is ALLOWED.
+    mkdirSync(join(repo, "packages", "shared"), { recursive: true });
+    writeFileSync(join(repo, "packages", "shared", "index.js"), "export const s = 1;\n");
+    const pnpmNm = join(repo, "packages", "app", "node_modules");
+    mkdirSync(pnpmNm, { recursive: true });
+    symlinkSync("../../shared", join(pnpmNm, "shared-pkg"));
+
+    // 3. Unsafe nested monorepo node_modules escaping OUTSIDE the repo root is REJECTED.
     const unsafeNm = join(repo, "packages", "bad", "node_modules");
     mkdirSync(unsafeNm, { recursive: true });
-    symlinkSync("../../../README.md", join(unsafeNm, "escape-link"));
+    symlinkSync("../../../../../etc/hosts", join(unsafeNm, "escape-link"));
 
-    // 3. Unsafe nested node_modules with an absolute symlink.
+    // 4. Unsafe nested node_modules with an absolute symlink is REJECTED.
     const absNm = join(repo, "packages", "abs", "node_modules");
     mkdirSync(absNm, { recursive: true });
     symlinkSync(join(repo, "README.md"), join(absNm, "abs-link"));
 
-    // 4. Ignored .venv and .next must never be discovered.
+    // 5. Ignored .venv and .next must never be discovered.
     mkdirSync(join(repo, ".venv", "bin"), { recursive: true });
     mkdirSync(join(repo, ".next", "cache"), { recursive: true });
 
     const discovered = discoverNodeModulesDirs(repo);
-    expect(discovered).toEqual(["node_modules", "packages/abs/node_modules", "packages/bad/node_modules"]);
-    expect(scanNodeModulesSafety(rootNm).safe).toBe(true);
-    expect(scanNodeModulesSafety(unsafeNm).safe).toBe(false);
-    expect(scanNodeModulesSafety(absNm).safe).toBe(false);
+    expect(discovered).toEqual(["node_modules", "packages/abs/node_modules", "packages/app/node_modules", "packages/bad/node_modules"]);
+    expect(scanNodeModulesSafety(rootNm, { repoRoot: repo }).safe).toBe(true);
+    expect(scanNodeModulesSafety(pnpmNm, { repoRoot: repo }).safe).toBe(true);
+    expect(scanNodeModulesSafety(unsafeNm, { repoRoot: repo }).safe).toBe(false);
+    expect(scanNodeModulesSafety(absNm, { repoRoot: repo }).safe).toBe(false);
 
     const copied: Array<{ src: string; dst: string }> = [];
     const res = cloneSafeNodeModules({
@@ -125,32 +133,69 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       clonePath,
       platform: "darwin",
       copyCoW: (src, dst) => {
+        if (src.endsWith(join("packages", "app", "node_modules"))) {
+          // Simulate a partial copy that fails mid-way -> partial dst must be cleaned up!
+          mkdirSync(dst, { recursive: true });
+          writeFileSync(join(dst, "partial.tmp"), "incomplete");
+          throw new Error("ETIMEDOUT");
+        }
         copied.push({ src, dst });
         mkdirSync(dst, { recursive: true });
       },
     });
     expect(res.cloned).toEqual(["node_modules"]);
-    expect(res.skipped.map(s => s.path).sort()).toEqual(["packages/abs/node_modules", "packages/bad/node_modules"]);
+    expect(existsSync(join(clonePath, "packages", "app", "node_modules"))).toBe(false);
+    expect(res.skipped.map(s => s.path).sort()).toEqual(["packages/abs/node_modules", "packages/app/node_modules", "packages/bad/node_modules"]);
     expect(copied).toHaveLength(1);
   });
 
   test("applyMainDirtyPatch brings tracked edits into the isolated clone without touching main checkout", () => {
     const root = tempDir();
     const repo = makeRepo(root);
-    const clonePath = join(root, "clone");
-    execFileSync("git", ["-c", "protocol.file.allow=always", "clone", "--local", "--", repo, clonePath], { env: GIT_ENV });
+    const stateRoot = join(root, "state");
+    const store = openStore(join(root, "state.db"));
+    const custody = new FakeCustody();
+    const host = new DirectChatHost(store, {
+      stateRoot,
+      custody,
+      bootId: () => "boot-1",
+      locateBinary: () => "/fake/claude",
+      spawnTurn: input => {
+        mkdirSync(dirname(input.logPath), { recursive: true });
+        writeFileSync(input.logPath, "", { mode: 0o600 });
+        custody.add(9050, "s9050");
+        return { pid: 9050, pgid: 9050, startIdentity: "s9050" };
+      },
+    });
+    try {
+      const started = host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "a".repeat(32),
+        repo,
+        provider: "claude",
+        prompt: "Setup",
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      host.stopThread("alex", started.thread.id);
 
-    // Dirty main checkout (one tracked edit + one untracked file).
-    writeFileSync(join(repo, "README.md"), "# Payments\nLine one\nUncommitted line\n");
-    writeFileSync(join(repo, "notes.tmp"), "untracked note\n");
+      // Dirty main checkout (one tracked edit + one untracked file).
+      writeFileSync(join(repo, "README.md"), "# Payments\nLine one\nUncommitted line\n");
+      writeFileSync(join(repo, "notes.tmp"), "untracked note\n");
 
-    const applied = applyMainDirtyPatch({ repo, clonePath });
-    expect(applied.ok).toBe(true);
-    if (!applied.ok) return;
-    expect(applied.appliedFiles).toEqual(["README.md"]);
-    expect(applied.untrackedFiles).toEqual(["notes.tmp"]);
-    expect(readFileSync(join(clonePath, "README.md"), "utf8")).toContain("Uncommitted line");
-    expect(existsSync(join(clonePath, "notes.tmp"))).toBe(false);
+      const applied = applyMainDirtyPatch({ repo, binding: host.bindingOf(started.thread)! });
+      expect(applied.ok).toBe(true);
+      if (!applied.ok) return;
+      expect(applied.appliedFiles).toEqual(["README.md"]);
+      expect(applied.untrackedFiles).toEqual(["notes.tmp"]);
+      expect(readFileSync(join(started.thread.clonePath, "README.md"), "utf8")).toContain("Uncommitted line");
+      expect(existsSync(join(started.thread.clonePath, "notes.tmp"))).toBe(false);
+    } finally {
+      host.close();
+      store.close();
+    }
   });
 
   test("artifacts enforce magic bytes, reject SVG/fake images, git-exclude attachments, and capture workspace + base64 images", () => {
@@ -290,16 +335,18 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       // Make an uncommitted edit inside the isolated clone.
       writeFileSync(join(started.thread.clonePath, "feature.ts"), "export const ready = true;\n");
 
-      // 1. Local repo without GitHub grant: canAutoMerge is false, keep-branch works.
-      const preview1 = previewDirectChatShip(store, { owner: "alex", threadId: started.thread.id });
+      // 1. Local repo without GitHub grant: canAutoMerge is false, keep-branch works with per-ship branch name.
+      const preview1 = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: "alex", threadId: started.thread.id });
       expect(preview1.ok).toBe(true);
       if (!preview1.ok) return;
       expect(preview1.preview.canAutoMerge).toBe(false);
       expect(preview1.preview.mode).toBe("keep-branch");
+      expect(preview1.preview.branch).toBe(`${started.thread.branch}-1`);
       expect(preview1.preview.changedFiles).toEqual(["feature.ts"]);
 
       // Stale termsDigest is refused with 409 terms_changed.
       const stale = executeDirectChatShip(store, {
+        stateRoot: host.stateRoot,
         owner: "alex",
         threadId: started.thread.id,
         mode: "keep-branch",
@@ -308,8 +355,9 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       expect(stale.ok).toBe(false);
       if (!stale.ok) expect(stale.code).toBe("terms_changed");
 
-      // Keep-branch freezes a snapshot commit and fetches the branch into main repo.
+      // Keep-branch freezes a snapshot commit and fetches the per-ship branch into main repo.
       const kept = executeDirectChatShip(store, {
+        stateRoot: host.stateRoot,
         owner: "alex",
         threadId: started.thread.id,
         mode: "keep-branch",
@@ -319,7 +367,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       if (!kept.ok) return;
       expect(kept.ship.state).toBe("kept");
       const mainBranches = execFileSync("git", ["-C", repo, "branch", "--list"], { env: GIT_ENV, encoding: "utf8" });
-      expect(mainBranches).toContain(started.thread.branch);
+      expect(mainBranches).toContain(`${started.thread.branch}-1`);
 
       // 2. Configure GitHub publication grant + check command -> auto-merge Ship arms a verify-only task!
       store.savePublicationGrant({
@@ -339,7 +387,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
 
       // Make another edit in the same chat to test a second Ship snapshot.
       writeFileSync(join(started.thread.clonePath, "feature2.ts"), "export const v2 = 2;\n");
-      const preview2 = previewDirectChatShip(store, { owner: "alex", threadId: started.thread.id, mode: "ship" });
+      const preview2 = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: "alex", threadId: started.thread.id, mode: "ship" });
       expect(preview2.ok).toBe(true);
       if (!preview2.ok) return;
       expect(preview2.preview.canAutoMerge).toBe(true);
@@ -347,6 +395,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       expect(preview2.preview.githubRepo).toBe("acme/payments-api");
 
       const shipped = executeDirectChatShip(store, {
+        stateRoot: host.stateRoot,
         owner: "alex",
         threadId: started.thread.id,
         mode: "ship",
@@ -360,7 +409,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       expect(shipped.ship.taskId).toBe(`dc-${preview2.preview.termsDigest}`);
       expect(store.getTask(shipped.ship.taskId!)).not.toBeNull();
 
-      // Cancelling the armed Ship transitions it to cancelled permanently.
+      // Cancelling the armed Ship transitions it to cancelled AND cancels the verify-only task!
       const cancelled = cancelDirectChatShip(store, {
         owner: "alex",
         threadId: started.thread.id,
@@ -369,6 +418,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       expect(cancelled.ok).toBe(true);
       const ships = listDirectChatShips(store, started.thread.id);
       expect(ships.find(s => s.id === shipped.ship.id)?.state).toBe("cancelled");
+      expect(store.getTask(shipped.ship.taskId!)?.state).toBe("cancelled");
     } finally {
       host.close();
       store.close();

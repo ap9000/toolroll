@@ -158,3 +158,32 @@ export const V182_TABLE_DDLS = Object.freeze({
 } as const);
 
 export const V182_STEPS = Object.freeze(["direct-chat-phase1b-tables"] as const);
+
+export const V183_ADDED_COLUMNS = Object.freeze({
+  direct_chat_thread: {
+    git_dir: { definition: "TEXT" },
+    config_sha256: { definition: "TEXT" },
+    diff_cache_json: { definition: "TEXT" },
+    is_legacy: { definition: "INTEGER NOT NULL DEFAULT 0" },
+  },
+  direct_chat_turn: {
+    stop_requested_at: { definition: "TEXT" },
+  },
+  direct_chat_ship: {
+    merge_token: { definition: "TEXT" },
+    merge_reserved_at: { definition: "TEXT" },
+  },
+} as const);
+
+export const V181_REQUIRED_COLUMNS = Object.freeze({
+  direct_chat_thread: ["id", "owner", "local_generation", "account_generation", "create_request_id", "title", "repo", "clone_path", "branch", "base_sha", "provider", "model_id", "provider_session_id", "main_dirty_files", "archived_at", "created_at", "updated_at"],
+  direct_chat_turn: ["id", "thread_id", "seq", "request_id", "user_prompt", "switched_from_provider", "log_path", "stderr_path", "byte_offset", "pid", "start_identity", "pgid", "boot_id", "status", "assistant_text", "error_text", "created_at", "finished_at"],
+  direct_chat_tool: ["id", "turn_id", "ordinal", "name", "detail", "status", "updated_at"],
+} as const);
+
+export const V182_REQUIRED_COLUMNS = Object.freeze({
+  direct_chat_artifact: ["id", "thread_id", "turn_id", "kind", "filename", "mime_type", "byte_size", "sha256", "storage_path", "source_path", "created_at"],
+  direct_chat_ship: ["id", "thread_id", "seq", "repo", "mode", "base_sha", "candidate_sha", "branch", "terms_json", "approved_by", "approved_generation", "local_generation", "proof", "state", "task_id", "scope_digest", "pr_url", "detail", "created_at", "state_at"],
+} as const);
+
+export const V183_STEPS = Object.freeze(["direct-chat-hardening-columns"] as const);

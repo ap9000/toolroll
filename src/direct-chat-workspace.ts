@@ -1,8 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { HARDENED_GIT_ARGS } from "./agent-fence.js";
+import {
+  assertTrustedCloneGit,
+  runHardenedMainGit,
+  runTrustedCloneGit,
+  type TrustedCloneBinding,
+} from "./direct-chat-git.js";
 
 const SKIPPED_DIR_SEGMENTS = new Set([
   ".git",
@@ -20,46 +24,24 @@ const SKIPPED_DIR_SEGMENTS = new Set([
 const MAX_SYMLINK_SCAN_ENTRIES = 250_000;
 const MAX_SYMLINK_SCAN_DEPTH = 48;
 
-function gitEnv(): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    HOME: homedir(),
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_TERMINAL_PROMPT: "0",
-  };
-}
-
-function runHardenedGit(args: readonly string[], cwd: string, input?: string): string {
-  return execFileSync(
-    "git",
-    [...HARDENED_GIT_ARGS, "-c", "protocol.ext.allow=never", "-c", "credential.helper=", ...args],
-    {
-      cwd,
-      encoding: "utf8",
-      env: gitEnv(),
-      input,
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    },
-  );
-}
-
 /**
  * Inspect a `node_modules` directory for symlinks that could write through into
- * the user's main checkout (absolute targets, or relative targets escaping the
- * `node_modules` tree). Relative intra-tree symlinks (`.bin/*`, pnpm `.pnpm/*`)
- * are allowed.
+ * the user's main checkout. Absolute symlinks are always rejected. Relative
+ * symlinks must stay within `repoRoot` (when provided — allowing pnpm workspace
+ * links like `../../packages/x` that resolve inside the clone after copying) or
+ * within `nodeModulesDir` itself.
  */
 export function scanNodeModulesSafety(
   nodeModulesDir: string,
-  opts?: { maxEntries?: number; maxDepth?: number },
+  opts?: { maxEntries?: number; maxDepth?: number; repoRoot?: string },
 ): { safe: true; entries: number } | { safe: false; reason: string } {
   const maxEntries = opts?.maxEntries ?? MAX_SYMLINK_SCAN_ENTRIES;
   const maxDepth = opts?.maxDepth ?? MAX_SYMLINK_SCAN_DEPTH;
   let rootReal: string;
+  let boundaryReal: string;
   try {
     rootReal = realpathSync(nodeModulesDir);
+    boundaryReal = opts?.repoRoot ? realpathSync(opts.repoRoot) : rootReal;
   } catch {
     return { safe: false, reason: "Directory could not be resolved." };
   }
@@ -100,9 +82,9 @@ export function scanNodeModulesSafety(
           return { safe: false, reason: `Absolute symlink (${name}) points outside node_modules.` };
         }
         const resolved = resolve(dirname(full), linkTarget);
-        const rel = relative(rootReal, resolved);
+        const rel = relative(boundaryReal, resolved);
         if (rel === ".." || rel.startsWith(`..${"/"}`) || rel.startsWith(`..${"\\"}`) || isAbsolute(rel)) {
-          return { safe: false, reason: `Relative symlink (${name}) escapes node_modules.` };
+          return { safe: false, reason: `Relative symlink (${name}) escapes allowed workspace boundary.` };
         }
       } else if (st.isDirectory()) {
         stack.push({ dir: full, depth: current.depth + 1 });
@@ -120,7 +102,7 @@ export type CloneNodeModulesResult = {
 export function discoverNodeModulesDirs(repo: string): string[] {
   let raw = "";
   try {
-    raw = runHardenedGit(["ls-files", "-o", "-i", "--exclude-standard", "--directory"], repo);
+    raw = runHardenedMainGit(["ls-files", "-o", "-i", "--exclude-standard", "--directory"], repo);
   } catch {
     return [];
   }
@@ -141,7 +123,7 @@ export function discoverNodeModulesDirs(repo: string): string[] {
  * Safely copy-on-write clone `node_modules` directories from the main repo into
  * the isolated Direct Chat clone on macOS APFS (`cp -cR`). Skips `.venv`, build
  * caches, cross-volume destinations, and any tree containing absolute or
- * escaping symlinks.
+ * repo-escaping symlinks. Cleans up any partial destination if `cp -cR` fails or times out.
  */
 export function cloneSafeNodeModules(input: {
   repo: string;
@@ -195,7 +177,7 @@ export function cloneSafeNodeModules(input: {
       result.skipped.push({ path: relPath, reason: "Different filesystem volume (APFS clonefile unavailable)." });
       continue;
     }
-    const safety = scanNodeModulesSafety(src);
+    const safety = scanNodeModulesSafety(src, { repoRoot: input.repo });
     if (!safety.safe) {
       result.skipped.push({ path: relPath, reason: safety.reason });
       continue;
@@ -205,6 +187,12 @@ export function cloneSafeNodeModules(input: {
       copyFn(src, dst);
       result.cloned.push(relPath);
     } catch (error) {
+      // Remove any partial copy left behind by a timeout or mid-copy failure.
+      try {
+        if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup.
+      }
       result.skipped.push({
         path: relPath,
         reason: error instanceof Error ? error.message.slice(0, 140) : "Copy-on-write clone failed.",
@@ -220,23 +208,30 @@ export type ApplyMainDirtyPatchResult =
   | { ok: false; status: number; error: string };
 
 /**
- * Snapshot tracked uncommitted edits from the user's main checkout (`git diff --binary HEAD`)
- * and apply them non-destructively inside the chat's isolated clone. Never modifies the main checkout.
+ * Snapshot tracked uncommitted edits from the user's main checkout (`git diff --binary --no-ext-diff --no-textconv HEAD`)
+ * and apply them non-destructively inside the verified isolated clone. Never modifies the main checkout.
  */
-export function applyMainDirtyPatch(input: { repo: string; clonePath: string }): ApplyMainDirtyPatchResult {
-  if (!existsSync(input.repo) || !existsSync(input.clonePath)) {
-    return { ok: false, status: 404, error: "Project or chat workspace is missing." };
+export function applyMainDirtyPatch(input: {
+  repo: string;
+  binding: TrustedCloneBinding;
+}): ApplyMainDirtyPatchResult {
+  if (!existsSync(input.repo)) {
+    return { ok: false, status: 404, error: "Project directory is missing." };
+  }
+  const verified = assertTrustedCloneGit(input.binding);
+  if (!verified.ok) {
+    return { ok: false, status: 409, error: verified.error };
   }
   let patch = "";
   let changedTracked: string[] = [];
   let untrackedFiles: string[] = [];
   try {
-    patch = runHardenedGit(["diff", "--binary", "HEAD"], input.repo);
-    changedTracked = runHardenedGit(["diff", "--name-only", "HEAD"], input.repo)
+    patch = runHardenedMainGit(["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"], input.repo);
+    changedTracked = runHardenedMainGit(["diff", "--name-only", "--no-ext-diff", "--no-textconv", "HEAD"], input.repo)
       .split("\n")
       .map(s => s.trim())
       .filter(Boolean);
-    untrackedFiles = runHardenedGit(["ls-files", "--others", "--exclude-standard"], input.repo)
+    untrackedFiles = runHardenedMainGit(["ls-files", "--others", "--exclude-standard"], input.repo)
       .split("\n")
       .map(s => s.trim())
       .filter(Boolean)
@@ -262,7 +257,7 @@ export function applyMainDirtyPatch(input: { repo: string; clonePath: string }):
   }
 
   try {
-    runHardenedGit(["apply", "--3way", "--whitespace=nowarn"], input.clonePath, patch);
+    runTrustedCloneGit(input.binding, ["apply", "--3way", "--whitespace=nowarn"], patch);
   } catch (error) {
     return {
       ok: false,

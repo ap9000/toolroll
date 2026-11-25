@@ -1,11 +1,10 @@
-import { execFileSync, spawn, type SpawnOptions } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { HARDENED_GIT_ARGS } from "./agent-fence.js";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
-import { type CustodyIO, type ProcessWitness } from "./flexible-custody.js";
+import { scanCustody, type CustodyIO, type LaunchCustody, type ProcessWitness, type ProcRow } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
 import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
 import { projectName } from "./project.js";
@@ -19,6 +18,13 @@ import {
   type DirectChatArtifactRow,
   type WorkspaceImageSnapshot,
 } from "./direct-chat-artifacts.js";
+import {
+  assertManagedClonePath,
+  assertTrustedCloneGit,
+  cloneIsolatedRepo,
+  runTrustedCloneGit,
+  type TrustedCloneBinding,
+} from "./direct-chat-git.js";
 import { applyMainDirtyPatch, cloneSafeNodeModules, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
 import type { Store } from "./store.js";
 
@@ -92,6 +98,7 @@ export type DirectChatTurnRow = {
   pgid: number | null;
   bootId: string | null;
   status: DirectChatTurnStatus;
+  stopRequestedAt: string | null;
   assistantText: string;
   errorText: string | null;
   createdAt: string;
@@ -110,12 +117,16 @@ export type DirectChatThreadRow = {
   repo: string;
   project: string;
   clonePath: string;
+  gitDir: string | null;
+  configSha256: string | null;
   branch: string;
   baseSha: string;
   provider: DirectChatProvider;
   modelId: string;
   providerSessionId: string | null;
   mainDirtyFiles: string[];
+  diffCache: DirectChatDiffSummary;
+  isLegacy: boolean;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -143,8 +154,10 @@ export type DirectChatNotification = {
 };
 
 const HEX32 = /^[0-9a-f]{32}$/;
-const MAX_LINE_BYTES = 1_048_576;
+const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_DIFF_BYTES = 40_000;
+const DEFAULT_STOP_GRACE_MS = 5_000;
+const EMPTY_DIFF: DirectChatDiffSummary = Object.freeze({ changedFiles: [], diffText: "", dirty: false });
 const HANDOFF_MAX_TURNS = 6;
 const HANDOFF_MAX_CHARS = 6_000;
 const STRIPPED_ENV_KEYS = new Set([
@@ -414,25 +427,29 @@ export function buildProviderCommand(input: {
   const { provider, modelId, prompt, sessionId } = input;
   switch (provider) {
     case "claude": {
-      const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"];
+      const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"];
       if (modelId !== "") args.push("--model", modelId);
       if (sessionId !== null && sessionId !== "") args.push("--resume", sessionId);
+      args.push("--", prompt);
       return args;
     }
     case "codex": {
-      if (sessionId !== null && sessionId !== "") {
-        const args = ["exec", "resume", "--json", "--skip-git-repo-check"];
-        if (modelId !== "") args.push("-m", modelId);
-        args.push(sessionId, prompt);
-        return args;
-      }
-      const args = ["exec", "--json", "--approve-for-me", "--skip-git-repo-check"];
+      const resuming = sessionId !== null && sessionId !== "";
+      const args = [
+        "exec",
+        ...(resuming
+          ? ["resume", sessionId, "-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"']
+          : ["--sandbox", "workspace-write", "-c", 'approval_policy="never"']),
+        "--json",
+        "--skip-git-repo-check",
+      ];
       if (modelId !== "") args.push("-m", modelId);
-      args.push(prompt);
+      args.push("--", prompt);
       return args;
     }
     case "gemini": {
-      const args = ["-p", prompt, "--output-format", "stream-json", "--mode", "auto", "--sandbox"];
+      const safePrompt = prompt.startsWith("-") ? ` ${prompt}` : prompt;
+      const args = ["-p", safePrompt, "--output-format", "stream-json", "--mode", "auto", "--sandbox"];
       if (modelId !== "") args.push("--model", modelId);
       if (sessionId !== null && sessionId !== "") args.push("--conversation", sessionId);
       return args;
@@ -491,31 +508,12 @@ export function buildTurnPrompt(input: {
   return parts.join("\n\n");
 }
 
-function hardenedGit(args: readonly string[], cwd?: string): string {
-  return execFileSync(
-    "git",
-    [...HARDENED_GIT_ARGS, "-c", "protocol.ext.allow=never", "-c", "credential.helper=", ...args],
-    {
-      cwd,
-      encoding: "utf8",
-      env: {
-        PATH: process.env["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        HOME: homedir(),
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_TERMINAL_PROMPT: "0",
-      },
-      maxBuffer: 2 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    }
-  );
-}
-
 export type DirectChatHostSeams = {
   stateRoot: string;
   now?: () => Date;
   custody?: CustodyIO;
   bootId?: () => string | null;
+  stopGraceMs?: number;
   locateBinary?: (provider: DirectChatProvider) => string | null;
   spawnTurn?: (input: {
     binary: string;
@@ -525,45 +523,42 @@ export type DirectChatHostSeams = {
     logPath: string;
     stderrPath: string;
   }) => { pid: number; pgid: number; startIdentity: string | null };
-  prepareClone?: (input: { repo: string; clonePath: string; branch: string }) => { baseSha: string; mainDirtyFiles: string[] };
-  readDiff?: (input: { clonePath: string; baseSha: string }) => DirectChatDiffSummary;
+  prepareClone?: (input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }) => {
+    baseSha: string;
+    gitDir: string;
+    configSha256: string;
+    mainDirtyFiles: string[];
+  };
+  readDiff?: (input: { binding: TrustedCloneBinding; baseSha: string }) => DirectChatDiffSummary;
   onNotify?: (note: DirectChatNotification) => void;
 };
 
-function defaultPrepareClone(input: { repo: string; clonePath: string; branch: string }): { baseSha: string; mainDirtyFiles: string[] } {
-  mkdirSync(dirname(input.clonePath), { recursive: true, mode: 0o700 });
-  const baseSha = hardenedGit(["rev-parse", "HEAD"], input.repo).trim();
-  let mainDirtyFiles: string[] = [];
-  try {
-    const status = hardenedGit(["status", "--porcelain"], input.repo);
-    mainDirtyFiles = status
-      .split("\n")
-      .map(line => line.slice(3).trim())
-      .filter(Boolean)
-      .slice(0, 20)
-      .map(sanitizeLine);
-  } catch {
-    mainDirtyFiles = [];
-  }
-  hardenedGit(["-c", "protocol.file.allow=always", "clone", "--local", "--", input.repo, input.clonePath]);
-  try {
-    hardenedGit(["remote", "remove", "origin"], input.clonePath);
-  } catch {
-    // clone may have no origin
-  }
-  hardenedGit(["checkout", "-b", input.branch, baseSha], input.clonePath);
+function defaultPrepareClone(input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }): {
+  baseSha: string;
+  gitDir: string;
+  configSha256: string;
+  mainDirtyFiles: string[];
+} {
+  const cloned = cloneIsolatedRepo(input);
   cloneSafeNodeModules({ repo: input.repo, clonePath: input.clonePath });
-  return { baseSha, mainDirtyFiles };
+  return {
+    baseSha: cloned.baseSha,
+    gitDir: cloned.gitDir,
+    configSha256: cloned.configSha256,
+    mainDirtyFiles: cloned.mainDirtyFiles.map(sanitizeLine),
+  };
 }
 
-function defaultReadDiff(input: { clonePath: string; baseSha: string }): DirectChatDiffSummary {
-  if (!existsSync(input.clonePath)) return { changedFiles: [], diffText: "", dirty: false };
+function defaultReadDiff(input: { binding: TrustedCloneBinding; baseSha: string }): DirectChatDiffSummary {
+  if (!existsSync(input.binding.clonePath)) return { changedFiles: [], diffText: "", dirty: false };
+  const verified = assertTrustedCloneGit(input.binding);
+  if (!verified.ok) return { changedFiles: [], diffText: "", dirty: false };
   try {
-    const statusLines = hardenedGit(["status", "--porcelain"], input.clonePath)
+    const statusLines = runTrustedCloneGit(input.binding, ["status", "--porcelain"])
       .split("\n")
       .map(line => line.trim())
       .filter(Boolean);
-    const committedFiles = hardenedGit(["diff", "--name-only", input.baseSha], input.clonePath)
+    const committedFiles = runTrustedCloneGit(input.binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", input.baseSha])
       .split("\n")
       .map(line => line.trim())
       .filter(Boolean);
@@ -574,7 +569,7 @@ function defaultReadDiff(input: { clonePath: string; baseSha: string }): DirectC
     const allFiles = [...new Set([...committedFiles, ...untracked])];
     let diffText = "";
     if (allFiles.length > 0) {
-      diffText = hardenedGit(["diff", "--no-color", input.baseSha], input.clonePath);
+      diffText = runTrustedCloneGit(input.binding, ["diff", "--no-ext-diff", "--no-textconv", "--no-color", input.baseSha]);
       if (diffText.length > MAX_DIFF_BYTES) {
         diffText = `${diffText.slice(0, MAX_DIFF_BYTES)}\n… (diff truncated)`;
       }
@@ -619,16 +614,16 @@ function defaultSpawnTurn(
 
 export class DirectChatHost {
   private readonly store: Store;
-  private readonly stateRoot: string;
+  readonly stateRoot: string;
   private readonly now: () => Date;
   private readonly custody: CustodyIO;
   private readonly bootId: () => string | null;
+  private readonly stopGraceMs: number;
   private readonly locateBinary: (provider: DirectChatProvider) => string | null;
   private readonly spawnTurnFn: NonNullable<DirectChatHostSeams["spawnTurn"]>;
   private readonly prepareCloneFn: NonNullable<DirectChatHostSeams["prepareClone"]>;
   private readonly readDiffFn: NonNullable<DirectChatHostSeams["readDiff"]>;
   private readonly onNotify: (note: DirectChatNotification) => void;
-  private readonly partialLineByTurn = new Map<string, string>();
   private readonly sawTerminalByTurn = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
@@ -640,6 +635,7 @@ export class DirectChatHost {
     this.now = seams.now ?? (() => new Date());
     this.custody = seams.custody ?? defaultCustodyIO();
     this.bootId = seams.bootId ?? (() => currentBootId());
+    this.stopGraceMs = seams.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
     this.prepareCloneFn = seams.prepareClone ?? defaultPrepareClone;
@@ -663,6 +659,33 @@ export class DirectChatHost {
     }
   }
 
+  bindingOf(thread: Pick<DirectChatThreadRow, "clonePath" | "gitDir" | "configSha256">): TrustedCloneBinding | null {
+    if (!thread.gitDir || !thread.configSha256) return null;
+    return {
+      stateRoot: this.stateRoot,
+      clonePath: thread.clonePath,
+      gitDir: thread.gitDir,
+      configSha256: thread.configSha256,
+    };
+  }
+
+  refreshDiffCache(thread: DirectChatThreadRow): DirectChatDiffSummary {
+    const binding = this.bindingOf(thread);
+    const diff = binding === null ? { ...EMPTY_DIFF } : this.readDiffFn({ binding, baseSha: thread.baseSha });
+    this.store.handle
+      .prepare(`UPDATE direct_chat_thread SET diff_cache_json = ? WHERE id = ?`)
+      .run(JSON.stringify(diff), thread.id);
+    return diff;
+  }
+
+  getThreadRecord(owner: string, threadId: string): DirectChatThreadRow | null {
+    if (!HEX32.test(threadId)) return null;
+    const raw = this.store.handle
+      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
+      .get(threadId, owner) as Record<string, unknown> | undefined;
+    return raw ? this.mapThread(raw) : null;
+  }
+
   listThreads(owner: string, projectFilter?: string | null): Array<DirectChatThreadRow & { running: boolean; lastStatus: DirectChatTurnStatus | null; changedFilesCount: number }> {
     const rows = this.store.handle
       .prepare(`SELECT * FROM direct_chat_thread WHERE owner = ? AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 80`)
@@ -677,12 +700,12 @@ export class DirectChatHost {
         .prepare(`SELECT status FROM direct_chat_turn WHERE thread_id = ? ORDER BY seq DESC LIMIT 1`)
         .get(thread.id) as Record<string, unknown> | undefined;
       const lastStatus = (typeof last?.["status"] === "string" ? last["status"] as DirectChatTurnStatus : null);
-      const diff = this.readDiffFn({ clonePath: thread.clonePath, baseSha: thread.baseSha });
+      // Read cached diff only — GET list NEVER spawns git in an agent-writable folder.
       out.push({
         ...thread,
         running: lastStatus === "running",
         lastStatus,
-        changedFilesCount: diff.changedFiles.length,
+        changedFilesCount: thread.diffCache.changedFiles.length,
       });
     }
     return out;
@@ -697,9 +720,9 @@ export class DirectChatHost {
     const thread = this.mapThread(raw);
     const turns = this.loadTurns(thread.id);
     const attachments = listArtifactsForThread(this.store, thread.id).filter(a => a.kind === "attachment");
-    const diff = this.readDiffFn({ clonePath: thread.clonePath, baseSha: thread.baseSha });
     const running = turns.some(t => t.status === "running");
-    return { thread, turns, attachments, diff, running };
+    // Read cached diff only — GET detail NEVER spawns git in an agent-writable folder.
+    return { thread, turns, attachments, diff: thread.diffCache, running };
   }
 
   attachFile(input: {
@@ -710,11 +733,11 @@ export class DirectChatHost {
     bytes: Buffer;
   }): { ok: true; artifact: DirectChatArtifactRow; cloneRelativePath: string | null } | { ok: false; status: number; error: string } {
     if (!HEX32.test(input.threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
-    const raw = this.store.handle
-      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
-      .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
-    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
-    const thread = this.mapThread(raw);
+    const thread = this.getThreadRecord(input.owner, input.threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+    const managed = assertManagedClonePath(this.stateRoot, thread.clonePath);
+    if (!managed.ok) return { ok: false, status: 409, error: managed.error };
+
     const saved = saveDirectChatArtifact(this.store, {
       stateRoot: this.stateRoot,
       threadId: thread.id,
@@ -724,6 +747,7 @@ export class DirectChatHost {
       mimeType: input.mimeType,
       bytes: input.bytes,
       clonePath: thread.clonePath,
+      gitDir: thread.gitDir,
       now: this.now(),
     });
     if (saved.ok) {
@@ -744,19 +768,19 @@ export class DirectChatHost {
 
   applyMainEdits(owner: string, threadId: string): ApplyMainDirtyPatchResult {
     if (!HEX32.test(threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
-    const raw = this.store.handle
-      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
-      .get(threadId, owner) as Record<string, unknown> | undefined;
-    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
-    const thread = this.mapThread(raw);
+    const thread = this.getThreadRecord(owner, threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+    const binding = this.bindingOf(thread);
+    if (binding === null) return { ok: false, status: 409, error: "This chat has no isolated clone workspace (read-only)." };
     const active = this.store.handle
       .prepare(`SELECT id FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
       .get(thread.id) as Record<string, unknown> | undefined;
     if (active) return { ok: false, status: 409, error: "Stop the running turn before bringing in uncommitted edits." };
-    const res = applyMainDirtyPatch({ repo: thread.repo, clonePath: thread.clonePath });
+    const res = applyMainDirtyPatch({ repo: thread.repo, binding });
     if (res.ok) {
       const stamp = this.now().toISOString();
       this.store.handle.prepare(`UPDATE direct_chat_thread SET main_dirty_files = NULL, updated_at = ? WHERE id = ?`).run(stamp, thread.id);
+      this.refreshDiffCache(thread);
       this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
     }
     return res;
@@ -794,13 +818,18 @@ export class DirectChatHost {
     const shortId = threadId.slice(0, 8);
     const safeRepo = basename(input.repo).replace(/[^A-Za-z0-9._-]/g, "_") || "repo";
     const clonePath = join(this.stateRoot, "direct-chat", "clones", `${safeRepo}-${shortId}`);
+    const gitDir = join(this.stateRoot, "direct-chat", "gitdirs", threadId);
     const branch = `toolroll/chat-${shortId}`;
 
     let baseSha: string;
+    let resolvedGitDir: string;
+    let configSha256: string;
     let mainDirtyFiles: string[];
     try {
-      const prep = this.prepareCloneFn({ repo: input.repo, clonePath, branch });
+      const prep = this.prepareCloneFn({ stateRoot: this.stateRoot, repo: input.repo, clonePath, gitDir, branch });
       baseSha = prep.baseSha;
+      resolvedGitDir = prep.gitDir;
+      configSha256 = prep.configSha256;
       mainDirtyFiles = prep.mainDirtyFiles;
     } catch (error) {
       return { ok: false, status: 500, error: `Could not prepare isolated clone: ${error instanceof Error ? error.message : String(error)}` };
@@ -814,9 +843,10 @@ export class DirectChatHost {
     this.store.handle.prepare(`
       INSERT INTO direct_chat_thread (
         id, owner, local_generation, account_generation, create_request_id,
-        title, repo, clone_path, branch, base_sha, provider, model_id,
+        title, repo, clone_path, git_dir, config_sha256, diff_cache_json, is_legacy,
+        branch, base_sha, provider, model_id,
         provider_session_id, main_dirty_files, archived_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
     `).run(
       threadId,
       input.owner,
@@ -826,6 +856,9 @@ export class DirectChatHost {
       title,
       input.repo,
       clonePath,
+      resolvedGitDir,
+      configSha256,
+      JSON.stringify(EMPTY_DIFF),
       branch,
       baseSha,
       input.provider,
@@ -862,11 +895,13 @@ export class DirectChatHost {
     const trimmed = input.prompt.trim();
     if (trimmed === "") return { ok: false, status: 400, error: "Write a message first." };
 
-    const rawThread = this.store.handle
-      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
-      .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
-    if (!rawThread) return { ok: false, status: 404, error: "Chat thread not found." };
-    const thread = this.mapThread(rawThread);
+    const thread = this.getThreadRecord(input.owner, input.threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+    if (thread.isLegacy) {
+      return { ok: false, status: 409, error: "Imported chats are read-only history. Start a new chat to continue." };
+    }
+    const managed = assertManagedClonePath(this.stateRoot, thread.clonePath);
+    if (!managed.ok) return { ok: false, status: 409, error: managed.error };
 
     const dupTurn = this.store.handle
       .prepare(`SELECT * FROM direct_chat_turn WHERE thread_id = ? AND request_id = ?`)
@@ -879,7 +914,7 @@ export class DirectChatHost {
       .prepare(`SELECT id FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
       .get(thread.id) as Record<string, unknown> | undefined;
     if (active) {
-      return { ok: false, status: 409, error: "A turn is already running in this chat." };
+      return { ok: false, status: 409, error: "A turn is already running or stopping in this chat." };
     }
 
     const binary = this.locateBinary(thread.provider);
@@ -907,31 +942,15 @@ export class DirectChatHost {
     });
     const stamp = this.now().toISOString();
     const beforeImages = snapshotWorkspaceImages(thread.clonePath);
-
-    let launched: { pid: number; pgid: number; startIdentity: string | null };
-    try {
-      launched = this.spawnTurnFn({
-        binary,
-        args,
-        cwd: thread.clonePath,
-        env: buildSanitizedChildEnv(),
-        logPath,
-        stderrPath,
-      });
-    } catch (error) {
-      return { ok: false, status: 500, error: `Could not launch ${thread.provider}: ${error instanceof Error ? error.message : String(error)}` };
-    }
-    this.preTurnImages.set(turnId, beforeImages);
-
     const switchedFrom = this.pendingSwitchFrom.get(thread.id) ?? null;
-    this.pendingSwitchFrom.delete(thread.id);
 
+    // Insert the turn row BEFORE spawning the child process so a DB failure can never leak an untracked process.
     this.store.handle.prepare(`
       INSERT INTO direct_chat_turn (
         id, thread_id, seq, request_id, user_prompt, switched_from_provider,
         log_path, stderr_path, byte_offset, pid, start_identity, pgid, boot_id,
-        status, assistant_text, error_text, created_at, finished_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'running', '', NULL, ?, NULL)
+        status, stop_requested_at, assistant_text, error_text, created_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, 'running', NULL, '', NULL, ?, NULL)
     `).run(
       turnId,
       thread.id,
@@ -941,12 +960,34 @@ export class DirectChatHost {
       switchedFrom,
       logPath,
       stderrPath,
-      launched.pid,
-      launched.startIdentity,
-      launched.pgid,
       this.bootId(),
       stamp
     );
+
+    let launched: { pid: number; pgid: number; startIdentity: string | null };
+    try {
+      launched = this.spawnTurnFn({
+        binary,
+        args,
+        cwd: managed.realClone,
+        env: buildSanitizedChildEnv(),
+        logPath,
+        stderrPath,
+      });
+    } catch (error) {
+      const msg = `Could not launch ${thread.provider}: ${error instanceof Error ? error.message : String(error)}`;
+      this.store.handle.prepare(`
+        UPDATE direct_chat_turn SET status = 'failed', error_text = ?, finished_at = ? WHERE id = ?
+      `).run(msg, this.now().toISOString(), turnId);
+      return { ok: false, status: 500, error: msg };
+    }
+
+    this.pendingSwitchFrom.delete(thread.id);
+    this.preTurnImages.set(turnId, beforeImages);
+
+    this.store.handle.prepare(`
+      UPDATE direct_chat_turn SET pid = ?, start_identity = ?, pgid = ? WHERE id = ?
+    `).run(launched.pid, launched.startIdentity, launched.pgid, turnId);
     this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
     this.onNotify({ threadId: thread.id, turnId, event: "change" });
 
@@ -987,22 +1028,35 @@ export class DirectChatHost {
     return { ok: true, thread: this.mapThread(updated) };
   }
 
-  stopThread(owner: string, threadId: string): { ok: true; stopped: boolean } | { ok: false; status: number; error: string } {
+  stopThread(owner: string, threadId: string): { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string } {
     if (!HEX32.test(threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
-    const raw = this.store.handle
-      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
-      .get(threadId, owner) as Record<string, unknown> | undefined;
-    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
+    const thread = this.getThreadRecord(owner, threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
 
     const running = this.store.handle
       .prepare(`SELECT * FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' ORDER BY seq DESC LIMIT 1`)
       .get(threadId) as Record<string, unknown> | undefined;
-    if (!running) return { ok: true, stopped: false };
+    if (!running) return { ok: true, stopped: false, stopping: false };
 
     const turn = this.mapTurn(running);
-    this.signalTurnProcess(turn, "SIGTERM");
-    this.reconcileSingleTurn(this.mapThread(raw), turn, { forceStopped: true });
-    return { ok: true, stopped: true };
+    const stamp = this.now().toISOString();
+    if (turn.stopRequestedAt === null) {
+      this.store.handle
+        .prepare(`UPDATE direct_chat_turn SET stop_requested_at = ? WHERE id = ? AND status = 'running'`)
+        .run(stamp, turn.id);
+    }
+    const updatedTurn = this.reloadTurn(turn.id) ?? { ...turn, stopRequestedAt: turn.stopRequestedAt ?? stamp };
+    const beforeStop = this.assessTurnCustody(updatedTurn, this.custody.table());
+    if (beforeStop.state === "alive" && beforeStop.members.length > 0) {
+      this.custody.signal(beforeStop.members, "SIGTERM");
+    }
+
+    // Re-verify process exit via custody: ONLY mark stopped once proven gone.
+    const afterTable = this.custody.table();
+    this.reconcileSingleTurn(thread, updatedTurn, afterTable);
+    const latest = this.reloadTurn(turn.id);
+    const finished = latest !== null && latest.status !== "running";
+    return { ok: true, stopped: finished, stopping: !finished };
   }
 
   deleteThread(input: {
@@ -1012,13 +1066,27 @@ export class DirectChatHost {
     keepClone?: boolean;
   }): { ok: true; removedClone: boolean } | { ok: false; status: number; error: string; code?: string } {
     if (!HEX32.test(input.threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
-    const raw = this.store.handle
-      .prepare(`SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL`)
-      .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
-    if (!raw) return { ok: false, status: 404, error: "Chat thread not found." };
-    const thread = this.mapThread(raw);
+    const thread = this.getThreadRecord(input.owner, input.threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
 
-    const diff = this.readDiffFn({ clonePath: thread.clonePath, baseSha: thread.baseSha });
+    // Refuse to delete while any turn is still running or stopping (prevents deleting a clone under a live agent).
+    const active = this.store.handle
+      .prepare(`SELECT id FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
+      .get(thread.id) as Record<string, unknown> | undefined;
+    if (active) {
+      const stopAttempt = this.stopThread(input.owner, thread.id);
+      if (!stopAttempt.ok) return stopAttempt;
+      if (stopAttempt.stopping) {
+        return {
+          ok: false,
+          status: 409,
+          code: "turn_stopping",
+          error: "This chat's agent is still stopping. Wait a moment for it to exit, then delete.",
+        };
+      }
+    }
+
+    const diff = this.refreshDiffCache(thread);
     if (diff.dirty && !input.discardChanges && !input.keepClone) {
       return {
         ok: false,
@@ -1028,17 +1096,30 @@ export class DirectChatHost {
       };
     }
 
-    this.stopThread(input.owner, thread.id);
     const stamp = this.now().toISOString();
     this.store.handle.prepare(`UPDATE direct_chat_thread SET archived_at = ?, updated_at = ? WHERE id = ?`).run(stamp, stamp, thread.id);
 
     let removedClone = false;
-    if (!input.keepClone && (!diff.dirty || input.discardChanges === true) && existsSync(thread.clonePath)) {
-      const clonesRoot = resolve(join(this.stateRoot, "direct-chat", "clones"));
-      const resolvedClone = resolve(thread.clonePath);
-      if (resolvedClone.startsWith(`${clonesRoot}/`)) {
-        rmSync(resolvedClone, { recursive: true, force: true });
+    if (!input.keepClone && (!diff.dirty || input.discardChanges === true)) {
+      const managed = assertManagedClonePath(this.stateRoot, thread.clonePath);
+      if (managed.ok) {
+        rmSync(managed.realClone, { recursive: true, force: true });
         removedClone = true;
+      }
+      if (thread.gitDir && existsSync(thread.gitDir)) {
+        const gitDirsRoot = join(this.stateRoot, "direct-chat", "gitdirs");
+        if (existsSync(gitDirsRoot)) {
+          try {
+            const realRoot = realpathSync(gitDirsRoot);
+            const realGd = realpathSync(thread.gitDir);
+            const rel = relative(realRoot, realGd);
+            if (rel !== "" && rel !== ".." && !rel.startsWith(`..${"/"}`) && !isAbsolute(rel)) {
+              rmSync(realGd, { recursive: true, force: true });
+            }
+          } catch {
+            // Best-effort cleanup of separate git-dir.
+          }
+        }
       }
     }
     this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
@@ -1049,40 +1130,95 @@ export class DirectChatHost {
     const runningRows = this.store.handle
       .prepare(`SELECT t.* FROM direct_chat_turn t JOIN direct_chat_thread th ON th.id = t.thread_id WHERE t.status = 'running' AND th.archived_at IS NULL`)
       .all() as Record<string, unknown>[];
+    if (runningRows.length === 0) return;
+    // Read the OS process table ONCE per poll tick for all running turns.
+    const tableSnapshot = this.custody.table();
     for (const rawTurn of runningRows) {
       const turn = this.mapTurn(rawTurn);
       const rawThread = this.store.handle
         .prepare(`SELECT * FROM direct_chat_thread WHERE id = ?`)
         .get(turn.threadId) as Record<string, unknown> | undefined;
       if (!rawThread) continue;
-      this.reconcileSingleTurn(this.mapThread(rawThread), turn);
+      this.reconcileSingleTurn(this.mapThread(rawThread), turn, tableSnapshot);
     }
   }
 
-  private reconcileSingleTurn(thread: DirectChatThreadRow, turn: DirectChatTurnRow, opts?: { forceStopped?: boolean }): void {
-    const advanced = this.drainTurnLog(thread, turn);
-    const alive = !opts?.forceStopped && this.isTurnProcessAlive(turn);
-    if (alive) {
+  private assessTurnCustody(
+    turn: DirectChatTurnRow,
+    tableSnapshot: ProcRow[] | null,
+  ): { state: "alive" | "dead" | "unknown"; members: ProcessWitness[] } {
+    if (turn.pid === null) return { state: "dead", members: [] };
+    const curBoot = this.bootId();
+    if (turn.bootId !== null && provenDeadByBootChange({ host: hostname(), bootId: turn.bootId }, { host: hostname(), bootId: curBoot })) {
+      return { state: "dead", members: [] };
+    }
+    // Unreadable process table is ALWAYS unknown — never settle a potentially live agent as dead.
+    if (tableSnapshot === null) return { state: "unknown", members: [] };
+    // Never signal or guess identity without a recorded startIdentity.
+    if (turn.startIdentity === null) {
+      const row = tableSnapshot.find(one => one.pid === turn.pid && !one.zombie);
+      return row ? { state: "unknown", members: [] } : { state: "dead", members: [] };
+    }
+
+    const launch: LaunchCustody = {
+      host: hostname(),
+      machineId: null,
+      bootId: turn.bootId,
+      leader: { pid: turn.pid, start: turn.startIdentity },
+      namespaces: [],
+      witnesses: [{ pid: turn.pid, start: turn.startIdentity }],
+      folder: "",
+    };
+    const scan = scanCustody(launch, {
+      ...this.custody,
+      table: () => tableSnapshot,
+    }, { holders: false });
+    if (scan.incomplete !== null) return { state: "unknown", members: [] };
+    if (scan.members.length > 0) {
+      return {
+        state: "alive",
+        members: scan.members.map(m => ({ pid: m.pid, start: m.start })),
+      };
+    }
+    return { state: "dead", members: [] };
+  }
+
+  private reconcileSingleTurn(
+    thread: DirectChatThreadRow,
+    turn: DirectChatTurnRow,
+    tableSnapshot: ProcRow[] | null,
+  ): void {
+    const advanced = this.drainTurnLog(thread, turn, false);
+    const custodyState = this.assessTurnCustody(turn, tableSnapshot);
+
+    if (custodyState.state === "alive" || custodyState.state === "unknown") {
+      if (turn.stopRequestedAt !== null && custodyState.state === "alive" && custodyState.members.length > 0) {
+        const elapsedMs = this.now().getTime() - Date.parse(turn.stopRequestedAt);
+        if (Number.isFinite(elapsedMs) && elapsedMs >= this.stopGraceMs) {
+          this.custody.signal(custodyState.members, "SIGKILL");
+        }
+      }
       if (advanced) {
         this.onNotify({ threadId: thread.id, turnId: turn.id, event: "turn" });
       }
       return;
     }
 
-    // Drain once more after exit so the tail is never missed.
+    // Verified dead: flush any remaining partial line at EOF, capture artifacts, and refresh cached diff.
     this.drainTurnLog(thread, this.reloadTurn(turn.id) ?? turn, true);
     const latest = this.reloadTurn(turn.id) ?? turn;
     const preImages = this.preTurnImages.get(turn.id);
-    if (preImages !== undefined) {
-      captureNewWorkspaceArtifacts(this.store, {
-        stateRoot: this.stateRoot,
-        threadId: thread.id,
-        turnId: turn.id,
-        clonePath: thread.clonePath,
-        before: preImages,
-        now: this.now(),
-      });
-    }
+    const sinceMs = Date.parse(turn.createdAt);
+    captureNewWorkspaceArtifacts(this.store, {
+      stateRoot: this.stateRoot,
+      threadId: thread.id,
+      turnId: turn.id,
+      clonePath: thread.clonePath,
+      ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
+      now: this.now(),
+    });
+    this.refreshDiffCache(thread);
+
     if (latest.status !== "running") {
       this.cleanupTurnState(turn.id);
       this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
@@ -1090,10 +1226,11 @@ export class DirectChatHost {
     }
 
     const stamp = this.now().toISOString();
-    let finalStatus: DirectChatTurnStatus = opts?.forceStopped ? "stopped" : "completed";
+    const wasStopRequested = latest.stopRequestedAt !== null;
+    let finalStatus: DirectChatTurnStatus = wasStopRequested ? "stopped" : "completed";
     let errorText: string | null = latest.errorText;
 
-    if (!opts?.forceStopped && !this.sawTerminalByTurn.has(turn.id)) {
+    if (!wasStopRequested && !this.sawTerminalByTurn.has(turn.id)) {
       const stderrTail = this.readStderrTail(latest.stderrPath);
       if (latest.assistantText.trim() === "" && stderrTail !== "") {
         finalStatus = "failed";
@@ -1127,31 +1264,35 @@ export class DirectChatHost {
     } catch {
       return false;
     }
-    if (fileSize <= turn.byteOffset && !flushPartial) return false;
+    if (fileSize <= turn.byteOffset) return false;
 
-    let chunk = "";
-    let nextOffset = turn.byteOffset;
-    if (fileSize > turn.byteOffset) {
-      const length = Math.min(fileSize - turn.byteOffset, 4 * 1024 * 1024);
-      const buf = Buffer.allocUnsafe(length);
-      const fd = openSync(turn.logPath, "r");
-      try {
-        const bytesRead = readSync(fd, buf, 0, length, turn.byteOffset);
-        nextOffset = turn.byteOffset + bytesRead;
-        chunk = buf.subarray(0, bytesRead).toString("utf8");
-      } finally {
-        closeSync(fd);
-      }
+    const length = Math.min(fileSize - turn.byteOffset, MAX_LINE_BYTES);
+    const buf = Buffer.allocUnsafe(length);
+    let bytesRead = 0;
+    const fd = openSync(turn.logPath, "r");
+    try {
+      bytesRead = readSync(fd, buf, 0, length, turn.byteOffset);
+    } finally {
+      closeSync(fd);
     }
+    if (bytesRead <= 0) return false;
 
-    const combined = (this.partialLineByTurn.get(turn.id) ?? "") + chunk;
-    const parts = combined.split("\n");
-    const trailing = flushPartial ? "" : (parts.pop() ?? "");
-    if (trailing !== "") {
-      this.partialLineByTurn.set(turn.id, trailing);
+    const slice = buf.subarray(0, bytesRead);
+    // Advance byte_offset ONLY up to the last newline byte so a partial line (or split UTF-8 codepoint)
+    // is never lost across a restart. Only consume trailing bytes without '\n' on final EOF flush.
+    const lastNewline = slice.lastIndexOf(0x0a);
+    let consumedBytes = 0;
+    if (lastNewline >= 0) {
+      consumedBytes = lastNewline + 1;
+    } else if (flushPartial || bytesRead >= MAX_LINE_BYTES) {
+      consumedBytes = bytesRead;
     } else {
-      this.partialLineByTurn.delete(turn.id);
+      return false;
     }
+
+    const nextOffset = turn.byteOffset + consumedBytes;
+    const chunk = slice.subarray(0, consumedBytes).toString("utf8");
+    const parts = chunk.split("\n");
 
     let changed = nextOffset !== turn.byteOffset;
     let assistantText = turn.assistantText;
@@ -1185,7 +1326,8 @@ export class DirectChatHost {
             nextSessionId = ev.sessionId;
             break;
           case "text_delta":
-            assistantText += sanitizeDisplay(ev.delta);
+            // Run redaction across the full accumulated text so secrets split across deltas are caught.
+            assistantText = sanitizeDisplay(assistantText + ev.delta);
             break;
           case "text_replace":
             assistantText = sanitizeDisplay(ev.text);
@@ -1245,40 +1387,6 @@ export class DirectChatHost {
     return changed;
   }
 
-  private isTurnProcessAlive(turn: DirectChatTurnRow): boolean {
-    if (turn.pid === null) return false;
-    const curBoot = this.bootId();
-    if (turn.bootId !== null && provenDeadByBootChange({ host: hostname(), bootId: turn.bootId }, { host: hostname(), bootId: curBoot })) return false;
-    const table = this.custody.table();
-    if (table === null) return false;
-    const row = table.find(one => one.pid === turn.pid);
-    if (!row || row.zombie) return false;
-    if (turn.startIdentity !== null && row.start !== null && row.start !== turn.startIdentity) return false;
-    return true;
-  }
-
-  private signalTurnProcess(turn: DirectChatTurnRow, signal: NodeJS.Signals): void {
-    if (turn.pid === null) return;
-    if (turn.startIdentity !== null) {
-      const witnesses: ProcessWitness[] = [{ pid: turn.pid, start: turn.startIdentity }];
-      const table = this.custody.table() ?? [];
-      if (turn.pgid !== null) {
-        for (const row of table) {
-          if (row.pgid === turn.pgid && row.pid !== turn.pid && row.start !== null) {
-            witnesses.push({ pid: row.pid, start: row.start });
-          }
-        }
-      }
-      this.custody.signal(witnesses, signal);
-    } else {
-      try {
-        process.kill(-turn.pid, signal);
-      } catch {
-        try { process.kill(turn.pid, signal); } catch { /* already gone */ }
-      }
-    }
-  }
-
   private readStderrTail(stderrPath: string): string {
     if (!existsSync(stderrPath)) return "";
     try {
@@ -1291,7 +1399,6 @@ export class DirectChatHost {
   }
 
   private cleanupTurnState(turnId: string): void {
-    this.partialLineByTurn.delete(turnId);
     this.sawTerminalByTurn.delete(turnId);
     this.preTurnImages.delete(turnId);
   }
@@ -1331,6 +1438,7 @@ export class DirectChatHost {
       pgid: typeof raw["pgid"] === "number" ? raw["pgid"] : null,
       bootId: typeof raw["boot_id"] === "string" ? raw["boot_id"] : null,
       status: String(raw["status"]) as DirectChatTurnStatus,
+      stopRequestedAt: typeof raw["stop_requested_at"] === "string" ? raw["stop_requested_at"] : null,
       assistantText: String(raw["assistant_text"] ?? ""),
       errorText: typeof raw["error_text"] === "string" ? raw["error_text"] : null,
       createdAt: String(raw["created_at"]),
@@ -1370,6 +1478,19 @@ export class DirectChatHost {
         mainDirtyFiles = [];
       }
     }
+    let diffCache: DirectChatDiffSummary = { changedFiles: [], diffText: "", dirty: false };
+    if (typeof raw["diff_cache_json"] === "string" && raw["diff_cache_json"] !== "") {
+      try {
+        const parsed = JSON.parse(raw["diff_cache_json"]) as Partial<DirectChatDiffSummary>;
+        diffCache = {
+          changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.filter((x): x is string => typeof x === "string") : [],
+          diffText: typeof parsed.diffText === "string" ? parsed.diffText : "",
+          dirty: parsed.dirty === true,
+        };
+      } catch {
+        diffCache = { changedFiles: [], diffText: "", dirty: false };
+      }
+    }
     return {
       id: String(raw["id"]),
       owner: String(raw["owner"]),
@@ -1380,12 +1501,16 @@ export class DirectChatHost {
       repo,
       project: projectName(repo),
       clonePath: String(raw["clone_path"]),
+      gitDir: typeof raw["git_dir"] === "string" && raw["git_dir"] !== "" ? raw["git_dir"] : null,
+      configSha256: typeof raw["config_sha256"] === "string" && raw["config_sha256"] !== "" ? raw["config_sha256"] : null,
       branch: String(raw["branch"]),
       baseSha: String(raw["base_sha"]),
       provider: String(raw["provider"]) as DirectChatProvider,
       modelId: String(raw["model_id"]),
       providerSessionId: typeof raw["provider_session_id"] === "string" ? raw["provider_session_id"] : null,
       mainDirtyFiles,
+      diffCache,
+      isLegacy: Number(raw["is_legacy"] ?? 0) === 1,
       archivedAt: typeof raw["archived_at"] === "string" ? raw["archived_at"] : null,
       createdAt: String(raw["created_at"]),
       updatedAt: String(raw["updated_at"]),
@@ -1393,6 +1518,11 @@ export class DirectChatHost {
   }
 }
 
+/**
+ * Imports legacy Mac `chat-threads.json` strictly as archived, read-only history
+ * inside a single transaction (`archived_at = updatedAt`, `is_legacy = 1`,
+ * `clone_path = ''`, never pointing at the user's real checkout).
+ */
 export function importLegacyDirectChatJson(input: {
   store: Store;
   owner: string;
@@ -1408,79 +1538,82 @@ export function importLegacyDirectChatJson(input: {
     return 0;
   }
   if (!Array.isArray(parsed)) return 0;
-  let imported = 0;
-  for (const raw of parsed) {
-    if (!raw || typeof raw !== "object") continue;
-    const item = raw as Record<string, unknown>;
-    const rawId = typeof item["id"] === "string" ? item["id"].toLowerCase().replace(/-/g, "") : "";
-    if (!HEX32.test(rawId)) continue;
-    const provider = isDirectChatProvider(item["provider"]) ? item["provider"] : "claude";
-    const repo = typeof item["projectPath"] === "string" && item["projectPath"] !== ""
-      ? item["projectPath"]
-      : (typeof item["project"] === "string" && item["project"] !== "" ? item["project"] : homedir());
-    const title = typeof item["title"] === "string" && item["title"] !== "" ? sanitizeLine(item["title"]) : "Imported chat";
-    const modelId = typeof item["modelId"] === "string" && item["modelId"] !== ""
-      ? item["modelId"]
-      : (typeof item["modelID"] === "string" && item["modelID"] !== "" ? item["modelID"] : defaultModelForProvider(provider));
-    const createdAt = typeof item["createdAt"] === "string" ? item["createdAt"] : new Date().toISOString();
-    const updatedAt = typeof item["updatedAt"] === "string" ? item["updatedAt"] : createdAt;
-    const sessionId = typeof item["sessionId"] === "string" && item["sessionId"] !== ""
-      ? item["sessionId"]
-      : (typeof item["providerSessionID"] === "string" && item["providerSessionID"] !== "" ? item["providerSessionID"] : null);
+  return input.store.transact(() => {
+    let imported = 0;
+    for (const raw of parsed) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      const rawId = typeof item["id"] === "string" ? item["id"].toLowerCase().replace(/-/g, "") : "";
+      if (!HEX32.test(rawId)) continue;
+      const provider = isDirectChatProvider(item["provider"]) ? item["provider"] : "claude";
+      const repo = typeof item["projectPath"] === "string" && item["projectPath"] !== ""
+        ? item["projectPath"]
+        : (typeof item["project"] === "string" && item["project"] !== "" ? item["project"] : homedir());
+      const title = typeof item["title"] === "string" && item["title"] !== "" ? sanitizeLine(item["title"]) : "Imported chat";
+      const modelId = typeof item["modelId"] === "string" && item["modelId"] !== ""
+        ? item["modelId"]
+        : (typeof item["modelID"] === "string" && item["modelID"] !== "" ? item["modelID"] : defaultModelForProvider(provider));
+      const createdAt = typeof item["createdAt"] === "string" ? item["createdAt"] : new Date().toISOString();
+      const updatedAt = typeof item["updatedAt"] === "string" ? item["updatedAt"] : createdAt;
+      const sessionId = typeof item["sessionId"] === "string" && item["sessionId"] !== ""
+        ? item["sessionId"]
+        : (typeof item["providerSessionID"] === "string" && item["providerSessionID"] !== "" ? item["providerSessionID"] : null);
 
-    const inserted = input.store.handle.prepare(`
-      INSERT OR IGNORE INTO direct_chat_thread (
-        id, owner, local_generation, account_generation, create_request_id,
-        title, repo, clone_path, branch, base_sha, provider, model_id,
-        provider_session_id, main_dirty_files, archived_at, created_at, updated_at
-      ) VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, ?, '', ?, ?, ?, NULL, NULL, ?, ?)
-    `).run(rawId, input.owner, input.accountGeneration, title, repo, repo, `imported/${rawId.slice(0, 8)}`, provider, modelId, sessionId, createdAt, updatedAt);
+      const inserted = input.store.handle.prepare(`
+        INSERT OR IGNORE INTO direct_chat_thread (
+          id, owner, local_generation, account_generation, create_request_id,
+          title, repo, clone_path, git_dir, config_sha256, diff_cache_json, is_legacy,
+          branch, base_sha, provider, model_id,
+          provider_session_id, main_dirty_files, archived_at, created_at, updated_at
+        ) VALUES (?, ?, NULL, ?, NULL, ?, ?, '', NULL, NULL, NULL, 1, ?, '', ?, ?, ?, NULL, ?, ?, ?)
+      `).run(rawId, input.owner, input.accountGeneration, title, repo, `imported/${rawId.slice(0, 8)}`, provider, modelId, sessionId, updatedAt, createdAt, updatedAt);
 
-    if (Number(inserted.changes) === 0) continue;
-    imported += 1;
+      if (Number(inserted.changes) === 0) continue;
+      imported += 1;
 
-    const messages = Array.isArray(item["messages"]) ? item["messages"] : [];
-    let seq = 0;
-    let pendingUserPrompt: string | null = null;
-    for (const rawMsg of messages) {
-      if (!rawMsg || typeof rawMsg !== "object") continue;
-      const msg = rawMsg as Record<string, unknown>;
-      const role = typeof msg["role"] === "string" ? msg["role"] : "";
-      const text = typeof msg["text"] === "string" ? msg["text"] : "";
-      if (role === "user") {
-        pendingUserPrompt = text;
-      } else if (role === "assistant" && pendingUserPrompt !== null) {
-        seq += 1;
-        const turnId = randomBytes(16).toString("hex");
-        const isError = msg["isError"] === true;
-        const ts = typeof msg["timestamp"] === "string" ? msg["timestamp"] : updatedAt;
-        input.store.handle.prepare(`
-          INSERT OR IGNORE INTO direct_chat_turn (
-            id, thread_id, seq, request_id, user_prompt, switched_from_provider,
-            log_path, stderr_path, byte_offset, pid, start_identity, pgid, boot_id,
-            status, assistant_text, error_text, created_at, finished_at
-          ) VALUES (?, ?, ?, NULL, ?, NULL, '', '', 0, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?)
-        `).run(turnId, rawId, seq, pendingUserPrompt, isError ? "failed" : "completed", isError ? "" : sanitizeDisplay(text), isError ? sanitizeDisplay(text) : null, ts, ts);
-        const tools = Array.isArray(msg["tools"]) ? msg["tools"] : [];
-        let ord = 0;
-        for (const rawTool of tools) {
-          if (!rawTool || typeof rawTool !== "object") continue;
-          const t = rawTool as Record<string, unknown>;
-          ord += 1;
-          const tid = typeof t["id"] === "string" && t["id"] !== "" ? t["id"] : `imp-${ord}`;
-          const tname = typeof t["name"] === "string" ? t["name"] : "Tool";
-          const tdetail = typeof t["detail"] === "string" ? t["detail"] : "";
-          const tstatus: DirectChatToolStatus = t["status"] === "error" ? "error" : "done";
+      const messages = Array.isArray(item["messages"]) ? item["messages"] : [];
+      let seq = 0;
+      let pendingUserPrompt: string | null = null;
+      for (const rawMsg of messages) {
+        if (!rawMsg || typeof rawMsg !== "object") continue;
+        const msg = rawMsg as Record<string, unknown>;
+        const role = typeof msg["role"] === "string" ? msg["role"] : "";
+        const text = typeof msg["text"] === "string" ? msg["text"] : "";
+        if (role === "user") {
+          pendingUserPrompt = text;
+        } else if (role === "assistant" && pendingUserPrompt !== null) {
+          seq += 1;
+          const turnId = randomBytes(16).toString("hex");
+          const isError = msg["isError"] === true;
+          const ts = typeof msg["timestamp"] === "string" ? msg["timestamp"] : updatedAt;
           input.store.handle.prepare(`
-            INSERT OR IGNORE INTO direct_chat_tool (id, turn_id, ordinal, name, detail, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(tid, turnId, ord, sanitizeLine(tname), sanitizeLine(tdetail), tstatus, ts);
+            INSERT OR IGNORE INTO direct_chat_turn (
+              id, thread_id, seq, request_id, user_prompt, switched_from_provider,
+              log_path, stderr_path, byte_offset, pid, start_identity, pgid, boot_id,
+              status, stop_requested_at, assistant_text, error_text, created_at, finished_at
+            ) VALUES (?, ?, ?, NULL, ?, NULL, '', '', 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)
+          `).run(turnId, rawId, seq, pendingUserPrompt, isError ? "failed" : "completed", isError ? "" : sanitizeDisplay(text), isError ? sanitizeDisplay(text) : null, ts, ts);
+          const tools = Array.isArray(msg["tools"]) ? msg["tools"] : [];
+          let ord = 0;
+          for (const rawTool of tools) {
+            if (!rawTool || typeof rawTool !== "object") continue;
+            const t = rawTool as Record<string, unknown>;
+            ord += 1;
+            const tid = typeof t["id"] === "string" && t["id"] !== "" ? t["id"] : `imp-${ord}`;
+            const tname = typeof t["name"] === "string" ? t["name"] : "Tool";
+            const tdetail = typeof t["detail"] === "string" ? t["detail"] : "";
+            const tstatus: DirectChatToolStatus = t["status"] === "error" ? "error" : "done";
+            input.store.handle.prepare(`
+              INSERT OR IGNORE INTO direct_chat_tool (id, turn_id, ordinal, name, detail, status, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(tid, turnId, ord, sanitizeLine(tname), sanitizeLine(tdetail), tstatus, ts);
+          }
+          pendingUserPrompt = null;
         }
-        pendingUserPrompt = null;
       }
     }
-  }
-  return imported;
+    return imported;
+  });
 }
 
 export function writeDirectChatLogFixture(logPath: string, lines: readonly string[]): void {

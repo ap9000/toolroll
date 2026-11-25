@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  buildProviderCommand,
   buildSanitizedChildEnv,
   buildTurnPrompt,
   DirectChatHost,
@@ -11,6 +12,7 @@ import {
   importLegacyDirectChatJson,
   parseDirectChatLine,
 } from "./direct-chat.js";
+import { assertTrustedCloneGit, runTrustedCloneGit } from "./direct-chat-git.js";
 import type { CustodyIO, ProcessWitness, ProcRow } from "./flexible-custody.js";
 import { openStore } from "./store.js";
 
@@ -132,8 +134,10 @@ describe("DirectChatHost & helpers", () => {
       const { thread } = res;
       expect(thread.mainDirtyFiles).toEqual(["dirty.txt"]);
       expect(existsSync(join(thread.clonePath, "dirty.txt"))).toBe(false);
-      // Real standalone .git directory (NOT a worktree .git pointer file).
-      expect(lstatSync(join(thread.clonePath, ".git")).isDirectory()).toBe(true);
+      // Separate git-dir inside Toolroll state folder (clone's .git is a gitdir pointer file).
+      expect(lstatSync(join(thread.clonePath, ".git")).isFile()).toBe(true);
+      expect(thread.gitDir).toContain(join("direct-chat", "gitdirs"));
+      expect(thread.configSha256).toMatch(/^[0-9a-f]{64}$/);
       // Remote `origin` was removed so pushes cannot reach main checkout.
       const remotes = execFileSync("git", ["-C", thread.clonePath, "remote"], { env: GIT_ENV, encoding: "utf8" }).trim();
       expect(remotes).toBe("");
@@ -143,12 +147,17 @@ describe("DirectChatHost & helpers", () => {
       const mainBranches = execFileSync("git", ["-C", repo, "branch", "--list"], { env: GIT_ENV, encoding: "utf8" });
       expect(mainBranches).not.toContain(thread.branch);
 
-      // Mutating hooks and branches inside the clone cannot touch main repo's .git.
-      writeFileSync(join(thread.clonePath, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
+      // Mutating branches or planting diff.external in the clone's git-dir config cannot touch main repo
+      // AND causes Toolroll's pinned-config guard to refuse before running git!
       execFileSync("git", ["-C", thread.clonePath, "branch", "side-branch"], { env: GIT_ENV });
-      expect(existsSync(join(repo, ".git", "hooks", "pre-commit"))).toBe(false);
       expect(execFileSync("git", ["-C", repo, "branch", "--list"], { env: GIT_ENV, encoding: "utf8" })).not.toContain("side-branch");
-      expect(spawned[0]?.cwd).toBe(thread.clonePath);
+      const marker = join(root, "pwned.txt");
+      appendFileSync(join(thread.gitDir!, "config"), `\n[diff]\n\texternal = touch ${marker}\n`);
+      const binding = host.bindingOf(thread)!;
+      expect(assertTrustedCloneGit(binding).ok).toBe(false);
+      expect(() => runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", thread.baseSha])).toThrow(/config changed/i);
+      expect(existsSync(marker)).toBe(false);
+      expect(spawned[0]?.cwd).toBe(realpathSync(thread.clonePath));
     } finally {
       host.close();
       store.close();
@@ -314,7 +323,7 @@ describe("DirectChatHost & helpers", () => {
 
       // Stop running turn via custody signal.
       const stopped = host.stopThread("alex", started.thread.id);
-      expect(stopped).toEqual({ ok: true, stopped: true });
+      expect(stopped).toEqual({ ok: true, stopped: true, stopping: false });
       expect(custody.signaled).toEqual([{ targets: [{ pid: 6000, start: "start-6000" }], signal: "SIGTERM" }]);
 
       // Now switch to Codex and send a follow-up turn.
@@ -448,7 +457,7 @@ describe("DirectChatHost & helpers", () => {
     expect(prompt).toContain("Hello");
   });
 
-  test("importLegacyDirectChatJson imports Mac chat-threads.json once, idempotently, leaving file untouched", () => {
+  test("importLegacyDirectChatJson imports Mac chat-threads.json strictly as archived read-only history and refuses writes", () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const legacyPath = join(root, "chat-threads.json");
@@ -480,16 +489,154 @@ describe("DirectChatHost & helpers", () => {
       // Original Mac file untouched.
       expect(readFileSync(legacyPath, "utf8")).toBe(legacyPayload);
 
+      // Imported legacy chats are archived & have empty clone_path (never pointing at real checkout).
+      const rawRow = store.handle
+        .prepare("SELECT archived_at, clone_path, is_legacy FROM direct_chat_thread WHERE id = ?")
+        .get("a1b2c3d4e5f64789abcd0123456789ab") as Record<string, unknown>;
+      expect(rawRow["archived_at"]).toBe("2026-10-01T10:05:00.000Z");
+      expect(rawRow["clone_path"]).toBe("");
+      expect(rawRow["is_legacy"]).toBe(1);
+
       const host = new DirectChatHost(store, { stateRoot: join(root, "state") });
-      const list = host.listThreads("alex");
-      expect(list).toHaveLength(1);
-      expect(list[0]?.title).toBe("Legacy Mac chat");
-      const detail = host.getThread("alex", list[0]!.id)!;
-      expect(detail.turns).toHaveLength(1);
-      expect(detail.turns[0]?.userPrompt).toBe("What does README say?");
-      expect(detail.turns[0]?.assistantText).toBe("It describes Payments.");
+      expect(host.listThreads("alex")).toHaveLength(0);
+
+      // Even if someone manually clears archived_at and sets clone_path = repo, every write path refuses!
+      store.handle.prepare("UPDATE direct_chat_thread SET archived_at = NULL, clone_path = ? WHERE id = ?").run(repo, "a1b2c3d4e5f64789abcd0123456789ab");
+      const sendBlocked = host.sendMessage({
+        owner: "alex",
+        threadId: "a1b2c3d4e5f64789abcd0123456789ab",
+        requestId: "9".repeat(32),
+        prompt: "Touch real repo",
+      });
+      expect(sendBlocked.ok).toBe(false);
+      if (!sendBlocked.ok) expect(sendBlocked.status).toBe(409);
+      const applyBlocked = host.applyMainEdits("alex", "a1b2c3d4e5f64789abcd0123456789ab");
+      expect(applyBlocked.ok).toBe(false);
     } finally {
       store.close();
     }
   });
+
+  test("hardening regressions: verified stop with SIGKILL escalation, unreadable ps = unknown, partial JSONL across restart, split-delta redaction, CLI flag safety", () => {
+    const root = tempDir();
+    const repo = makeRepoSimple(root);
+    const stateRoot = join(root, "state");
+    const dbPath = join(root, "state.db");
+    let nowMs = Date.parse("2026-11-24T10:00:00.000Z");
+    let tableUnreadable = false;
+    let ignoreSigterm = true;
+    const signalsSent: Array<{ pid: number; sig: NodeJS.Signals }> = [];
+
+    const rows = new Map<number, ProcRow>();
+    const stubbornCustody: CustodyIO = {
+      platform: "darwin",
+      self: 1,
+      table: () => (tableUnreadable ? null : [...rows.values()]),
+      namespaceOf: () => null,
+      holdersOf: () => [],
+      signal(targets, sig) {
+        const sent: ProcessWitness[] = [];
+        for (const t of targets) {
+          signalsSent.push({ pid: t.pid, sig });
+          if (sig === "SIGKILL" || !ignoreSigterm) {
+            rows.delete(t.pid);
+          }
+          sent.push(t);
+        }
+        return { sent, gone: [], mismatched: [], refused: [], unsupported: false, bestEffort: true };
+      },
+    };
+
+    const store = openStore(dbPath);
+    let capturedLogPath = "";
+    const host = new DirectChatHost(store, {
+      stateRoot,
+      now: () => new Date(nowMs),
+      custody: stubbornCustody,
+      bootId: () => "boot-1",
+      stopGraceMs: 5_000,
+      locateBinary: () => "/fake/claude",
+      spawnTurn: input => {
+        capturedLogPath = input.logPath;
+        mkdirSync(dirname(input.logPath), { recursive: true });
+        // Write a partial JSONL line WITHOUT a trailing newline, plus split-secret deltas!
+        writeFileSync(
+          input.logPath,
+          `${JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "ANTHROPIC_API_KEY=" } })}\n`
+            + `${JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "sk-ant-api03-secretvalue1234567890" } })}\n`
+            + `{"event":"result","result":{"conversation_id":"conv-`,
+          { mode: 0o600 },
+        );
+        rows.set(8801, { pid: 8801, ppid: 1, pgid: 8801, uid: 501, start: "s8801", zombie: false });
+        return { pid: 8801, pgid: 8801, startIdentity: "s8801" };
+      },
+    });
+
+    try {
+      const started = host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "8".repeat(32),
+        repo,
+        provider: "gemini",
+        prompt: "-flag-like prompt",
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+
+      // 1. Unreadable ps table must NOT mark the running turn dead!
+      tableUnreadable = true;
+      host.reconcileRunningTurns();
+      expect(host.getThread("alex", started.thread.id)?.running).toBe(true);
+      // Split-secret across two text_deltas is redacted on whole accumulated text!
+      expect(host.getThread("alex", started.thread.id)?.turns[0]?.assistantText).not.toContain("sk-ant-api03");
+
+      // 2. Partial line without '\n' was NOT consumed in byte_offset; finish writing it and verify recovery.
+      tableUnreadable = false;
+      appendFileSync(capturedLogPath, `999","status":"SUCCESS","response":"Done cleanly."}}\n`);
+      host.reconcileRunningTurns();
+      expect(host.getThread("alex", started.thread.id)?.thread.providerSessionId).toBe("conv-999");
+
+      // 3. Start a second turn that ignores SIGTERM -> stopThread enters stopping state, deleteThread refuses 409,
+      //    and after stopGraceMs elapses reconcileRunningTurns escalates to SIGKILL and settles!
+      const second = host.sendMessage({
+        owner: "alex",
+        threadId: started.thread.id,
+        requestId: "7".repeat(32),
+        prompt: "Long running task",
+      });
+      expect(second.ok).toBe(true);
+      const stopRes = host.stopThread("alex", started.thread.id);
+      expect(stopRes).toEqual({ ok: true, stopped: false, stopping: true });
+      expect(signalsSent.some(s => s.sig === "SIGTERM")).toBe(true);
+
+      const delBlocked = host.deleteThread({ owner: "alex", threadId: started.thread.id, discardChanges: true });
+      expect(delBlocked.ok).toBe(false);
+      if (!delBlocked.ok) expect(delBlocked.code).toBe("turn_stopping");
+
+      // Advance clock past stopGraceMs -> SIGKILL sent, process dies, next reconcile settles turn as stopped!
+      nowMs += 6_000;
+      host.reconcileRunningTurns();
+      expect(signalsSent.some(s => s.sig === "SIGKILL")).toBe(true);
+      host.reconcileRunningTurns();
+      expect(host.getThread("alex", started.thread.id)?.running).toBe(false);
+      expect(host.getThread("alex", started.thread.id)?.turns.at(-1)?.status).toBe("stopped");
+
+      // 4. Verify CLI prompt flag safety & Codex resume sandbox flags.
+      expect(buildProviderCommand({ provider: "claude", modelId: "opus", prompt: "--danger", sessionId: null }).slice(-2)).toEqual(["--", "--danger"]);
+      const codexResume = buildProviderCommand({ provider: "codex", modelId: "gpt-5.4", prompt: "-foo", sessionId: "thr_1" });
+      expect(codexResume).toContain("resume");
+      expect(codexResume).toContain('sandbox_mode="workspace-write"');
+      expect(codexResume).toContain('approval_policy="never"');
+      expect(codexResume.slice(-2)).toEqual(["--", "-foo"]);
+    } finally {
+      host.close();
+      store.close();
+    }
+  });
 });
+
+function makeRepoSimple(root: string): string {
+  return makeTempRepo(root, "hardening-repo");
+}

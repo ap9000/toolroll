@@ -1,15 +1,18 @@
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { HARDENED_GIT_ARGS } from "./agent-fence.js";
 import { assignmentOf } from "./assignment.js";
 import { canonicalJson } from "./canonical-json.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerificationView } from "./contracts/verification-view.js";
+import {
+  assertTrustedCloneGit,
+  fetchTrustedSnapshotIntoMainRepo,
+  runHardenedMainGit,
+  runTrustedCloneGit,
+  type TrustedCloneBinding,
+} from "./direct-chat-git.js";
 import { directChatShipSealAllowed } from "./direct-chat-laptop.js";
 import { laptopShipProblem } from "./flexible-laptop.js";
-export { directChatShipSealAllowed };
 import { soloNow } from "./install-mode.js";
 import { taskBranch } from "./names.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -21,8 +24,11 @@ import { approvalOf, approve, machineActing, proposeGuarded, type AcceptanceCrit
 import type { Store } from "./store.js";
 import { verificationEvidence } from "./verification-evidence.js";
 
+export { directChatShipSealAllowed };
+
 export const DIRECT_CHAT_FILED_PREFIX = "direct-chat:";
 export const DIRECT_CHAT_SHIP_OUT_OF_SCOPE = "Verify the frozen Direct Chat snapshot commit only. Further changes need a new Ship.";
+export const DIRECT_CHAT_STALE_MERGE_MS = 15 * 60_000;
 const DEFAULT_ACCEPTANCE: readonly AcceptanceCriterion[] = Object.freeze([
   { id: "c1", statement: "The project's checks pass on this exact snapshot commit.", how: null, evidence: ["check"] },
 ]);
@@ -75,6 +81,8 @@ export type DirectChatShipRow = {
   taskId: string | null;
   scopeDigest: string | null;
   prUrl: string | null;
+  mergeToken: string | null;
+  mergeReservedAt: string | null;
   detail: string | null;
   createdAt: string;
   stateAt: string;
@@ -106,30 +114,6 @@ export function directChatShipDigestOf(terms: DirectChatShipTerms): string {
   return createHash("sha256").update(`toolroll:direct-chat-ship:${canonicalJson(terms)}`, "utf8").digest("hex").slice(0, 32);
 }
 
-function gitEnv(): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    HOME: homedir(),
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_TERMINAL_PROMPT: "0",
-  };
-}
-
-function runGit(args: readonly string[], cwd: string): string {
-  return execFileSync(
-    "git",
-    [...HARDENED_GIT_ARGS, "-c", "protocol.ext.allow=never", "-c", "credential.helper=", ...args],
-    {
-      cwd,
-      encoding: "utf8",
-      env: gitEnv(),
-      maxBuffer: 8 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-}
-
 function destinationOf(store: Store, repo: string): DirectChatShipDestination | null {
   const grant = store.publicationGrantFor(repo);
   if (grant === null || !grant.capabilities.includes("push-branch") || !grant.capabilities.includes("open-pr")) {
@@ -144,14 +128,22 @@ function destinationOf(store: Store, repo: string): DirectChatShipDestination | 
   };
 }
 
-function inspectCloneForShip(clonePath: string, baseSha: string): { changedFiles: string[]; worktreeDigest: string; headSha: string; dirty: boolean } {
-  const headSha = runGit(["rev-parse", "HEAD"], clonePath).trim();
-  const status = runGit(["status", "--porcelain"], clonePath);
-  const committed = runGit(["diff", "--name-only", baseSha, "HEAD"], clonePath)
+function bindingFromThreadRow(stateRoot: string, thread: Record<string, unknown>): TrustedCloneBinding | null {
+  const clonePath = String(thread["clone_path"] ?? "");
+  const gitDir = typeof thread["git_dir"] === "string" ? thread["git_dir"] : "";
+  const configSha256 = typeof thread["config_sha256"] === "string" ? thread["config_sha256"] : "";
+  if (!clonePath || !gitDir || !configSha256) return null;
+  return { stateRoot, clonePath, gitDir, configSha256 };
+}
+
+function inspectCloneForShip(binding: TrustedCloneBinding, baseSha: string): { changedFiles: string[]; worktreeDigest: string; headSha: string; dirty: boolean } {
+  const headSha = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
+  const status = runTrustedCloneGit(binding, ["status", "--porcelain"]);
+  const committed = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", baseSha, "HEAD"])
     .split("\n")
     .map(s => s.trim())
     .filter(Boolean);
-  const working = runGit(["diff", "--name-only", "HEAD"], clonePath)
+  const working = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD"])
     .split("\n")
     .map(s => s.trim())
     .filter(Boolean);
@@ -161,12 +153,12 @@ function inspectCloneForShip(clonePath: string, baseSha: string): { changedFiles
     .map(line => line.slice(3).trim())
     .filter(Boolean);
   const changedFiles = [...new Set([...committed, ...working, ...untracked])].sort();
-  const diffRaw = runGit(["diff", "--binary", baseSha], clonePath);
+  const diffRaw = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--binary", baseSha]);
   const untrackedHash = createHash("sha256");
   for (const rel of untracked.sort()) {
     untrackedHash.update(`${rel}\0`);
     try {
-      const blob = runGit(["hash-object", "--", rel], clonePath).trim();
+      const blob = runTrustedCloneGit(binding, ["hash-object", "--no-filters", "--", rel]).trim();
       untrackedHash.update(`${blob}\n`);
     } catch {
       untrackedHash.update("?\n");
@@ -184,33 +176,28 @@ function inspectCloneForShip(clonePath: string, baseSha: string): { changedFiles
   };
 }
 
-function freezeSnapshotCommit(clonePath: string, title: string, baseSha: string): string {
-  const status = runGit(["status", "--porcelain"], clonePath).trim();
+function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseSha: string): string {
+  const status = runTrustedCloneGit(binding, ["status", "--porcelain"]).trim();
   if (status !== "") {
-    runGit(["add", "-A"], clonePath);
+    runTrustedCloneGit(binding, ["add", "-A"]);
     const msg = `Direct chat snapshot: ${title.slice(0, 72)}`;
-    runGit(
-      ["-c", "user.name=Toolroll Direct Chat", "-c", "user.email=direct-chat@toolroll.local", "commit", "-m", msg],
-      clonePath,
-    );
+    runTrustedCloneGit(binding, [
+      "-c", "user.name=Toolroll Direct Chat",
+      "-c", "user.email=direct-chat@toolroll.local",
+      "commit", "-m", msg,
+    ]);
   }
-  const sha = runGit(["rev-parse", "HEAD"], clonePath).trim();
+  const sha = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
   if (sha === baseSha) {
     throw new Error("No changes to ship compared to base commit.");
   }
   return sha;
 }
 
-function fetchSnapshotIntoMainRepo(input: { repo: string; clonePath: string; candidateSha: string; targetRef: string }): void {
-  runGit(
-    ["-c", "protocol.file.allow=always", "fetch", "--no-tags", input.clonePath, `${input.candidateSha}:${input.targetRef}`],
-    input.repo,
-  );
-}
-
 export function previewDirectChatShip(
   store: Store,
   input: {
+    stateRoot: string;
     owner: string;
     threadId: string;
     mode?: DirectChatShipMode | undefined;
@@ -223,12 +210,15 @@ export function previewDirectChatShip(
     .prepare("SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL")
     .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
   if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+  if (Number(thread["is_legacy"] ?? 0) === 1) {
+    return { ok: false, status: 409, error: "Imported chats are read-only history and cannot be shipped." };
+  }
 
   const running = store.handle
     .prepare("SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1")
     .get(input.threadId);
   if (running !== undefined) {
-    return { ok: false, status: 409, error: "Stop the running turn before shipping this chat." };
+    return { ok: false, status: 409, error: "Wait for the running or stopping turn to finish before shipping this chat." };
   }
 
   const account = store.accountOf(input.owner);
@@ -236,17 +226,22 @@ export function previewDirectChatShip(
     return { ok: false, status: 403, error: "Approver standing is required to ship." };
   }
 
-  const repo = String(thread["repo"]);
-  const clonePath = String(thread["clone_path"]);
-  const baseSha = String(thread["base_sha"]);
-  const branch = String(thread["branch"]);
-  if (!existsSync(clonePath)) {
-    return { ok: false, status: 404, error: "This chat's isolated clone no longer exists on disk." };
+  const binding = bindingFromThreadRow(input.stateRoot, thread);
+  if (binding === null) {
+    return { ok: false, status: 409, error: "This chat has no trusted isolated clone workspace." };
   }
+  const verified = assertTrustedCloneGit(binding);
+  if (!verified.ok) {
+    return { ok: false, status: 409, error: verified.error };
+  }
+
+  const repo = String(thread["repo"]);
+  const baseSha = String(thread["base_sha"]);
+  const baseBranch = String(thread["branch"]);
 
   let inspected;
   try {
-    inspected = inspectCloneForShip(clonePath, baseSha);
+    inspected = inspectCloneForShip(binding, baseSha);
   } catch (error) {
     return { ok: false, status: 500, error: `Could not inspect chat clone: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -268,6 +263,8 @@ export function previewDirectChatShip(
   const nextSeq = Number(
     (store.handle.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM direct_chat_ship WHERE thread_id = ?").get(input.threadId) as Record<string, unknown>)["n"],
   );
+  // Name keep-branch per Ship (`toolroll/chat-<shortId>-<seq>`) so repeat ships never collide with an existing or checked-out branch.
+  const branch = mode === "keep-branch" ? `${baseBranch}-${nextSeq}` : baseBranch;
   const title = (input.title?.trim() || String(thread["title"]) || "Changes from Direct Chat").slice(0, 120);
   const goal = (input.goal?.trim() || `Ship verified changes from Direct Chat (${title}).`).slice(0, 400);
 
@@ -319,6 +316,7 @@ export function previewDirectChatShip(
 export function executeDirectChatShip(
   store: Store,
   input: {
+    stateRoot: string;
     owner: string;
     threadId: string;
     mode: DirectChatShipMode;
@@ -338,6 +336,7 @@ export function executeDirectChatShip(
   }
 
   const previewRes = previewDirectChatShip(store, {
+    stateRoot: input.stateRoot,
     owner: input.owner,
     threadId: input.threadId,
     mode: input.mode,
@@ -367,16 +366,19 @@ export function executeDirectChatShip(
     .prepare("SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL")
     .get(input.threadId, input.owner) as Record<string, unknown> | undefined;
   if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+  const binding = bindingFromThreadRow(input.stateRoot, thread);
+  if (binding === null) {
+    return { ok: false, status: 409, error: "This chat has no trusted isolated clone workspace." };
+  }
 
   const repo = String(thread["repo"]);
-  const clonePath = String(thread["clone_path"]);
   const baseSha = String(thread["base_sha"]);
   const now = input.now ?? new Date();
   const stamp = now.toISOString();
 
   let candidateSha: string;
   try {
-    candidateSha = freezeSnapshotCommit(clonePath, preview.title, baseSha);
+    candidateSha = freezeSnapshotCommit(binding, preview.title, baseSha);
   } catch (error) {
     return { ok: false, status: 409, error: error instanceof Error ? error.message : String(error) };
   }
@@ -390,17 +392,21 @@ export function executeDirectChatShip(
   if (input.mode === "keep-branch") {
     const targetRef = `refs/heads/${preview.branch}`;
     try {
-      fetchSnapshotIntoMainRepo({ repo, clonePath, candidateSha, targetRef });
+      fetchTrustedSnapshotIntoMainRepo({ binding, repo, candidateSha, targetRef });
     } catch (error) {
-      return { ok: false, status: 500, error: `Could not import branch into main repo: ${error instanceof Error ? error.message : String(error)}` };
+      const rawMsg = error instanceof Error ? error.message : String(error);
+      const friendly = rawMsg.includes("checked out") || rawMsg.includes("non-fast-forward") || rawMsg.includes("rejected")
+        ? `Branch ${preview.branch} already exists or is checked out in your main repo. Preview again to create the next snapshot branch.`
+        : `Could not import branch into main repo: ${rawMsg}`;
+      return { ok: false, status: 409, error: friendly };
     }
     store.transact(() => {
       store.handle.prepare(`
         INSERT INTO direct_chat_ship (
           id, thread_id, seq, repo, mode, base_sha, candidate_sha, branch, terms_json,
           approved_by, approved_generation, local_generation, proof, state,
-          task_id, scope_digest, pr_url, detail, created_at, state_at
-        ) VALUES (?, ?, ?, ?, 'keep-branch', ?, ?, ?, ?, ?, ?, ?, ?, 'kept', NULL, NULL, NULL, NULL, ?, ?)
+          task_id, scope_digest, pr_url, merge_token, merge_reserved_at, detail, created_at, state_at
+        ) VALUES (?, ?, ?, ?, 'keep-branch', ?, ?, ?, ?, ?, ?, ?, ?, 'kept', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
       `).run(
         shipId,
         input.threadId,
@@ -447,7 +453,7 @@ export function executeDirectChatShip(
   }
   const branch = taskBranch(taskId);
   try {
-    fetchSnapshotIntoMainRepo({ repo, clonePath, candidateSha, targetRef: `refs/heads/${branch}` });
+    fetchTrustedSnapshotIntoMainRepo({ binding, repo, candidateSha, targetRef: `refs/heads/${branch}` });
   } catch (error) {
     return { ok: false, status: 500, error: `Could not import snapshot commit into main repo: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -461,8 +467,8 @@ export function executeDirectChatShip(
         INSERT INTO direct_chat_ship (
           id, thread_id, seq, repo, mode, base_sha, candidate_sha, branch, terms_json,
           approved_by, approved_generation, local_generation, proof, state,
-          task_id, scope_digest, pr_url, detail, created_at, state_at
-        ) VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?, ?, ?, ?, ?, 'imported', NULL, NULL, NULL, NULL, ?, ?)
+          task_id, scope_digest, pr_url, merge_token, merge_reserved_at, detail, created_at, state_at
+        ) VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?, ?, ?, ?, ?, 'imported', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
       `).run(
         shipId,
         input.threadId,
@@ -542,7 +548,7 @@ export function executeDirectChatShip(
     return { ok: true, ship: sealedShip };
   } catch (error) {
     try {
-      runGit(["branch", "-D", branch], repo);
+      runHardenedMainGit(["branch", "-D", branch], repo);
     } catch {
       // Best-effort cleanup of imported branch on rolled-back seal.
     }
@@ -565,18 +571,20 @@ export function cancelDirectChatShip(
   if (state !== "armed" && state !== "completed") {
     return { ok: false, status: 409, error: `Cannot cancel a ship in state '${state}'.` };
   }
-  const stamp = (input.now ?? new Date()).toISOString();
+  const now = input.now ?? new Date();
+  const stamp = now.toISOString();
+  const taskId = typeof row["task_id"] === "string" ? row["task_id"] : null;
   store.transact(() => {
     store.handle.prepare(`
       UPDATE direct_chat_ship
-      SET state = 'cancelled', detail = 'Cancelled by owner.', state_at = ?
+      SET state = 'cancelled', merge_token = NULL, merge_reserved_at = NULL, detail = 'Cancelled by owner.', state_at = ?
       WHERE id = ? AND state IN ('armed', 'completed')
     `).run(stamp, input.shipId);
     store.recordAction({
       at: stamp,
       actor: input.owner,
       repo: String(row["repo"]),
-      taskId: typeof row["task_id"] === "string" ? row["task_id"] : null,
+      taskId,
       runId: null,
       source: "work",
       action: "direct chat ship cancelled",
@@ -584,6 +592,14 @@ export function cancelDirectChatShip(
       detail: `thread ${input.threadId} · ship ${input.shipId}`,
     });
   });
+  // Cancel the underlying verify-only task too so no orphan verification job keeps running.
+  if (taskId !== null) {
+    try {
+      store.cancelTask(taskId, now, "Direct Chat Ship cancelled by owner.");
+    } catch {
+      // Task may already be terminal or claimed; ship itself is cancelled for good.
+    }
+  }
   return { ok: true };
 }
 
@@ -620,6 +636,8 @@ function readShipRow(raw: Record<string, unknown> | undefined): DirectChatShipRo
     taskId: typeof raw["task_id"] === "string" ? raw["task_id"] : null,
     scopeDigest: typeof raw["scope_digest"] === "string" ? raw["scope_digest"] : null,
     prUrl: typeof raw["pr_url"] === "string" ? raw["pr_url"] : null,
+    mergeToken: typeof raw["merge_token"] === "string" ? raw["merge_token"] : null,
+    mergeReservedAt: typeof raw["merge_reserved_at"] === "string" ? raw["merge_reserved_at"] : null,
     detail: typeof raw["detail"] === "string" ? raw["detail"] : null,
     createdAt: String(raw["created_at"]),
     stateAt: String(raw["state_at"]),
@@ -657,8 +675,9 @@ function cancelArmedRow(store: Store, ship: DirectChatShipRow, why: string, now:
   const stamp = now.toISOString();
   store.transact(() => {
     store.handle.prepare(`
-      UPDATE direct_chat_ship SET state = 'cancelled', detail = ?, state_at = ?
-      WHERE id = ? AND state IN ('armed', 'completed')
+      UPDATE direct_chat_ship
+      SET state = 'cancelled', merge_token = NULL, merge_reserved_at = NULL, detail = ?, state_at = ?
+      WHERE id = ? AND state IN ('armed', 'completed', 'merging')
     `).run(why.slice(0, 1000), stamp, ship.id);
     store.recordAction({
       at: stamp,
@@ -693,6 +712,17 @@ function passingCheckDigest(store: Store, root: string, runId: number, ship: Dir
     : null;
 }
 
+function baseStillAncestor(repo: string, baseSha: string, targetBranch: string): "yes" | "no" | "unknown" {
+  if (!existsSync(repo)) return "unknown";
+  try {
+    runHardenedMainGit(["--no-replace-objects", "merge-base", "--is-ancestor", baseSha, `refs/heads/${targetBranch}`], repo);
+    return "yes";
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    return status === 1 ? "no" : "unknown";
+  }
+}
+
 export type DirectChatArmedReport = {
   ok: true;
   completed: number;
@@ -701,10 +731,13 @@ export type DirectChatArmedReport = {
   waiting: number;
 };
 
+const inFlightMerges = new Set<string>();
+
 /**
  * Watch-loop pass for armed Direct Chat Ships (called alongside `flexibleArmedPass`
- * in `src/operate.ts`). Re-proves authority, check receipt, and exact commit SHA
- * before opening or merging a PR. Never merges on a failed or missing check.
+ * in `src/operate.ts`). Re-proves authority, base ancestry, check receipt, and
+ * exact commit SHA, taking a durable merge reservation (`completed -> merging`)
+ * before calling GitHub so a crash mid-merge never blindly re-merges.
  */
 export async function directChatArmedPass(
   store: Store,
@@ -713,17 +746,55 @@ export async function directChatArmedPass(
   const clock = input.clock ?? (() => new Date());
   const report: DirectChatArmedReport = { ok: true, completed: 0, merged: 0, cancelled: 0, waiting: 0 };
   const rows = store.handle
-    .prepare("SELECT * FROM direct_chat_ship WHERE state IN ('armed', 'completed') ORDER BY created_at ASC")
+    .prepare("SELECT * FROM direct_chat_ship WHERE state IN ('armed', 'completed', 'merging') ORDER BY created_at ASC")
     .all() as Record<string, unknown>[];
 
   for (const raw of rows) {
     const ship = readShipRow(raw);
     if (ship === null || ship.taskId === null) continue;
+
+    // Crash recovery for an uncertain merge reservation (`merging` not held in this process).
+    if (ship.state === "merging") {
+      if (ship.mergeToken !== null && inFlightMerges.has(ship.mergeToken)) {
+        report.waiting += 1;
+        continue;
+      }
+      const reservedMs = ship.mergeReservedAt ? Date.parse(ship.mergeReservedAt) : 0;
+      if (Number.isFinite(reservedMs) && clock().getTime() - reservedMs < DIRECT_CHAT_STALE_MERGE_MS) {
+        report.waiting += 1;
+        continue;
+      }
+      // Stale reservation after a crash: inspect publication state rather than blindly re-merging.
+      const run = newestBuilderRun(store, ship.taskId);
+      const pub = run ? store.publicationForRun(run.id) : null;
+      if (pub?.remoteState === "MERGED") {
+        const at = clock().toISOString();
+        store.handle.prepare(`
+          UPDATE direct_chat_ship SET state = 'merged', merge_token = NULL, merge_reserved_at = NULL, pr_url = ?, state_at = ?
+          WHERE id = ? AND state = 'merging'
+        `).run(pub.prUrl ?? null, at, ship.id);
+        report.merged += 1;
+      } else {
+        cancelArmedRow(store, ship, "Merge outcome was uncertain after a restart; inspect the pull request on GitHub.", clock());
+        report.cancelled += 1;
+      }
+      continue;
+    }
+
     const problem = directChatShipAuthorityProblem(store, ship);
     if (problem !== null) {
       cancelArmedRow(store, ship, problem, clock());
       report.cancelled += 1;
       continue;
+    }
+
+    if (ship.terms.github !== null) {
+      const ancestor = baseStillAncestor(ship.repo, ship.baseSha, ship.terms.github.base);
+      if (ancestor === "no") {
+        cancelArmedRow(store, ship, `Base commit is no longer an ancestor of ${ship.terms.github.base}.`, clock());
+        report.cancelled += 1;
+        continue;
+      }
     }
 
     const newest = newestBuilderRun(store, ship.taskId);
@@ -776,7 +847,7 @@ export async function directChatArmedPass(
       continue;
     }
 
-    // State === "completed": merge once PR is open and matches exact shipped commit & destination.
+    // State === "completed": take durable merge reservation before GitHub merge call.
     const pub = store.publicationForRun(newest.id);
     if (pub === null || pub.prNumber === null) {
       report.waiting += 1;
@@ -787,33 +858,49 @@ export async function directChatArmedPass(
       report.cancelled += 1;
       continue;
     }
-    const merged = await mergePullRequest(store, {
-      runId: newest.id,
-      by: ship.approvedBy,
-      clock,
-      ...(input.exec === undefined ? {} : { exec: input.exec }),
-      proceed: seen => {
-        if (directChatShipAuthorityProblem(store, ship) !== null) {
-          cancelArmedRow(store, ship, "Authority changed before merge.", clock());
-          return false;
-        }
-        if (seen.head !== null && seen.head !== ship.candidateSha) {
-          cancelArmedRow(store, ship, "PR head changed on GitHub.", clock());
-          return false;
-        }
-        if (seen.base !== null && ship.terms.github !== null && seen.base !== ship.terms.github.base) {
-          cancelArmedRow(store, ship, "PR base changed on GitHub.", clock());
-          return false;
-        }
-        return true;
-      },
-    });
+
+    const token = randomBytes(16).toString("hex");
+    inFlightMerges.add(token);
+    let merged: Awaited<ReturnType<typeof mergePullRequest>>;
+    try {
+      merged = await mergePullRequest(store, {
+        runId: newest.id,
+        by: ship.approvedBy,
+        clock,
+        ...(input.exec === undefined ? {} : { exec: input.exec }),
+        proceed: seen => {
+          if (directChatShipAuthorityProblem(store, ship) !== null) {
+            cancelArmedRow(store, ship, "Authority changed before merge.", clock());
+            return false;
+          }
+          if (seen.head !== null && seen.head !== ship.candidateSha) {
+            cancelArmedRow(store, ship, "PR head changed on GitHub.", clock());
+            return false;
+          }
+          if (seen.base !== null && ship.terms.github !== null && seen.base !== ship.terms.github.base) {
+            cancelArmedRow(store, ship, "PR base changed on GitHub.", clock());
+            return false;
+          }
+          const at = clock().toISOString();
+          const reserved = store.handle.prepare(`
+            UPDATE direct_chat_ship
+            SET state = 'merging', merge_token = ?, merge_reserved_at = ?, state_at = ?
+            WHERE id = ? AND state = 'completed'
+          `).run(token, at, at, ship.id);
+          return Number(reserved.changes) === 1;
+        },
+      });
+    } finally {
+      inFlightMerges.delete(token);
+    }
+
     if (merged.ok) {
       const at = clock().toISOString();
       store.transact(() => {
         store.handle.prepare(`
-          UPDATE direct_chat_ship SET state = 'merged', pr_url = ?, state_at = ?
-          WHERE id = ? AND state = 'completed'
+          UPDATE direct_chat_ship
+          SET state = 'merged', merge_token = NULL, merge_reserved_at = NULL, pr_url = ?, state_at = ?
+          WHERE id = ? AND state IN ('merging', 'completed')
         `).run(pub.prUrl ?? null, at, ship.id);
         store.recordAction({
           at,

@@ -395,7 +395,7 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect(applyMainRes.status).toBe(200);
     expect(JSON.parse(applyMainRes.body)).toMatchObject({ ok: true });
 
-    const previewRes = await world.send(`/engine/direct-chats/${started.threadId}/ship-preview`, "GET", { cookie: world.cookie });
+    const previewRes = await world.post(`/engine/direct-chats/${started.threadId}/ship-preview`, {});
     expect(previewRes.status).toBe(200);
     const preview = JSON.parse(previewRes.body) as { termsDigest: string; mode: string; changedFiles: string[] };
     expect(preview.mode).toBe("keep-branch");

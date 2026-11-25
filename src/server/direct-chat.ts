@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -32,7 +31,7 @@ import {
   type DirectChatShipRow,
 } from "../direct-chat-ship.js";
 import { soloNow } from "../install-mode.js";
-import { compareInstalled, laptopServiceDefinition } from "../laptop-service.js";
+import { backgroundInstalled } from "../laptop-background.js";
 import type { LiveBus } from "../live-bus.js";
 import { localOwnerStandsNow, type LocalOwnerAct } from "../local-owner.js";
 import { projectName, rowVisible } from "../project.js";
@@ -144,17 +143,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
   function isBackgroundOn(): boolean {
     if (!dbFile || dbFile === ":memory:") return false;
     try {
-      const unit = laptopServiceDefinition({
-        platform: process.platform,
-        home: process.env["HOME"] ?? "",
-        node: process.execPath,
-        dist: dirname(new URL(import.meta.url).pathname),
-        db: dbFile,
-        port: 4180,
-      });
-      if ("error" in unit) return false;
-      const existing = existsSync(unit.path) ? readFileSync(unit.path, "utf8") : null;
-      return compareInstalled(existing, unit) === "same";
+      return backgroundInstalled();
     } catch {
       return false;
     }
@@ -322,8 +311,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatStarted", { ok: false, error: gate.error } satisfies DirectChatStarted);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatStarted", { ok: false, error: "Chat thread not found." } satisfies DirectChatStarted);
     }
     const prompt = ctx.posted.get("prompt") ?? "";
@@ -350,13 +339,14 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
     }
     const res = host.stopThread(gate.who.name, threadId);
     if (!res.ok) return checked(ctx, res.status, "directChatMutated", { ok: false, error: res.error } satisfies DirectChatMutated);
-    return checked(ctx, 200, "directChatMutated", { ok: true, said: res.stopped ? "Stopped." : "Nothing was running." } satisfies DirectChatMutated);
+    const said = res.stopped ? "Stopped." : res.stopping ? "Stopping…" : "Nothing was running.";
+    return checked(ctx, 200, "directChatMutated", { ok: true, said } satisfies DirectChatMutated);
   }
 
   async function switchModel(ctx: HandlerContext): Promise<void> {
@@ -364,8 +354,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
     }
     const providerRaw = ctx.posted.get("provider") ?? "";
@@ -383,8 +373,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
     }
     const discardChanges = ctx.posted.get("discard") === "1" || ctx.posted.get("discard") === "true";
@@ -406,8 +396,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     const match = ARTIFACT_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
     const artifactId = match?.[2] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "refusal", { error: "Artifact not found." });
     }
     const loaded = host.getArtifact(gate.who.name, threadId, artifactId);
@@ -426,8 +416,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatAttached", { ok: false, error: gate.error } satisfies DirectChatAttached);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatAttached", { ok: false, error: "Chat thread not found." } satisfies DirectChatAttached);
     }
     const filename = ctx.posted.get("filename") ?? "attachment";
@@ -464,8 +454,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
     }
     const res = host.applyMainEdits(gate.who.name, threadId);
@@ -476,19 +466,19 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
   }
 
   async function shipPreview(ctx: HandlerContext): Promise<void> {
-    const gate = admit(ctx, null);
+    const gate = admit(ctx, "read");
     if (!gate.ok) return checked(ctx, gate.status, "refusal", { error: gate.error });
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "refusal", { error: "Chat thread not found." });
     }
-    const modeParam = ctx.url.searchParams.get("mode");
+    const modeParam = ctx.posted.get("mode") ?? ctx.url.searchParams.get("mode");
     const mode: DirectChatShipMode | undefined = modeParam === "ship" || modeParam === "keep-branch" ? modeParam : undefined;
-    const title = ctx.url.searchParams.get("title") ?? undefined;
-    const goal = ctx.url.searchParams.get("goal") ?? undefined;
-    const res = previewDirectChatShip(store, { owner: gate.who.name, threadId, mode, title, goal });
+    const title = ctx.posted.get("title") ?? ctx.url.searchParams.get("title") ?? undefined;
+    const goal = ctx.posted.get("goal") ?? ctx.url.searchParams.get("goal") ?? undefined;
+    const res = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: gate.who.name, threadId, mode, title, goal });
     if (!res.ok) return checked(ctx, res.status, "refusal", { error: res.error });
     const { preview } = res;
     return checked(ctx, 200, "directChatShipPreview", {
@@ -515,8 +505,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatShipped", { ok: false, error: gate.error } satisfies DirectChatShipped);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatShipped", { ok: false, error: "Chat thread not found." } satisfies DirectChatShipped);
     }
     const modeRaw = ctx.posted.get("mode") ?? "keep-branch";
@@ -535,6 +525,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       : null;
 
     const res = executeDirectChatShip(store, {
+      stateRoot: host.stateRoot,
       owner: gate.who.name,
       threadId,
       mode: modeRaw,
@@ -551,6 +542,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
         ...(res.code ? { code: res.code } : {}),
       } satisfies DirectChatShipped);
     }
+    host.refreshDiffCache(thread);
     deps.bus.publish({ revision: `dc:${threadId}:ship:${Date.now()}` });
     const said = res.ship.mode === "keep-branch"
       ? `Saved branch ${res.ship.branch} (${res.ship.candidateSha.slice(0, 8)}).`
@@ -567,8 +559,8 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
     const match = THREAD_PATH.exec(ctx.url.pathname);
     const threadId = match?.[1] ?? "";
-    const found = host.getThread(gate.who.name, threadId);
-    if (found === null || !canReachThread(gate.who.name, found.thread)) {
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
       return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
     }
     const shipId = ctx.posted.get("shipId") ?? "";
