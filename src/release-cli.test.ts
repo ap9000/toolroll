@@ -35,6 +35,15 @@ describe("toolroll release <branch>", () => {
     }
   });
 
+  test("a version (or none: main's own) releases from main, resumed by its version, never as a branch", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
+    for (const [argv, version] of [[["0.9.119"], "0.9.119"], [[], "0.9.120"]] as const) {
+      const lines: string[] = [];
+      expect(await runReleaseCommand([...argv, "--repo", "/rv", "--json"], line => lines.push(line), { adapters: signedOut, stateDir, mainVersion: async () => "0.9.120" })).toBe(3);
+      expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, command: "release", step: "preflight", resume: `toolroll release ${version} --repo /rv` });
+    }
+  });
+
   test("a stop names its step and the command that continues from it", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "so-release-cli-"));
     const lines: string[] = [];
