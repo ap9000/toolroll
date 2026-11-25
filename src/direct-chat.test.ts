@@ -1051,7 +1051,7 @@ describe("DirectChatHost & helpers", () => {
       expect(turn1Diff?.changedFiles).toEqual(["first.txt"]);
       expect(turn1Diff?.diffText).toContain("hello from turn 1");
 
-      const turn2 = host.sendMessage({
+      const turn2 = await host.sendMessage({
         owner: "alex",
         threadId: created.thread.id,
         requestId: "22".repeat(16),

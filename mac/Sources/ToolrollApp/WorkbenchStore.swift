@@ -344,9 +344,8 @@ public final class WorkbenchStore {
         busyLabel = "Starting Local Toolroll Engine…"
         defer { busyLabel = nil }
 
-        let candidates = ["/opt/homebrew/bin/toolroll", "/usr/local/bin/toolroll"]
-        guard let binPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            notice = WorkbenchNotice(kind: .refusal, message: "Could not locate local `toolroll` binary to start.")
+        guard let binPath = EngineBinary.trusted() else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Couldn't find an installed Toolroll (Homebrew or npm) to start. Start it from Terminal with `toolroll up --laptop`.")
             return
         }
         do {
