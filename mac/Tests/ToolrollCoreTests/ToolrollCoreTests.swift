@@ -1211,4 +1211,26 @@ struct ToolrollCoreTests {
         #expect(palette.chatBubbleInk == "#171717")
         #expect(palette.base == "system")
     }
+
+    @Test("ComposerAttachmentStore parses Attached context images, files, and folders out of message text")
+    func parseAttachedContextExtractsImages() throws {
+        let raw = """
+        why does it look yellow
+
+        Attached context:
+        - Image: /Users/alex/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png (1814×304)
+        - File: /Users/alex/repo/README.md
+        - Folder: /Users/alex/repo/src
+        """
+        let parsed = ComposerAttachmentStore.parseAttachedContext(from: raw)
+        #expect(parsed.body == "why does it look yellow")
+        #expect(parsed.attachments.count == 3)
+        #expect(parsed.attachments[0].kind == .image)
+        #expect(parsed.attachments[0].path == "/Users/alex/Library/Application Support/CleanShot/CleanShot 2026-11-24@2x.png")
+        #expect(parsed.attachments[0].pixelSize == "1814×304")
+        #expect(parsed.attachments[1].kind == .file)
+        #expect(parsed.attachments[1].displayName == "README.md")
+        #expect(parsed.attachments[2].kind == .folder)
+        #expect(parsed.attachments[2].displayName == "src")
+    }
 }

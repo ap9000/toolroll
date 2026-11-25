@@ -3,7 +3,7 @@ import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { prepareSharedAction } from "./chat-actions.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
-import { executeLeadTool, type LeadToolContext } from "./lead-tools.js";
+import { executeLeadTool, findLeadTools, type LeadToolContext } from "./lead-tools.js";
 import { executeLocalInstantProposal, isSafeInstantLocalProposal } from "./lead-doors.js";
 import type { ViewRunner } from "./view-tools.js";
 
@@ -134,5 +134,17 @@ describe("Lead instant solo actions and Direct Chat tools", () => {
     expect(after["model_id"]).toBe("gpt-6-astra");
     expect(after["effort"]).toBe("xhigh");
     expect(after["archived_at"]).not.toBeNull();
+  });
+
+  test("get_usage_limits is discoverable and returns live subscription windows and budgets", () => {
+    expect(findLeadTools("how much claude quota remaining").map(one => one.name)).toContain("get_usage_limits");
+    const baseCtx: LeadToolContext = { store, who, now: T0, step: 1, readDecisions: new Map(), draft: () => null };
+    const res = executeLeadTool(baseCtx, "get_usage_limits", {});
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const body = res.body as { summary: string | null; windows: unknown[]; budgets: unknown[] };
+      expect(Array.isArray(body.windows)).toBe(true);
+      expect(Array.isArray(body.budgets)).toBe(true);
+    }
   });
 });

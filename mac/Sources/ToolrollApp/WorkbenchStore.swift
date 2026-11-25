@@ -3253,7 +3253,27 @@ public final class WorkbenchStore {
             }
             return
         }
-        openInBrowser(path: link.href)
+        let href = link.href.trimmingCharacters(in: .whitespacesAndNewlines)
+        if href == "/flows" || href.hasPrefix("/flows/") {
+            workspaceMode = .automations
+            return
+        }
+        if href == "/projects" {
+            isAddProjectSheetOpen = true
+            return
+        }
+        if href == "/settings/appearance" {
+            isAppearanceSheetOpen = true
+            return
+        }
+        if href.hasPrefix("/direct-chats/") {
+            let chatId = String(href.dropFirst("/direct-chats/".count)).components(separatedBy: "?").first ?? ""
+            if !chatId.isEmpty, chatThreads.contains(where: { $0.id == chatId }) {
+                selectChatThread(chatId)
+                return
+            }
+        }
+        openInBrowser(path: href)
     }
 
     @discardableResult

@@ -18,6 +18,8 @@ public struct AgentChatView: View {
     @State private var isPosturePopoverOpen: Bool = false
     @State private var isUsagePopoverOpen: Bool = false
     @State private var lightboxSelection: DirectChatGallerySelection? = nil
+    @State private var localAttachmentPreview: ([ParsedMessageAttachment], Int)? = nil
+    @State private var isLocalLightboxOpen = false
     @FocusState private var replyFocused: Bool
 
     public init(store: WorkbenchStore, thread: AgentChatThread) {
@@ -135,6 +137,12 @@ public struct AgentChatView: View {
                 initialIndex: selection.initialIndex
             )
             .dismissSheetOnOutsideClick()
+        }
+        .sheet(isPresented: $isLocalLightboxOpen) {
+            if let preview = localAttachmentPreview {
+                LocalAttachmentLightbox(images: preview.0, initialIndex: preview.1)
+                    .dismissSheetOnOutsideClick()
+            }
         }
     }
 
@@ -605,14 +613,28 @@ public struct AgentChatView: View {
                     .foregroundStyle(ToolrollPalette.muted)
                     .padding(.leading, 4)
                 }
+                let parsed = ComposerAttachmentStore.parseAttachedContext(from: msg.text)
                 HStack(alignment: .top, spacing: 10) {
                     UserMonogramBadge(account: store.activeProfile.account, size: 22)
-                    Text(msg.text)
-                        .font(.system(size: 13.5))
-                        .lineSpacing(3)
-                        .foregroundStyle(ToolrollPalette.chatBubbleInk)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !parsed.body.isEmpty {
+                            Text(parsed.body)
+                                .font(.system(size: 13.5))
+                                .lineSpacing(3)
+                                .foregroundStyle(ToolrollPalette.chatBubbleInk)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if !parsed.attachments.isEmpty {
+                            MessageAttachmentStrip(
+                                attachments: parsed.attachments,
+                                inkColor: ToolrollPalette.chatBubbleInk
+                            ) { imgs, idx in
+                                localAttachmentPreview = (imgs, idx)
+                                isLocalLightboxOpen = true
+                            }
+                        }
+                    }
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 13)

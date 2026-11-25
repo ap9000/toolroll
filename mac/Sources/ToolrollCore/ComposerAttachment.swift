@@ -31,6 +31,24 @@ public struct ComposerAttachment: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+public struct ParsedMessageAttachment: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let kind: ComposerAttachmentKind
+    public let path: String
+    public let displayName: String
+    public let pixelSize: String?
+
+    public init(kind: ComposerAttachmentKind, path: String, pixelSize: String? = nil) {
+        self.id = "\(kind.rawValue):\(path)"
+        self.kind = kind
+        self.path = path
+        self.displayName = URL(fileURLWithPath: path).lastPathComponent.isEmpty
+            ? path
+            : URL(fileURLWithPath: path).lastPathComponent
+        self.pixelSize = pixelSize
+    }
+}
+
 public enum ComposerAttachmentStore {
     public static let imageExtensions: Set<String> = [
         "png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tiff", "tif", "bmp", "svg"
@@ -180,5 +198,50 @@ public enum ComposerAttachmentStore {
             combined = "\(trimmed)\n\n\(context)"
         }
         return (title: title, goal: combined, combinedMessage: combined)
+    }
+
+    public static func parseAttachedContext(from rawText: String) -> (body: String, attachments: [ParsedMessageAttachment]) {
+        let lines = rawText.components(separatedBy: .newlines)
+        guard let markerIdx = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "Attached context:" }) else {
+            return (body: rawText, attachments: [])
+        }
+        var parsed: [ParsedMessageAttachment] = []
+        let tail = lines[(markerIdx + 1)...]
+        for rawLine in tail {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if trimmed.hasPrefix("- Image: ") {
+                let rest = String(trimmed.dropFirst("- Image: ".count)).trimmingCharacters(in: .whitespaces)
+                var path = rest
+                var pixelSize: String? = nil
+                if rest.hasSuffix(")"), let openParen = rest.lastIndex(of: "(") {
+                    let candidate = String(rest[rest.index(after: openParen)..<rest.index(before: rest.endIndex)])
+                    if candidate.contains("×") || candidate.contains("x") {
+                        pixelSize = candidate
+                        path = String(rest[..<openParen]).trimmingCharacters(in: .whitespaces)
+                    }
+                }
+                if !path.isEmpty {
+                    parsed.append(ParsedMessageAttachment(kind: .image, path: path, pixelSize: pixelSize))
+                }
+            } else if trimmed.hasPrefix("- File: ") {
+                let path = String(trimmed.dropFirst("- File: ".count)).trimmingCharacters(in: .whitespaces)
+                if !path.isEmpty {
+                    parsed.append(ParsedMessageAttachment(kind: .file, path: path))
+                }
+            } else if trimmed.hasPrefix("- Folder: ") {
+                let path = String(trimmed.dropFirst("- Folder: ".count)).trimmingCharacters(in: .whitespaces)
+                if !path.isEmpty {
+                    parsed.append(ParsedMessageAttachment(kind: .folder, path: path))
+                }
+            } else {
+                return (body: rawText, attachments: [])
+            }
+        }
+        guard !parsed.isEmpty else {
+            return (body: rawText, attachments: [])
+        }
+        let body = lines[..<markerIdx].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (body: body, attachments: parsed)
     }
 }

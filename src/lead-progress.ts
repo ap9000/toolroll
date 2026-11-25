@@ -68,6 +68,7 @@ const TOOL_LABELS: Record<string, string> = {
   list_direct_chats: "Listing Direct Chats",
   get_direct_chat: "Reading Direct Chat",
   manage_direct_chat: "Updating Direct Chat",
+  get_usage_limits: "Checking subscription usage and budgets",
 };
 
 export function leadToolLabel(name: string): string {

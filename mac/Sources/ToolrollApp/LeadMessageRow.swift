@@ -1,5 +1,209 @@
+import AppKit
 import SwiftUI
 import ToolrollCore
+
+private struct LocalImageGallerySelection: Identifiable {
+    let id = UUID()
+    let images: [ParsedMessageAttachment]
+    let initialIndex: Int
+}
+
+struct MessageAttachmentStrip: View {
+    let attachments: [ParsedMessageAttachment]
+    var inkColor: Color = ToolrollPalette.chatBubbleInk
+    var onPreviewImage: (([ParsedMessageAttachment], Int) -> Void)? = nil
+
+    private var images: [ParsedMessageAttachment] {
+        attachments.filter { $0.kind == .image }
+    }
+
+    private var nonImages: [ParsedMessageAttachment] {
+        attachments.filter { $0.kind != .image }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !images.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(images.enumerated()), id: \.element.id) { idx, item in
+                            Button {
+                                onPreviewImage?(images, idx)
+                            } label: {
+                                LocalAttachmentThumbnail(item: item, inkColor: inkColor)
+                            }
+                            .buttonStyle(.plain)
+                            .help(item.displayName)
+                        }
+                    }
+                }
+            }
+            if !nonImages.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(nonImages) { item in
+                        HStack(spacing: 5) {
+                            Image(systemName: item.kind == .folder ? "folder.fill" : "doc.text.fill")
+                                .font(.system(size: 10.5))
+                            Text(item.displayName)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(inkColor.opacity(0.9))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(inkColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct LocalAttachmentThumbnail: View {
+    let item: ParsedMessageAttachment
+    let inkColor: Color
+    @State private var nsImage: NSImage? = nil
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let nsImage {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 148, height: 92)
+                    .clipped()
+            } else {
+                VStack(spacing: 4) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18))
+                        .foregroundStyle(inkColor.opacity(0.65))
+                    Text(item.displayName)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(inkColor.opacity(0.75))
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                }
+                .frame(width: 148, height: 92)
+                .background(inkColor.opacity(0.08))
+            }
+
+            if let px = item.pixelSize, !px.isEmpty, nsImage != nil {
+                Text(px)
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color.black.opacity(0.62), in: Capsule())
+                    .padding(6)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(inkColor.opacity(0.22), lineWidth: 1)
+        )
+        .onAppear {
+            if nsImage == nil, FileManager.default.fileExists(atPath: item.path) {
+                nsImage = NSImage(contentsOfFile: item.path)
+            }
+        }
+    }
+}
+
+struct LocalAttachmentLightbox: View {
+    let images: [ParsedMessageAttachment]
+    @State private var currentIndex: Int
+    @Environment(\.dismiss) private var dismiss
+
+    init(images: [ParsedMessageAttachment], initialIndex: Int) {
+        self.images = images
+        let clamped = images.isEmpty ? 0 : min(max(0, initialIndex), images.count - 1)
+        self._currentIndex = State(initialValue: clamped)
+    }
+
+    private var active: ParsedMessageAttachment? {
+        guard currentIndex >= 0, currentIndex < images.count else { return nil }
+        return images[currentIndex]
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(active?.displayName ?? "Image")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                if let px = active?.pixelSize, !px.isEmpty {
+                    Text(px)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                if images.count > 1 {
+                    Text("\(currentIndex + 1) / \(images.count)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                Spacer()
+                if images.count > 1 {
+                    Button { step(-1) } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    .disabled(currentIndex == 0)
+
+                    Button { step(1) } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    .disabled(currentIndex >= images.count - 1)
+                }
+                Button("Close") { dismiss() }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(ToolrollPalette.paper)
+            .overlay(alignment: .bottom) { HairlineDivider() }
+
+            ZStack {
+                ToolrollPalette.ground
+                if let active, let nsImage = NSImage(contentsOfFile: active.path) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(20)
+                } else {
+                    Text("Image file is no longer available on disk.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 640, idealWidth: 820, minHeight: 460, idealHeight: 580)
+        .background(ToolrollPalette.ground)
+        .focusable()
+        .onKeyPress(.leftArrow) {
+            step(-1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            step(1)
+            return .handled
+        }
+    }
+
+    private func step(_ delta: Int) {
+        guard !images.isEmpty else { return }
+        let next = currentIndex + delta
+        if next >= 0 && next < images.count {
+            currentIndex = next
+        }
+    }
+}
 
 struct LeadMessageRow: View {
     static let thinkingId = -1
@@ -12,18 +216,33 @@ struct LeadMessageRow: View {
     var onDismissProposal: ((LeadChatCard) -> Void)? = nil
     var onOpenLink: ((LeadChatLink) -> Void)? = nil
 
+    @State private var previewGallery: LocalImageGallerySelection? = nil
+
     private var isYours: Bool { message.role == "operator" || message.role == "user" }
 
     var body: some View {
         if isYours {
+            let parsed = ComposerAttachmentStore.parseAttachedContext(from: message.text)
             HStack(alignment: .top, spacing: wide ? 10 : 9) {
                 UserMonogramBadge(account: account, size: wide ? 22 : 20)
-                Text(message.text)
-                    .font(.system(size: wide ? 13.5 : 13))
-                    .lineSpacing(wide ? 3 : 2.5)
-                    .foregroundStyle(ToolrollPalette.chatBubbleInk)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    if !parsed.body.isEmpty {
+                        Text(parsed.body)
+                            .font(.system(size: wide ? 13.5 : 13))
+                            .lineSpacing(wide ? 3 : 2.5)
+                            .foregroundStyle(ToolrollPalette.chatBubbleInk)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !parsed.attachments.isEmpty {
+                        MessageAttachmentStrip(
+                            attachments: parsed.attachments,
+                            inkColor: ToolrollPalette.chatBubbleInk
+                        ) { imgs, idx in
+                            previewGallery = LocalImageGallerySelection(images: imgs, initialIndex: idx)
+                        }
+                    }
+                }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, wide ? 13 : 11)
@@ -31,7 +250,11 @@ struct LeadMessageRow: View {
             .background(ToolrollPalette.chatBubble, in: RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: wide ? 11 : 10, style: .continuous).strokeBorder(ToolrollPalette.chatBubbleBorder, lineWidth: 1))
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("You: \(message.text)")
+            .accessibilityLabel("You: \(parsed.body.isEmpty ? message.text : parsed.body)")
+            .sheet(item: $previewGallery) { gallery in
+                LocalAttachmentLightbox(images: gallery.images, initialIndex: gallery.initialIndex)
+                    .dismissSheetOnOutsideClick()
+            }
         } else {
             HStack(alignment: .top, spacing: wide ? 10 : 9) {
                 ProviderBrandGlyph(provider: "lead", size: wide ? 22 : 20, tinted: false, inTile: true)

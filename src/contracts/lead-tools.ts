@@ -233,6 +233,7 @@ export const LEAD_TOOL_INPUTS = {
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).nullable().optional(),
     title: z.string().min(1).max(160).optional(),
   }),
+  get_usage_limits: z.strictObject({}),
 } as const;
 
 export type LeadToolName = keyof typeof LEAD_TOOL_INPUTS;
@@ -374,6 +375,7 @@ export const LEAD_TOOL_OUTPUTS = {
   list_direct_chats: z.looseObject({ chats: rows({ chat: str, title: str, provider: str, model: str, running: z.boolean() }), total: int }),
   get_direct_chat: z.looseObject({ chat: str, title: str, provider: str, model: str, running: z.boolean(), turns: list }),
   manage_direct_chat: z.looseObject({ chat: str, operation: str, said: str }),
+  get_usage_limits: z.looseObject({ summary: nullable(str), windows: list, budgets: list }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
 
 /**

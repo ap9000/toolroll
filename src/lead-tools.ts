@@ -53,6 +53,8 @@ import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { listDirectChatSubscriptionModels, normalizeDirectChatEffort } from "./direct-chat-catalog.js";
 import { defaultModelForProvider, isDirectChatProvider } from "./direct-chat.js";
+import { limitsView, usageChipOf } from "./limits-ui.js";
+import { projectName } from "./project.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
@@ -508,6 +510,7 @@ const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
   list_direct_chats: ["direct chat", "chat", "chats", "thread", "threads", "claude", "codex", "gemini", "conversation", "interactive", "session"],
   get_direct_chat: ["direct chat", "chat", "chats", "thread", "threads", "claude", "codex", "gemini", "conversation", "messages", "reply", "tokens", "context"],
   manage_direct_chat: ["direct chat", "chat", "chats", "thread", "threads", "stop", "archive", "unarchive", "rename", "model", "effort", "switch", "claude", "codex", "gemini"],
+  get_usage_limits: ["usage", "limit", "limits", "quota", "budget", "spend", "rate", "window", "percent", "remaining", "claude", "codex", "gemini", "subscription"],
   show_card: ["findings", "handover", "card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "builders", "workers", "integrations", "show", "dashboard"],
   propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
   get_findings: ["finding", "findings", "review", "handover", "follow-through", "failed check", "send back"],
@@ -2235,7 +2238,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       }
       const changed = Array.isArray(set.body["changed"]) ? set.body["changed"].filter((one): one is string => typeof one === "string").slice(0, 40) : [];
       recordActionWhole(ctx.store.handle, { ...entry, outcome: "done" }, { pending, changed });
-      return { ok: true, body: { changed, said: "Saved to tui.toml; the running workbench shows it within a second. `toolroll view reset` undoes it (the previous file is kept as tui.toml.bak)." } };
+      return { ok: true, body: { changed, said: "Saved to tui.toml; both the Toolroll Mac app and terminal workbench repaint within a second. `toolroll view reset` undoes it (the previous file is kept as tui.toml.bak)." } };
     },
   },
   propose_cancel: {
@@ -2453,6 +2456,37 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         return { ok: true, body: { chat: chatId, operation: op, said: `Switched Direct Chat to ${nextProvider} ${nextModel}${effortWords} for the next message.` } };
       }
       return { ok: false, message: "Choose stop, archive, unarchive, set_model, or rename." };
+    },
+  },
+  get_usage_limits: {
+    description: "Read live Claude, Codex and Gemini subscription usage windows (percent used, reset time, whether reached) and monthly API-key budgets. Use before recommending a provider/model switch or answering quota questions. Read-only.",
+    handle: ctx => {
+      const rawWindows = ctx.store.providerLimits();
+      const rawBudgets = ctx.store.budgets().length === 0 ? [] : ctx.store.monthSpendCached(ctx.now).budgets;
+      const viewed = limitsView(rawWindows, rawBudgets, {
+        project: repo => projectName(repo),
+        subagent: id => `Subagent ${id}`,
+      }, ctx.now);
+      const chip = usageChipOf(rawWindows, ctx.now);
+      const tiles = viewed?.tiles ?? [];
+      const windows = tiles.filter(t => !t.key.startsWith("budget:")).map(t => ({
+        key: t.key,
+        name: t.name,
+        window: t.window,
+        percent: Math.round(t.percent),
+        tone: t.tone,
+        detail: t.detail,
+        observed: t.title,
+      }));
+      const budgets = tiles.filter(t => t.key.startsWith("budget:")).map(t => ({
+        name: t.name,
+        spent: t.value,
+        limit: t.unit,
+        percent: Math.round(t.percent),
+        tone: t.tone,
+        detail: t.detail,
+      }));
+      return { ok: true, body: { summary: chip?.text ?? null, windows, budgets } };
     },
   },
 };
