@@ -1095,4 +1095,44 @@ struct ToolrollCoreTests {
         let read = try JSONDecoder().decode(LeadChatResponse.self, from: Data(#"{"version":1,"room":"chat","session":7,"leadName":"Lead","canSend":true,"busy":false,"messages":[]}"#.utf8))
         #expect(read.session == 7)
     }
+
+    @Test("Interrupted Claude chat turn recovers sessionId, tool steps, and final reply from Claude project transcript")
+    func claudeInterruptedTurnRecovery() throws {
+        let tmpRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolroll-claude-recover-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpRoot) }
+
+        let projPath = "/Users/alex/Documents/site.com"
+        let projDir = AgentChatPersistence.claudeProjectDirectory(for: projPath, claudeProjectsRoot: tmpRoot)
+        try FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
+
+        let sessionId = "597a2366-ceb7-419e-ab4e-7c645bd4bff5"
+        let transcript = """
+        {"type":"user","message":{"role":"user","content":"Fix the corner peel"}}
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/Users/alex/Documents/site.com/src/styles.css"}}]}}
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Simplified the corner and replaced the orange accent with muted cobalt."}]}}
+        """
+        try Data(transcript.utf8).write(to: projDir.appendingPathComponent("\(sessionId).jsonl"))
+
+        var thread = AgentChatThread(
+            title: "Fix the corner peel",
+            projectName: "site.com",
+            projectPath: projPath,
+            provider: .claude,
+            modelId: "opus",
+            sessionId: nil,
+            messages: [
+                AgentChatMessage(role: .user, text: "Fix the corner peel"),
+                AgentChatMessage(role: .assistant, text: "", isStreaming: true),
+            ]
+        )
+
+        let recovered = AgentChatPersistence.recoverInterruptedClaudeTurn(&thread, claudeProjectsRoot: tmpRoot)
+        #expect(recovered == true)
+        #expect(thread.sessionId == sessionId)
+        #expect(thread.messages[1].isStreaming == false)
+        #expect(thread.messages[1].tools.count == 1)
+        #expect(thread.messages[1].tools[0].name == "Read")
+        #expect(thread.messages[1].text.contains("muted cobalt"))
+    }
 }

@@ -218,6 +218,7 @@ public final class WorkbenchStore {
     }
     public var useLeadForNextChat: Bool = false
     private var chatProcessHandles: [String: AgentChatProcessHandle] = [:]
+    private var chatSaveTask: Task<Void, Never>?
     private var knownAgentRequestIds: Set<String> = []
     private var agentRequestPollTask: Task<Void, Never>?
     private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
@@ -1070,12 +1071,15 @@ public final class WorkbenchStore {
             switch event {
             case .sessionId(let sid):
                 chatThreads[tIdx].sessionId = sid
+                scheduleChatPersistence(immediate: true)
             case .textDelta(let delta):
                 chatThreads[tIdx].messages[mIdx].text += delta
                 chatThreads[tIdx].updatedAt = Date()
+                scheduleChatPersistence()
             case .textReplace(let full):
                 chatThreads[tIdx].messages[mIdx].text = full
                 chatThreads[tIdx].updatedAt = Date()
+                scheduleChatPersistence()
             case .tool(let toolEvent):
                 if let existing = chatThreads[tIdx].messages[mIdx].tools.firstIndex(where: { $0.id == toolEvent.id }) {
                     chatThreads[tIdx].messages[mIdx].tools[existing] = toolEvent
@@ -1083,6 +1087,7 @@ public final class WorkbenchStore {
                     chatThreads[tIdx].messages[mIdx].tools.append(toolEvent)
                 }
                 chatThreads[tIdx].updatedAt = Date()
+                scheduleChatPersistence()
             case .completed:
                 chatThreads[tIdx].messages[mIdx].isStreaming = false
                 for i in chatThreads[tIdx].messages[mIdx].tools.indices {
@@ -1091,6 +1096,7 @@ public final class WorkbenchStore {
                     }
                 }
                 chatThreads[tIdx].updatedAt = Date()
+                scheduleChatPersistence(immediate: true)
             case .failed(let message):
                 chatThreads[tIdx].messages[mIdx].isStreaming = false
                 chatThreads[tIdx].messages[mIdx].isError = true
@@ -1100,6 +1106,7 @@ public final class WorkbenchStore {
                     chatThreads[tIdx].messages[mIdx].text += "\n\n\(message)"
                 }
                 chatThreads[tIdx].updatedAt = Date()
+                scheduleChatPersistence(immediate: true)
             }
         }
 
@@ -1111,8 +1118,24 @@ public final class WorkbenchStore {
         runningChatThreadIds.remove(threadId)
         chatProcessHandles.removeValue(forKey: threadId)
         chatThreads.sort { $0.updatedAt > $1.updatedAt }
-        AgentChatPersistence.save(chatThreads)
+        scheduleChatPersistence(immediate: true)
         await refreshChatDiff(threadId: threadId)
+    }
+
+    private func scheduleChatPersistence(immediate: Bool = false) {
+        if immediate {
+            chatSaveTask?.cancel()
+            chatSaveTask = nil
+            AgentChatPersistence.save(chatThreads)
+            return
+        }
+        guard chatSaveTask == nil else { return }
+        chatSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, !Task.isCancelled else { return }
+            self.chatSaveTask = nil
+            AgentChatPersistence.save(self.chatThreads)
+        }
     }
 
     public func stopChatThread(threadId: String) {

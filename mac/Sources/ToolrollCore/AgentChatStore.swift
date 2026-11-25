@@ -337,7 +337,7 @@ public enum AgentChatStreamParser {
         }
     }
 
-    private static func summarizeToolInput(name: String, input: [String: Any]?) -> String {
+    static func summarizeToolInput(name: String, input: [String: Any]?) -> String {
         guard let input else { return "" }
         let keys = [
             "CommandLine", "command",
@@ -381,11 +381,157 @@ public enum AgentChatPersistence {
             return []
         }
         for i in decoded.indices {
+            var needsClaudeRecovery = false
             for j in decoded[i].messages.indices {
-                decoded[i].messages[j].isStreaming = false
+                if decoded[i].messages[j].isStreaming {
+                    decoded[i].messages[j].isStreaming = false
+                    if decoded[i].messages[j].role == .assistant && decoded[i].messages[j].text.isEmpty {
+                        needsClaudeRecovery = true
+                    }
+                }
+                for k in decoded[i].messages[j].tools.indices {
+                    if decoded[i].messages[j].tools[k].status == "running" {
+                        decoded[i].messages[j].tools[k].status = "done"
+                    }
+                }
+            }
+            if !needsClaudeRecovery,
+               let last = decoded[i].messages.last,
+               last.role == .assistant,
+               last.text.isEmpty,
+               !last.isError
+            {
+                needsClaudeRecovery = true
+            }
+            if needsClaudeRecovery && decoded[i].provider == .claude {
+                if recoverInterruptedClaudeTurn(&decoded[i]) {
+                    save(decoded, to: url)
+                }
             }
         }
         return decoded.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    public static func claudeProjectDirectory(
+        for projectPath: String,
+        claudeProjectsRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+    ) -> URL {
+        let encoded = projectPath.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
+        return claudeProjectsRoot.appendingPathComponent(encoded)
+    }
+
+    @discardableResult
+    public static func recoverInterruptedClaudeTurn(
+        _ thread: inout AgentChatThread,
+        claudeProjectsRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+    ) -> Bool {
+        guard thread.provider == .claude,
+              let lastAssistantIdx = thread.messages.lastIndex(where: { $0.role == .assistant }),
+              thread.messages[lastAssistantIdx].text.isEmpty
+        else {
+            return false
+        }
+        let dir = claudeProjectDirectory(for: thread.projectPath, claudeProjectsRoot: claudeProjectsRoot)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return false }
+
+        let targetPrompt = thread.messages[..<lastAssistantIdx].last(where: { $0.role == .user })?.text
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let candidateFiles: [URL]
+        if let sid = thread.sessionId, !sid.isEmpty {
+            let direct = dir.appendingPathComponent("\(sid).jsonl")
+            candidateFiles = FileManager.default.fileExists(atPath: direct.path) ? [direct] : []
+        } else {
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            candidateFiles = entries
+                .filter { $0.pathExtension == "jsonl" }
+                .sorted { a, b in
+                    let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return da > db
+                }
+                .prefix(8)
+                .map { $0 }
+        }
+
+        for file in candidateFiles {
+            guard let recovered = parseClaudeTranscript(at: file, matchingPrompt: thread.sessionId == nil ? targetPrompt : nil) else {
+                continue
+            }
+            if !recovered.text.isEmpty || !recovered.tools.isEmpty {
+                let sid = file.deletingPathExtension().lastPathComponent
+                if thread.sessionId == nil || thread.sessionId?.isEmpty == true {
+                    thread.sessionId = sid
+                }
+                if !recovered.tools.isEmpty {
+                    thread.messages[lastAssistantIdx].tools = recovered.tools
+                }
+                if !recovered.text.isEmpty {
+                    thread.messages[lastAssistantIdx].text = recovered.text
+                }
+                thread.messages[lastAssistantIdx].isStreaming = false
+                thread.updatedAt = Date()
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func parseClaudeTranscript(
+        at url: URL,
+        matchingPrompt: String?
+    ) -> (text: String, tools: [AgentChatToolEvent])? {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var sawPromptMatch = (matchingPrompt == nil || matchingPrompt?.isEmpty == true)
+        var tools: [AgentChatToolEvent] = []
+        var lastAssistantText = ""
+
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = obj["type"] as? String
+            else { continue }
+
+            if type == "user", let target = matchingPrompt, !target.isEmpty {
+                if let msg = obj["message"] as? [String: Any],
+                   let content = msg["content"] as? String,
+                   content.trimmingCharacters(in: .whitespacesAndNewlines) == target
+                {
+                    sawPromptMatch = true
+                    tools.removeAll()
+                    lastAssistantText = ""
+                }
+            } else if type == "assistant", sawPromptMatch,
+                      let msg = obj["message"] as? [String: Any],
+                      let blocks = msg["content"] as? [[String: Any]]
+            {
+                var texts: [String] = []
+                for block in blocks {
+                    let bType = block["type"] as? String ?? ""
+                    if bType == "text", let text = block["text"] as? String, !text.isEmpty {
+                        texts.append(text)
+                    } else if bType == "tool_use" {
+                        let name = block["name"] as? String ?? "Tool"
+                        let input = block["input"] as? [String: Any]
+                        let detail = AgentChatStreamParser.summarizeToolInput(name: name, input: input)
+                        let id = block["id"] as? String ?? UUID().uuidString
+                        if !tools.contains(where: { $0.id == id }) {
+                            tools.append(AgentChatToolEvent(id: id, name: name, detail: detail, status: "done"))
+                        }
+                    }
+                }
+                if !texts.isEmpty {
+                    lastAssistantText = texts.joined(separator: "\n")
+                }
+            }
+        }
+
+        guard sawPromptMatch else { return nil }
+        return (lastAssistantText, tools)
     }
 
     public static func save(_ threads: [AgentChatThread], to url: URL = defaultStorageURL) {

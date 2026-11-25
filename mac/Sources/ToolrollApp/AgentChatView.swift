@@ -183,6 +183,10 @@ public struct AgentChatView: View {
                             .textSelection(.enabled)
                             .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
+                    } else if !msg.isStreaming && !msg.isError {
+                        Text(msg.tools.isEmpty ? "Response was interrupted before finishing." : "Completed steps with no final text reply.")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(ToolrollPalette.muted)
                     }
 
                     if msg.isStreaming {

@@ -45,6 +45,7 @@ public struct MainWorkbenchView: View {
                                 AutomationsView(store: store)
                             } else if let chatThread = store.selectedChatThread {
                                 AgentChatView(store: store, thread: chatThread)
+                                    .id(chatThread.id)
                             } else if store.isComposingNewWork {
                                 NewWorkCanvasView(store: store)
                             } else if store.selectedRow == nil {
