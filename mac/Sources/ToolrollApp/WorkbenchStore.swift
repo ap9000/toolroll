@@ -3657,7 +3657,7 @@ public final class WorkbenchStore {
                         taskId: req.id,
                         title: "\(req.requester) · \(req.projectName)",
                         subtitle: "Approval requested",
-                        body: req.why.isEmpty ? req.summary : "\(req.summary) — \(req.why)"
+                        body: req.appliedWords ?? "Wants to change what builds may reach"
                     )
                 }
             }
@@ -3683,9 +3683,27 @@ public final class WorkbenchStore {
         }
     }
 
-    public func approveAgentRequest(_ request: AgentRequest, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
+    /// The server's terms for one pending network request, read from the project settings page now; nil when the server
+    /// shows none for it (an older Toolroll, or a request filed in the older format).
+    public func networkRequestTerms(for request: AgentRequest) async -> AgentNetworkRequestTerms? {
+        guard request.kind == .network, let client, !activeProfile.isDemo else { return nil }
+        guard let snap = try? await client.fetchProjectSettings(repo: request.repo) else { return nil }
+        return snap.networkRequests.first { $0.id == request.id && $0.repo == request.repo }
+    }
+
+    /// Approves an agent request. A network request is approved only through the server's terms the person was shown
+    /// (`terms`): its id and digest are sent, never the file's params. The other kinds apply exactly the values their
+    /// card names (AgentRequest.appliedWords).
+    public func approveAgentRequest(_ request: AgentRequest, terms: AgentNetworkRequestTerms?, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
         guard let dbPath = resolvedLocalDatabasePath else {
             return (false, "No local Toolroll database connected.")
+        }
+        if request.kind == .network {
+            guard let terms, terms.id == request.id, terms.repo == request.repo else {
+                return (false, "Update Toolroll to review this request.")
+            }
+        } else if request.appliedWords == nil {
+            return (false, "This request names nothing to approve.")
         }
         resolvingAgentRequestId = request.id
         defer { resolvingAgentRequestId = nil }
@@ -3695,7 +3713,7 @@ public final class WorkbenchStore {
             password = typed
         } else {
             guard let unlocked = await unlockPasswordWithTouchID(
-                reason: "Approve \(request.requester)'s request for \(request.projectName): \(request.summary)"
+                reason: "Approve a \(request.kind == .network ? "network" : "settings") change for \(request.projectName)"
             ) else {
                 return (false, "Cancelled.")
             }
@@ -3705,16 +3723,14 @@ public final class WorkbenchStore {
         let outcome: (ok: Bool, message: String)
         switch request.kind {
         case .network:
-            let open = request.params.mode == "open"
-            let localAny = request.params.local == "any"
-            let hosts = (request.params.hosts ?? []).joined(separator: ", ")
-            outcome = await updateProjectNetwork(
-                repoPath: request.repo,
-                open: open,
-                localAny: localAny,
-                hosts: hosts,
-                password: password
-            )
+            guard let terms, let client else { return (false, "Not connected.") }
+            do {
+                let reply = try await client.approveNetworkRequest(repo: terms.repo, id: terms.id, digest: terms.digest, password: password)
+                outcome = (true, reply)
+            } catch {
+                handleSignInRefusal(error)
+                return (false, error.localizedDescription)
+            }
         case .worktreeSetup:
             let cmd = request.params.command ?? ""
             let ok = await approveProjectWorktreeSetup(repoPath: request.repo, command: cmd, password: password)
@@ -3734,15 +3750,18 @@ public final class WorkbenchStore {
             return outcome
         }
 
-        AgentRequestStore.resolve(
-            databasePath: dbPath,
-            id: request.id,
-            status: .approved,
-            note: outcome.message
-        )
+        // The server marks a network request approved itself, in its own words.
+        if request.kind != .network {
+            AgentRequestStore.resolve(
+                databasePath: dbPath,
+                id: request.id,
+                status: .approved,
+                note: outcome.message
+            )
+        }
         refreshAgentRequests(notifyNew: false)
         await refreshAll()
-        notice = WorkbenchNotice(kind: .info, message: "Approved \(request.requester) request: \(request.summary)")
+        notice = WorkbenchNotice(kind: .info, message: outcome.message)
         return (true, outcome.message)
     }
 

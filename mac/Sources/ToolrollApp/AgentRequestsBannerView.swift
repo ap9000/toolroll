@@ -30,6 +30,13 @@ private struct AgentRequestRowCard: View {
     @State private var passwordDraft: String = ""
     @State private var rememberWithTouchID: Bool = true
     @State private var errorMessage: String? = nil
+    /// The server's terms for a network request (never the file's words); nil until read, or when it shows none.
+    @State private var terms: AgentNetworkRequestTerms? = nil
+    @State private var termsRead: Bool = false
+
+    private var canApprove: Bool {
+        request.kind == .network ? terms != nil : request.appliedWords != nil
+    }
 
     private var isBusy: Bool {
         store.resolvingAgentRequestId == request.id
@@ -74,20 +81,18 @@ private struct AgentRequestRowCard: View {
                             .background(ToolrollPalette.paper, in: Capsule())
                             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
                     }
-                    Text(request.summary)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(ToolrollPalette.ink)
-                    if !request.why.isEmpty {
-                        Text("Why: \(request.why)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ToolrollPalette.muted)
-                            .lineLimit(2)
-                    }
+                    requestTerms
                 }
 
                 Spacer(minLength: 10)
 
-                if store.isTouchIDEnabled && !useTypedPassword {
+                if !canApprove {
+                    Button("Decline") {
+                        store.declineAgentRequest(request)
+                    }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                    .disabled(isBusy)
+                } else if store.isTouchIDEnabled && !useTypedPassword {
                     HStack(spacing: 6) {
                         Button {
                             Task { await submit(withTouchID: true) }
@@ -158,7 +163,7 @@ private struct AgentRequestRowCard: View {
                 }
             }
 
-            if !store.isTouchIDEnabled && store.isTouchIDAvailable && !passwordDraft.isEmpty {
+            if canApprove && !store.isTouchIDEnabled && store.isTouchIDAvailable && !passwordDraft.isEmpty {
                 Toggle(isOn: $rememberWithTouchID) {
                     Text("Save verified password in Keychain for 1-tap \(store.touchIDLabel) approvals")
                         .font(.system(size: 11))
@@ -183,13 +188,70 @@ private struct AgentRequestRowCard: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(ToolrollPalette.inputLine, lineWidth: 1)
         )
+        .task(id: request) { await readTerms() }
+    }
+
+    @ViewBuilder
+    private var requestTerms: some View {
+        switch request.kind {
+        case .network:
+            if let terms {
+                ForEach(Array(terms.words.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("Now: \(AgentNetworkRequestTerms.describe(terms.before))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("After: \(AgentNetworkRequestTerms.describe(terms.after))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(termsRead ? "Update Toolroll to review this request." : "Reading the exact change…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+        case .worktreeSetup, .liveView:
+            Text(request.appliedWords ?? "This request names nothing to approve.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(request.appliedWords == nil ? ToolrollPalette.muted : ToolrollPalette.ink)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func readTerms() async {
+        guard request.kind == .network else { return }
+        terms = await store.networkRequestTerms(for: request)
+        termsRead = true
     }
 
     private func submit(withTouchID: Bool) async {
         errorMessage = nil
         let typed = withTouchID ? nil : passwordDraft
         if !withTouchID { passwordDraft = "" }
-        let res = await store.approveAgentRequest(request, typedPassword: typed)
+        let shown = terms
+        let res = await store.approveAgentRequest(request, terms: shown, typedPassword: typed)
+        if res.message == AgentNetworkRequestTerms.changedRefusal {
+            // Nothing changed on the server: read the terms again and show them before another Approve.
+            terms = nil
+            termsRead = false
+            await readTerms()
+            errorMessage = "This request changed. Review it again."
+            return
+        }
+        if res.message == AgentNetworkRequestTerms.oldRefusal {
+            terms = nil
+            termsRead = true
+            errorMessage = res.message
+            return
+        }
         if res.ok {
             if let typed, !typed.isEmpty, rememberWithTouchID, !store.isTouchIDEnabled, store.isTouchIDAvailable {
                 _ = store.enableTouchID(password: typed)

@@ -877,6 +877,8 @@ public actor ToolrollClient {
         public let networkHosts: String
         public let concurrency: Int
         public let suggestedSetupCommand: String
+        /// Pending agent network requests with the server's own terms (never the request file's words).
+        public let networkRequests: [AgentNetworkRequestTerms]
 
         public init(
             repoPath: String,
@@ -887,7 +889,8 @@ public actor ToolrollClient {
             networkLocalAny: Bool,
             networkHosts: String,
             concurrency: Int,
-            suggestedSetupCommand: String
+            suggestedSetupCommand: String,
+            networkRequests: [AgentNetworkRequestTerms] = []
         ) {
             self.repoPath = repoPath
             self.projectName = projectName
@@ -898,6 +901,7 @@ public actor ToolrollClient {
             self.networkHosts = networkHosts
             self.concurrency = concurrency
             self.suggestedSetupCommand = suggestedSetupCommand
+            self.networkRequests = networkRequests
         }
     }
 
@@ -982,7 +986,8 @@ public actor ToolrollClient {
             networkLocalAny: networkLocalAny,
             networkHosts: networkHosts,
             concurrency: concurrency,
-            suggestedSetupCommand: suggested
+            suggestedSetupCommand: suggested,
+            networkRequests: AgentNetworkRequestTerms.parse(projectSettingsHTML: html)
         )
     }
 
@@ -1024,6 +1029,21 @@ public actor ToolrollClient {
                 ("password", password),
             ],
             defaultDone: "Saved project network settings."
+        )
+    }
+
+    /// Approves an agent's network request exactly as the server showed it: only its id and the digest of the terms the
+    /// person saw are sent; the server re-derives the terms and refuses when they no longer match.
+    public func approveNetworkRequest(repo: String, id: String, digest: String, password: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/network",
+            fields: [
+                ("repo", repo),
+                ("request", id),
+                ("digest", digest),
+                ("password", password),
+            ],
+            defaultDone: "Approved the agent's request."
         )
     }
 
