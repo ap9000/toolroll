@@ -30,7 +30,7 @@ export function setPasswordless(store: Store, on: boolean, by: string, now: Date
   const setting = passwordlessSetting(store);
   if (setting.on === on && (on || setting.at !== null)) return { changed: false };
   store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: on ? "on" : "off", source: "policy",
-    detail: on ? "Passwordless on: signing in is the only password" : "Passwordless off: step-ups ask for the password again" });
+    detail: on ? "Passwordless on: approvals need no password" : "Passwordless off: step-ups ask for the password again" });
   store.bumpWake();
   return { changed: true };
 }

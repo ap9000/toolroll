@@ -134,7 +134,7 @@ function Account({ workspace }: { workspace: BrowserWorkspace }) {
     </div>
     <div data-live data-sidebar-slot="chips">{remembered !== null ? <PostForm action={remembered.forget} ref={forget} hidden data-fresh-chip>
       <input type="hidden" name="return" value={workspace.path} />
-    </PostForm> : workspace.passwordless ? <p className="so-acct-note">Passwordless is on</p> : null}</div>
+    </PostForm> : workspace.passwordless ? <p className="so-acct-note">Approvals need no password</p> : null}</div>
     <PostForm action="/logout" ref={signOut} hidden />
   </div>;
 }

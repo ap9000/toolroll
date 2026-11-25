@@ -236,7 +236,7 @@ export const TEAM_FACT_WORDS: Readonly<Record<TeamFact, string>> = Object.freeze
 /** The one line Settings → General shows. */
 export function installModeLine(mode: InstallMode): { label: "Solo" | "Team"; words: string } {
   return mode === "solo"
-    ? { label: "Solo", words: "Just you. Approvals need no password; sign-in, tokens and connections still do." }
+    ? { label: "Solo", words: "Just you. Approvals need no password; changes that add a way in still do: sign-in, tokens, connections, agent threads and check commands." }
     : { label: "Team", words: "More than one person can use this install." };
 }
 

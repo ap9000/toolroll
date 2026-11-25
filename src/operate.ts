@@ -15324,23 +15324,23 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const termsLines = (terms: FlexibleTerms, digest: string) => [...flexibleTermsWords(terms), `Terms ${digest}`];
   const shown = (standing: FlexibleStanding): { data: Record<string, unknown>; lines: string[] } => {
     if (standing.state === "secure") return { data: { state: "secure" }, lines: [`${repo}: Secure. Work is planned and approved before it starts.`] };
-    if (standing.state === "unreadable") return { data: { state: "unreadable" }, lines: [`${repo}: its Flexible terms can't be read, so they allow nothing. Turn Flexible off, then on again.`] };
+    if (standing.state === "unreadable") return { data: { state: "unreadable" }, lines: [`${repo}: its thread terms can't be read, so they allow nothing. Turn interactive agent threads off for it, then on again.`] };
     const data = { state: standing.state, digest: standing.digest, terms: standing.terms, signedBy: standing.signedBy, signedAt: standing.signedAt, ...(standing.state === "lapsed" ? { lapse: standing.reason } : {}) };
     if (standing.state === "lapsed") return { data, lines: [`${repo}: Flexible terms no longer count. ${FLEXIBLE_LAPSE_WORDS[standing.reason]} Turn it on again to sign new terms.`] };
-    return { data, lines: [`${repo}: Flexible, turned on by ${standing.signedBy}.`, ...termsLines(standing.terms, standing.digest)] };
+    return { data, lines: [`${repo}: interactive agent threads are on, turned on by ${standing.signedBy}.`, ...termsLines(standing.terms, standing.digest)] };
   };
   if (action === "show") {
     const now = shown(flexibleStanding(store, repo));
     return succeed(write, json, command, { repo, flexible: now.data }, () => now.lines);
   }
   const refused = (message: string) => fail(write, json, command, "person-only", message, EXIT.refused);
-  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's Flexible terms, never the lead, a token or a chat app.");
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's thread terms, never the lead, a token or a chat app.");
   const acting = await askCredentials(flags, context);
-  if (acting === null) return refused(`${action === "enable" ? "Turning on Flexible needs your password" : "This needs your sign-in"}: pass --as and --token.`);
+  if (acting === null) return refused(`${action === "enable" ? "Turning on interactive agent threads needs your password" : "This needs your sign-in"}: pass --as and --token.`);
   if (action === "enable") {
     if (!flexibleAvailable(store)) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
     const proved = credentialApprover(store, acting.name, acting.token, repo);
-    if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on Flexible.");
+    if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on interactive agent threads.");
     const choice: FlexibleChoice = { ...(max === undefined ? {} : { max }), ...(chosenDefault === undefined ? {} : { default: chosenDefault }) };
     const proposed = proposedFlexibleTerms(store, repo, acting.name, choice);
     if (!proposed.ok) return fail(write, json, command, proposed.reason, proposed.message, EXIT.refused);
@@ -15348,15 +15348,15 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
     if (digest === undefined) {
       if (!interactive() || json) return fail(write, json, command, "review-terms", [...termsLines(proposed.terms, proposed.digest), `Read these terms, then run again with --digest ${proposed.digest} to agree to them. Nothing changed.`].join("\n"), EXIT.refused, { digest: proposed.digest, terms: proposed.terms });
       write(termsLines(proposed.terms, proposed.digest).join("\n"));
-      if (!(await confirm("Turn on Flexible with these terms? [y/N] "))) return fail(write, json, command, "declined", "Nothing changed.", EXIT.refused);
+      if (!(await confirm("Turn on interactive agent threads in this project with these terms?"))) return fail(write, json, command, "declined", "Nothing changed.", EXIT.refused);
       digest = proposed.digest;
     }
     const done = enableFlexible(store, { repo, by: acting.name, proof: proved.method, choice, shownDigest: digest, now: context.clock() });
     if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
-    return succeed(write, json, command, { repo, flexible: shown(flexibleStanding(store, repo)).data, replaced: done.replaced }, () => [`${repo} is Flexible.`, ...termsLines(done.terms, done.digest)]);
+    return succeed(write, json, command, { repo, flexible: shown(flexibleStanding(store, repo)).data, replaced: done.replaced }, () => [`Interactive agent threads are on in ${repo} (terms ${done.digest}). Start one with T in the terminal workbench.`]);
   }
   const proved = authenticateApprover(store, acting.name, acting.token, repo);
-  if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, signed in as a person, changes its Flexible terms.");
+  if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, signed in as a person, changes its thread terms.");
   if (action === "lower") {
     if (max === undefined) return fail(write, json, command, "usage", "Name the highest level with --max supervised, auto or full.", EXIT.usage);
     const done = lowerFlexible(store, { repo, by: acting.name, max, now: context.clock() });
@@ -15365,7 +15365,7 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   }
   const done = turnFlexibleOff(store, { repo, by: acting.name, now: context.clock() });
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
-  return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `${repo} is Secure again. No new Flexible threads start.` : `${repo} is already Secure.`]);
+  return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `Interactive agent threads are off in ${repo}. No new ones start.` : `Interactive agent threads are already off in ${repo}.`]);
 }
 
 /** `toolroll config set task-sizing on|off` and `config show task-sizing`: Settings → General's switch, proved as its

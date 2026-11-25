@@ -608,7 +608,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     // Turning it on is a credential act: a password typed now (or a one-use provider re-check), never a session.
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to turn Passwordless on.");
     setPasswordless(store, true, who.name, now);
-    return back("said", "Passwordless is on. Signing in is the only password now.");
+    return back("said", "Passwordless is on. Approvals need no password now; changes that add a way in still ask.");
   }
   async function knowledgePage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
