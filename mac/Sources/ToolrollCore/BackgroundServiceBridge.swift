@@ -35,16 +35,7 @@ public enum BackgroundServiceBridge {
     }
 
     public static func locateToolrollBinary() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "/opt/homebrew/bin/toolroll",
-            "/usr/local/bin/toolroll",
-            "\(home)/.local/bin/toolroll",
-        ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            return path
-        }
-        return nil
+        LocalDaemonBootstrapper.locateToolrollBinary()
     }
 
     public static func fetchStatus(databasePath: String?) async -> BackgroundServiceStatus {
@@ -120,8 +111,7 @@ public enum BackgroundServiceBridge {
                 proc.executableURL = URL(fileURLWithPath: executable)
                 proc.arguments = arguments
                 var env = ProcessInfo.processInfo.environment
-                let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                env["PATH"] = [extra, env["PATH"]].compactMap { $0 }.joined(separator: ":")
+                env["PATH"] = LocalDaemonBootstrapper.enrichedPATH(base: env["PATH"])
                 proc.environment = env
 
                 let outPipe = Pipe()

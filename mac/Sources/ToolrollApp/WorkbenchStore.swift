@@ -191,6 +191,8 @@ public final class WorkbenchStore {
     public private(set) var canvasBaseURL: String = ""
     public private(set) var hydratingBoardIds: Set<String> = []
     public private(set) var activeAgentSetupTitle: String? = nil
+    public private(set) var missingRuntimeInstallCommand: String? = nil
+    private var attemptedAutoBootstrap: Bool = false
     public private(set) var localSessionCookie: (name: String, value: String, origin: String)? = nil
 
     private var backStack: [String?] = []
@@ -233,6 +235,9 @@ public final class WorkbenchStore {
     public var selectedChatThreadId: String? = nil
     public private(set) var runningChatThreadIds: Set<String> = []
     public private(set) var chatThreadDiffs: [String: AgentChatGitDiff] = [:]
+    public private(set) var chatTurnDiffs: [String: AgentChatGitDiff] = [:]
+    public var chatDiffScope: DiffScopeMode = .branch
+    public private(set) var pendingChatReviewComments: [String: [InlineDiffComment]] = [:]
     public private(set) var chatArtifactImages: [String: Data] = [:]
     public private(set) var chatGitBindingErrors: [String: String] = [:]
     public private(set) var directChatAvailable: Bool = true
@@ -279,6 +284,8 @@ public final class WorkbenchStore {
     public private(set) var selectedDiffPath: String?
     public private(set) var selectedDiffFile: ResultDiffFileResponse?
     public private(set) var inlineDiffComments: [InlineDiffComment] = []
+    public private(set) var pendingTaskReviewComments: [InlineDiffComment] = []
+    public private(set) var selectedDiffRunId: Int? = nil
     public private(set) var terminalsResponse: TermStateResponse?
     public private(set) var leadChat: LeadChatResponse = LeadChatResponse()
 
@@ -336,39 +343,28 @@ public final class WorkbenchStore {
         isInspectorVisible = inspector
     }
 
-    public func startLocalEngine() async {
-        busyLabel = "Starting Local Toolroll Engine…"
+    public func startLocalEngine(silent: Bool = false, allowNpxFallback: Bool = true) async {
+        busyLabel = silent ? "Connecting to Local Toolroll…" : "Starting Local Toolroll Engine…"
         defer { busyLabel = nil }
 
-        let candidates = ["/opt/homebrew/bin/toolroll", "/usr/local/bin/toolroll"]
-        guard let binPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            notice = WorkbenchNotice(kind: .refusal, message: "Could not locate local `toolroll` binary to start.")
+        let result = await LocalDaemonBootstrapper.startAndConnect(
+            allowNpxFallback: allowNpxFallback,
+            timeoutSeconds: silent ? 8.0 : 12.0
+        )
+        if let proc = result.process {
+            managedLocalEngineProcess = proc
+        }
+        missingRuntimeInstallCommand = result.installCommand
+
+        if let creds = result.credentials {
+            missingRuntimeInstallCommand = nil
+            await adoptConnectedLocalSession(creds, silent: silent)
+            await refreshSetupState()
             return
         }
-        do {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: binPath)
-            let dbPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/nightorders/orders.db").path
-            if FileManager.default.fileExists(atPath: dbPath) {
-                proc.arguments = ["up", "--laptop", "--no-open", "--db", dbPath, "--port", "4180"]
-            } else {
-                proc.arguments = ["up", "--laptop", "--no-open"]
-            }
-            proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
-            try proc.run()
-            managedLocalEngineProcess = proc
-            for _ in 0..<12 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if await connectToLocalConsoleIfAvailable(silent: true) {
-                    await refreshSetupState()
-                    return
-                }
-            }
-            notice = WorkbenchNotice(kind: .info, message: "Engine starting… click Rescan in a moment.")
-        } catch {
-            notice = WorkbenchNotice(kind: .refusal, message: "Could not start local engine: \(error.localizedDescription)")
+        if !silent {
+            let kind: WorkbenchNotice.Kind = result.process != nil ? .info : .refusal
+            notice = WorkbenchNotice(kind: kind, message: result.message)
         }
     }
 
@@ -1234,6 +1230,9 @@ public final class WorkbenchStore {
                 chatThreads.insert(updated, at: 0)
             }
             chatThreadDiffs[threadId] = AgentChatGitDiff(dto: detail.diff)
+            if chatDiffScope == .turn, let turnDetail = try? await client.fetchDirectChatDetail(threadId: threadId, diffScope: .turn) {
+                chatTurnDiffs[threadId] = AgentChatGitDiff(dto: turnDetail.diff)
+            }
             if updated.running {
                 runningChatThreadIds.insert(threadId)
             } else {
@@ -2419,6 +2418,17 @@ public final class WorkbenchStore {
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
             }
+            if !attemptedAutoBootstrap {
+                attemptedAutoBootstrap = true
+                if LocalDaemonBootstrapper.canAutoStart() {
+                    await startLocalEngine(silent: true, allowNpxFallback: false)
+                    if isLocalSession {
+                        return
+                    }
+                } else if case .missingRuntime(let installCmd) = LocalDaemonBootstrapper.resolvePlan() {
+                    missingRuntimeInstallCommand = installCmd
+                }
+            }
         }
         await refreshAll()
         if selectedTaskId == nil, let first = needsRows.first ?? runningRows.first ?? failedRows.first ?? workRowsResponse.rows.first {
@@ -2553,41 +2563,46 @@ public final class WorkbenchStore {
         localSessionCookie = (name, value, creds.origin)
     }
 
+    private func adoptConnectedLocalSession(_ creds: LocalSessionCredentials, silent: Bool) async {
+        let localProf = ConnectionProfile(
+            name: "local",
+            origin: creds.origin,
+            account: creds.account,
+            token: "",
+            label: "Local Toolroll (\(creds.origin.replacingOccurrences(of: "http://", with: "")))",
+            isDemo: false
+        )
+        let loaded = profileStore.load()
+        self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
+        self.activeProfile = localProf
+        self.isLocalSession = true
+        self.localDatabasePath = creds.databasePath
+        self.missingRuntimeInstallCommand = nil
+        let fresh = ToolrollClient(localSession: creds)
+        self.client = fresh
+        await fresh.onSessionRenewed { [weak self] renewed in
+            Task { @MainActor in self?.adoptRenewedSession(renewed) }
+        }
+        self.passwordSet = creds.passwordSet
+        refreshTouchIDState()
+        refreshAgentRequests(notifyNew: false)
+        startAgentRequestPolling()
+        if let eq = creds.cookieHeader.firstIndex(of: "=") {
+            let cname = String(creds.cookieHeader[..<eq])
+            let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
+            self.localSessionCookie = (cname, cval, creds.origin)
+        }
+        self.terminalSession.disconnect(clearOutput: true)
+        self.selectedTaskId = nil
+        self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
+        await refreshAll()
+        restartSSE()
+    }
+
     @discardableResult
     public func connectToLocalConsoleIfAvailable(silent: Bool = false) async -> Bool {
         if let creds = await LocalConsoleConnector.discoverAndConnect() {
-            let localProf = ConnectionProfile(
-                name: "local",
-                origin: creds.origin,
-                account: creds.account,
-                token: "",
-                label: "Local Toolroll (\(creds.origin.replacingOccurrences(of: "http://", with: "")))",
-                isDemo: false
-            )
-            let loaded = profileStore.load()
-            self.profiles = [localProf] + loaded.profiles.filter { $0.name != "local" }
-            self.activeProfile = localProf
-            self.isLocalSession = true
-            self.localDatabasePath = creds.databasePath
-            let fresh = ToolrollClient(localSession: creds)
-            self.client = fresh
-            await fresh.onSessionRenewed { [weak self] renewed in
-                Task { @MainActor in self?.adoptRenewedSession(renewed) }
-            }
-            self.passwordSet = creds.passwordSet
-            refreshTouchIDState()
-            refreshAgentRequests(notifyNew: false)
-            startAgentRequestPolling()
-            if let eq = creds.cookieHeader.firstIndex(of: "=") {
-                let cname = String(creds.cookieHeader[..<eq])
-                let cval = String(creds.cookieHeader[creds.cookieHeader.index(after: eq)...])
-                self.localSessionCookie = (cname, cval, creds.origin)
-            }
-            self.terminalSession.disconnect(clearOutput: true)
-            self.selectedTaskId = nil
-            self.notice = silent ? nil : WorkbenchNotice(kind: .info, message: "Connected to Local Toolroll at \(creds.origin) as \(creds.account).")
-            await refreshAll()
-            restartSSE()
+            await adoptConnectedLocalSession(creds, silent: silent)
             return true
         }
         if !silent {
@@ -2726,6 +2741,8 @@ public final class WorkbenchStore {
         liveRunRecordsById = [:]
         selectedDiffPath = nil
         selectedDiffFile = nil
+        selectedDiffRunId = nil
+        pendingTaskReviewComments = []
         approvalCard = nil
         approvalPasswordPrompt = nil
         await loadSelectedTaskDetails(taskId: taskId)
@@ -2833,6 +2850,127 @@ public final class WorkbenchStore {
             return bytes
         }
         return nil
+    }
+
+    public func activeChatDiff(for threadId: String) -> AgentChatGitDiff {
+        if chatDiffScope == .turn {
+            return chatTurnDiffs[threadId] ?? AgentChatGitDiff()
+        }
+        return chatThreadDiffs[threadId] ?? AgentChatGitDiff()
+    }
+
+    public func setChatDiffScope(_ scope: DiffScopeMode, threadId: String) async {
+        chatDiffScope = scope
+        if scope == .branch {
+            await refreshDirectChatDetail(threadId: threadId)
+            return
+        }
+        if activeProfile.isDemo {
+            if chatTurnDiffs[threadId] == nil, let branchDiff = chatThreadDiffs[threadId] ?? DemoFixtures.directChatDiffs[threadId] {
+                chatTurnDiffs[threadId] = branchDiff
+            }
+            return
+        }
+        guard let client, isLocalSession else { return }
+        if let turnDetail = try? await client.fetchDirectChatDetail(threadId: threadId, diffScope: .turn) {
+            chatTurnDiffs[threadId] = AgentChatGitDiff(dto: turnDetail.diff)
+        }
+    }
+
+    public func queueChatReviewComment(
+        threadId: String,
+        path: String,
+        startLine: Int,
+        endLine: Int? = nil,
+        snippet: String? = nil,
+        text: String
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var list = pendingChatReviewComments[threadId] ?? []
+        list.append(InlineDiffComment(path: path, line: startLine, endLine: endLine, snippet: snippet, text: trimmed))
+        pendingChatReviewComments[threadId] = list
+    }
+
+    public func removeChatReviewComment(threadId: String, id: UUID) {
+        var list = pendingChatReviewComments[threadId] ?? []
+        list.removeAll { $0.id == id }
+        if list.isEmpty {
+            pendingChatReviewComments.removeValue(forKey: threadId)
+        } else {
+            pendingChatReviewComments[threadId] = list
+        }
+    }
+
+    public func clearChatReviewComments(threadId: String) {
+        pendingChatReviewComments.removeValue(forKey: threadId)
+    }
+
+    public func sendQueuedChatReviewBatch(threadId: String) async {
+        let queued = pendingChatReviewComments[threadId] ?? []
+        guard !queued.isEmpty else { return }
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: queued)
+        pendingChatReviewComments.removeValue(forKey: threadId)
+        await sendChatMessage(threadId: threadId, text: prompt)
+    }
+
+    public var availableDiffRuns: [Int] {
+        guard let steps = stepCards else { return [] }
+        let all = steps.cards.flatMap(\.runs) + [steps.liveRun, steps.review?.run].compactMap { $0 }
+        return Array(Set(all)).sorted()
+    }
+
+    public func selectDiffRun(_ runId: Int?) async {
+        selectedDiffRunId = runId
+        if activeProfile.isDemo {
+            return
+        }
+        guard let client, let taskId = selectedTaskId else { return }
+        do {
+            let diff = try await client.fetchDiff(taskId: taskId, runId: runId)
+            diffResponse = diff
+            if let current = selectedDiffPath, diff.files.contains(where: { $0.path == current }) {
+                await selectDiffFile(path: current)
+            } else if let first = diff.files.first?.path {
+                await selectDiffFile(path: first)
+            } else {
+                selectedDiffPath = nil
+                selectedDiffFile = nil
+            }
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func queueTaskReviewComment(
+        path: String,
+        startLine: Int,
+        endLine: Int? = nil,
+        snippet: String? = nil,
+        text: String
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingTaskReviewComments.append(
+            InlineDiffComment(path: path, line: startLine, endLine: endLine, snippet: snippet, text: trimmed)
+        )
+    }
+
+    public func removeTaskReviewComment(id: UUID) {
+        pendingTaskReviewComments.removeAll { $0.id == id }
+    }
+
+    public func clearTaskReviewComments() {
+        pendingTaskReviewComments.removeAll()
+    }
+
+    public func sendQueuedTaskReviewBatch() async {
+        guard !pendingTaskReviewComments.isEmpty, let taskId = selectedTaskId else { return }
+        let queued = pendingTaskReviewComments
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: queued)
+        pendingTaskReviewComments.removeAll()
+        inlineDiffComments.append(contentsOf: queued)
+        await steerTask(taskId: taskId, note: prompt)
     }
 
     public func addInlineDiffComment(path: String, line: Int, text: String) async {

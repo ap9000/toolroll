@@ -539,10 +539,23 @@ public actor ToolrollClient {
         }
     }
 
-    public func fetchDirectChatDetail(threadId: String) async throws -> DirectChatDetailResponse {
+    public func fetchDirectChatDetail(
+        threadId: String,
+        diffScope: DiffScopeMode = .branch,
+        turnId: String? = nil
+    ) async throws -> DirectChatDetailResponse {
         try await renewingStaleSession {
             let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
-            return try await send(try makeRequest(path: "/engine/direct-chats/\(enc)"), as: DirectChatDetailResponse.self)
+            var query: [String] = []
+            if diffScope == .turn {
+                query.append("scope=turn")
+            }
+            if let turnId, !turnId.isEmpty {
+                let encTurn = turnId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? turnId
+                query.append("turn=\(encTurn)")
+            }
+            let suffix = query.isEmpty ? "" : "?\(query.joined(separator: "&"))"
+            return try await send(try makeRequest(path: "/engine/direct-chats/\(enc)\(suffix)"), as: DirectChatDetailResponse.self)
         }
     }
 

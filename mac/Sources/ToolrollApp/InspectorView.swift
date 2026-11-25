@@ -477,8 +477,46 @@ private struct TerminalKeyCaptureView: NSViewRepresentable {
 
 private struct DiffInspectorView: View {
     @Bindable var store: WorkbenchStore
-    @State private var commentingLine: Int? = nil
+    @State private var selectionFilePath: String? = nil
+    @State private var selectionStartLine: Int? = nil
+    @State private var selectionEndLine: Int? = nil
     @State private var commentDraft: String = ""
+    @State private var isBatchListExpanded: Bool = false
+
+    private func normalizedRange(for filePath: String) -> ClosedRange<Int>? {
+        guard selectionFilePath == filePath, let start = selectionStartLine else { return nil }
+        let end = selectionEndLine ?? start
+        return min(start, end)...max(start, end)
+    }
+
+    private func handleLineSelect(filePath: String, line: Int) {
+        let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+        if shiftHeld, selectionFilePath == filePath, let anchor = selectionStartLine {
+            selectionEndLine = line
+            if selectionEndLine == anchor {
+                selectionEndLine = nil
+            }
+            return
+        }
+        if selectionFilePath == filePath && selectionStartLine == line && selectionEndLine == nil {
+            selectionFilePath = nil
+            selectionStartLine = nil
+            selectionEndLine = nil
+            commentDraft = ""
+        } else {
+            selectionFilePath = filePath
+            selectionStartLine = line
+            selectionEndLine = nil
+            commentDraft = ""
+        }
+    }
+
+    private func clearSelection() {
+        selectionFilePath = nil
+        selectionStartLine = nil
+        selectionEndLine = nil
+        commentDraft = ""
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -496,7 +534,51 @@ private struct DiffInspectorView: View {
                             .foregroundStyle(ToolrollPalette.danger)
                     }
                     Spacer()
-                    if let run = diff.run {
+                    if store.availableDiffRuns.count > 1 {
+                        HStack(spacing: 2) {
+                            Button {
+                                Task { await store.selectDiffRun(nil) }
+                            } label: {
+                                Text("Branch")
+                                    .font(.system(size: 10.5, weight: store.selectedDiffRunId == nil ? .semibold : .regular))
+                                    .foregroundStyle(store.selectedDiffRunId == nil ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(store.selectedDiffRunId == nil ? ToolrollPalette.ground : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                            }
+                            .buttonStyle(.plain)
+
+                            Menu {
+                                ForEach(store.availableDiffRuns.reversed(), id: \.self) { runId in
+                                    Button {
+                                        Task { await store.selectDiffRun(runId) }
+                                    } label: {
+                                        if store.selectedDiffRunId == runId {
+                                            Label("Run #\(runId)", systemImage: "checkmark")
+                                        } else {
+                                            Text("Run #\(runId)")
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text(store.selectedDiffRunId.map { "Run #\($0)" } ?? "Turn")
+                                        .font(.system(size: 10.5, weight: store.selectedDiffRunId != nil ? .semibold : .regular))
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 8, weight: .semibold))
+                                }
+                                .foregroundStyle(store.selectedDiffRunId != nil ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(store.selectedDiffRunId != nil ? ToolrollPalette.ground : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                        .padding(2)
+                        .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    } else if let run = diff.run {
                         Text("Run #\(run)")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(ToolrollPalette.muted)
@@ -512,7 +594,9 @@ private struct DiffInspectorView: View {
                     HStack(spacing: 6) {
                         ForEach(diff.files) { file in
                             let selected = store.selectedDiffPath == file.path
+                            let queuedInFile = store.pendingTaskReviewComments.filter { $0.path == file.path }.count
                             Button {
+                                clearSelection()
                                 Task { await store.selectDiffFile(path: file.path) }
                             } label: {
                                 HStack(spacing: 5) {
@@ -528,6 +612,14 @@ private struct DiffInspectorView: View {
                                         Text("-\(r)")
                                             .font(.system(size: 10, design: .monospaced))
                                             .foregroundStyle(ToolrollPalette.danger)
+                                    }
+                                    if queuedInFile > 0 {
+                                        Text("\(queuedInFile)")
+                                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.paper)
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 1)
+                                            .background(ToolrollPalette.live, in: Capsule())
                                     }
                                 }
                                 .padding(.horizontal, 8)
@@ -549,11 +641,17 @@ private struct DiffInspectorView: View {
                     ScrollView([.vertical, .horizontal]) {
                         VStack(alignment: .leading, spacing: 12) {
                             if let file = store.selectedDiffFile {
-                                Text(file.path)
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 10)
+                                HStack(spacing: 8) {
+                                    Text(file.path)
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                    Spacer()
+                                    Text("Click + on a line · Shift-click to select range")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.top, 10)
 
                                 ForEach(file.hunks) { hunk in
                                     VStack(alignment: .leading, spacing: 0) {
@@ -566,7 +664,7 @@ private struct DiffInspectorView: View {
                                             .background(ToolrollPalette.raised)
 
                                         ForEach(hunk.lines) { line in
-                                            diffLineRow(line, filePath: file.path)
+                                            diffLineRow(line, filePath: file.path, hunkLines: hunk.lines)
                                         }
                                     }
                                     .overlay(
@@ -580,6 +678,11 @@ private struct DiffInspectorView: View {
                         .padding(.bottom, 16)
                     }
                     .background(ToolrollPalette.codeBg)
+                }
+
+                if !store.pendingTaskReviewComments.isEmpty {
+                    HairlineDivider()
+                    taskReviewBatchBar
                 }
             } else {
                 VStack(spacing: 8) {
@@ -598,27 +701,124 @@ private struct DiffInspectorView: View {
         }
     }
 
-    private func diffLineRow(_ line: DiffLine, filePath: String) -> some View {
+    private var taskReviewBatchBar: some View {
+        let queued = store.pendingTaskReviewComments
+        let fileCount = Set(queued.map(\.path)).count
+        return VStack(alignment: .leading, spacing: 6) {
+            if isBatchListExpanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(queued) { item in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("\((item.path as NSString).lastPathComponent):\(item.lineRangeLabel)")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.live)
+                                Text(item.text)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(ToolrollPalette.ink)
+                                    .lineLimit(2)
+                                Spacer()
+                                Button {
+                                    store.removeTaskReviewComment(id: item.id)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                    }
+                }
+                .frame(maxHeight: 110)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        isBatchListExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: isBatchListExpanded ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("\(queued.count) review \(queued.count == 1 ? "note" : "notes") · \(fileCount) \(fileCount == 1 ? "file" : "files")")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(ToolrollPalette.ink)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button("Clear") {
+                    store.clearTaskReviewComments()
+                    isBatchListExpanded = false
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+
+                Button("Send Batch (⌘⏎)") {
+                    isBatchListExpanded = false
+                    Task { await store.sendQueuedTaskReviewBatch() }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                .keyboardShortcut(.return, modifiers: .command)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(ToolrollPalette.raised)
+    }
+
+    private func diffLineRow(_ line: DiffLine, filePath: String, hunkLines: [DiffLine]) -> some View {
         let targetLine = line.newLine ?? line.oldLine
-        let existingComments = targetLine.map { ln in
+        let activeRange = normalizedRange(for: filePath)
+        let isInSelectedRange = targetLine.map { ln in activeRange?.contains(ln) ?? false } ?? false
+        let isComposerAnchor = targetLine != nil && activeRange?.upperBound == targetLine
+
+        let savedComments = targetLine.map { ln in
             store.inlineDiffComments.filter { $0.path == filePath && $0.line == ln }
+        } ?? []
+        let queuedComments = targetLine.map { ln in
+            store.pendingTaskReviewComments.filter { $0.path == filePath && ($0.endLine ?? $0.line) == ln }
         } ?? []
 
         return DiffLineRowView(
             line: line,
-            isCommenting: targetLine != nil && commentingLine == targetLine,
+            isSelectedInRange: isInSelectedRange,
+            isCommenting: isComposerAnchor,
+            activeRangeLabel: activeRange.map { r in r.lowerBound == r.upperBound ? "L\(r.lowerBound)" : "L\(r.lowerBound)-\(r.upperBound)" },
             commentDraft: $commentDraft,
-            existingComments: existingComments,
+            existingComments: savedComments,
+            queuedComments: queuedComments,
             onToggleComment: {
                 guard let ln = targetLine else { return }
-                commentingLine = (commentingLine == ln) ? nil : ln
-                commentDraft = ""
+                handleLineSelect(filePath: filePath, line: ln)
+            },
+            onQueueComment: { text in
+                guard let range = activeRange else { return }
+                let snippet = DiffReviewEngine.extractSnippet(from: hunkLines, startLine: range.lowerBound, endLine: range.upperBound)
+                store.queueTaskReviewComment(
+                    path: filePath,
+                    startLine: range.lowerBound,
+                    endLine: range.lowerBound == range.upperBound ? nil : range.upperBound,
+                    snippet: snippet,
+                    text: text
+                )
+                clearSelection()
             },
             onSaveComment: { text in
-                guard let ln = targetLine else { return }
-                commentDraft = ""
-                commentingLine = nil
+                guard let ln = activeRange?.lowerBound ?? targetLine else { return }
+                clearSelection()
                 Task { await store.addInlineDiffComment(path: filePath, line: ln, text: text) }
+            },
+            onRemoveQueued: { id in
+                store.removeTaskReviewComment(id: id)
             }
         )
     }
@@ -626,11 +826,16 @@ private struct DiffInspectorView: View {
 
 private struct DiffLineRowView: View {
     let line: DiffLine
+    let isSelectedInRange: Bool
     let isCommenting: Bool
+    let activeRangeLabel: String?
     @Binding var commentDraft: String
     let existingComments: [InlineDiffComment]
+    let queuedComments: [InlineDiffComment]
     let onToggleComment: () -> Void
+    let onQueueComment: (String) -> Void
     let onSaveComment: (String) -> Void
+    let onRemoveQueued: (UUID) -> Void
     @State private var isHovered: Bool = false
 
     var body: some View {
@@ -638,12 +843,14 @@ private struct DiffLineRowView: View {
         let isDel = line.isDeletion
         let isMeta = line.isMeta
         let prefix = isAdd ? "+" : (isDel ? "-" : " ")
-        let rowBg: Color = isAdd
-            ? ToolrollPalette.success.opacity(0.14)
-            : (isDel ? ToolrollPalette.danger.opacity(0.14) : (isHovered ? ToolrollPalette.raised.opacity(0.55) : .clear))
-        let stripeColor: Color = isAdd
-            ? ToolrollPalette.success
-            : (isDel ? ToolrollPalette.danger : .clear)
+        let rowBg: Color = isSelectedInRange
+            ? ToolrollPalette.live.opacity(0.16)
+            : (isAdd
+                ? ToolrollPalette.success.opacity(0.14)
+                : (isDel ? ToolrollPalette.danger.opacity(0.14) : (isHovered ? ToolrollPalette.raised.opacity(0.55) : .clear)))
+        let stripeColor: Color = isSelectedInRange
+            ? ToolrollPalette.live
+            : (isAdd ? ToolrollPalette.success : (isDel ? ToolrollPalette.danger : .clear))
         let gutterFg: Color = isAdd
             ? ToolrollPalette.success.opacity(0.8)
             : (isDel ? ToolrollPalette.danger.opacity(0.8) : ToolrollPalette.muted.opacity(0.75))
@@ -654,6 +861,7 @@ private struct DiffLineRowView: View {
             ? ToolrollPalette.success
             : (isDel ? ToolrollPalette.danger : (isMeta ? ToolrollPalette.muted : ToolrollPalette.ink.opacity(0.88)))
         let targetLine = line.newLine ?? line.oldLine
+        let hasNotes = !existingComments.isEmpty || !queuedComments.isEmpty
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
@@ -662,17 +870,17 @@ private struct DiffLineRowView: View {
                     .frame(width: 2.5)
 
                 Group {
-                    if let ln = targetLine, isHovered || isCommenting || !existingComments.isEmpty {
+                    if let ln = targetLine, isHovered || isCommenting || isSelectedInRange || hasNotes {
                         Button(action: onToggleComment) {
-                            Image(systemName: existingComments.isEmpty ? "plus" : "text.bubble.fill")
+                            Image(systemName: hasNotes ? "text.bubble.fill" : "plus")
                                 .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(isCommenting || !existingComments.isEmpty ? ToolrollPalette.live : ToolrollPalette.ink)
+                                .foregroundStyle(isCommenting || isSelectedInRange || hasNotes ? ToolrollPalette.live : ToolrollPalette.ink)
                                 .frame(width: 16, height: 16)
                                 .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
                                 .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(ToolrollPalette.line, lineWidth: 0.75))
                         }
                         .buttonStyle(.plain)
-                        .help("Comment on line \(ln)")
+                        .help("Comment on line \(ln) (Shift-click to select range)")
                     } else {
                         Color.clear.frame(width: 16, height: 16)
                     }
@@ -710,23 +918,28 @@ private struct DiffLineRowView: View {
             .background(rowBg)
             .onHover { isHovered = $0 }
 
-            if let ln = targetLine, isCommenting {
+            if isCommenting {
                 HStack(spacing: 6) {
-                    Text("L\(ln)")
+                    Text(activeRangeLabel ?? "L\(targetLine ?? 0)")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                    TextField("Add inline review note…", text: $commentDraft)
+                        .foregroundStyle(ToolrollPalette.live)
+                    TextField("Add review note for batch…", text: $commentDraft)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.ink)
                         .onSubmit {
                             let trimmed = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !trimmed.isEmpty { onSaveComment(commentDraft) }
+                            if !trimmed.isEmpty { onQueueComment(commentDraft) }
                         }
+                    Button("Queue") {
+                        onQueueComment(commentDraft)
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Save") {
                         onSaveComment(commentDraft)
                     }
-                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
                     .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(.horizontal, 12)
@@ -734,12 +947,35 @@ private struct DiffLineRowView: View {
                 .background(ToolrollPalette.raised)
             }
 
+            ForEach(queuedComments) { note in
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.badge.checkmark")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(ToolrollPalette.live)
+                    Text("Queued L\(note.lineRangeLabel): \(note.text)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                    Button {
+                        onRemoveQueued(note.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(ToolrollPalette.live.opacity(0.08))
+            }
+
             ForEach(existingComments) { note in
                 HStack(spacing: 6) {
                     Image(systemName: "text.bubble.fill")
                         .font(.system(size: 9.5))
                         .foregroundStyle(ToolrollPalette.live)
-                    Text("L\(note.line): \(note.text)")
+                    Text("L\(note.lineRangeLabel): \(note.text)")
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.ink)
                     Spacer()

@@ -1347,4 +1347,136 @@ struct ToolrollCoreTests {
         #expect(s5.botConnected == false)
         #expect(s5.problem == "Enter your Toolroll password to change your phone pairing.")
     }
+
+    @Test("LocalDaemonBootstrapper enriches Finder PATH, prefers bundled daemon > CLI > npx, and surfaces install command")
+    func localDaemonBootstrapperResolutionAndArgs() {
+        let enriched = LocalDaemonBootstrapper.enrichedPATH(base: "/usr/bin:/bin", home: "/Users/alex")
+        let dirs = enriched.split(separator: ":").map(String.init)
+        #expect(dirs.first == "/opt/homebrew/bin")
+        #expect(dirs.contains("/Users/alex/.local/bin"))
+        #expect(dirs.contains("/Users/alex/.npm-global/bin"))
+        #expect(dirs.contains("/Users/alex/Library/pnpm"))
+        #expect(dirs.contains("/usr/bin"))
+
+        let bundled = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: "/Applications/Toolroll.app/Contents/Resources",
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { path in
+                path == "/Applications/Toolroll.app/Contents/Resources/daemon/node"
+                    || path == "/opt/homebrew/bin/toolroll"
+            },
+            fileExists: { path in
+                path == "/Applications/Toolroll.app/Contents/Resources/daemon/dist/bin.js"
+            }
+        )
+        #expect(bundled == .bundledScript(
+            nodePath: "/Applications/Toolroll.app/Contents/Resources/daemon/node",
+            cliPath: "/Applications/Toolroll.app/Contents/Resources/daemon/dist/bin.js"
+        ))
+        #expect(bundled.supportsSilentAutoStart == true)
+
+        let cli = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { $0 == "/Users/alex/.npm-global/bin/toolroll" },
+            fileExists: { _ in false }
+        )
+        #expect(cli == .cliBinary(path: "/Users/alex/.npm-global/bin/toolroll"))
+        #expect(cli.supportsSilentAutoStart == true)
+
+        let npx = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { $0 == "/opt/homebrew/bin/npx" || $0 == "/opt/homebrew/bin/node" },
+            fileExists: { _ in false }
+        )
+        #expect(npx == .npxFallback(npxPath: "/opt/homebrew/bin/npx"))
+        #expect(npx.supportsSilentAutoStart == false)
+
+        let missing = LocalDaemonBootstrapper.resolvePlan(
+            home: "/Users/alex",
+            bundleResourcePath: nil,
+            env: ["PATH": "/usr/bin"],
+            isExecutable: { _ in false },
+            fileExists: { _ in false }
+        )
+        #expect(missing == .missingRuntime(installCommand: LocalDaemonBootstrapper.recommendedInstallCommand))
+        #expect(missing.supportsSilentAutoStart == false)
+
+        let dbPath = LocalDaemonBootstrapper.defaultDatabasePath(
+            home: "/Users/alex",
+            env: [:],
+            fileExists: { $0 == "/Users/alex/.config/toolroll/orders.db" }
+        )
+        #expect(dbPath == "/Users/alex/.config/toolroll/orders.db")
+
+        let cliSpec = LocalDaemonBootstrapper.launchSpec(
+            for: .cliBinary(path: "/opt/homebrew/bin/toolroll"),
+            databasePath: "/Users/alex/.config/nightorders/orders.db",
+            existingDatabase: true
+        )
+        #expect(cliSpec?.executable == "/opt/homebrew/bin/toolroll")
+        #expect(cliSpec?.arguments == ["up", "--laptop", "--no-open", "--db", "/Users/alex/.config/nightorders/orders.db", "--port", "4180"])
+
+        let npxSpec = LocalDaemonBootstrapper.launchSpec(
+            for: .npxFallback(npxPath: "/opt/homebrew/bin/npx"),
+            databasePath: "/Users/alex/.config/nightorders/orders.db",
+            existingDatabase: false
+        )
+        #expect(npxSpec?.executable == "/opt/homebrew/bin/npx")
+        #expect(npxSpec?.arguments == ["--yes", "toolroll", "up", "--laptop", "--no-open"])
+    }
+
+    @Test("DiffReviewEngine parses unified git diffs with line numbers and formats multi-file line-range review batches")
+    func diffReviewEngineParsesUnifiedDiffAndFormatsBatch() {
+        let patch = """
+        diff --git a/src/auth.ts b/src/auth.ts
+        index 1111111..2222222 100644
+        --- a/src/auth.ts
+        +++ b/src/auth.ts
+        @@ -10,3 +10,4 @@ export function refresh() {
+         const now = Date.now();
+        -return oldToken();
+        +if (!token) return null;
+        +return renew(token, now);
+        diff --git a/src/ui.swift b/src/ui.swift
+        new file mode 100644
+        --- /dev/null
+        +++ b/src/ui.swift
+        @@ -0,0 +1,2 @@
+        +let title = "Toolroll"
+        +print(title)
+        """
+
+        let files = DiffReviewEngine.parseUnifiedDiff(patch)
+        #expect(files.count == 2)
+        #expect(files[0].path == "src/auth.ts")
+        #expect(files[0].added == 2)
+        #expect(files[0].removed == 1)
+        #expect(files[0].hunks.count == 1)
+        #expect(files[0].hunks[0].lines.count == 4)
+        #expect(files[0].hunks[0].lines[2].newLine == 11)
+        #expect(files[0].hunks[0].lines[3].newLine == 12)
+        #expect(files[1].path == "src/ui.swift")
+        #expect(files[1].added == 2)
+
+        let snippet = DiffReviewEngine.extractSnippet(from: files[0].hunks[0].lines, startLine: 11, endLine: 12)
+        #expect(snippet?.contains("if (!token) return null;") == true)
+        #expect(snippet?.contains("return renew(token, now);") == true)
+
+        let c1 = InlineDiffComment(path: "src/auth.ts", line: 12, endLine: 11, snippet: snippet, text: "Check expiry before renew.")
+        let c2 = InlineDiffComment(path: "src/ui.swift", line: 1, text: "Use localized string.")
+        #expect(c1.lineRangeLabel == "11-12")
+        #expect(c1.covers(line: 11) && c1.covers(line: 12) && !c1.covers(line: 13))
+        #expect(c2.lineRangeLabel == "1")
+
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: [c1, c2])
+        #expect(prompt.contains("1. `src/auth.ts:11-12`"))
+        #expect(prompt.contains("Check expiry before renew."))
+        #expect(prompt.contains("2. `src/ui.swift:1`"))
+        #expect(prompt.contains("Use localized string."))
+    }
 }
