@@ -577,6 +577,7 @@ public struct InboxSidebarView: View {
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
             .toolrollHoverSurface(cornerRadius: 7, isSelected: false)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
@@ -648,6 +649,7 @@ public struct InboxSidebarView: View {
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
             .toolrollHoverSurface(cornerRadius: 7, isSelected: false)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
@@ -667,14 +669,11 @@ public struct InboxSidebarView: View {
         } label: {
             HStack(alignment: .center, spacing: 7) {
                 if isRunning {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 14, height: 14)
+                    ToolrollKineticLoader(provider: thread.provider.rawValue, height: 11)
+                        .frame(width: 15, height: 15)
                 } else {
-                    Image(systemName: "bubble.left")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
-                        .frame(width: 14, height: 14)
+                    ProviderBrandGlyph(provider: thread.provider.rawValue, size: 13, tinted: true, inTile: false)
+                        .frame(width: 15, height: 15)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {

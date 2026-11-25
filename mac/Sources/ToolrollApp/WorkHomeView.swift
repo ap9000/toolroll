@@ -238,11 +238,13 @@ struct WorkHomeView: View {
             Text(title)
                 .font(.system(size: 11, weight: active ? .semibold : .medium))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 3.5)
+                .padding(.horizontal, 10)
+                .frame(height: 22)
                 .background(active ? ToolrollPalette.raised : Color.clear, in: Capsule())
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
     }
 
     private var chatTargetMenu: some View {
@@ -275,7 +277,13 @@ struct WorkHomeView: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
+                ProviderBrandGlyph(
+                    provider: store.useLeadForNextChat ? "lead" : store.defaultChatProvider.rawValue,
+                    size: 12,
+                    tinted: !store.useLeadForNextChat,
+                    inTile: false
+                )
                 Text(store.useLeadForNextChat ? "Workspace Lead" : store.defaultChatProvider.label(for: store.defaultChatModelId))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
@@ -287,6 +295,7 @@ struct WorkHomeView: View {
             .frame(height: 26)
             .background(ToolrollPalette.ground, in: Capsule())
             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -308,8 +317,10 @@ struct WorkHomeView: View {
             .frame(height: 26)
             .background(ToolrollPalette.ground, in: Capsule())
             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
         .help("Approve plan and checks before the agent edits files")
     }
 
@@ -361,6 +372,7 @@ struct WorkHomeView: View {
             .frame(height: 26)
             .background(ToolrollPalette.ground, in: Capsule())
             .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

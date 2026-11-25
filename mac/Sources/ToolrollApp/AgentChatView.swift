@@ -7,6 +7,7 @@ public struct AgentChatView: View {
     let thread: AgentChatThread
 
     @State private var isComposerDropTargeted: Bool = false
+    @State private var expandedToolMessageIds: Set<String> = []
     @FocusState private var replyFocused: Bool
 
     public init(store: WorkbenchStore, thread: AgentChatThread) {
@@ -136,73 +137,139 @@ public struct AgentChatView: View {
         .background(ToolrollPalette.raised)
     }
 
+    @ViewBuilder
     private func messageRow(_ msg: AgentChatMessage) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if msg.role == .user {
-                HStack {
-                    Spacer(minLength: 48)
-                    Text(msg.text)
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(ToolrollPalette.ink)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 9)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        if msg.role == .user {
+            HStack(alignment: .top, spacing: 10) {
+                UserMonogramBadge(account: store.activeProfile.account, size: 22)
+                Text(msg.text)
+                    .font(.system(size: 13.5))
+                    .lineSpacing(3)
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        } else {
+            let activeToolVerb: String = {
+                if let runningTool = msg.tools.last(where: { $0.status == "running" }) {
+                    return runningTool.detail.isEmpty ? "\(runningTool.name)…" : "\(runningTool.name): \(runningTool.detail)…"
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text(thread.provider.displayName)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(ToolrollPalette.muted)
-                        if msg.isStreaming {
-                            ProgressView()
-                                .controlSize(.mini)
-                        }
-                    }
+                return "Thinking…"
+            }()
+
+            HStack(alignment: .top, spacing: 10) {
+                ProviderBrandGlyph(provider: thread.provider.rawValue, size: 22, tinted: true, inTile: true)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(thread.provider.label(for: thread.modelId))
+                        .font(.system(size: 12, weight: .semibold))
+                        .tracking(-0.1)
+                        .foregroundStyle(ToolrollPalette.ink)
 
                     if !msg.tools.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(msg.tools) { tool in
-                                HStack(spacing: 6) {
-                                    Image(systemName: tool.status == "running" ? "circle.dotted" : "checkmark")
-                                        .font(.system(size: 9.5, weight: .semibold))
-                                        .foregroundStyle(tool.status == "running" ? ToolrollPalette.live : ToolrollPalette.muted)
-                                    Text(tool.name)
-                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(ToolrollPalette.ink)
-                                    if !tool.detail.isEmpty {
-                                        Text(tool.detail)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundStyle(ToolrollPalette.muted)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                }
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 4)
-                                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-                            }
-                        }
+                        toolActivityGroup(for: msg)
                     }
 
                     if !msg.text.isEmpty {
                         Text(msg.text)
                             .font(.system(size: 13.5))
-                            .foregroundStyle(msg.isError ? ToolrollPalette.danger : ToolrollPalette.ink)
+                            .foregroundStyle(msg.isError ? ToolrollPalette.danger : ToolrollPalette.ink.opacity(0.93))
                             .textSelection(.enabled)
                             .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
-                    } else if msg.isStreaming {
-                        Text("Thinking…")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+
+                    if msg.isStreaming {
+                        KineticThinkingRow(provider: thread.provider.rawValue, label: activeToolVerb)
+                            .padding(.top, msg.text.isEmpty ? 0 : 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func toolActivityGroup(for msg: AgentChatMessage) -> some View {
+        let isExpanded = expandedToolMessageIds.contains(msg.id)
+        let visibleTools: [AgentChatToolEvent] = {
+            if isExpanded { return msg.tools }
+            if msg.isStreaming {
+                return Array(msg.tools.suffix(2))
+            }
+            return []
+        }()
+
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                    if isExpanded {
+                        expandedToolMessageIds.remove(msg.id)
+                    } else {
+                        expandedToolMessageIds.insert(msg.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.muted)
+                    Text("\(msg.tools.count) \(msg.tools.count == 1 ? "step" : "steps")")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(ToolrollPalette.muted)
+                    if !isExpanded, let latest = msg.tools.last, !latest.detail.isEmpty {
+                        Text("· \(latest.name) \(latest.detail)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !visibleTools.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(visibleTools) { tool in
+                        HStack(spacing: 6) {
+                            if tool.status == "running" {
+                                ToolrollKineticLoader(provider: thread.provider.rawValue, height: 9)
+                            } else if tool.status == "error" {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.danger)
+                            } else {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                            }
+                            Text(tool.name)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
+                            if !tool.detail.isEmpty {
+                                Text(tool.detail)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+                }
             }
         }
     }

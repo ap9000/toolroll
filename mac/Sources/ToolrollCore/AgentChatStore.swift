@@ -278,25 +278,44 @@ public enum AgentChatStreamParser {
         let event = json["event"] as? String ?? ""
         if event == "step_update", let step = json["step_update"] as? [String: Any] {
             let stepType = step["step_type"] as? String ?? ""
-            let state = step["state"] as? String ?? ""
+            let state = (step["state"] as? String ?? "").uppercased()
             if stepType == "agent_response", let delta = step["text_delta"] as? String, !delta.isEmpty {
                 events.append(.textDelta(delta))
-            } else if !stepType.isEmpty && stepType != "user_input" && stepType != "agent_response" && stepType != "thinking" {
+            } else if stepType == "tool" {
                 let idx = step["step_index"] as? Int ?? 0
-                let status = state == "DONE" ? "done" : "running"
-                let detail = (step["summary"] as? String) ?? (step["title"] as? String) ?? stepType
-                events.append(.tool(AgentChatToolEvent(id: "agy-\(idx)", name: stepType.replacingOccurrences(of: "_", with: " ").capitalized, detail: detail, status: status)))
+                let toolInfo = step["tool_info"] as? [String: Any]
+                let rawName = (step["tool_name"] as? String)
+                    ?? (toolInfo?["name"] as? String)
+                    ?? "Tool"
+                let params = toolInfo?["parameters"] as? [String: Any]
+                let status: String
+                if state == "DONE" {
+                    status = "done"
+                } else if state == "ERROR" {
+                    status = "error"
+                } else {
+                    status = "running"
+                }
+                let friendly = friendlyToolName(rawName)
+                let detail = summarizeToolInput(name: rawName, input: params)
+                events.append(.tool(AgentChatToolEvent(id: "agy-\(idx)", name: friendly, detail: detail, status: status)))
             }
         } else if event == "result", let result = json["result"] as? [String: Any] {
             if let cid = result["conversation_id"] as? String, !cid.isEmpty {
                 events.append(.sessionId(cid))
             }
             let status = (result["status"] as? String ?? "").uppercased()
+            let text = (result["response"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if status == "SUCCESS" || status.isEmpty {
-                if let text = result["response"] as? String, !text.isEmpty {
-                    events.append(.textReplace(text))
+                if !text.isEmpty {
+                    events.append(.textReplace(result["response"] as? String ?? text))
+                    events.append(.completed)
+                } else if let denied = result["denied_actions"] as? [[String: Any]], !denied.isEmpty {
+                    let names = denied.compactMap { ($0["display_name"] as? String) ?? ($0["action"] as? String) }.joined(separator: ", ")
+                    events.append(.failed("Blocked by permission policy (\(names.isEmpty ? "tool" : names))."))
+                } else {
+                    events.append(.completed)
                 }
-                events.append(.completed)
             } else {
                 let msg = (result["error"] as? String) ?? (result["response"] as? String) ?? "Gemini run failed."
                 events.append(.failed(msg))
@@ -305,11 +324,39 @@ public enum AgentChatStreamParser {
         return events
     }
 
+    private static func friendlyToolName(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "view_file", "read", "read_file": return "Read"
+        case "list_dir", "find_by_name": return "Browse"
+        case "grep_search", "search_web": return "Search"
+        case "replace_file_content", "multi_replace_file_content", "sed_file", "edit": return "Edit"
+        case "write_to_file", "write": return "Write"
+        case "run_command", "bash": return "Run"
+        default:
+            return raw.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
     private static func summarizeToolInput(name: String, input: [String: Any]?) -> String {
         guard let input else { return "" }
-        for key in ["command", "file_path", "path", "pattern", "query", "url", "description"] {
+        let keys = [
+            "CommandLine", "command",
+            "TargetFile", "AbsolutePath", "DirectoryPath", "SearchDirectory", "SearchPath", "Path",
+            "file_path", "path",
+            "Query", "Pattern", "pattern", "query",
+            "Url", "url",
+            "description",
+        ]
+        for key in keys {
             if let val = input[key] as? String, !val.isEmpty {
-                return String(val.prefix(120))
+                let cleaned = val.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
+                if cleaned.hasPrefix("~/") || cleaned.hasPrefix("/") {
+                    let parts = cleaned.split(separator: "/")
+                    if parts.count > 3 {
+                        return parts.suffix(2).joined(separator: "/")
+                    }
+                }
+                return String(cleaned.prefix(100))
             }
         }
         return ""
@@ -439,7 +486,8 @@ public enum AgentChatRunner {
             var args = [
                 "-p", prompt,
                 "--output-format", "stream-json",
-                "--mode", "accept-edits",
+                "--mode", "auto",
+                "--sandbox",
             ]
             if !modelId.isEmpty {
                 args.append(contentsOf: ["--model", modelId])

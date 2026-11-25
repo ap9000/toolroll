@@ -231,12 +231,9 @@ public struct MainWorkbenchView: View {
         let isRunning = store.runningChatThreadIds.contains(thread.id)
         HStack(spacing: 8) {
             if isRunning {
-                ProgressView()
-                    .controlSize(.mini)
+                ToolrollKineticLoader(provider: thread.provider.rawValue, height: 12)
             } else {
-                Circle()
-                    .fill(ToolrollPalette.success)
-                    .frame(width: 6, height: 6)
+                ProviderBrandGlyph(provider: thread.provider.rawValue, size: 13, tinted: true, inTile: false)
             }
             Text(thread.title)
                 .font(.system(size: 12.5, weight: .semibold))
@@ -270,7 +267,8 @@ public struct MainWorkbenchView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    ProviderBrandGlyph(provider: thread.provider.rawValue, size: 11, tinted: true, inTile: false)
                     Text(thread.provider.label(for: thread.modelId))
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(ToolrollPalette.ink)
@@ -282,6 +280,7 @@ public struct MainWorkbenchView: View {
                 .frame(height: 22)
                 .background(ToolrollPalette.raised, in: Capsule())
                 .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .contentShape(Capsule())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)

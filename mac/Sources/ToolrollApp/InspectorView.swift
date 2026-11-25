@@ -781,15 +781,19 @@ private struct LeadThreadView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(store.leadChat.messages) { msg in
-                            LeadMessageRow(message: msg).id(msg.id)
+                            LeadMessageRow(
+                                message: msg,
+                                account: store.activeProfile.account,
+                                leadName: store.leadChat.leadName
+                            )
+                            .id(msg.id)
                         }
                         if store.leadChat.busy {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text("\(store.leadChat.leadName) is thinking…")
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                            }
+                            KineticThinkingRow(
+                                provider: "lead",
+                                label: "\(store.leadChat.leadName) is thinking…"
+                            )
+                            .padding(.horizontal, 2)
                             .id(LeadMessageRow.thinkingId)
                         }
                     }

@@ -515,13 +515,20 @@ public struct ModelPickerPopover: View {
         return Button {
             selectedProvider = id
         } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 12.5, weight: active ? .semibold : .regular))
-                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .frame(width: 30, height: 28)
-                .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
-                .contentShape(Rectangle())
+            Group {
+                if let id {
+                    ProviderBrandGlyph(provider: id, size: 13.5, tinted: active, inTile: false)
+                        .opacity(active ? 1.0 : 0.72)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12.5, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                }
+            }
+            .frame(width: 30, height: 28)
+            .background(active ? ToolrollPalette.paper : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(active ? ToolrollPalette.line : Color.clear, lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(label)
@@ -533,9 +540,7 @@ public struct ModelPickerPopover: View {
             applyModelEntry(entry)
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: providerSymbol(entry.provider))
-                    .font(.system(size: 11))
-                    .foregroundStyle(ToolrollPalette.muted)
+                ProviderBrandGlyph(provider: entry.provider, size: 13, tinted: true, inTile: false)
                     .frame(width: 16)
 
                 VStack(alignment: .leading, spacing: 1) {

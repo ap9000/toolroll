@@ -201,8 +201,10 @@ public struct TaskCockpitView: View {
                             selected ? Color.white.opacity(0.14) : Color.clear,
                             in: Capsule()
                         )
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Capsule())
             }
         }
         .padding(2)
@@ -547,25 +549,31 @@ public struct TaskCockpitView: View {
 
                 if store.approvalPasswordPrompt == nil {
                     if store.stepCards?.plan != nil || store.stepCards?.planStopped?.again != nil {
-                        Button("Replan") {
+                        Button {
                             Task { await store.planAgainSelectedTask() }
+                        } label: {
+                            Text("Replan")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .padding(.horizontal, 7)
+                                .frame(height: 24)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.horizontal, 6)
-                        .frame(height: 24)
                         .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
                     }
 
-                    Button("Cancel") {
+                    Button {
                         Task { await store.cancelSelectedTask() }
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.horizontal, 7)
+                            .frame(height: 24)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(ToolrollPalette.muted)
-                    .padding(.horizontal, 6)
-                    .frame(height: 24)
                     .toolrollHoverSurface(cornerRadius: 6, isSelected: false)
                 }
 
@@ -2308,8 +2316,10 @@ public struct TaskCockpitView: View {
                     .frame(maxWidth: 155)
                     .background(Color.white.opacity(0.07), in: Capsule())
                     .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Capsule())
                 .fixedSize()
                 .popover(isPresented: $isModelPickerOpen, arrowEdge: .top) {
                     ModelPickerPopover(store: store, initialRoleKey: modelPickerInitialRole, taskId: taskId, onDismiss: { isModelPickerOpen = false })
