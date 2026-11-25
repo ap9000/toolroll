@@ -415,6 +415,32 @@ pub fn ask_ship(app: &mut App) -> Vec<crate::app::Effect> {
     }]
 }
 
+/// `S` on a thread: Save as branch. Its committed work goes into the project's own repository as `toolroll/code-<id>`
+/// (the console's controlled import; no pull request, no merge), and the console's words say the `git merge` to run.
+pub fn save_branch(app: &mut App) -> Vec<crate::app::Effect> {
+    let Some(id) = app.thread_selected() else {
+        app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
+        return vec![];
+    };
+    let row = app.threads.rows.iter().find(|t| t.id == id);
+    if row.is_some_and(|t| matches!(t.turn.as_deref(), Some("admitted" | "running"))) {
+        app.status = Some((
+            Tone::Refused,
+            "The agent is still working on your last message. Wait for it, or stop it with x, then save.".into(),
+        ));
+        return vec![];
+    }
+    app.status = Some((Tone::Said, "Saving the thread's work as a branch…".into()));
+    vec![Effect::Act {
+        path: format!(
+            "/agents/live/thread/{}/save",
+            toolroll_api::client::encode(&id)
+        ),
+        fields: vec![],
+        done: "Saved.".into(),
+    }]
+}
+
 /// The console refused the reply on its way (or never answered): it goes back in its box, text and all, while its thread
 /// is still the one selected and nothing else is open. Never a second send by itself.
 pub fn keep_refused_reply(app: &mut App) {

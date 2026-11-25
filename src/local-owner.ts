@@ -113,6 +113,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "ship-thread",
   // Cancel one's own thread's armed Ship for good (it only narrows).
   "cancel-ship",
+  // Save one's own thread's committed work as a branch in its project (everyday 9, B1, flexible-save.ts): the controlled
+  // import into `toolroll/code-<thread>`, with no pull request, task or merge. It grants nothing; the person's own git
+  // merge lands it. The handler (engine-api.ts threadSave) checks this exact act.
+  "save-thread",
   "flexible-sign-in-save",
   "flexible-sign-in-check",
   "flexible-sign-in-clear",

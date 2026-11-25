@@ -4,6 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
+import { saveFlexibleBranch } from "./flexible-save.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -15664,10 +15665,10 @@ function flexibleNextStepWords(store: Store, person: string): string[] {
 }
 
 /**
- * `toolroll thread list|show|end|remove|ship <id>`: a person's own interactive agent threads, from the command line.
- * Reply stays in the workbench (`s`): the console holds the agent's input. Reads and the narrowing acts (end, remove)
- * name the person as the config commands do (a solo install's one operator with no password, re-read in each write;
- * anywhere else the ordinary step-up). Ship takes a password typed now at a hidden prompt, never --token or a
+ * `toolroll thread list|show|end|remove|ship|save <id>`: a person's own interactive agent threads, from the command line.
+ * Reply stays in the workbench (`s`): the console holds the agent's input. Reads, the narrowing acts (end, remove) and
+ * Save as branch (it grants nothing) name the person as the config commands do (a solo install's one operator with no
+ * password, re-read in each write; anywhere else the ordinary step-up). Ship takes a password typed now at a hidden prompt, never --token or a
  * remembered login; it shows the whole terms first and asks before it ships. On an install where nobody has a password,
  * Ship is the workbench's one key instead.
  */
@@ -15675,7 +15676,7 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
   const { store, write, json, clock } = context;
   const verb = positional[0] ?? "list";
   const command = `thread ${verb}`;
-  if (!["list", "show", "end", "remove", "ship"].includes(verb)) return fail(write, json, command, "usage", "`toolroll thread list|show|end|remove|ship <thread>`", EXIT.usage);
+  if (!["list", "show", "end", "remove", "ship", "save"].includes(verb)) return fail(write, json, command, "usage", "`toolroll thread list|show|end|remove|ship|save <thread>`", EXIT.usage);
   const personOnly = "Only you, as a person, work with your own threads here; never a token, the lead, a chat app or a machine.";
   if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return fail(write, json, command, "person-only", personOnly, EXIT.refused);
   // The thread, by its id or the first characters of it (8 or more), among the person's own.
@@ -15752,6 +15753,14 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     // closes the rest); no other thread is touched.
     if (done.stopPending) await stopFlexibleThreadsEverywhere(store, { reason: "its owner ended the thread", thread, clock });
     return succeed(write, json, command, { thread, already: done.already }, () => [done.already ? "This thread had already ended." : "Ended. You can still ship its work for a week; then its copy is tidied."]);
+  }
+  // save: its committed work as the branch toolroll/code-<id> in its project (flexible-save.ts: the controlled import, no
+  // pull request, task or merge). The same proof End takes, asked again inside the save's own transaction.
+  if (verb === "save") {
+    const saved = await saveFlexibleBranch(store, { thread, by: { name: who.name, generation: account.generation }, now: clock(), prove: proveNow });
+    if (!saved.ok) return fail(write, json, command, saved.reason, saved.message, EXIT.refused);
+    return succeed(write, json, command, { thread, branch: saved.branch, commit: saved.candidate, already: saved.already, files: saved.changedPaths, next: saved.next },
+      () => [saved.already ? `Already saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}).` : `Saved as ${saved.branch} (commit ${saved.candidate.slice(0, 12)}, ${saved.changedPaths.length} file${saved.changedPaths.length === 1 ? "" : "s"}).`, saved.next]);
   }
   // remove: the thread's own copy (its repository and keep-ref), refused while anything of its agent may run or a Ship is open.
   const removed = await removeFlexibleThreadCopy(store, { thread, by: who.name, now: clock(), prove: proveNow });

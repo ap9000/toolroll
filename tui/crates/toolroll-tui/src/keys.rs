@@ -84,6 +84,7 @@ actions! {
     ThreadStop = "thread-stop", Global, Act, "Stop the thread's agent (x on a thread)", [];
     ThreadEnd = "thread-end", Global, Act, "End the thread, for good (X on a thread; asks first)", [];
     ThreadShip = "thread-ship", Global, Act, "Ship the thread's work (a on a thread; its terms first)", [];
+    ThreadSave = "thread-save", Global, Act, "Save the thread's work as a branch in your repository", ["S"];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
     PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
     JumpBack = "jump-back", Global, Move, "Back to where each jump left from (again right away: forward)", ["'"];

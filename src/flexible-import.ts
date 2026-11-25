@@ -799,6 +799,25 @@ export async function flexibleTaskBranch(store: Store, input: { thread: string; 
 }
 
 /**
+ * Where a saved thread branch would go in its project (Save as branch, flexible-save.ts): the project's checked-out branch
+ * (null when HEAD is detached or unreadable) and whether that branch is an ancestor of `candidate` (a fast-forward merges
+ * it). Reads the project's own repository only, from Toolroll's record of the thread, through the hardened runner; never
+ * the thread's folder. It decides nothing: the words a person copies.
+ */
+export async function projectMergeHint(store: Store, input: { thread: string; candidate: string; runner?: Runner }): Promise<{ repo: string; branch: string | null; fastForward: boolean } | null> {
+  const thread = flexibleThread(store, input.thread);
+  if (thread === null || !SHA.test(input.candidate)) return null;
+  let project: string;
+  try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { return null; }
+  const read = gitIn(input.runner ?? run, "read");
+  const head = await read(project, ["symbolic-ref", "-q", "HEAD"]);
+  const ref = head.code === 0 ? head.stdout.trim() : "";
+  if (!ref.startsWith("refs/heads/")) return { repo: project, branch: null, fastForward: false };
+  const ancestor = await read(project, ["merge-base", "--is-ancestor", "--end-of-options", ref, input.candidate]);
+  return { repo: project, branch: ref.slice("refs/heads/".length), fastForward: ancestor.code === 0 };
+}
+
+/**
  * Settle an import a crash interrupted (the Ship's reconciler, under the thread's lock, for a send left `approved`): its
  * import ref goes when it holds exactly this import's candidate, and the thread's branch goes back to what it held
  * before (removed when it held nothing) when it holds exactly this candidate. Each by compare-and-swap; a ref someone

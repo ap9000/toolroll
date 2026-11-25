@@ -180,6 +180,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "agents.live.thread.ship": "ship-thread",
   "agents.live.thread.ship-cancel": "cancel-ship",
   "agents.live.thread.ship-send-back": "reply-thread",
+  // Save one's own thread's work as a branch in the project (everyday 9, B1): the controlled import, no pull request,
+  // task or merge; it grants nothing (the handler checks this exact act).
+  "agents.live.thread.save": "save-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",
@@ -545,6 +548,7 @@ post("pages", "agents.live.thread.end", "^\\/agents\\/live\\/thread\\/[0-9a-f]{3
 post("pages", "agents.live.thread.ship", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver ships their own thread's work."), sample: `/agents/live/thread/${"a".repeat(32)}/ship` });
 post("pages", "agents.live.thread.ship-cancel", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/cancel$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/ship/cancel` });
 post("pages", "agents.live.thread.ship-send-back", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/send-back$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver sends back their own thread's Ship."), sample: `/agents/live/thread/${"a".repeat(32)}/ship/send-back` });
+post("pages", "agents.live.thread.save", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/save$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver saves their own thread's work as a branch."), sample: `/agents/live/thread/${"a".repeat(32)}/save` });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to

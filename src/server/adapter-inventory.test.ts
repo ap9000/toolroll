@@ -31,6 +31,8 @@ test("every route row is marked for the local owner; an allow names one of its a
     "agents.live.thread.answer=answer-question",
     // Ending one's own thread (final; it only narrows: engine-api.ts threadClose checks the act).
     "agents.live.thread.end=end-thread",
+    // Saving one's own thread's work as a branch (everyday 9 B1: engine-api.ts threadSave checks the act; it grants nothing).
+    "agents.live.thread.save=save-thread",
     // Ship on a password-free laptop (the owner's D1: engine-api.ts threadShip checks this exact act and the laptop
     // predicate); cancelling a Ship only narrows; sending one back is a reply.
     "agents.live.thread.ship-cancel=cancel-ship", "agents.live.thread.ship-send-back=reply-thread", "agents.live.thread.ship=ship-thread",

@@ -346,6 +346,24 @@ describe("Ship over HTTP: its terms first; the press only on the laptop road", (
   });
 });
 
+describe("Save as branch over HTTP: the owner's own session, no password (everyday 9 B1)", () => {
+  test("someone else and a token are refused; the owner's press reaches the save itself, which refuses while a turn may run", async () => {
+    const post = async (persona: string) => {
+      const response = await fetch(`${base}/agents/live/thread/${T1}/save`, { method: "POST", redirect: "manual",
+        headers: { cookie: cookies[persona]!, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+        body: new URLSearchParams({ csrf: csrfOf[persona]! }).toString() });
+      return { status: response.status, body: await response.json() as { outcome: string; words: string } };
+    };
+    for (const persona of ["ines", "alex"]) expect(await post(persona), persona).toEqual({ status: 404, body: { outcome: "refused", words: "There's no such thread." } });
+    const byToken = await fetch(`${base}/agents/live/thread/${T1}/save`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${readToken}` } });
+    expect(byToken.status).toBe(403);
+    const owner = await post("pat");
+    expect(owner.status).toBe(409);
+    expect(owner.body.words).not.toMatch(/password|sign in/i);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_ship").get()?.["n"]).toBe(0);
+  });
+});
+
 describe("End over HTTP (last: it ends the thread for good)", () => {
   const post = async (persona: string, verb: string, fields: Record<string, string> = {}) => {
     const response = await fetch(`${base}/agents/live/thread/${T1}/${verb}`, { method: "POST", redirect: "manual",
