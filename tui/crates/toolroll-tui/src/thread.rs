@@ -335,6 +335,8 @@ fn thread_ended(app: &App, thread: &str) -> bool {
 pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app::Effect> {
     let message = text.trim().to_string();
     if message.is_empty() {
+        // Nothing sent: an older "Sent. Turn N started" no longer describes what just happened.
+        app.status = None;
         return vec![];
     }
     if app.thread_selected().as_deref() != Some(thread.as_str()) {

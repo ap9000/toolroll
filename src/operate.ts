@@ -9867,7 +9867,7 @@ async function addTask(
   // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
   // Words only; who may ask is unchanged.
   const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
-    ? "Next: run `toolroll`, select it and press p to ask for a plan." : null;
+    ? "Next: run `toolroll`, select it and press p to ask for a plan. To build without a plan, file it with `toolroll task new` instead." : null;
   return succeed(
     write,
     json,
@@ -10276,7 +10276,9 @@ function showTask(positional: readonly string[], context: Context): number {
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
       `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : `${shared.headline === "On hold" ? " · " : " — "}${shared.sentence}`}`,
-      ...(primaryAction === null ? [] : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
+      // Accepted work has no "open the result" step left (stranger 13): the next line says only what is still to do.
+      ...(primaryAction === null || (checkedByPerson && (primaryAction.code === "open-result" || primaryAction.code === "inspect-run")) ? []
+        : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
     ]),
     // The closed machine-authored verdict (Priority 2), computed once at
     // completion — never re-derived here. Same words `verdictWords`
