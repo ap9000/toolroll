@@ -252,9 +252,10 @@ pub fn ship_outcome(ship: Option<&str>) -> Option<&'static str> {
 
 /// Said when a thread act is asked for with no thread selected.
 pub const NO_THREAD_SELECTED: &str = "Select a thread first.";
-/// Said in the reply box when the thread's agent isn't running: the reply starts a fresh one (no `--resume`: D7).
+/// Said in the reply box when the thread's agent isn't running: the reply starts a fresh one (no `--resume`: D7), which
+/// is handed the conversation so far.
 pub const REPLY_STARTS_FRESH: &str =
-    "This starts a fresh agent: it won't remember earlier turns. Your files are as it left them.";
+    "A fresh agent picks this up with the conversation so far. Your files are as it left them.";
 
 /// Said when a reply can't go yet because the thread's turn is still working: the box stays open with what was typed.
 pub const REPLY_WAITS_FOR_TURN: &str =

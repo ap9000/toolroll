@@ -737,7 +737,7 @@ fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("Reply:"), "{shown}");
     assert!(
-        shown.contains("This starts a fresh agent: it won't remember earlier turns."),
+        shown.contains("A fresh agent picks this up with the conversation so far."),
         "{shown}"
     );
     for c in "Now add a test".chars() {
@@ -1265,4 +1265,39 @@ fn a_second_ship_refusal_on_the_same_turn_is_news_again() {
         ))
     );
     assert!(app.unread.contains(second));
+}
+
+// ---- a thread as a conversation, with its own changes -------------------------------------------------------------
+
+#[test]
+fn the_persons_own_messages_show_in_the_transcript_marked_as_theirs_and_drawn_inert() {
+    let mut w = window();
+    w["window"]["records"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!({ "k": "you", "at": "2026-11-15T10:02:10.000Z", "t": ["Make the totals include tax\u{1b}]52;c;ZXZpbA==\u{7}", "and keep the tests green"] }));
+    let mut app = thread_app(w);
+    let shown = screen(&mut app, 120, 44);
+    let you = shown
+        .lines()
+        .position(|l| l.contains("You "))
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert!(
+        shown
+            .lines()
+            .nth(you + 1)
+            .is_some_and(|l| l.contains("Make the totals include tax")),
+        "{shown}"
+    );
+    assert!(shown.contains("and keep the tests green"), "{shown}");
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\u{7}'),
+        "{shown}"
+    );
+    // Theirs comes before the agent's words, as it was said.
+    let agent = shown
+        .lines()
+        .position(|l| l.contains("The totals test fails"))
+        .unwrap();
+    assert!(you < agent, "{shown}");
 }

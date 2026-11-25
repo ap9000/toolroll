@@ -296,6 +296,20 @@ pub fn lines(t: &Transcript, width: usize, from: usize) -> Vec<Line<'static>> {
     };
     for r in main {
         match r {
+            // What the person said: marked as theirs, never as the agent's words.
+            LiveRecord::You { t: said, .. } => {
+                flush(&mut out, &mut group, &mut steps, &mut working);
+                out.push(Line::from(Span::styled(
+                    "You",
+                    ink().add_modifier(ratatui::style::Modifier::BOLD),
+                )));
+                for text in said {
+                    for l in wrap(&clean(text), width.saturating_sub(2).max(8)) {
+                        out.push(Line::from(Span::styled(format!("  {l}"), ink())));
+                    }
+                }
+                out.push(Line::raw(""));
+            }
             LiveRecord::Say { t: said, .. } => {
                 flush(&mut out, &mut group, &mut steps, &mut working);
                 for text in said {

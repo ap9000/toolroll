@@ -589,7 +589,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (!sent.ok) return acted(response, 409, "refused", sent.message);
     // A resend after an attempt that never reached the agent says so, with why that one ended.
     const again = sent.resent === undefined ? "" : `Your earlier send (turn ${sent.resent.seq}) never reached the agent${sent.resent.detail === null ? "" : ` (${sent.resent.detail.slice(0, 200)})`}, so it was sent again. `;
-    return json(response, 200, { outcome: "done", words: again + (sent.replayed ? "That reply was already sent." : sent.fresh ? `Sent. Turn ${sent.seq} started with a fresh agent: it doesn't remember earlier turns.` : `Sent. Turn ${sent.seq} started.`),
+    return json(response, 200, { outcome: "done", words: again + (sent.replayed ? "That reply was already sent." : `Sent. Turn ${sent.seq} started; the agent has the conversation so far.`),
       turn: sent.turn });
   }
 
@@ -688,7 +688,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const sent = await sendBackFlexibleThread(store, flexible, { thread: id, by: { name: who.name, generation: who.session.generation }, feedback, key, freshProof: FRESH_PROOFS.has(proved.method),
       held, launcher, now: new Date() });
     if (!sent.ok) return acted(response, 409, "refused", sent.message);
-    return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started${sent.fresh ? " with a fresh agent: it doesn't remember earlier turns" : ""}.`);
+    return acted(response, 200, "done", `Sent back. Turn ${sent.seq} started; the agent has the conversation so far.`);
   }
 
   /** GET /engine/chat[?project=]: the person's central Lead conversation as structured data (never HTML), admitted as

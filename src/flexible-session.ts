@@ -55,6 +55,8 @@ import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexib
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
+import { flexibleConversationOf, flexibleTurnMessage, recordFlexibleFiles, recordFlexibleReply, recordFlexibleSaid, recordFlexibleStartTip, saidLines } from "./flexible-conversation.js";
+import { flexibleThreadTip, readFlexibleChanges } from "./flexible-import.js";
 import type { FlexibleLauncher } from "./flexible-launcher.js";
 import { primaryResultEvent } from "./stream-scope.js";
 import type { Store } from "./store.js";
@@ -87,7 +89,10 @@ const LINE_CAP = 1_048_576;
 
 type Asked = { request: string; token: string; ref: string; kind: FlexibleRequestKind; tool: string; input: Record<string, unknown>; inputDigest: string; complete: boolean; questions: string[] };
 type AgentLink = { launch: string; turn: string | null; stdin: Writable; connection: FlexibleAnswerConnection; recorder: LiveRecorder };
-type ThreadSession = { thread: string; relay: FlexibleRelayServer | null; agent: AgentLink | null; records: LiveRecord[]; dropped: number; epoch: string;
+/** A thread's live record: a build's (live-records.ts), or what the person said (`you`: their own message, cleaned,
+ * never the agent's words). */
+export type ThreadRecord = LiveRecord | { k: "you"; at: string; t: string[] };
+type ThreadSession = { thread: string; relay: FlexibleRelayServer | null; agent: AgentLink | null; records: ThreadRecord[]; dropped: number; epoch: string;
   asked: Map<string, Asked>; title: string | null };
 
 /** One console process's Flexible threads (openFlexibleSessions). `changes` counts, per thread, what this host changed
@@ -382,7 +387,9 @@ export async function startFlexibleThreadSession(store: Store, sessions: Flexibl
   if (held?.relay != null) return { ok: true, relayPort: held.relay.port };
   const relay = await startFlexibleRelay(store, { thread: input.thread });
   if ("ok" in relay) return relay;
-  const session = held ?? { thread: input.thread, relay: null, agent: null, records: [], dropped: 0, epoch: randomBytes(8).toString("hex"), asked: new Map(), title: null };
+  // A session made here starts with the conversation so far from Toolroll's records (what the person said and the
+  // agent's final replies), so a console that restarted still shows it.
+  const session = held ?? { thread: input.thread, relay: null, agent: null, records: conversationRecords(store, input.thread), dropped: 0, epoch: randomBytes(8).toString("hex"), asked: new Map(), title: null };
   session.relay = relay;
   sessions.threads.set(input.thread, session);
   return { ok: true, relayPort: relay.port };
@@ -605,6 +612,8 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
     if (primaryResultEvent(raw) && link.turn !== null) {
       // A result that is an error isn't a finished turn: it ends `unknown`, in Toolroll's words.
       const failed = raw["is_error"] === true;
+      // The turn's final reply, kept for the next turn's agent (the conversation so far) and the person's view.
+      if (!failed && typeof raw["result"] === "string") { try { recordFlexibleReply(store, { turn: link.turn, reply: raw["result"] }); } catch { /* the conversation goes without it */ } }
       void endFlexibleThreadTurn(store, sessions, { thread: input.thread, turn: link.turn, outcome: failed ? "unknown" : "finished", ...(failed ? { detail: "The agent stopped with an error." } : {}), ...clocked });
     }
   };
@@ -718,7 +727,10 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
     exited: listener => { child.once("exit", listener); }, ...clocked });
   if (!attached.ok) return attached;
   session.title ??= cardText(input.message.split("\n")[0], 80) || null;
-  try { session.agent?.stdin.write(`${userFrame(input.message, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
+  // The agent is fresh: it gets the conversation so far from Toolroll's records, quoted, ahead of the person's message.
+  const handed = await conversationFor(store, { thread: turn.thread, turn: input.turn, seq: turn.seq, message: input.message });
+  session.records.push({ k: "you", at: (input.clock ?? systemClock)().toISOString(), t: saidLines(input.message) });
+  try { session.agent?.stdin.write(`${userFrame(handed, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
   bump(sessions, turn.thread);
   return { ok: true, launched: started.launched, launchId: started.launchId };
 }
@@ -785,6 +797,7 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
         billing: input.billing, requestKey, holder: sessions.holder, clock, opening: true });
       if (!admitted.ok) return admitted;
       turn = admitted.turn;
+      recordFlexibleSaid(store, { turn: admitted.turn, thread: id, seq: admitted.seq, said: input.message, at: clock().toISOString() });
       // Its title, recorded with it (written once): the first line of its first message, cleaned as the live view
       // cleans the agent's text. The list and every surface read this, never this host's memory alone.
       const title = cardText(input.message.split("\n")[0], 80);
@@ -841,8 +854,9 @@ export function flexibleThreadEnded(store: Store, thread: string): boolean {
  *   with the thread's agent and model. The same `key` again never takes a second turn.
  * - The same `key` again after its turn ended before its agent ever started (nothing ran) sends it again as a new turn
  *   (`resent`, said to the person); after its agent did start, it is refused with that turn's state.
- * - Then the turn begins (beginFlexibleThreadTurn) with a fresh agent, which doesn't remember earlier turns (`fresh`,
- *   said to the person): an earlier turn's agent is replaced, never reused (flexible-agents.ts startFlexibleTurn).
+ * - Then the turn begins (beginFlexibleThreadTurn) with a fresh agent (`fresh`): an earlier turn's agent is replaced,
+ *   never reused (flexible-agents.ts startFlexibleTurn). It is handed the conversation so far from Toolroll's records,
+ *   quoted (flexible-conversation.ts), so the person is told it has it.
  * A person's surface only; the caller proves the person (their session re-read, and the proof a start takes).
  */
 export async function continueFlexibleThread(store: Store, sessions: FlexibleSessions, input: { thread: string; by: { name: string; generation: number }; message: string; key: string;
@@ -866,8 +880,11 @@ export async function continueFlexibleThread(store: Store, sessions: FlexibleSes
         ? "Threads use your own Claude sign-in, and you haven't saved one (or it was removed). Add one, then reply. Nothing was sent."
         : "Claude didn't accept your sign-in for threads. Save a new one, then reply. Nothing was sent." };
       const level = levelOf(store, input.thread) ?? before.level;
-      return admitFlexibleTurn(store, { thread: input.thread, starter: input.by, digest: before.termsDigest, level, freshProof: input.freshProof, provider: before.provider, model: before.model,
+      const made = admitFlexibleTurn(store, { thread: input.thread, starter: input.by, digest: before.termsDigest, level, freshProof: input.freshProof, provider: before.provider, model: before.model,
         billing: billing.billing, requestKey: `reply:${input.key}`, holder: sessions.holder, clock });
+      // What they said, with the turn it starts (a replayed admission finds it there already).
+      if (made.ok) recordFlexibleSaid(store, { turn: made.turn, thread: input.thread, seq: made.seq, said: input.message, at: clock().toISOString() });
+      return made;
     });
     if (!admitted.ok) return admitted;
     if (admitted.replayed && flexibleTurn(store, admitted.turn)?.status !== "admitted") return { ok: false as const, reason: "already-sent", message: "That message already started a turn. Nothing new was started." };
@@ -1141,7 +1158,7 @@ export type FlexibleThreadFacts = { version: string; title: string; project: str
     endWords?: string;
     /** How it is billed: on the person's plan (a setup-token) or a key. */
     billing?: "subscription" | "api-key" } | null; questions: FlexibleQuestionView[] };
-export type FlexibleWindow = { ok: true; records: LiveRecord[]; cursor: string; restarted: boolean; earlier: boolean; quarantined: number; skipped: number; more: boolean }
+export type FlexibleWindow = { ok: true; records: ThreadRecord[]; cursor: string; restarted: boolean; earlier: boolean; quarantined: number; skipped: number; more: boolean }
   | { ok: false; reason: "missing" };
 
 /** The thread's level as it stands: the one it was lowered to, else its last turn's. */
@@ -1196,16 +1213,19 @@ export function flexibleThreadLiveOf(store: Store, sessions: FlexibleSessions, i
   const session = sessions.threads.get(thread.id);
   const facts = factsOf(store, sessions, thread, session);
   const live = session?.agent != null;
-  if (input.file === "sub" || session === undefined) return { ok: true, live, window: { ok: false, reason: "missing" }, facts };
-  const total = session.dropped + session.records.length;
+  if (input.file === "sub") return { ok: true, live, window: { ok: false, reason: "missing" }, facts };
+  // No session here (nothing ran since this console started): the conversation so far, from Toolroll's records.
+  const source = session ?? { records: conversationRecords(store, thread.id), dropped: 0, epoch: RECORDED_EPOCH };
+  if (source.records.length === 0 && session === undefined) return { ok: true, live, window: { ok: false, reason: "missing" }, facts };
+  const total = source.dropped + source.records.length;
   const named = input.cursor === null ? null : /^([0-9a-f]{16})\.(0|[1-9][0-9]{0,11})$/.exec(input.cursor);
-  const restarted = input.cursor !== null && (named === null || named[1] !== session.epoch || Number(named[2]) > total);
-  let from = named !== null && !restarted ? Number(named[2]) : session.dropped;
-  const earlier = from < session.dropped;
-  if (earlier) from = session.dropped;
-  const records = session.records.slice(from - session.dropped, from - session.dropped + WINDOW_RECORDS);
+  const restarted = input.cursor !== null && (named === null || named[1] !== source.epoch || Number(named[2]) > total);
+  let from = named !== null && !restarted ? Number(named[2]) : source.dropped;
+  const earlier = from < source.dropped;
+  if (earlier) from = source.dropped;
+  const records = source.records.slice(from - source.dropped, from - source.dropped + WINDOW_RECORDS);
   const next = from + records.length;
-  return { ok: true, live, window: { ok: true, records, cursor: `${session.epoch}.${next}`, restarted, earlier, quarantined: 0, skipped: 0, more: next < total }, facts };
+  return { ok: true, live, window: { ok: true, records, cursor: `${source.epoch}.${next}`, restarted, earlier, quarantined: 0, skipped: 0, more: next < total }, facts };
 }
 
 /** The owner's ready threads, newest first, as the work list shows them. */
@@ -1447,3 +1467,54 @@ async function stopSessionLocked(store: Store, sessions: FlexibleSessions, input
   if ("reason" in stopped) return stopped;
   return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
 }
+
+// ---- the conversation so far ------------------------------------------------------------------------------------------
+
+/** The epoch of a window read from Toolroll's records while no session runs here: a session started later has another,
+ * so a reader holding this one reads again from the start (and finds the same conversation, then the new turn). */
+const RECORDED_EPOCH = "0".repeat(16);
+
+/** The thread's ended turns as records: what the person said (`you`) and the agent's final reply, from Toolroll's
+ * records (flexible_turn_said), cleaned as live text is. A turn still on its way is the live session's. */
+function conversationRecords(store: Store, thread: string): ThreadRecord[] {
+  let turns: ReturnType<typeof flexibleConversationOf>;
+  try { turns = flexibleConversationOf(store, thread); } catch { return []; }
+  return turns.filter(one => one.status !== "admitted" && one.status !== "running").flatMap((one): ThreadRecord[] => [
+    { k: "you", at: one.saidAt, t: saidLines(one.said) },
+    ...(one.reply === null ? [] : [{ k: "say" as const, at: one.saidAt, t: saidLines(one.reply, 400) }]),
+  ]);
+}
+
+/** Earlier turns whose changed paths are read at most per new turn (a quarantined read each, under the thread's lock):
+ * normally just the turn before it; and how long that read may take. */
+const FILES_READ_PER_TURN = 1;
+const FILES_READ_MS = 10_000;
+
+/**
+ * What a turn's fresh agent is handed: the conversation so far (the thread's earlier turns from Toolroll's records,
+ * quoted, capped) and then the person's message. First the thread's commit as this turn begins is recorded, and the
+ * paths the latest earlier turns changed are read (from each one's start commit to the next one's, in a quarantine:
+ * flexible-import.ts readFlexibleChanges) where they weren't yet. Anything that can't be read is left out, never a
+ * reason to refuse the turn.
+ */
+async function conversationFor(store: Store, input: { thread: string; turn: string; seq: number; message: string }): Promise<string> {
+  try {
+    const tip = flexibleThreadTip(store, input.thread);
+    if (tip !== null) recordFlexibleStartTip(store, { turn: input.turn, tip });
+    const turns = flexibleConversationOf(store, input.thread);
+    let read = 0;
+    for (let at = turns.length - 1; at >= 0 && read < FILES_READ_PER_TURN; at--) {
+      const one = turns[at]!;
+      const next = turns.slice(at + 1).find(later => later.startTip !== null);
+      if (one.files !== null || one.startTip === null || next === undefined || one.seq >= input.seq) continue;
+      if (one.startTip === next.startTip) { recordFlexibleFiles(store, { turn: one.turn, files: [] }); continue; }
+      read++;
+      const changed = await readFlexibleChanges(store, { thread: input.thread, from: one.startTip, to: next.startTip!, patch: false, limits: { readMs: FILES_READ_MS } });
+      if (changed.ok) recordFlexibleFiles(store, { turn: one.turn, files: "none" in changed ? [] : changed.paths });
+    }
+    return flexibleTurnMessage(flexibleConversationOf(store, input.thread).filter(one => one.seq < input.seq), input.message, input.seq);
+  } catch {
+    return input.message;
+  }
+}
+
