@@ -389,11 +389,15 @@ describe("Direct Chat HTTP + SSE routes", () => {
     });
     expect(badAttach.status).toBe(415);
 
-    // Dirty main checkout -> bring uncommitted changes into clone -> preview + keep-branch Ship!
+    // Dirty main checkout -> bring uncommitted changes into clone -> repair binding -> preview + keep-branch Ship!
     writeFileSync(join(world.repo, "README.md"), "# Payments\nMain uncommitted edit\n");
     const applyMainRes = await world.post(`/engine/direct-chats/${started.threadId}/apply-main-edits`, {});
     expect(applyMainRes.status).toBe(200);
     expect(JSON.parse(applyMainRes.body)).toMatchObject({ ok: true });
+
+    const repairRes = await world.post(`/engine/direct-chats/${started.threadId}/repair`, {});
+    expect(repairRes.status).toBe(200);
+    expect(JSON.parse(repairRes.body)).toMatchObject({ ok: true });
 
     const previewRes = await world.post(`/engine/direct-chats/${started.threadId}/ship-preview`, {});
     expect(previewRes.status).toBe(200);

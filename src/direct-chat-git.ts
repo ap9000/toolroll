@@ -1,9 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import { TEARDOWN_FLAGS } from "./teardown-git.js";
+
+const execFileAsync = promisify(execFile);
 
 const EXTRA_DIRECT_CHAT_GIT_FLAGS: readonly string[] = [
   ...TEARDOWN_FLAGS,
@@ -12,18 +15,36 @@ const EXTRA_DIRECT_CHAT_GIT_FLAGS: readonly string[] = [
   "-c", "transfer.fsckObjects=true",
 ];
 
-function cleanGitEnv(): NodeJS.ProcessEnv {
+function cleanGitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return {
     PATH: process.env["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
     HOME: homedir(),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
+    ...extra,
   };
 }
 
+export function sha256Buffer(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 export function sha256File(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  return sha256Buffer(readFileSync(path));
+}
+
+export function pinnedConfigBackupPath(realGitDir: string): string {
+  return `${realGitDir}.pinned-config`;
+}
+
+function hasCommonDirEntry(realGitDir: string): boolean {
+  try {
+    lstatSync(join(realGitDir, "commondir"));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
 /**
@@ -93,34 +114,122 @@ export function assertTrustedCloneGit(binding: TrustedCloneBinding): { ok: true;
       return { ok: false, error: "Chat git-dir is outside Toolroll's managed gitdirs folder." };
     }
 
+    // Refuse if `<gitDir>/commondir` exists (file, directory, or symlink): git would redirect
+    // config lookups to an unchecked folder outside the pinned `<gitDir>/config`.
+    if (hasCommonDirEntry(realGitDir)) {
+      return { ok: false, error: "Chat git-dir contains an unexpected commondir redirect; repair the workspace git binding to continue." };
+    }
+
     // Verify `<clonePath>/.git` is a regular file pointing strictly at `realGitDir`.
     const dotGit = join(managed.realClone, ".git");
     const dgStat = lstatSync(dotGit);
     if (!dgStat.isFile() || dgStat.isSymbolicLink()) {
-      return { ok: false, error: "Chat clone's .git pointer was replaced or tampered with." };
+      return { ok: false, error: "Chat clone's .git pointer was replaced or tampered with; repair the workspace git binding to continue." };
     }
     const pointerText = readFileSync(dotGit, "utf8").trim();
     const match = /^gitdir:\s*(.+)$/.exec(pointerText);
     if (match === null) {
-      return { ok: false, error: "Chat clone's .git pointer is malformed." };
+      return { ok: false, error: "Chat clone's .git pointer is malformed; repair the workspace git binding to continue." };
     }
     const pointedReal = realpathSync(resolve(managed.realClone, match[1]!.trim()));
     if (pointedReal !== realGitDir) {
-      return { ok: false, error: "Chat clone's .git pointer no longer matches Toolroll's trusted git-dir." };
+      return { ok: false, error: "Chat clone's .git pointer no longer matches Toolroll's trusted git-dir; repair the workspace git binding to continue." };
     }
 
     // Verify `<gitDir>/config` is a regular file matching the pinned SHA-256.
     const configPath = join(realGitDir, "config");
     const cfgStat = lstatSync(configPath);
     if (!cfgStat.isFile() || cfgStat.isSymbolicLink()) {
-      return { ok: false, error: "Chat git config was replaced with a non-file." };
+      return { ok: false, error: "Chat git config was replaced with a non-file; repair the workspace git binding to continue." };
     }
     if (sha256File(configPath) !== binding.configSha256) {
-      return { ok: false, error: "Chat git config changed since clone creation; refusing to run git." };
+      return { ok: false, error: "Chat git config changed since clone creation; repair the workspace git binding to continue." };
     }
     return { ok: true, realClone: managed.realClone, realGitDir };
   } catch {
     return { ok: false, error: "Could not verify chat git-dir binding." };
+  }
+}
+
+/**
+ * Restores a tampered chat clone's `.git` pointer and `<gitDir>/config` from
+ * the pinned backup (verified against the SQLite `configSha256`), and removes
+ * any planted `<gitDir>/commondir` redirect.
+ */
+export function repairCloneGitBinding(binding: TrustedCloneBinding): { ok: true } | { ok: false; error: string } {
+  const managed = assertManagedClonePath(binding.stateRoot, binding.clonePath);
+  if (!managed.ok) return managed;
+  if (!binding.gitDir || !binding.configSha256) {
+    return { ok: false, error: "Chat clone has no recorded trusted git-dir or pinned config hash." };
+  }
+  const gitDirsRoot = join(binding.stateRoot, "direct-chat", "gitdirs");
+  if (!existsSync(gitDirsRoot) || !existsSync(binding.gitDir)) {
+    return { ok: false, error: "Chat clone's separate git-dir is missing." };
+  }
+  try {
+    const gdStat = lstatSync(binding.gitDir);
+    if (!gdStat.isDirectory() || gdStat.isSymbolicLink()) {
+      return { ok: false, error: "Chat git-dir must be a real directory, not a symlink." };
+    }
+    const realGdRoot = realpathSync(gitDirsRoot);
+    const realGitDir = realpathSync(binding.gitDir);
+    const relGd = relative(realGdRoot, realGitDir);
+    if (relGd === "" || relGd === ".." || relGd.startsWith(`..${"/"}`) || relGd.startsWith(`..${"\\"}`) || isAbsolute(relGd)) {
+      return { ok: false, error: "Chat git-dir is outside Toolroll's managed gitdirs folder." };
+    }
+
+    // Verify the saved pinned config text matches the hash recorded in SQLite before restoring it.
+    const backupPath = pinnedConfigBackupPath(realGitDir);
+    const backupStat = lstatSync(backupPath);
+    if (!backupStat.isFile() || backupStat.isSymbolicLink()) {
+      return { ok: false, error: "Pinned git config backup is missing or invalid; start a new chat instead." };
+    }
+    const pinnedBytes = readFileSync(backupPath);
+    if (sha256Buffer(pinnedBytes) !== binding.configSha256) {
+      return { ok: false, error: "Pinned git config backup does not match the recorded hash; start a new chat instead." };
+    }
+
+    // Remove any planted commondir redirect (file or symlink).
+    const commonDirPath = join(realGitDir, "commondir");
+    if (hasCommonDirEntry(realGitDir)) {
+      const cdStat = lstatSync(commonDirPath);
+      if (cdStat.isDirectory() && !cdStat.isSymbolicLink()) {
+        return { ok: false, error: "Chat git-dir has an unexpected commondir directory; start a new chat instead." };
+      }
+      unlinkSync(commonDirPath);
+    }
+
+    // Restore `<gitDir>/config` (unlinking first if replaced with a symlink).
+    const configPath = join(realGitDir, "config");
+    try {
+      const cfgStat = lstatSync(configPath);
+      if (cfgStat.isDirectory() && !cfgStat.isSymbolicLink()) {
+        return { ok: false, error: "Chat git config was replaced with a directory; start a new chat instead." };
+      }
+      unlinkSync(configPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    writeFileSync(configPath, pinnedBytes, { mode: 0o600 });
+
+    // Restore `<clonePath>/.git` pointer file (refuse if replaced with a real directory).
+    const dotGit = join(managed.realClone, ".git");
+    try {
+      const dgStat = lstatSync(dotGit);
+      if (dgStat.isDirectory() && !dgStat.isSymbolicLink()) {
+        return { ok: false, error: "Chat clone's .git was replaced with a directory; start a new chat instead." };
+      }
+      unlinkSync(dotGit);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    writeFileSync(dotGit, `gitdir: ${realGitDir}\n`, { mode: 0o600 });
+
+    const recheck = assertTrustedCloneGit(binding);
+    if (!recheck.ok) return recheck;
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `Could not repair chat git binding: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -139,10 +248,25 @@ export function runHardenedMainGit(args: readonly string[], repoCwd: string, inp
   );
 }
 
+export async function runHardenedMainGitAsync(args: readonly string[], repoCwd: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "git",
+    [...EXTRA_DIRECT_CHAT_GIT_FLAGS, ...args],
+    {
+      cwd: repoCwd,
+      encoding: "utf8",
+      env: cleanGitEnv(),
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  return stdout;
+}
+
 /**
  * Runs hardened `git` against a chat clone ONLY after verifying the separate
- * git-dir pointer and pinned config SHA-256, passing `--git-dir` and `--work-tree`
- * explicitly so git never discovers an attacker-planted `.git`.
+ * git-dir pointer, absence of `commondir`, and pinned config SHA-256, passing
+ * `--git-dir`, `--work-tree`, and `GIT_COMMON_DIR` explicitly so git never
+ * follows an attacker-planted `.git` or `commondir` redirect.
  */
 export function runTrustedCloneGit(binding: TrustedCloneBinding, args: readonly string[], input?: string): string {
   const verified = assertTrustedCloneGit(binding);
@@ -160,7 +284,7 @@ export function runTrustedCloneGit(binding: TrustedCloneBinding, args: readonly 
     {
       cwd: verified.realClone,
       encoding: "utf8",
-      env: cleanGitEnv(),
+      env: cleanGitEnv({ GIT_COMMON_DIR: verified.realGitDir }),
       input,
       maxBuffer: 16 * 1024 * 1024,
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -168,10 +292,22 @@ export function runTrustedCloneGit(binding: TrustedCloneBinding, args: readonly 
   );
 }
 
+function pinCloneGitConfig(realGitDir: string): string {
+  const configPath = join(realGitDir, "config");
+  try {
+    chmodSync(configPath, 0o600);
+  } catch {
+    // Best-effort permission tightening.
+  }
+  const configBytes = readFileSync(configPath);
+  writeFileSync(pinnedConfigBackupPath(realGitDir), configBytes, { mode: 0o600 });
+  return sha256Buffer(configBytes);
+}
+
 /**
  * Creates an isolated local clone using `--separate-git-dir` inside Toolroll's
- * state folder, strips `origin`, checks out `branch`, and returns the pinned
- * `configSha256` of `<gitDir>/config` so every subsequent git call verifies it.
+ * state folder, strips `origin`, checks out `branch`, saves the pinned config
+ * backup, and returns the pinned `configSha256` of `<gitDir>/config`.
  */
 export function cloneIsolatedRepo(input: {
   stateRoot: string;
@@ -196,7 +332,6 @@ export function cloneIsolatedRepo(input: {
     mainDirtyFiles = [];
   }
 
-  // Clone with --separate-git-dir so `.git` metadata lives under Toolroll's gitdirs/.
   execFileSync(
     "git",
     [
@@ -218,12 +353,13 @@ export function cloneIsolatedRepo(input: {
 
   const realClone = realpathSync(input.clonePath);
   const realGitDir = realpathSync(input.gitDir);
+  const cloneEnv = cleanGitEnv({ GIT_COMMON_DIR: realGitDir });
 
   try {
     execFileSync(
       "git",
       [...EXTRA_DIRECT_CHAT_GIT_FLAGS, `--git-dir=${realGitDir}`, `--work-tree=${realClone}`, "remote", "remove", "origin"],
-      { cwd: realClone, encoding: "utf8", env: cleanGitEnv(), stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: realClone, encoding: "utf8", env: cloneEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
   } catch {
     // Clone may have no origin remote.
@@ -232,16 +368,79 @@ export function cloneIsolatedRepo(input: {
   execFileSync(
     "git",
     [...EXTRA_DIRECT_CHAT_GIT_FLAGS, `--git-dir=${realGitDir}`, `--work-tree=${realClone}`, "checkout", "-b", input.branch, baseSha],
-    { cwd: realClone, encoding: "utf8", env: cleanGitEnv(), stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: realClone, encoding: "utf8", env: cloneEnv, stdio: ["ignore", "pipe", "pipe"] },
   );
 
-  const configPath = join(realGitDir, "config");
+  const configSha256 = pinCloneGitConfig(realGitDir);
+  return { baseSha, gitDir: realGitDir, configSha256, mainDirtyFiles };
+}
+
+/**
+ * Non-blocking async variant of `cloneIsolatedRepo` used during chat creation
+ * so `POST /engine/direct-chats` never blocks Node's event loop.
+ */
+export async function cloneIsolatedRepoAsync(input: {
+  stateRoot: string;
+  repo: string;
+  clonePath: string;
+  gitDir: string;
+  branch: string;
+}): Promise<{ baseSha: string; gitDir: string; configSha256: string; mainDirtyFiles: string[] }> {
+  mkdirSync(dirname(input.clonePath), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(input.gitDir), { recursive: true, mode: 0o700 });
+
+  const baseSha = (await runHardenedMainGitAsync(["rev-parse", "HEAD"], input.repo)).trim();
+  let mainDirtyFiles: string[] = [];
   try {
-    chmodSync(configPath, 0o600);
+    const status = await runHardenedMainGitAsync(["status", "--porcelain"], input.repo);
+    mainDirtyFiles = status
+      .split("\n")
+      .map(line => line.slice(3).trim())
+      .filter(Boolean)
+      .slice(0, 20);
   } catch {
-    // Best-effort permission tightening.
+    mainDirtyFiles = [];
   }
-  const configSha256 = sha256File(configPath);
+
+  await execFileAsync(
+    "git",
+    [
+      ...EXTRA_DIRECT_CHAT_GIT_FLAGS,
+      "-c", "protocol.file.allow=always",
+      "clone", "--local",
+      `--separate-git-dir=${input.gitDir}`,
+      "--",
+      input.repo,
+      input.clonePath,
+    ],
+    {
+      encoding: "utf8",
+      env: cleanGitEnv(),
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+
+  const realClone = realpathSync(input.clonePath);
+  const realGitDir = realpathSync(input.gitDir);
+  const cloneEnv = cleanGitEnv({ GIT_COMMON_DIR: realGitDir });
+
+  try {
+    await execFileAsync(
+      "git",
+      [...EXTRA_DIRECT_CHAT_GIT_FLAGS, `--git-dir=${realGitDir}`, `--work-tree=${realClone}`, "remote", "remove", "origin"],
+      { cwd: realClone, encoding: "utf8", env: cloneEnv },
+    );
+  } catch {
+    // Clone may have no origin remote.
+  }
+
+  await execFileAsync(
+    "git",
+    [...EXTRA_DIRECT_CHAT_GIT_FLAGS, `--git-dir=${realGitDir}`, `--work-tree=${realClone}`, "checkout", "-b", input.branch, baseSha],
+    { cwd: realClone, encoding: "utf8", env: cloneEnv },
+  );
+
+  const configSha256 = pinCloneGitConfig(realGitDir);
   return { baseSha, gitDir: realGitDir, configSha256, mainDirtyFiles };
 }
 

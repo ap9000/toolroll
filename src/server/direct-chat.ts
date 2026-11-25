@@ -42,7 +42,7 @@ import { rereadBrowser } from "./live.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
 
-const THREAD_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})(?:\/(messages|stop|model|delete|attachments|apply-main-edits|ship-preview|ship|ship-cancel))?$/;
+const THREAD_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})(?:\/(messages|stop|model|delete|attachments|apply-main-edits|repair|ship-preview|ship|ship-cancel))?$/;
 const ARTIFACT_PATH = /^\/engine\/direct-chats\/([a-f0-9]{32})\/artifacts\/([a-f0-9]{32})$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
@@ -285,7 +285,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       return checked(ctx, 404, "directChatStarted", { ok: false, error: "Choose a connected project first." } satisfies DirectChatStarted);
     }
 
-    const res = host.createThread({
+    const res = await host.createThread({
       owner: gate.who.name,
       localGeneration: gate.who.authority === "local-owner" ? gate.who.session.localGeneration : null,
       accountGeneration: gate.who.session.generation,
@@ -465,6 +465,22 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     return checked(ctx, 200, "directChatMutated", { ok: true, said: res.said } satisfies DirectChatMutated);
   }
 
+  async function repair(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-manage");
+    if (!gate.ok) return checked(ctx, gate.status, "directChatMutated", { ok: false, error: gate.error } satisfies DirectChatMutated);
+    const match = THREAD_PATH.exec(ctx.url.pathname);
+    const threadId = match?.[1] ?? "";
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) {
+      return checked(ctx, 404, "directChatMutated", { ok: false, error: "Chat thread not found." } satisfies DirectChatMutated);
+    }
+    const res = host.repairCloneGit(gate.who.name, threadId);
+    if (!res.ok) {
+      return checked(ctx, res.status, "directChatMutated", { ok: false, error: res.error } satisfies DirectChatMutated);
+    }
+    return checked(ctx, 200, "directChatMutated", { ok: true, said: res.said } satisfies DirectChatMutated);
+  }
+
   async function shipPreview(ctx: HandlerContext): Promise<void> {
     const gate = admit(ctx, "read");
     if (!gate.ok) return checked(ctx, gate.status, "refusal", { error: gate.error });
@@ -583,6 +599,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       "direct-chat.artifact": artifact,
       "direct-chat.attach": attach,
       "direct-chat.apply-main": applyMain,
+      "direct-chat.repair": repair,
       "direct-chat.ship-preview": shipPreview,
       "direct-chat.ship": ship,
       "direct-chat.ship-cancel": shipCancel,

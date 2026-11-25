@@ -217,6 +217,7 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.delete": "direct-chat-manage",
   "direct-chat.attach": "direct-chat-send",
   "direct-chat.apply-main": "direct-chat-manage",
+  "direct-chat.repair": "direct-chat-manage",
   "direct-chat.ship-preview": "read",
   "direct-chat.ship": "direct-chat-ship",
   "direct-chat.ship-cancel": "direct-chat-manage",
@@ -669,6 +670,7 @@ post("tasks", "direct-chat.model", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/mo
 post("tasks", "direct-chat.delete", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/delete$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/delete` });
 post("tasks", "direct-chat.attach", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/attachments$`, { ...DIRECT_CHAT, bodyCap: 16 * 1024 * 1024, sample: `/engine/direct-chats/${"a".repeat(32)}/attachments` });
 post("tasks", "direct-chat.apply-main", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/apply-main-edits$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/apply-main-edits` });
+post("tasks", "direct-chat.repair", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/repair$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/repair` });
 // Reading a chat clone's git diff for Ship preview runs git in an agent-writable workspace, so it is a POST (never a GET).
 post("tasks", "direct-chat.ship-preview", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-preview$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-preview` });
 post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/ship` });

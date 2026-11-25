@@ -1,12 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   assertTrustedCloneGit,
   runHardenedMainGit,
+  runHardenedMainGitAsync,
   runTrustedCloneGit,
   type TrustedCloneBinding,
 } from "./direct-chat-git.js";
+
+const execFileAsync = promisify(execFile);
 
 const SKIPPED_DIR_SEGMENTS = new Set([
   ".git",
@@ -188,6 +192,173 @@ export function cloneSafeNodeModules(input: {
       result.cloned.push(relPath);
     } catch (error) {
       // Remove any partial copy left behind by a timeout or mid-copy failure.
+      try {
+        if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup.
+      }
+      result.skipped.push({
+        path: relPath,
+        reason: error instanceof Error ? error.message.slice(0, 140) : "Copy-on-write clone failed.",
+      });
+    }
+  }
+
+  return result;
+}
+
+async function scanNodeModulesSafetyAsync(
+  nodeModulesDir: string,
+  opts?: { maxEntries?: number; maxDepth?: number; repoRoot?: string },
+): Promise<{ safe: true; entries: number } | { safe: false; reason: string }> {
+  const maxEntries = opts?.maxEntries ?? MAX_SYMLINK_SCAN_ENTRIES;
+  const maxDepth = opts?.maxDepth ?? MAX_SYMLINK_SCAN_DEPTH;
+  let rootReal: string;
+  let boundaryReal: string;
+  try {
+    rootReal = realpathSync(nodeModulesDir);
+    boundaryReal = opts?.repoRoot ? realpathSync(opts.repoRoot) : rootReal;
+  } catch {
+    return { safe: false, reason: "Directory could not be resolved." };
+  }
+
+  let entries = 0;
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: rootReal, depth: 0 }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.depth > maxDepth) {
+      return { safe: false, reason: "Directory nesting exceeds safety depth limit." };
+    }
+    let items: string[];
+    try {
+      items = readdirSync(current.dir);
+    } catch {
+      return { safe: false, reason: "Unreadable directory inside node_modules." };
+    }
+    for (const name of items) {
+      entries += 1;
+      if (entries > maxEntries) {
+        return { safe: false, reason: "Dependency tree exceeds symlink scan cap." };
+      }
+      if (entries % 1_000 === 0) {
+        await new Promise<void>(resolveYield => setImmediate(resolveYield));
+      }
+      const full = join(current.dir, name);
+      let st;
+      try {
+        st = lstatSync(full);
+      } catch {
+        return { safe: false, reason: "Unreadable entry inside node_modules." };
+      }
+      if (st.isSymbolicLink()) {
+        let linkTarget: string;
+        try {
+          linkTarget = readlinkSync(full);
+        } catch {
+          return { safe: false, reason: "Unreadable symlink inside node_modules." };
+        }
+        if (isAbsolute(linkTarget)) {
+          return { safe: false, reason: `Absolute symlink (${name}) points outside node_modules.` };
+        }
+        const resolved = resolve(dirname(full), linkTarget);
+        const rel = relative(boundaryReal, resolved);
+        if (rel === ".." || rel.startsWith(`..${"/"}`) || rel.startsWith(`..${"\\"}`) || isAbsolute(rel)) {
+          return { safe: false, reason: `Relative symlink (${name}) escapes allowed workspace boundary.` };
+        }
+      } else if (st.isDirectory()) {
+        stack.push({ dir: full, depth: current.depth + 1 });
+      }
+    }
+  }
+  return { safe: true, entries };
+}
+
+async function discoverNodeModulesDirsAsync(repo: string): Promise<string[]> {
+  let raw = "";
+  try {
+    raw = await runHardenedMainGitAsync(["ls-files", "-o", "-i", "--exclude-standard", "--directory"], repo);
+  } catch {
+    return [];
+  }
+  const found: string[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim().replace(/\/+$/, "");
+    if (trimmed === "") continue;
+    const parts = trimmed.split("/");
+    if (parts.at(-1) !== "node_modules") continue;
+    if (parts.some(seg => seg === ".." || seg === "." || SKIPPED_DIR_SEGMENTS.has(seg))) continue;
+    if (parts.slice(0, -1).includes("node_modules")) continue;
+    found.push(trimmed);
+  }
+  return [...new Set(found)].sort();
+}
+
+/**
+ * Non-blocking async variant of `cloneSafeNodeModules`: yields during symlink
+ * scanning and runs `/bin/cp -cR` asynchronously so starting a chat never
+ * blocks Node's event loop.
+ */
+export async function cloneSafeNodeModulesAsync(input: {
+  repo: string;
+  clonePath: string;
+  platform?: NodeJS.Platform;
+  copyCoW?: (src: string, dst: string) => Promise<void> | void;
+}): Promise<CloneNodeModulesResult> {
+  const platform = input.platform ?? process.platform;
+  const result: CloneNodeModulesResult = { cloned: [], skipped: [] };
+  if (platform !== "darwin") {
+    return result;
+  }
+
+  const dirs = await discoverNodeModulesDirsAsync(input.repo);
+  if (dirs.length === 0) return result;
+
+  let cloneDev: number;
+  try {
+    cloneDev = statSync(input.clonePath).dev;
+  } catch {
+    return result;
+  }
+
+  const copyFn = input.copyCoW ?? (async (src: string, dst: string) => {
+    await execFileAsync("/bin/cp", ["-cR", src, dst], {
+      timeout: 15_000,
+    });
+  });
+
+  for (const relPath of dirs) {
+    const src = join(input.repo, relPath);
+    const dst = join(input.clonePath, relPath);
+    if (!existsSync(src)) continue;
+    if (existsSync(dst)) {
+      result.skipped.push({ path: relPath, reason: "Already exists in clone." });
+      continue;
+    }
+    let srcStat;
+    try {
+      srcStat = lstatSync(src);
+    } catch {
+      result.skipped.push({ path: relPath, reason: "Source could not be read." });
+      continue;
+    }
+    if (!srcStat.isDirectory() || srcStat.isSymbolicLink()) {
+      result.skipped.push({ path: relPath, reason: "Not a real directory." });
+      continue;
+    }
+    if (srcStat.dev !== cloneDev) {
+      result.skipped.push({ path: relPath, reason: "Different filesystem volume (APFS clonefile unavailable)." });
+      continue;
+    }
+    const safety = await scanNodeModulesSafetyAsync(src, { repoRoot: input.repo });
+    if (!safety.safe) {
+      result.skipped.push({ path: relPath, reason: safety.reason });
+      continue;
+    }
+    try {
+      mkdirSync(dirname(dst), { recursive: true });
+      await copyFn(src, dst);
+      result.cloned.push(relPath);
+    } catch (error) {
       try {
         if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
       } catch {

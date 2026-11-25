@@ -73,7 +73,7 @@ const COOKIE_ONLY_POSTS = [
   'edge.connect-pair-confirm',
   // Direct Chat: local-clone direct agent chats, loopback + cookie session only, never a token.
   'direct-chat.start', 'direct-chat.send', 'direct-chat.stop', 'direct-chat.model', 'direct-chat.delete',
-  'direct-chat.attach', 'direct-chat.apply-main', 'direct-chat.ship-preview', 'direct-chat.ship', 'direct-chat.ship-cancel',
+  'direct-chat.attach', 'direct-chat.apply-main', 'direct-chat.repair', 'direct-chat.ship-preview', 'direct-chat.ship', 'direct-chat.ship-cancel',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

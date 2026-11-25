@@ -21,11 +21,13 @@ import {
 import {
   assertManagedClonePath,
   assertTrustedCloneGit,
-  cloneIsolatedRepo,
+  cloneIsolatedRepoAsync,
+  pinnedConfigBackupPath,
+  repairCloneGitBinding,
   runTrustedCloneGit,
   type TrustedCloneBinding,
 } from "./direct-chat-git.js";
-import { applyMainDirtyPatch, cloneSafeNodeModules, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
+import { applyMainDirtyPatch, cloneSafeNodeModulesAsync, type ApplyMainDirtyPatchResult } from "./direct-chat-workspace.js";
 import type { Store } from "./store.js";
 
 export type DirectChatProvider = "claude" | "codex" | "gemini";
@@ -491,7 +493,7 @@ export function buildTurnPrompt(input: {
   const parts: string[] = [];
   if (input.isFirstTurnForProvider) {
     parts.push(
-      `[Workspace boundary: you are working in an isolated local clone on branch ${input.branch} with no remote. Work only inside this directory; never push, force-reset, or delete files outside this workspace.]`
+      `[Workspace boundary: you are working in an isolated local clone on branch ${input.branch} with no remote. Work only inside this directory; never push, force-reset, or delete files outside this workspace. Leave your changes in the working tree — do not run git commit or git push, because Toolroll commits and ships snapshots for you.]`
     );
     if (input.priorTurns.length > 0) {
       const slice = input.priorTurns.slice(-HANDOFF_MAX_TURNS);
@@ -523,7 +525,12 @@ export type DirectChatHostSeams = {
     logPath: string;
     stderrPath: string;
   }) => { pid: number; pgid: number; startIdentity: string | null };
-  prepareClone?: (input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }) => {
+  prepareClone?: (input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }) => Promise<{
+    baseSha: string;
+    gitDir: string;
+    configSha256: string;
+    mainDirtyFiles: string[];
+  }> | {
     baseSha: string;
     gitDir: string;
     configSha256: string;
@@ -533,14 +540,14 @@ export type DirectChatHostSeams = {
   onNotify?: (note: DirectChatNotification) => void;
 };
 
-function defaultPrepareClone(input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }): {
+async function defaultPrepareCloneAsync(input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }): Promise<{
   baseSha: string;
   gitDir: string;
   configSha256: string;
   mainDirtyFiles: string[];
-} {
-  const cloned = cloneIsolatedRepo(input);
-  cloneSafeNodeModules({ repo: input.repo, clonePath: input.clonePath });
+}> {
+  const cloned = await cloneIsolatedRepoAsync(input);
+  await cloneSafeNodeModulesAsync({ repo: input.repo, clonePath: input.clonePath });
   return {
     baseSha: cloned.baseSha,
     gitDir: cloned.gitDir,
@@ -604,7 +611,11 @@ function defaultSpawnTurn(
     }
     child.unref();
     const pid = child.pid;
-    const row = custody.table()?.find(one => one.pid === pid) ?? null;
+    let row: ProcRow | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      row = custody.table()?.find(one => one.pid === pid) ?? null;
+      if (row !== null) break;
+    }
     return { pid, pgid: row?.pgid ?? pid, startIdentity: row?.start ?? null };
   } finally {
     closeSync(outFd);
@@ -627,6 +638,7 @@ export class DirectChatHost {
   private readonly sawTerminalByTurn = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
+  private readonly inFlightCreates = new Map<string, Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }>>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(store: Store, seams: DirectChatHostSeams) {
@@ -638,7 +650,7 @@ export class DirectChatHost {
     this.stopGraceMs = seams.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
-    this.prepareCloneFn = seams.prepareClone ?? defaultPrepareClone;
+    this.prepareCloneFn = seams.prepareClone ?? defaultPrepareCloneAsync;
     this.readDiffFn = seams.readDiff ?? defaultReadDiff;
     this.onNotify = seams.onNotify ?? (() => {});
   }
@@ -786,7 +798,29 @@ export class DirectChatHost {
     return res;
   }
 
-  createThread(input: {
+  repairCloneGit(owner: string, threadId: string): { ok: true; said: string } | { ok: false; status: number; error: string } {
+    if (!HEX32.test(threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
+    const thread = this.getThreadRecord(owner, threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+    if (thread.isLegacy) {
+      return { ok: false, status: 409, error: "Imported chats are read-only history." };
+    }
+    const active = this.store.handle
+      .prepare(`SELECT id FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
+      .get(thread.id) as Record<string, unknown> | undefined;
+    if (active) return { ok: false, status: 409, error: "Stop the running turn before repairing the workspace git binding." };
+    const binding = this.bindingOf(thread);
+    if (binding === null) return { ok: false, status: 409, error: "This chat has no isolated clone workspace (read-only)." };
+    const repaired = repairCloneGitBinding(binding);
+    if (!repaired.ok) return { ok: false, status: 409, error: repaired.error };
+    const stamp = this.now().toISOString();
+    this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
+    this.refreshDiffCache(thread);
+    this.onNotify({ threadId: thread.id, turnId: null, event: "change" });
+    return { ok: true, said: "Workspace git binding repaired." };
+  }
+
+  async createThread(input: {
     owner: string;
     localGeneration: number | null;
     accountGeneration: number;
@@ -795,11 +829,39 @@ export class DirectChatHost {
     provider: DirectChatProvider;
     modelId?: string;
     prompt: string;
-  }): { ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string } {
+  }): Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }> {
     const trimmedPrompt = input.prompt.trim();
     if (trimmedPrompt === "") return { ok: false, status: 400, error: "Write a message to start a chat." };
     if (!HEX32.test(input.requestId)) return { ok: false, status: 400, error: "Invalid request id." };
 
+    const dedupeKey = `${input.owner}:${input.requestId}`;
+    const existingPromise = this.inFlightCreates.get(dedupeKey);
+    if (existingPromise !== undefined) {
+      return existingPromise;
+    }
+
+    const work = this.createThreadImpl(input, trimmedPrompt);
+    this.inFlightCreates.set(dedupeKey, work);
+    try {
+      return await work;
+    } finally {
+      this.inFlightCreates.delete(dedupeKey);
+    }
+  }
+
+  private async createThreadImpl(
+    input: {
+      owner: string;
+      localGeneration: number | null;
+      accountGeneration: number;
+      requestId: string;
+      repo: string;
+      provider: DirectChatProvider;
+      modelId?: string;
+      prompt: string;
+    },
+    trimmedPrompt: string,
+  ): Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }> {
     const existing = this.store.handle
       .prepare(`SELECT * FROM direct_chat_thread WHERE owner = ? AND create_request_id = ?`)
       .get(input.owner, input.requestId) as Record<string, unknown> | undefined;
@@ -826,12 +888,20 @@ export class DirectChatHost {
     let configSha256: string;
     let mainDirtyFiles: string[];
     try {
-      const prep = this.prepareCloneFn({ stateRoot: this.stateRoot, repo: input.repo, clonePath, gitDir, branch });
+      const prep = await this.prepareCloneFn({ stateRoot: this.stateRoot, repo: input.repo, clonePath, gitDir, branch });
       baseSha = prep.baseSha;
       resolvedGitDir = prep.gitDir;
       configSha256 = prep.configSha256;
       mainDirtyFiles = prep.mainDirtyFiles;
     } catch (error) {
+      try {
+        if (existsSync(clonePath)) rmSync(clonePath, { recursive: true, force: true });
+        if (existsSync(gitDir)) rmSync(gitDir, { recursive: true, force: true });
+        const backup = pinnedConfigBackupPath(gitDir);
+        if (existsSync(backup)) rmSync(backup, { force: true });
+      } catch {
+        // Best-effort cleanup of failed clone preparation.
+      }
       return { ok: false, status: 500, error: `Could not prepare isolated clone: ${error instanceof Error ? error.message : String(error)}` };
     }
 
@@ -1115,6 +1185,8 @@ export class DirectChatHost {
             const rel = relative(realRoot, realGd);
             if (rel !== "" && rel !== ".." && !rel.startsWith(`..${"/"}`) && !isAbsolute(rel)) {
               rmSync(realGd, { recursive: true, force: true });
+              const backup = pinnedConfigBackupPath(realGd);
+              if (existsSync(backup)) rmSync(backup, { force: true });
             }
           } catch {
             // Best-effort cleanup of separate git-dir.
@@ -1198,9 +1270,42 @@ export class DirectChatHost {
           this.custody.signal(custodyState.members, "SIGKILL");
         }
       }
-      if (advanced) {
-        this.onNotify({ threadId: thread.id, turnId: turn.id, event: "turn" });
+      // Escape hatch for missing startIdentity (e.g., ps briefly missed the process at spawn and the PID
+      // was reused): never signal an unproven PID, but once the owner requests Stop and stopGraceMs has
+      // elapsed (or the turn log already recorded a terminal event), settle cleanly instead of wedging forever.
+      const latestAfterDrain = this.reloadTurn(turn.id) ?? turn;
+      const missingIdentityExpiredStop =
+        custodyState.state === "unknown"
+        && turn.startIdentity === null
+        && latestAfterDrain.stopRequestedAt !== null
+        && Number.isFinite(this.now().getTime() - Date.parse(latestAfterDrain.stopRequestedAt))
+        && (this.now().getTime() - Date.parse(latestAfterDrain.stopRequestedAt)) >= this.stopGraceMs;
+      const missingIdentityTerminalLog =
+        custodyState.state === "unknown"
+        && turn.startIdentity === null
+        && latestAfterDrain.status !== "running";
+      if (!missingIdentityExpiredStop && !missingIdentityTerminalLog) {
+        if (advanced) {
+          this.onNotify({ threadId: thread.id, turnId: turn.id, event: "turn" });
+        }
+        return;
       }
+      if (missingIdentityExpiredStop && latestAfterDrain.status === "running") {
+        this.drainTurnLog(thread, latestAfterDrain, true);
+        const stamp = this.now().toISOString();
+        this.store.handle.prepare(`
+          UPDATE direct_chat_turn
+          SET status = 'interrupted', error_text = COALESCE(error_text, ?), finished_at = ?
+          WHERE id = ? AND status = 'running'
+        `).run("Stopped without verified process identity; check if an agent process is still running.", stamp, turn.id);
+        this.store.handle.prepare(`
+          UPDATE direct_chat_tool SET status = 'done', updated_at = ? WHERE turn_id = ? AND status = 'running'
+        `).run(stamp, turn.id);
+        this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
+      }
+      this.refreshDiffCache(thread);
+      this.cleanupTurnState(turn.id);
+      this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
       return;
     }
 

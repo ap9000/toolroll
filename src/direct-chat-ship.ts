@@ -690,6 +690,14 @@ function cancelArmedRow(store: Store, ship: DirectChatShipRow, why: string, now:
       outcome: "cancelled",
       detail: `ship ${ship.id} · ${why}`.slice(0, 1000),
     });
+    // Cancel the verify-only task too so automatic cancels never leave an orphan verify job running.
+    if (ship.taskId !== null) {
+      try {
+        store.cancelTask(ship.taskId, now, `Direct Chat Ship cancelled: ${why}`);
+      } catch {
+        // Task may already be terminal.
+      }
+    }
   });
 }
 
@@ -712,10 +720,20 @@ function passingCheckDigest(store: Store, root: string, runId: number, ship: Dir
     : null;
 }
 
-function baseStillAncestor(repo: string, baseSha: string, targetBranch: string): "yes" | "no" | "unknown" {
+export function baseStillAncestor(repo: string, baseSha: string, remote: string, targetBranch: string): "yes" | "no" | "unknown" {
   if (!existsSync(repo)) return "unknown";
+  // Prefer the remote-tracking ref (`refs/remotes/<remote>/<base>`) over local `refs/heads/<base>`,
+  // which can be stale if the user hasn't pulled.
+  const remoteRef = `refs/remotes/${remote}/${targetBranch}`;
+  let targetRef = `refs/heads/${targetBranch}`;
   try {
-    runHardenedMainGit(["--no-replace-objects", "merge-base", "--is-ancestor", baseSha, `refs/heads/${targetBranch}`], repo);
+    runHardenedMainGit(["rev-parse", "--verify", "--quiet", remoteRef], repo);
+    targetRef = remoteRef;
+  } catch {
+    // No remote-tracking ref yet; fall back to local branch ref.
+  }
+  try {
+    runHardenedMainGit(["--no-replace-objects", "merge-base", "--is-ancestor", baseSha, targetRef], repo);
     return "yes";
   } catch (error) {
     const status = (error as { status?: number }).status;
@@ -789,9 +807,9 @@ export async function directChatArmedPass(
     }
 
     if (ship.terms.github !== null) {
-      const ancestor = baseStillAncestor(ship.repo, ship.baseSha, ship.terms.github.base);
+      const ancestor = baseStillAncestor(ship.repo, ship.baseSha, ship.terms.github.remote, ship.terms.github.base);
       if (ancestor === "no") {
-        cancelArmedRow(store, ship, `Base commit is no longer an ancestor of ${ship.terms.github.base}.`, clock());
+        cancelArmedRow(store, ship, `Base commit is no longer an ancestor of ${ship.terms.github.remote}/${ship.terms.github.base}.`, clock());
         report.cancelled += 1;
         continue;
       }
@@ -881,6 +899,13 @@ export async function directChatArmedPass(
             cancelArmedRow(store, ship, "PR base changed on GitHub.", clock());
             return false;
           }
+          if (seen.url !== null && ship.terms.github !== null && pub.prNumber !== null) {
+            const expectedUrl = `https://github.com/${ship.terms.github.repo}/pull/${pub.prNumber}`;
+            if (seen.url.toLowerCase() !== expectedUrl.toLowerCase()) {
+              cancelArmedRow(store, ship, "PR repository or number changed on GitHub.", clock());
+              return false;
+            }
+          }
           const at = clock().toISOString();
           const reserved = store.handle.prepare(`
             UPDATE direct_chat_ship
@@ -915,7 +940,18 @@ export async function directChatArmedPass(
         });
       });
       report.merged += 1;
+    } else if (merged.reason === "closed" || merged.reason === "moved" || merged.reason === "elsewhere") {
+      cancelArmedRow(store, ship, merged.message, clock());
+      report.cancelled += 1;
     } else {
+      // Definite refusal or transient failure (process did not crash): release our merge reservation
+      // back to `completed` so the next watch pass can retry instead of stalling until stale timeout.
+      const at = clock().toISOString();
+      store.handle.prepare(`
+        UPDATE direct_chat_ship
+        SET state = 'completed', merge_token = NULL, merge_reserved_at = NULL, detail = ?, state_at = ?
+        WHERE id = ? AND state = 'merging' AND merge_token = ?
+      `).run(merged.message.slice(0, 1000), at, ship.id, token);
       report.waiting += 1;
     }
   }

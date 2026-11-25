@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -12,7 +12,7 @@ import {
   importLegacyDirectChatJson,
   parseDirectChatLine,
 } from "./direct-chat.js";
-import { assertTrustedCloneGit, runTrustedCloneGit } from "./direct-chat-git.js";
+import { assertTrustedCloneGit, pinnedConfigBackupPath, runTrustedCloneGit } from "./direct-chat-git.js";
 import type { CustodyIO, ProcessWitness, ProcRow } from "./flexible-custody.js";
 import { openStore } from "./store.js";
 
@@ -93,7 +93,7 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
-  test("isolated local clone has its own .git dir, no origin remote, and cannot touch main repo refs or hooks", () => {
+  test("isolated local clone has its own .git dir, no origin remote, and cannot touch main repo refs or hooks", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     // Leave an uncommitted edit in main checkout to verify it is reported but not copied into the clone.
@@ -118,7 +118,7 @@ describe("DirectChatHost & helpers", () => {
     });
 
     try {
-      const res = host.createThread({
+      const res = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -157,6 +157,44 @@ describe("DirectChatHost & helpers", () => {
       expect(assertTrustedCloneGit(binding).ok).toBe(false);
       expect(() => runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", thread.baseSha])).toThrow(/config changed/i);
       expect(existsSync(marker)).toBe(false);
+
+      // Stop turn and verify repairCloneGit restores tampered config, .git pointer, and planted commondir!
+      host.stopThread("alex", thread.id);
+      const evilCommonDir = join(root, "evil-common");
+      mkdirSync(evilCommonDir, { recursive: true });
+      const filterMarker = join(root, "filter-pwned.txt");
+      writeFileSync(
+        join(evilCommonDir, "config"),
+        `[filter "evil"]\n\tclean = touch ${filterMarker}\n\tsmudge = cat\n`,
+      );
+      writeFileSync(join(thread.clonePath, ".gitattributes"), "* filter=evil\n");
+      writeFileSync(join(thread.gitDir!, "commondir"), `${evilCommonDir}\n`);
+      // Even after restoring config, commondir redirect MUST still be refused and filter must never execute.
+      writeFileSync(join(thread.gitDir!, "config"), readFileSync(pinnedConfigBackupPath(thread.gitDir!)));
+      const commonDirCheck = assertTrustedCloneGit(binding);
+      expect(commonDirCheck.ok).toBe(false);
+      if (!commonDirCheck.ok) expect(commonDirCheck.error).toMatch(/commondir/i);
+      expect(() => runTrustedCloneGit(binding, ["status"])).toThrow(/commondir/i);
+      expect(existsSync(filterMarker)).toBe(false);
+
+      // Also verify tampering .git pointer + commondir + config can be cleanly repaired via host.repairCloneGit!
+      writeFileSync(join(thread.clonePath, ".git"), "gitdir: /tmp/not-ours\n");
+      appendFileSync(join(thread.gitDir!, "config"), "\n[user]\n\tname = tampered\n");
+      const repaired = host.repairCloneGit("alex", thread.id);
+      expect(repaired.ok).toBe(true);
+      expect(assertTrustedCloneGit(binding).ok).toBe(true);
+      expect(existsSync(join(thread.gitDir!, "commondir"))).toBe(false);
+      expect(runTrustedCloneGit(binding, ["status", "--porcelain"])).toContain(".gitattributes");
+      expect(existsSync(filterMarker)).toBe(false);
+
+      // A dangling symlink named `commondir` is also refused, and a tampered `.pinned-config` backup is refused!
+      symlinkSync("/nonexistent/target", join(thread.gitDir!, "commondir"));
+      expect(assertTrustedCloneGit(binding).ok).toBe(false);
+      writeFileSync(pinnedConfigBackupPath(thread.gitDir!), "[core]\n\tbare = true\n");
+      const refusedRepair = host.repairCloneGit("alex", thread.id);
+      expect(refusedRepair.ok).toBe(false);
+      if (!refusedRepair.ok) expect(refusedRepair.error).toMatch(/does not match the recorded hash/i);
+
       expect(spawned[0]?.cwd).toBe(realpathSync(thread.clonePath));
     } finally {
       host.close();
@@ -164,7 +202,7 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
-  test("detached turn survives server restart, re-adopts via custody, tails JSONL, and settles on exit", () => {
+  test("detached turn survives server restart, re-adopts via custody, tails JSONL, and settles on exit", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const dbPath = join(root, "state.db");
@@ -191,7 +229,7 @@ describe("DirectChatHost & helpers", () => {
         return { pid: 5001, pgid: 5001, startIdentity: "s1764028801" };
       },
     });
-    const started = hostA.createThread({
+    const started = await hostA.createThread({
       owner: "alex",
       localGeneration: 1,
       accountGeneration: 1,
@@ -264,7 +302,7 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
-  test("stopThread signals process group; provider switch refuses while running and hands off context once idle", () => {
+  test("stopThread signals process group; provider switch refuses while running and hands off context once idle", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const store = openStore(join(root, "state.db"));
@@ -286,7 +324,7 @@ describe("DirectChatHost & helpers", () => {
     });
 
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -299,7 +337,7 @@ describe("DirectChatHost & helpers", () => {
       if (!started.ok) return;
 
       // Duplicate requestId is idempotent (no second spawn).
-      const dup = host.createThread({
+      const dup = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -353,7 +391,7 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
-  test("deleteThread protects uncommitted changes with 409 unless discardChanges or keepClone is specified", () => {
+  test("deleteThread protects uncommitted changes with 409 unless discardChanges or keepClone is specified", async () => {
     const root = tempDir();
     const repo = makeTempRepo(root);
     const store = openStore(join(root, "state.db"));
@@ -371,7 +409,7 @@ describe("DirectChatHost & helpers", () => {
     });
 
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -454,6 +492,7 @@ describe("DirectChatHost & helpers", () => {
       priorTurns: [{ userPrompt: "Hello", assistantText: "Hi there" }],
     });
     expect(prompt).toContain("isolated local clone on branch toolroll/chat-12345678");
+    expect(prompt).toContain("do not run git commit or git push");
     expect(prompt).toContain("Hello");
   });
 
@@ -517,7 +556,7 @@ describe("DirectChatHost & helpers", () => {
     }
   });
 
-  test("hardening regressions: verified stop with SIGKILL escalation, unreadable ps = unknown, partial JSONL across restart, split-delta redaction, CLI flag safety", () => {
+  test("hardening regressions: verified stop with SIGKILL escalation, unreadable ps = unknown, missing startIdentity escape hatch, partial JSONL across restart, split-delta redaction, CLI flag safety", async () => {
     const root = tempDir();
     const repo = makeRepoSimple(root);
     const stateRoot = join(root, "state");
@@ -573,7 +612,7 @@ describe("DirectChatHost & helpers", () => {
     });
 
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -630,6 +669,42 @@ describe("DirectChatHost & helpers", () => {
       expect(codexResume).toContain('sandbox_mode="workspace-write"');
       expect(codexResume).toContain('approval_policy="never"');
       expect(codexResume.slice(-2)).toEqual(["--", "-foo"]);
+
+      // 5. Missing startIdentity escape hatch: if startIdentity was null at spawn and the PID is still
+      //    present in ps (e.g. PID reuse), Stop never blindly signals the PID, and once stopGraceMs elapses
+      //    reconcileRunningTurns settles it as interrupted so the chat isn't permanently wedged!
+      const missingIdHost = new DirectChatHost(store, {
+        stateRoot,
+        now: () => new Date(nowMs),
+        custody: stubbornCustody,
+        bootId: () => "boot-1",
+        stopGraceMs: 5_000,
+        locateBinary: () => "/fake/claude",
+        spawnTurn: input => {
+          mkdirSync(dirname(input.logPath), { recursive: true });
+          writeFileSync(input.logPath, "", { mode: 0o600 });
+          rows.set(9911, { pid: 9911, ppid: 1, pgid: 9911, uid: 501, start: "reused-pid", zombie: false });
+          return { pid: 9911, pgid: 9911, startIdentity: null };
+        },
+      });
+      const third = missingIdHost.sendMessage({
+        owner: "alex",
+        threadId: started.thread.id,
+        requestId: "6".repeat(32),
+        prompt: "Missing start identity turn",
+      });
+      expect(third.ok).toBe(true);
+      const beforeSignals = signalsSent.length;
+      const stopUnknown = missingIdHost.stopThread("alex", started.thread.id);
+      expect(stopUnknown).toEqual({ ok: true, stopped: false, stopping: true });
+      // Must NOT signal unproven PID 9911!
+      expect(signalsSent).toHaveLength(beforeSignals);
+      nowMs += 6_000;
+      missingIdHost.reconcileRunningTurns();
+      expect(signalsSent).toHaveLength(beforeSignals);
+      expect(missingIdHost.getThread("alex", started.thread.id)?.running).toBe(false);
+      expect(missingIdHost.getThread("alex", started.thread.id)?.turns.at(-1)?.status).toBe("interrupted");
+      missingIdHost.close();
     } finally {
       host.close();
       store.close();

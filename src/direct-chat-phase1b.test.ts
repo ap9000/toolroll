@@ -12,7 +12,9 @@ import {
   snapshotWorkspaceImages,
 } from "./direct-chat-artifacts.js";
 import {
+  baseStillAncestor,
   cancelDirectChatShip,
+  directChatArmedPass,
   executeDirectChatShip,
   listDirectChatShips,
   previewDirectChatShip,
@@ -20,13 +22,17 @@ import {
 import {
   applyMainDirtyPatch,
   cloneSafeNodeModules,
+  cloneSafeNodeModulesAsync,
   discoverNodeModulesDirs,
   scanNodeModulesSafety,
 } from "./direct-chat-workspace.js";
 import type { CustodyIO, ProcessWitness, ProcRow } from "./flexible-custody.js";
+import { recordRunCheckLevel } from "./check-levels.js";
+import { storeEvidence } from "./evidence.js";
 import { declareNewInstallSolo } from "./install-mode.js";
 import { addApprover } from "./scope.js";
 import { openStore } from "./store.js";
+import { sealVerificationReceipt } from "./verification-evidence.js";
 
 const GIT_ENV = {
   ...process.env,
@@ -86,7 +92,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     while (cleanupDirs.length > 0) rmSync(cleanupDirs.pop()!, { recursive: true, force: true });
   });
 
-  test("safe APFS node_modules cloning discovers monorepo dirs, allows internal relative symlinks, and rejects escaping/absolute symlinks", () => {
+  test("safe APFS node_modules cloning discovers monorepo dirs, allows internal relative symlinks, and rejects escaping/absolute symlinks", async () => {
     const root = tempDir();
     const repo = makeRepo(root);
     const clonePath = join(root, "clone");
@@ -147,9 +153,23 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     expect(existsSync(join(clonePath, "packages", "app", "node_modules"))).toBe(false);
     expect(res.skipped.map(s => s.path).sort()).toEqual(["packages/abs/node_modules", "packages/app/node_modules", "packages/bad/node_modules"]);
     expect(copied).toHaveLength(1);
+
+    // Async CoW clone path produces the same safe result without blocking the event loop.
+    const asyncClonePath = join(root, "clone-async");
+    mkdirSync(asyncClonePath, { recursive: true });
+    const asyncRes = await cloneSafeNodeModulesAsync({
+      repo,
+      clonePath: asyncClonePath,
+      platform: "darwin",
+      copyCoW: async (_src, dst) => {
+        mkdirSync(dst, { recursive: true });
+      },
+    });
+    expect(asyncRes.cloned).toEqual(["node_modules", "packages/app/node_modules"]);
+    expect(asyncRes.skipped.map(s => s.path).sort()).toEqual(["packages/abs/node_modules", "packages/bad/node_modules"]);
   });
 
-  test("applyMainDirtyPatch brings tracked edits into the isolated clone without touching main checkout", () => {
+  test("applyMainDirtyPatch brings tracked edits into the isolated clone without touching main checkout", async () => {
     const root = tempDir();
     const repo = makeRepo(root);
     const stateRoot = join(root, "state");
@@ -168,7 +188,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       },
     });
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -198,7 +218,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     }
   });
 
-  test("artifacts enforce magic bytes, reject SVG/fake images, git-exclude attachments, and capture workspace + base64 images", () => {
+  test("artifacts enforce magic bytes, reject SVG/fake images, git-exclude attachments, and capture workspace + base64 images", async () => {
     const root = tempDir();
     const repo = makeRepo(root);
     const store = openStore(join(root, "state.db"));
@@ -219,7 +239,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     });
 
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: 1,
         accountGeneration: 1,
@@ -293,7 +313,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     }
   });
 
-  test("Ship previews hashed terms, freezes snapshot commits, supports keep-branch on local repos, and arms+cancels verify-only tasks on GitHub repos", () => {
+  test("Ship previews hashed terms, freezes snapshot commits, supports keep-branch on local repos, and arms+cancels verify-only tasks on GitHub repos", async () => {
     const root = tempDir();
     const repo = makeRepo(root);
     const store = openStore(join(root, "state.db"));
@@ -319,7 +339,7 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
     });
 
     try {
-      const started = host.createThread({
+      const started = await host.createThread({
         owner: "alex",
         localGeneration: null,
         accountGeneration: 1,
@@ -419,6 +439,152 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       const ships = listDirectChatShips(store, started.thread.id);
       expect(ships.find(s => s.id === shipped.ship.id)?.state).toBe("cancelled");
       expect(store.getTask(shipped.ship.taskId!)?.state).toBe("cancelled");
+
+      // 3. Base check prefers remote-tracking ref `refs/remotes/origin/main` over a stale local `refs/heads/main`,
+      //    and automatic cancel via `directChatArmedPass` ALSO cancels the underlying verify-only task!
+      writeFileSync(join(started.thread.clonePath, "feature3.ts"), "export const v3 = 3;\n");
+      const preview3 = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: "alex", threadId: started.thread.id, mode: "ship" });
+      expect(preview3.ok).toBe(true);
+      if (!preview3.ok) return;
+      const shipped3 = executeDirectChatShip(store, {
+        stateRoot: host.stateRoot,
+        owner: "alex",
+        threadId: started.thread.id,
+        mode: "ship",
+        termsDigest: preview3.preview.termsDigest,
+        password: op.token,
+        now: T0,
+      });
+      expect(shipped3.ok).toBe(true);
+      if (!shipped3.ok) return;
+
+      // Create an orphan commit on `refs/remotes/origin/main` (simulating a remote force-push while local `main` is stale).
+      const orphanTree = execFileSync("git", ["-C", repo, "rev-parse", "HEAD^{tree}"], { env: GIT_ENV, encoding: "utf8" }).trim();
+      const orphanSha = execFileSync(
+        "git",
+        ["-C", repo, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit-tree", orphanTree, "-m", "remote rewrite"],
+        { env: GIT_ENV, encoding: "utf8" },
+      ).trim();
+      execFileSync("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", orphanSha], { env: GIT_ENV });
+      expect(baseStillAncestor(repo, started.thread.baseSha, "origin", "main")).toBe("no");
+
+      const passReport = await directChatArmedPass(store, { root: join(root, "evidence"), clock: () => T0 });
+      expect(passReport.cancelled).toBe(1);
+      expect(listDirectChatShips(store, started.thread.id).find(s => s.id === shipped3.ship.id)?.state).toBe("cancelled");
+      expect(store.getTask(shipped3.ship.taskId!)?.state).toBe("cancelled");
+
+      // 4. Definite merge failure reverts `merging -> completed` (instead of getting stuck in `merging` and
+      //    cancelled 15 minutes later as uncertain).
+      execFileSync("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", started.thread.baseSha], { env: GIT_ENV });
+      writeFileSync(join(started.thread.clonePath, "feature4.ts"), "export const v4 = 4;\n");
+      const preview4 = previewDirectChatShip(store, { stateRoot: host.stateRoot, owner: "alex", threadId: started.thread.id, mode: "ship" });
+      expect(preview4.ok).toBe(true);
+      if (!preview4.ok) return;
+      const shipped4 = executeDirectChatShip(store, {
+        stateRoot: host.stateRoot,
+        owner: "alex",
+        threadId: started.thread.id,
+        mode: "ship",
+        termsDigest: preview4.preview.termsDigest,
+        password: op.token,
+        now: T0,
+      });
+      expect(shipped4.ok).toBe(true);
+      if (!shipped4.ok) return;
+
+      // Seed a passing verified builder run + open PR so directChatArmedPass enters the `completed` -> `merging` step.
+      const taskRef4 = store.lookupRef(shipped4.ship.taskId!)!;
+      const scope4 = store.getScope(shipped4.ship.taskId!)!;
+      const T1 = new Date(T0.getTime() + 1_000);
+      const run4 = Number(
+        store.handle.prepare(`
+          INSERT INTO run (
+            task_ref, lease_id, runner, branch, worktree, model, role, provider,
+            started_at, finished_at, base_revision, head_revision, scope_digest, committed, outcome
+          ) VALUES (?, 'lease-4', 'w1', ?, ?, 'sonnet', 'builder', 'claude', ?, ?, ?, ?, ?, 1, 'built')
+        `).run(
+          taskRef4.id,
+          shipped4.ship.branch,
+          started.thread.clonePath,
+          T1.toISOString(),
+          T1.toISOString(),
+          started.thread.baseSha,
+          shipped4.ship.candidateSha,
+          scope4.digest,
+        ).lastInsertRowid,
+      );
+      const evRoot = join(root, "evidence");
+      mkdirSync(evRoot, { recursive: true });
+      storeEvidence(store, evRoot, run4, "check-log", "check.log", Buffer.from("PASS\n"), "machine check", T1, { captureStatus: "ok", redacted: false });
+      sealVerificationReceipt(
+        store,
+        evRoot,
+        run4,
+        shipped4.ship.candidateSha,
+        store.liveVerifyCommand(repo)!,
+        { configured: true, ran: true, exitCode: 0 },
+        T1,
+      );
+      recordRunCheckLevel(store, { id: run4, taskId: shipped4.ship.taskId!, repo }, "full", "project", T1);
+      store.handle.prepare(`
+        INSERT INTO run_check (run, status, exit_code, suites_json, release, recorded_at)
+        VALUES (?, 'passed', 0, '[]', 0, ?)
+      `).run(run4, T1.toISOString());
+      const pubId = store.createPublicationIntent({
+        run: run4,
+        taskRef: taskRef4.id,
+        githubRepo: "acme/payments-api",
+        remote: "origin",
+        base: "main",
+        head: shipped4.ship.branch,
+        headSha: shipped4.ship.candidateSha,
+        bodyHash: "h1",
+        draft: false,
+      }, T1);
+      store.handle.prepare(`
+        UPDATE publication SET state = 'opened', pr_number = 42, pr_url = 'https://github.com/acme/payments-api/pull/42'
+        WHERE id = ?
+      `).run(pubId);
+      store.handle.prepare(`
+        INSERT INTO pull_request_follow (publication, flow_card, revisions, created_at, updated_at)
+        VALUES (?, NULL, 0, ?, ?)
+      `).run(pubId, T1.toISOString(), T1.toISOString());
+      store.handle.prepare(`
+        UPDATE direct_chat_ship SET state = 'completed' WHERE id = ?
+      `).run(shipped4.ship.id);
+
+      const ghActions: string[] = [];
+      const failMergePass = await directChatArmedPass(store, {
+        root: evRoot,
+        clock: () => T1,
+        exec: async (_cmd, args) => {
+          ghActions.push(`${args[0]} ${args[1]}`);
+          if (args[0] === "pr" && args[1] === "view") {
+            return {
+              code: 0,
+              stdout: JSON.stringify({
+                state: "OPEN",
+                isDraft: false,
+                headRefOid: shipped4.ship.candidateSha,
+                statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+                mergeCommit: null,
+                baseRefName: "main",
+                url: "https://github.com/acme/payments-api/pull/42",
+              }),
+              stderr: "",
+              notFound: false,
+            };
+          }
+          // Simulate GitHub refusing the merge (e.g. branch protection / transient 502).
+          return { code: 1, stdout: "", stderr: "GraphQL: Base branch policy blocked merge temporarily", notFound: false };
+        },
+      });
+      expect(ghActions).toContain("pr merge");
+      expect(failMergePass.waiting).toBe(1);
+      const afterFail = listDirectChatShips(store, started.thread.id).find(s => s.id === shipped4.ship.id)!;
+      expect(afterFail.state).toBe("completed");
+      expect(afterFail.mergeToken).toBeNull();
+      expect(afterFail.detail).toContain("Base branch policy");
     } finally {
       host.close();
       store.close();
