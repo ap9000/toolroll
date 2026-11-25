@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import type { Store, VerifyCommand } from "./store.js";
+import { verifyCommandAt } from "./store.js";
 import { refArchived } from "./task-archive.js";
 import { belongsToRelease } from "./release-authority.js";
 import type { ExecResult } from "./exec.js";
@@ -28,7 +29,7 @@ import { hardenedGit } from "./teardown-git.js";
 import { approvedCommandShell, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { boundStreamHeadTail, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
-import { CHECK_LEVEL_WORDS, checkCommandFor, repoClause, repoOfRun, runCheckLevel, type CheckLevel } from "./check-levels.js";
+import { CHECK_LEVEL_WORDS, checkCommandFor, quickVerifyKey, repoClause, repoOfRun, runCheckLevel, type CheckLevel } from "./check-levels.js";
 import { fileTaskProposal } from "./proposal.js";
 
 export const CHECKS_REQUESTED = "checks requested";
@@ -70,8 +71,9 @@ function ledgerFor(store: Store, runId: number): LedgerRow[] {
 }
 
 /** Every follow-up check a result has had, oldest first, as the ledger and its sealed receipts say. */
-export function followUpChecksOf(store: Store, runId: number, now: Date = new Date(), root?: string): FollowUpCheck[] {
-  const rows = ledgerFor(store, runId);
+// `asOf`: the follow-ups as they stood at that moment, under the commands approved then (a historical completion).
+export function followUpChecksOf(store: Store, runId: number, now: Date = new Date(), root?: string, asOf?: Date): FollowUpCheck[] {
+  const rows = asOf === undefined ? ledgerFor(store, runId) : ledgerFor(store, runId).filter(row => Date.parse(row.at) <= asOf.getTime());
   const receipts = new Map<number, { exitCode: number | null; ran: boolean; log: number | null; head: string | null; tested: string | null; batch: BatchFacts | null }>();
   if (root !== undefined) {
     for (const artifact of store.artifactsFor(runId).filter(one => one.kind === "structured-output" && one.capture === FOLLOW_UP_RECEIPT)) {
@@ -97,7 +99,11 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
   };
   const stillApproved = (level: RunLevel, digest: string): boolean => {
     if (repo === null) return false;
-    try { return checkCommandFor(store, repo, level).command?.digest === digest; } catch { return false; }
+    try {
+      if (asOf === undefined) return checkCommandFor(store, repo, level).command?.digest === digest;
+      const then = (level === "quick" ? verifyCommandAt(store, quickVerifyKey(repo), asOf) : null) ?? verifyCommandAt(store, repo, asOf);
+      return then?.digest === digest;
+    } catch { return false; }
   };
   return rows.filter(row => row.action === CHECKS_REQUESTED && (row.outcome === "quick" || row.outcome === "full")).map(request => {
     const [head = "", why = "person", digest = "", recordedBase = ""] = (request.detail ?? "").split(" · ");

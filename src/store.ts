@@ -28415,3 +28415,15 @@ function directChatEffortUsageShapeProblem(db: Database): string | null {
   }
   return null;
 }
+
+/** The command that was live for `repo` at `at` (history: revoked rows are kept), as it read while live. A completion
+ * recorded under an earlier command reads its checks as they were then (assignment.ts historical completion), never the
+ * live one. */
+export function verifyCommandAt(store: Store, repo: string, at: Date): VerifyCommand | null {
+  const when = at.toISOString();
+  const row = store.handle
+    .prepare("SELECT * FROM verify_command WHERE repo = ? AND approved_at <= ? AND (revoked_at IS NULL OR revoked_at > ?) ORDER BY id DESC LIMIT 1")
+    .get(repo, when, when);
+  // Its later revocation is not part of what was approved then.
+  return row === undefined ? null : { ...readVerifyCommand(row), revokedAt: null, revokedBy: null };
+}

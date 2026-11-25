@@ -15,7 +15,7 @@ import { readCandidateEndpoints, savedInventoryPaths } from "./contracts/diff-st
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "./check-report.js";
 import { provedComposition, type ComposedLinks, type Coverage } from "./release-recheck.js";
-import { checkAttemptOf } from "./store.js";
+import { checkAttemptOf, verifyCommandAt } from "./store.js";
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -65,7 +65,9 @@ export function sealVerificationReceipt(store: Store, root: string, runId: numbe
  * and sealed candidate endpoints. Recovery logs without a receipt stay explicit. */
 // Recovery reads this existing receipt binding, then requires an actually executed
 // v1 passing gate. This reader does not rerun checks or transfer a prior approval.
-export function verificationEvidence(store: Store, root: string, runId: number):
+// `asOf` reads the evidence against the command that was approved at that moment (a completion recorded then: its
+// history, assignment.ts). Every gate that acts now (publishing, deployment, release) reads the live command.
+export function verificationEvidence(store: Store, root: string, runId: number, asOf?: Date):
   { ok: true; bytes: string | null; digest: string } | { ok: false; problem: string } {
   const fail = (problem: string) => ({ ok: false as const, problem });
   const source = store.getRun(runId);
@@ -78,7 +80,8 @@ export function verificationEvidence(store: Store, root: string, runId: number):
   // A run whose checks were Off recorded no check; that is not a gap.
   if (!receipts.length && !verified && runCheckLevel(store, runId) === "off") return { ok: true, bytes: null, digest: hash(null) };
   // A Quick run is bound to the project's approved quick command, a Full one to the full command.
-  const command = repo ? sealedCommandKey(root, receipts) === quickVerifyKey(repo) ? liveQuickCommand(store, repo) : store.liveVerifyCommand(repo) : null;
+  const commandOf = (key: string) => asOf === undefined ? store.liveVerifyCommand(key) : verifyCommandAt(store, key, asOf);
+  const command = repo ? sealedCommandKey(root, receipts) === quickVerifyKey(repo) ? asOf === undefined ? liveQuickCommand(store, repo) : commandOf(quickVerifyKey(repo)) : commandOf(repo) : null;
   if (!command && !receipts.length && !verified) return { ok: true, bytes: null, digest: hash(null) };
   if (!command || command.approvedAt > source.startedAt) return fail("The original approved verification command is missing or changed.");
   if (receipts.length > 1) return fail("The verification receipt is ambiguous.");
@@ -106,7 +109,7 @@ export function verificationEvidence(store: Store, root: string, runId: number):
       const reused = checked.reusedFrom;
       if (!brief || !readObservationEvidence(store, root, runId) || !reused || reused.run !== brief.sourceRun || reused.run >= runId || reused.digest !== brief.gateDigest ||
           source.baseRevision !== brief.head || source.headRevision !== brief.head || checked.executedHere !== false) return fail("The reused gate is not bound to an unchanged observation follow-up.");
-      const original = verificationEvidence(store, root, reused.run);
+      const original = verificationEvidence(store, root, reused.run, asOf);
       if (!original.ok || !original.bytes || original.digest !== reused.digest) return fail("The original passing gate no longer verifies.");
       const previousRead = readVerificationView(original.bytes);
       if (!previousRead.ok) return fail("The original passing gate no longer verifies.");

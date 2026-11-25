@@ -14,6 +14,7 @@ import { sealVerificationReceipt } from "./verification-evidence.js";
 import { recordRunCheckLevel } from "./check-levels.js";
 import { assignmentOf } from "./assignment.js";
 import { mintCoordinator } from "./coordinator.js";
+import { assignmentStatusFacts, headlineOf } from "./task-status.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const REPO = "/repo/task-accept";
@@ -119,5 +120,73 @@ describe("task accept: what each call means", () => {
     expect(await run(["task", "accept", "t-lead", "--digest", receipt("t-lead"), "--token-env", "SO_TEST_LEAD", "--json"]), lines.join("\n")).toBe(EXIT.ok);
     expect(payload()["command"]).toBe("task accept");
     expect(state("t-lead")).toBe("complete");
+  });
+});
+
+/** A completion is history (everyday-8 #7): changing the check command later never reopens it, while anything that
+ * changes the result, its scope or its evidence still does, and nothing that needs today's exact receipt counts it. */
+describe("a completion stays complete when the check command changes", () => {
+  const LATER = new Date(NOW.getTime() + 60_000);
+  const snapshot = (id: string) => assignmentOf(store, id, LATER, { principal: "operator", repos: [REPO] }, root())!;
+  const complete = async (id: string) => {
+    expect(await run(["task", "accept", id, "--finish", ...as()]), lines.join("\n")).toBe(EXIT.ok);
+    expect(state(id)).toBe("complete");
+  };
+
+  test("replaced or cleared: still complete, under its own digest, never today's receipt", async () => {
+    for (const [id, change] of [
+      ["t-replaced", () => store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER)],
+      ["t-cleared", () => store.clearVerifyCommand(REPO, "alex", LATER)],
+    ] as const) {
+      built(id);
+      await complete(id);
+      const sealed = receipt(id);
+      change();
+      const after = snapshot(id);
+      expect(after.state, id).toBe("complete");
+      expect(after.completion?.historical, id).toBe(true);
+      expect(after.completion?.digest, id).toBe(sealed);
+      // Deploy and release compare the completion with the exact receipt they read now: it isn't this one.
+      expect(after.receipt?.digest, id).not.toBe(sealed);
+      expect(headlineOf(assignmentStatusFacts(after)), id).toBe("Complete");
+      store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    }
+  });
+
+  test("a task finished before any check command existed stays complete when one is set", async () => {
+    store.clearVerifyCommand(REPO, "alex", NOW);
+    store.createTask({ id: "t-none", title: "t-none" }, NOW);
+    const ref = store.refFor("built-in", "t-none").id;
+    store.placeTask(ref, REPO, {}, NOW);
+    const proposed = propose(store, { taskId: "t-none", goal: "Do it", touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: NOW });
+    if (!approve(store, "t-none", "alex", NOW, proposed.digest, password).ok) throw new Error("approve");
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route");
+    const runId = store.startRun({ taskRef: ref, leaseId: "l-none", runner: "r", branch: "b-none", worktree: "/pool/none", route: authority.stamp, now: NOW });
+    store.stampRun(runId, { scopeDigest: store.getScope("t-none")!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(runId, { headRevision: HEAD, handoff: "Done." });
+    store.finishRun(runId, { outcome: "built", committed: true, now: NOW });
+    store.setTaskState("t-none", "done", NOW);
+    recordRunCheckLevel(store, { id: runId, taskId: "t-none", repo: REPO }, "full", "project", NOW);
+    expect(await run(["task", "accept", "t-none", "--despite", "Read the diff myself", ...as()]), lines.join("\n")).toBe(EXIT.ok);
+    await complete("t-none");
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    expect(snapshot("t-none").state).toBe("complete");
+  });
+
+  test("changed scope or damaged evidence still reopens it", async () => {
+    built("t-scope");
+    await complete("t-scope");
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    propose(store, { taskId: "t-scope", goal: "Do something else", touches: ["src/b.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: LATER });
+    expect(snapshot("t-scope").state).not.toBe("complete");
+
+    store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    const runId = built("t-damaged");
+    await complete("t-damaged");
+    store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    const log = store.artifactsFor(runId).find(a => a.kind === "check-log")!;
+    rmSync(join(root(), log.key), { force: true });
+    expect(snapshot("t-damaged").state).not.toBe("complete");
   });
 });

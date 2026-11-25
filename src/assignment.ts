@@ -68,7 +68,9 @@ export type AssignmentSnapshot = {
   };
   /** `lead`: marked complete by the person's lead (`toolroll lead token`), shown as "by the lead". */
   /** `landed`: Toolroll marked it complete because its work is already in main, and why ("its pull request merged"). */
-  completion: { actor: string; at: string; digest: string; lead?: true; landed?: string } | null;
+  /** `historical`: completed under checks that read differently now (a check command changed since); `digest` is the
+   * receipt it sealed then, not today's, so nothing that needs the exact current receipt counts it. */
+  completion: { actor: string; at: string; digest: string; lead?: true; landed?: string; historical?: true } | null;
   handoff: { kind: "result" | "decision" | "attention"; digest: string; acknowledged: boolean } | null;
   publication: { state: string; prUrl: string | null; remoteState: string | null } | null;
   /** The result's one automatic review, when its project had review on:
@@ -138,12 +140,13 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
 
 // Report the recorded check outcome, never turn a model verdict into a check.
 // Follow-up checks on the same commit (Run checks) upgrade a pass and show a failure.
-export function assignmentChecksForRun(given: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
+// `asOf`: the checks as they read at that moment, under the commands approved then (a historical completion).
+export function assignmentChecksForRun(given: Store, root: string | undefined, runId: number, now: Date, asOf?: Date): AssignmentChecks {
   // A page read reads each result's saved checks once (work-reads.ts): these reads never write.
   const store = readerOf(given);
-  const own = recordedFailureStands(store, runId, buildChecks(store, root, runId));
+  const own = recordedFailureStands(store, runId, buildChecks(store, root, runId, asOf));
   const run = store.getRun(runId);
-  const followUps = followUpChecksOf(store, runId, now, root);
+  const followUps = followUpChecksOf(store, runId, now, root, asOf);
   if (followUps.length === 0) return own;
   const read = withFollowUps({ status: own.status, level: own.level ?? null, exitCode: own.exitCode, head: run?.headRevision ?? null }, followUps);
   const latest = [...followUps].reverse().find(one => one.state === "passed" || one.state === "failed");
@@ -172,12 +175,12 @@ function recordedFailureStands(store: Store, runId: number, own: AssignmentCheck
 
 const COMMAND_MISSING_OR_CHANGED = "The original approved verification command is missing or changed.";
 
-function buildChecks(store: Store, root: string | undefined, runId: number): AssignmentChecks {
+function buildChecks(store: Store, root: string | undefined, runId: number, asOf?: Date): AssignmentChecks {
   const level = runCheckLevel(store, runId);
   const unavailable = (detail: string): AssignmentChecks => ({ status: "unavailable", exitCode: null, command: null, logArtifactId: null, detail, level });
   if (root === undefined) return unavailable("Saved checks are unavailable.");
   try {
-    const gate = verificationEvidence(store, root, runId);
+    const gate = verificationEvidence(store, root, runId, asOf);
     if (!gate.ok) {
       // The approved command changed since this check ran: nothing is missing, the check just no longer binds to it.
       const run = store.getRun(runId), repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
@@ -240,12 +243,14 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
   const unavailable = family.versions.flatMap(version => store.runsFor(version.refId).flatMap(run =>
     store.artifactsFor(run.id).filter(artifact => root === undefined || !verifyArtifact(root, artifact).ok)
       .map(artifact => `Saved ${artifact.kind} #${artifact.id} (run ${run.id}) is unavailable or changed.`)));
-  const ownChecks = result === null ? null : assignmentChecksForRun(store, root, result.id, now);
+  const finishedBuild = result?.role === "builder" && (result.outcome === "built" || result.outcome === "no-change") &&
+    result.finishedAt !== null && /^[a-f0-9]{40}$/.test(result.headRevision ?? "");
+  // The receipt for one reading of the checks: now's (the live one), or as they read when a completion was recorded
+  // (historical completion below). Everything else in it — result, scope, evidence, family — is always read now.
+  const sealFor = (ownChecks: AssignmentChecks | null) => {
   // Checks Off: a passing full release check that contains this commit covers it, read now from the existing receipts.
   const checks = ownChecks === null || ownChecks.level !== "off" || ownChecks.status === "passed" || ownChecks.status === "failed" ? ownChecks
     : { ...ownChecks, release: releaseCoverageOf(store, root, current.repo, result!.headRevision, memo === undefined ? {} : { memo }) };
-  const finishedBuild = result?.role === "builder" && (result.outcome === "built" || result.outcome === "no-change") &&
-    result.finishedAt !== null && /^[a-f0-9]{40}$/.test(result.headRevision ?? "");
   // Finished work returns to its lead or user. Strict terms and previous model
   // judgments stay recorded; neither is a second execution stage for handoff.
   const completionKind: AssignmentReceipt["completionKind"] = result?.role === "scout" && result.outcome === "built" && result.finishedAt !== null ? "research-report"
@@ -271,6 +276,9 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
   const receipt = receiptBody === null ? null : { ...receiptBody, digest: digest({ receipt: sealedBody,
     scope: scope === null ? null : { digest: scope.digest, approved: approvalOf(scope).approved, termsProblem: scope.termsProblem ?? null },
     versions: family.versions.map(v => ({ id: v.id, state: v.state })) }) };
+  return { checks, completionKind, receipt };
+  };
+  const { completionKind, receipt } = sealFor(result === null ? null : assignmentChecksForRun(store, root, result.id, now));
   let completion: AssignmentSnapshot["completion"] = null;
   let state: AssignmentSnapshot["state"] = "working";
   let detail = work.status.detail;
@@ -336,8 +344,16 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
       : completionKind === "accepted-exception" ? "An operator accepted this result with its recorded limitations. The lead can inspect that decision; the recorded checks are unchanged."
       : receipt.checks.detail;
     primaryAction = { code: "open-result", label: completionKind === "research-report" ? "Read report" : "Open result", target: { taskId: current.id, runId: result!.id, decisionId: null }, access: "read", retry: "read-again" };
-    const checked = store.handle.prepare("SELECT actor,at,detail FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND outcome = ? AND source = 'work' ORDER BY id DESC")
+    const exact = store.handle.prepare("SELECT actor,at,detail FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND outcome = ? AND source = 'work' ORDER BY id DESC")
       .all(family.root.id, result!.id, CHECK_ACTION, receipt.digest).find(row => COMPLETER_ACTOR.test(String(row["actor"])));
+    // A completion is history (everyday-8 #7): a check command set, changed or cleared later, or a check run later, never
+    // reopens it. It stands only while the receipt re-read with the checks as they read at that moment is exactly the
+    // one it sealed — the same result, scope, evidence and family, read now — so changed work never inherits it. Its
+    // digest stays the historical one: publishing, release and deployment, which need this exact receipt, still refuse.
+    const historical = exact !== undefined ? undefined : store.handle.prepare("SELECT actor,at,detail,outcome FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND source = 'work' ORDER BY id DESC LIMIT 3")
+      .all(family.root.id, result!.id, CHECK_ACTION).filter(row => COMPLETER_ACTOR.test(String(row["actor"])) && !Number.isNaN(Date.parse(String(row["at"]))))
+      .find(row => sealFor(assignmentChecksForRun(store, root, result!.id, now, new Date(String(row["at"])))).receipt?.digest === String(row["outcome"]));
+    const checked = exact ?? historical;
     // This ledger fact was authorized when written. Credential rotation,
     // membership changes and ownership transfer cannot revoke past completion.
     // The exact result digest still fences changes to work, scope and history.
@@ -345,12 +361,14 @@ export function assignmentOf(given: Store, taskId: string, now: Date, access: As
       const rootRef = store.lookupRef(family.root.id);
       const byLead = rootRef !== null && olderStoreSafe(() => store.taskActs(rootRef.id), []).filter(one => one.act === "completed").at(-1)?.lead === true;
       const landed = landedReasonOf(String(checked["actor"]), checked["detail"] == null ? null : String(checked["detail"]));
-      completion = { actor: String(checked["actor"]), at: String(checked["at"]), digest: receipt.digest, ...(byLead && landed === null ? { lead: true as const } : {}), ...(landed === null ? {} : { landed }) };
+      completion = { actor: String(checked["actor"]), at: String(checked["at"]), digest: exact === undefined ? String(checked["outcome"]) : receipt.digest,
+        ...(byLead && landed === null ? { lead: true as const } : {}), ...(landed === null ? {} : { landed }), ...(exact === undefined ? { historical: true as const } : {}) };
       state = "complete";
       primaryAction = { ...primaryAction, label: completionKind === "research-report" ? "Read report" : "Open result" };
       const label = byLead ? "the lead" : completion.actor.startsWith("operator:") ? completion.actor.slice(9) : owner && completion.actor === actorOf(owner) ? owner.label : "the previous lead";
       detail = landed !== null ? `Marked complete automatically: ${landed}. ${receipt.checks.detail}`
         : completionKind === "research-report" ? `Research report checked by ${label}. No deployment is implied.`
+        : exact === undefined ? `Handled by ${label}. Its checks read differently now: ${receipt.checks.detail} Publication and deployment need them to pass again.`
         : `Handled by ${label}. ${receipt.checks.detail} Publication and deployment are separate.`;
     }
   } else if (work.status.rank === 0 || (!live && (current.state === "done" || current.state === "failed" || work.status.views.includes("needs-you")))) {
