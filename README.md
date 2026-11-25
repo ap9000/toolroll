@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/wordmark-dark.svg">
-  <img src="docs/media/wordmark-light.svg" alt="Toolroll" width="440">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ap9000/toolroll/main/docs/media/wordmark-dark.svg">
+  <img src="https://raw.githubusercontent.com/ap9000/toolroll/main/docs/media/wordmark-light.svg" alt="Toolroll" width="440">
 </picture>
 
 ### Your agents build. You decide.
@@ -10,8 +10,8 @@
 **Delegate changes. Review verified diffs. Ship in one keystroke — in the native macOS app or your terminal.**
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/media/terminal-workbench-light.png">
-  <img src="docs/media/terminal-workbench.png" alt="Toolroll: native macOS app and terminal workbench with tasks that need you and live streaming output" width="900">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ap9000/toolroll/main/docs/media/terminal-workbench-light.png">
+  <img src="https://raw.githubusercontent.com/ap9000/toolroll/main/docs/media/terminal-workbench.png" alt="Toolroll: native macOS app and terminal workbench with tasks that need you and live streaming output" width="900">
 </picture>
 <sub>Native SwiftUI macOS app and keyboard-driven terminal workbench, zero Electron, zero telemetry.</sub>
 
@@ -19,7 +19,7 @@ For Claude Code, Codex, and Gemini — using the subscriptions already on your m
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-171717)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-171717)](https://github.com/ap9000/toolroll/blob/main/LICENSE)
 [![Homebrew](https://img.shields.io/badge/homebrew-ap9000%2Ftoolroll-171717)](https://github.com/ap9000/homebrew-toolroll)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2022.20-171717)
 
@@ -175,9 +175,9 @@ docs for language models.
 ## Contributing
 
 Provider adapters are the most useful place to start. See
-[CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as
-[SECURITY.md](SECURITY.md) describes.
+[CONTRIBUTING.md](https://github.com/ap9000/toolroll/blob/main/CONTRIBUTING.md). Report security issues as
+[SECURITY.md](https://github.com/ap9000/toolroll/blob/main/SECURITY.md) describes.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/ap9000/toolroll/blob/main/LICENSE)

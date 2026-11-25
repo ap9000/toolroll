@@ -335,6 +335,8 @@ fn thread_ended(app: &App, thread: &str) -> bool {
 pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app::Effect> {
     let message = text.trim().to_string();
     if message.is_empty() {
+        // Nothing sent: an older "Sent. Turn N started" no longer describes what just happened.
+        app.status = None;
         return vec![];
     }
     if app.thread_selected().as_deref() != Some(thread.as_str()) {
@@ -412,6 +414,32 @@ pub fn ask_ship(app: &mut App) -> Vec<crate::app::Effect> {
         ),
         fields: vec![],
         done: "Shipping.".into(),
+    }]
+}
+
+/// `S` on a thread: Save as branch. Its committed work goes into the project's own repository as `toolroll/code-<id>`
+/// (the console's controlled import; no pull request, no merge), and the console's words say the `git merge` to run.
+pub fn save_branch(app: &mut App) -> Vec<crate::app::Effect> {
+    let Some(id) = app.thread_selected() else {
+        app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
+        return vec![];
+    };
+    let row = app.threads.rows.iter().find(|t| t.id == id);
+    if row.is_some_and(|t| matches!(t.turn.as_deref(), Some("admitted" | "running"))) {
+        app.status = Some((
+            Tone::Refused,
+            "The agent is still working on your last message. Wait for it, or stop it with x, then save.".into(),
+        ));
+        return vec![];
+    }
+    app.status = Some((Tone::Said, "Saving the thread's work as a branch…".into()));
+    vec![Effect::Act {
+        path: format!(
+            "/agents/live/thread/{}/save",
+            toolroll_api::client::encode(&id)
+        ),
+        fields: vec![],
+        done: "Saved.".into(),
     }]
 }
 

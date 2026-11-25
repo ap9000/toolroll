@@ -180,6 +180,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "agents.live.thread.ship": "ship-thread",
   "agents.live.thread.ship-cancel": "cancel-ship",
   "agents.live.thread.ship-send-back": "reply-thread",
+  // Save one's own thread's work as a branch in the project (everyday 9, B1): the controlled import, no pull request,
+  // task or merge; it grants nothing (the handler checks this exact act).
+  "agents.live.thread.save": "save-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",
@@ -204,6 +207,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "flow.trigger.resume": "trigger-resume",
   "flow.trigger.check": "trigger-run",
   "flow.trigger.press": "trigger-run",
+  // Run checks on a result from the local owner's session (everyday 9 A6): the already-approved command only, on a solo
+  // install, for work it could approve again now; the handler checks this exact act (local-checks.ts).
+  "run.act.checks": "run-checks",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",
@@ -223,6 +229,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.ship": "direct-chat-ship",
   "direct-chat.page-ship-review": "read",
   "direct-chat.page-ship": "direct-chat-ship",
+  // Reply from the Direct Chat page (everyday 9 B4): the app's own send, the same act.
+  "direct-chat.page-reply": "direct-chat-send",
   "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
@@ -545,6 +553,7 @@ post("pages", "agents.live.thread.end", "^\\/agents\\/live\\/thread\\/[0-9a-f]{3
 post("pages", "agents.live.thread.ship", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver ships their own thread's work."), sample: `/agents/live/thread/${"a".repeat(32)}/ship` });
 post("pages", "agents.live.thread.ship-cancel", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/cancel$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/ship/cancel` });
 post("pages", "agents.live.thread.ship-send-back", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/ship\\/send-back$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver sends back their own thread's Ship."), sample: `/agents/live/thread/${"a".repeat(32)}/ship/send-back` });
+post("pages", "agents.live.thread.save", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/save$", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver saves their own thread's work as a branch."), sample: `/agents/live/thread/${"a".repeat(32)}/save` });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to
@@ -686,6 +695,7 @@ post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/shi
 // Ship from the page: its terms read in the chat's clone (a POST, never a GET), then the yes, as the API's ship is.
 post("tasks", "direct-chat.page-ship-review", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
 post("tasks", "direct-chat.page-ship", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/ship` });
+post("tasks", "direct-chat.page-reply", `^\\/direct-chats\\/${TERMINAL}\\/reply$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/reply` });
 post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
@@ -935,7 +945,9 @@ post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up",
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
-for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}` });
+// Send back and build (intent=revise on /comment) approves through the ordinary approve(): a password remembered on this
+// session may stand in there, as on the task's own Approve (everyday 9 A6); only that act reads it (withFreshness).
+for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}`, ...(one === "comment" ? { freshness: "allowlist" as const } : {}) });
 // Cockpit E: reveal a running attempt's proved checkout in Finder (nothing is launched in it).
 post("tasks", "run.act.reveal", `^\\/r\\/${ID}\\/reveal$`, { project: "run", limited: "resource", callers: ["cookie"], sample: "/r/1/reveal", ...approver("Only an approver can show an agent's files.") });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });

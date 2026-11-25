@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { inRehearsal } from "../rehearsal.js";
 import { tmpdir } from "node:os";
@@ -42,7 +43,7 @@ import { handlersOf } from "./handler-registry.js";
 import { redirect, respond } from "./http.js";
 import { html, postForm } from "../html.js";
 import { screen } from "./chrome.js";
-import { btn } from "./kit.js";
+import { btn, field, textarea } from "./kit.js";
 import { rereadBrowser } from "./live.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
@@ -615,7 +616,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
 
   // ---- the pages (everyday-8 #6): the same saved chats the engine API reads, for a browser with no app --------------
 
-  const PAGE_PATH = /^\/direct-chats\/([a-f0-9]{32})(?:\/(ship-review|ship))?$/;
+  const PAGE_PATH = /^\/direct-chats\/([a-f0-9]{32})(?:\/(ship-review|ship|reply))?$/;
   const STATUS_WORDS: Record<string, string> = { completed: "Finished", failed: "Failed", interrupted: "Stopped", running: "Working", queued: "Waiting" };
   const DIFF_SHOWN = 200_000;
   function pageRefusal(ctx: HandlerContext, status: number, words: string): void {
@@ -650,8 +651,30 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     const ships = listDirectChatShips(store, thread.id);
     const shipped = ships.length === 0 ? "" : html`<ul>${ships.map(one => html`<li>${one.mode === "keep-branch" ? "Saved as branch" : "Shipped"} <span class="k-mono">${one.branch}</span> · ${one.state}${one.taskId === null ? "" : html` · <a class="k-link" href="/t/${encodeURIComponent(one.taskId)}">Open task</a>`}</li>`)}</ul>`;
     const shipAct = running || diff.changedFiles.length === 0 ? "" : postForm(`/direct-chats/${thread.id}/ship-review`, btn("Review Ship", { variant: "primary", type: "submit" }));
-    const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}<h2>Changes</h2>${changes}<h2>Ship</h2>${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
+    // Reply (everyday 9 B4): the next message, through the same send the app uses (one request key per page drawn, so a
+    // double submit is one turn). While it works, the box waits.
+    // Imported history from the older app takes no reply (the send refuses it): say so instead of offering a box.
+    const reply = thread.isLegacy ? html`<p class="k-note" data-direct-chat-read-only>Imported from an earlier version: read only. Start a new Direct Chat to go on.</p>`
+      : running ? html`<p class="k-note">It's working on your last message. Reply when it finishes.</p>`
+      : postForm(`/direct-chats/${thread.id}/reply`, html`${field({ id: "direct-chat-reply", label: "Reply", control: textarea({ id: "direct-chat-reply", name: "prompt", rows: 3, attrs: { required: true, maxlength: "20000" } }) })}${btn("Send", { variant: "primary", type: "submit" })}`,
+        { hidden: { request: randomBytes(16).toString("hex") } });
+    const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}${reply}<h2>Changes</h2>${changes}<h2>Ship</h2>${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
     return runtime.sendScreen(ctx.response, 200, screen(thread.title || "Direct Chat", body, { chrome: runtime.chromeFor(thread.repo, "tasks") }));
+  }
+
+  /** Reply from the page: the app's own send (admitted the same way: loopback, solo, the chat's owner, the local owner's
+   * act direct-chat-send), then back to the chat. */
+  async function pageReply(ctx: HandlerContext): Promise<void> {
+    const gate = admit(ctx, "direct-chat-send");
+    if (!gate.ok) return pageRefusal(ctx, gate.status, gate.error);
+    const threadId = PAGE_PATH.exec(ctx.url.pathname)?.[1] ?? "";
+    const thread = host.getThreadRecord(gate.who.name, threadId);
+    if (thread === null || !canReachThread(gate.who.name, thread)) return pageRefusal(ctx, 404, "That Direct Chat isn't here.");
+    const prompt = ctx.posted.get("prompt") ?? "";
+    if (prompt.trim() === "") return pageRefusal(ctx, 400, "Write a reply first. Nothing was sent.");
+    const res = await host.sendMessage({ owner: gate.who.name, threadId, requestId: ctx.posted.get("request") ?? "", prompt });
+    if (!res.ok) return pageRefusal(ctx, res.status, res.error);
+    return redirect(ctx.response, `/direct-chats/${threadId}`);
   }
 
   /** Ship, reviewed first: its exact terms read now (git in the chat's own clone, so a POST), then one yes. */
@@ -697,6 +720,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       "direct-chat.page": pageDetail,
       "direct-chat.page-ship-review": pageShipReview,
       "direct-chat.page-ship": pageShip,
+      "direct-chat.page-reply": pageReply,
       "direct-chat.list": list,
       "direct-chat.detail": detail,
       "direct-chat.start": start,

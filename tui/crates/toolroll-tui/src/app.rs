@@ -2918,11 +2918,15 @@ impl App {
                 row_moved = true;
             }
         }
+        // New facts (a turn ended, a commit, a Ship moved): a Diff already read for this thread is read again, so it
+        // never stays on what it said before the turn (stranger 13: it did until the thread was left and reopened).
+        let mut facts_moved = false;
         if let Some(facts) = window.thread {
             if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
                 if let Some(row) = self.threads.rows.iter_mut().find(|t| t.id == id) {
                     row_moved |= crate::thread::follow_facts(row, &facts);
                 }
+                facts_moved = view.facts.is_some();
                 view.facts = Some(facts);
                 changed = true;
             }
@@ -2960,12 +2964,17 @@ impl App {
                 self.selected = at;
             }
         }
-        match more {
+        // A read already on its way for this thread is superseded too (Codex round 1, finding 4): asking again moves the
+        // wanted generation on, so the older answer, read before the turn ended, is dropped when it arrives.
+        let diff_again = facts_moved
+            && (self.diff.as_ref().is_some_and(|d| d.task == id)
+                || self.diff_wanted.as_ref().is_some_and(|w| w.task == id));
+        let mut effects = match more {
             Some(cursor) => {
                 let view = self.threads.view.as_mut().unwrap();
                 view.fetching = true;
                 vec![Effect::FetchThread {
-                    thread: id,
+                    thread: id.clone(),
                     cursor: Some(cursor),
                     known: view.facts.as_ref().map(|f| f.version.clone()),
                     wait: false,
@@ -2974,7 +2983,11 @@ impl App {
             // Something changed: wait for the next change at once (a held read), never on the tick.
             None if changed => self.poll_thread(),
             None => vec![],
+        };
+        if diff_again {
+            effects.push(self.ask_diff(id));
         }
+        effects
     }
 
     /// An act came back: the answer it carried (if any) is no longer on its way here; the read says where it stands.
@@ -5009,7 +5022,9 @@ impl App {
                     vec![]
                 }
             }
-            Action::ThreadShip => {
+            // On a thread, `S` saves its committed work as a branch in the project (no pull request, no merge).
+            Action::ThreadSave if self.thread_selected().is_some() => crate::thread::save_branch(self),
+            Action::ThreadShip | Action::ThreadSave => {
                 self.say(Tone::Refused, crate::thread::NO_THREAD_SELECTED);
                 vec![]
             }

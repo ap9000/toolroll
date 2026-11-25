@@ -362,14 +362,15 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
     // Its Ships' refs (flexible-ship.ts), each by compare-and-swap against what Toolroll recorded: every import ref
     // still holding its Ship's candidate, and the thread's branch while it holds the newest standing import's. A ref
     // someone moved is left as it is and said.
-    const ships = store.handle.prepare("SELECT import_ref, candidate, state FROM flexible_ship WHERE thread = ? ORDER BY seq").all(thread.id);
+    const ships = store.handle.prepare("SELECT import_ref, candidate, state, json_extract(terms_json, '$.kind') AS kind FROM flexible_ship WHERE thread = ? ORDER BY seq").all(thread.id);
     for (const ship of ships.filter(one => ["imported", "merged", "cancelled", "sent-back"].includes(String(one["state"])))) {
       const gone = await build(project, ["update-ref", "--no-deref", "-d", String(ship["import_ref"]), String(ship["candidate"])]);
       if (gone.code === 0) shipRefs++;
       else if ((await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", String(ship["import_ref"])])).code === 0) shipRefsLeft++;
     }
     const standing = [...ships].reverse().find(one => ["imported", "merged", "cancelled", "sent-back"].includes(String(one["state"])));
-    if (standing !== undefined) {
+    // A branch the person saved (Save as branch, flexible-save.ts) is theirs to merge: removing the thread's copy keeps it.
+    if (standing !== undefined && standing["kind"] !== "flexible-save") {
       const branch = `refs/heads/${flexibleThreadBranch(thread.id)}`;
       const gone = await build(project, ["update-ref", "--no-deref", "-d", branch, String(standing["candidate"])]);
       if (gone.code === 0) shipRefs++;

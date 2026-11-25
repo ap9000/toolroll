@@ -87,6 +87,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 Action::Resume if held => 300,
                 Action::ThreadReply
                 | Action::ThreadShip
+                | Action::ThreadSave
                 | Action::ThreadStop
                 | Action::ThreadEnd
                     if thread =>
@@ -104,6 +105,7 @@ fn context_rank(app: &App, pick: &Pick) -> i64 {
                 | Action::Resume
                 | Action::ThreadReply
                 | Action::ThreadShip
+                | Action::ThreadSave
                 | Action::ThreadStop
                 | Action::ThreadEnd => -100,
                 Action::Open

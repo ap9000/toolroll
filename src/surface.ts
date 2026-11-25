@@ -488,6 +488,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("thread end", "end one of your threads for good (its agent stops; its work can still be shipped for a week)"),
   operator("thread remove", "remove one of your threads' working copy (refused while its agent may run or a Ship is open)"),
   operator("thread ship", "ship one of your threads' committed work: shows its terms, asks, then takes your password typed now"),
+  operator("thread save", "save one of your threads' committed work as the branch toolroll/code-<id> in its project (no pull request, no merge); says the git merge that puts it on your branch"),
   operator("setup clear", "clear installation setup"),
   operator("verify set", "approve the one shell command the plane re-runs after every future commit (--quick \"<cmd>\" approves the fast check Quick runs); --self-heal binds one approved-setup replay when a required project executable is missing"),
   operator("verify clear", "revoke a repository's approved verification command; --level quick revokes only the quick command"),
@@ -555,7 +556,7 @@ const REMOTE_NO: readonly string[] = [
   // the write too).
   "map on", "map off", "map holdout end", "map report",
   // Your own interactive agent threads: the console on this machine holds them; never a token's.
-  "thread list", "thread show", "thread end", "thread remove", "thread ship",
+  "thread list", "thread show", "thread end", "thread remove", "thread ship", "thread save",
   // Publication and release.
   "publish", "publish status", "publish merge", "publish refire", "publish unblock", "publish rearm", "publish grant", "publish revoke",
   // A repository's authority grants on this machine.

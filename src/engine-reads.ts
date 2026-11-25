@@ -748,10 +748,13 @@ const PRIVATE_KEY_MARK = /-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----/;
 const HIDDEN_NAME = "[a name was hidden]";
 
 /** A thread's changed files with their counts (`task` is the thread's id; `run` the number of its latest turn, which
- * the file reads name back), from its committed work against the commit it started from. */
-export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges): ResultDiff {
+ * the file reads name back), from its committed work against the commit it started from. `edited`: the agent's records
+ * here show it edited files (said when nothing is committed). */
+export function threadDiffOf(thread: string, turn: number, changes: ThreadChanges, seen: { edited?: boolean } = {}): ResultDiff {
   const empty = (problem: string): ResultDiff => ({ version: ENGINE_API_VERSION, task: thread, run: turn, totals: null, files: [], patchTruncated: false, problem });
   if (!changes.ok) return empty(`This thread's changes can't be read: ${cleanLiveText(changes.message)}`);
+  // The agent edited files but committed none of it (everyday 9, B2): said as what to do, since Ship and Save take commits.
+  if ("none" in changes && seen.edited === true) return empty("The agent has uncommitted edits. Ask it to commit them: Ship and Save as branch take committed work only.");
   if ("none" in changes) return empty("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only.");
   const files = patchFiles(changes.patch).map((text, index) => {
     const parsed = parseReviewDiff(text).files[0];

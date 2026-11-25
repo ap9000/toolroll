@@ -1002,7 +1002,7 @@ export async function flexibleThreadShipTerms(store: Store, input: { thread: str
   const owned = ownThread(store, input.thread, input.by);
   if (owned === null) return refuse("thread-unknown");
   const needs = flexibleShipNeeds(store, owned.repo);
-  if (needs !== null) return { ok: false, reason: needs.reason, message: needs.message };
+  if (needs !== null) return { ok: false, reason: needs.reason, message: `${needs.message} ${saveInsteadWords(input.thread)}` };
   const shown = await flexibleShipTerms(store, { thread: input.thread, by: input.by.name });
   if (!shown.ok) return shown;
   return { ok: true, digest: shown.digest, summary: shown.summary };
@@ -1431,7 +1431,7 @@ export function flexibleShipNeedsFor(store: Store, asked: string): { reason: str
   const found = store.handle.prepare("SELECT repo FROM flexible_thread WHERE state = 'ready' AND substr(id, 1, ?) = ? LIMIT 2").all(asked.length, asked);
   if (found.length !== 1) return null;
   const needs = flexibleShipNeeds(store, String(found[0]!["repo"]));
-  return needs === null ? null : { reason: needs.reason, message: needs.message };
+  return needs === null ? null : { reason: needs.reason, message: `${needs.message} ${saveInsteadWords(asked)}` };
 }
 
 /** stopFlexibleThreadSession's work, under the thread's lock (appended here: functions are added at the end of this file). */
@@ -1533,4 +1533,17 @@ export async function flexibleThreadChanges(store: Store, input: { thread: strin
   if (!read.ok) return { tip: null, changes: { ok: false, message: read.message } };
   if ("none" in read) return { tip: read.base, changes: { ok: true, none: true } };
   return { tip: read.tip, changes: { ok: true, patch: read.patch, truncated: read.truncated } };
+}
+
+/** Said beside Ship's refusal on a project that can't take a Ship (everyday 9, B1): Save as branch works there. */
+function saveInsteadWords(thread: string): string {
+  return `To use its work now, save it as a branch in your repository instead (S on the thread in \`toolroll\`, or \`toolroll thread save ${thread.slice(0, 8)}\`).`;
+}
+
+/** Whether the thread's agent edited files in what this console holds of it (an `edit` step in its records): for the
+ * Diff's words when nothing is committed yet (everyday 9, B2). The records are the agent's own (display only): this
+ * decides nothing, and no git runs in the thread's folder to find out. */
+export function flexibleThreadEdited(sessions: FlexibleSessions, input: { thread: string }): boolean {
+  const session = sessions.threads.get(input.thread);
+  return session !== undefined && session.records.some(one => one.k === "step" && (one as { kind?: unknown }).kind === "edit");
 }
