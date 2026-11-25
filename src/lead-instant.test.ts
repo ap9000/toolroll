@@ -387,119 +387,54 @@ describe("Lead instant solo actions and Direct Chat tools", () => {
     }
   });
 
-  test("sweepStaleLeadTurns never latches unknown_spend on subscription turns, while keeping latch for metered API turns", () => {
-    const afterDeadline = new Date(T0.getTime() + 120_000);
+  test("sweepStaleLeadTurns clears unknown spend only for a turn whose recorded billing proves a subscription", () => {
+    let clock = new Date(T0.getTime() + 120_000);
+    /** One started lead step on this route, its deadline passed by the next sweep. */
+    const startedStep = (credentialKey: string, provider: "codex-subscription" | "claude-subscription" | "anthropic-api", metered: boolean) => {
+      const session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey, ceilingMicrousd: metered ? 5_000_000 : 0, ceilingDigest: who.ceilingDigest, termsDigest: "t".repeat(64) }, clock);
+      const thread = store.openLeadThread(who.name, who.ceilingDigest, clock).thread;
+      const turnInput = { approver: who.name, session, thread: thread.id, credentialKey, reservedMicrousd: metered ? 500_000 : 0, dailyTurns: 100, weeklyCeilingMicrousd: metered ? 5_000_000 : 0, deadlineMs: 30_000, provider };
+      const turn = store.openLeadTurn(turnInput, clock);
+      if (!turn.ok) throw new Error(turn.reason);
+      const started = store.startLeadTurn(turn.id, clock);
+      if (!started.ok) throw new Error("start failed");
+      const step = store.openLeadStep({ leadTurn: turn.id, generation: started.generation, approver: who.name, credentialKey, provider, model: metered ? "claude-sonnet-4-6" : "gpt-6-astra", deadlineMs: 30_000 }, clock);
+      if (!step.ok) throw new Error(step.reason);
+      expect(store.startChatTurn(step.id, clock).ok).toBe(true);
+      return { step: step.id, thread: thread.id, again: () => store.openLeadTurn(turnInput, clock) };
+    };
+    const sweep = () => { clock = new Date(clock.getTime() + 120_000); return store.sweepStaleLeadTurns(clock); };
+    const lastWords = (thread: number) => { const said = store.listLeadMessages(thread, 20); return said[said.length - 1]!.text; };
 
-    // 1. Subscription turn (codex-subscription) started and swept after crash/restart.
-    const subSession = store.mintLeadSession({
-      approver: who.name,
-      approverGeneration: who.generation,
-      credentialKey: "sub:codex-subscription",
-      ceilingMicrousd: 0,
-      ceilingDigest: who.ceilingDigest,
-      termsDigest: "t".repeat(64),
-    }, T0);
-    const subThread = store.openLeadThread(who.name, who.ceilingDigest, T0).thread;
-    const subTurn = store.openLeadTurn({
-      approver: who.name,
-      session: subSession,
-      thread: subThread.id,
-      credentialKey: "sub:codex-subscription",
-      reservedMicrousd: 0,
-      dailyTurns: 100,
-      weeklyCeilingMicrousd: 0,
-      deadlineMs: 30_000,
-      provider: "codex-subscription",
-    }, T0);
-    if (!subTurn.ok) throw new Error(subTurn.reason);
-    const subStarted = store.startLeadTurn(subTurn.id, T0);
-    if (!subStarted.ok) throw new Error("sub start failed");
-    const subStep = store.openLeadStep({
-      leadTurn: subTurn.id,
-      generation: subStarted.generation,
-      approver: who.name,
-      credentialKey: "sub:codex-subscription",
-      provider: "codex-subscription",
-      model: "gpt-6-astra",
-      deadlineMs: 30_000,
-    }, T0);
-    if (!subStep.ok) throw new Error(subStep.reason);
-    expect(store.startChatTurn(subStep.id, T0).ok).toBe(true);
+    // 1. A subscription-labelled route whose turn recorded no billing: the CLI may have billed an API key it found
+    //    itself, so the crash keeps its unknown spend for a person to acknowledge.
+    const unproved = startedStep("sub:codex-subscription", "codex-subscription", false);
+    expect(sweep()).toBe(1);
+    expect(store.getChatTurn(unproved.step)).toMatchObject({ state: "failed", unknownSpend: true });
+    expect(store.latchedChatTurns("sub:codex-subscription")).toHaveLength(1);
+    expect(lastWords(unproved.thread)).toContain("cost isn't known");
+    expect(unproved.again()).toEqual({ ok: false, reason: "latched" });
 
-    expect(store.sweepStaleLeadTurns(afterDeadline)).toBe(1);
-    const subStepAfter = store.getChatTurn(subStep.id)!;
-    expect(subStepAfter.state).toBe("failed");
-    expect(subStepAfter.unknownSpend).toBe(false);
-    expect(subStepAfter.settledMicrousd).toBe(0);
-    expect(store.latchedChatTurns("sub:codex-subscription")).toHaveLength(0);
-    const subMsgs = store.listLeadMessages(subThread.id, 20);
-    expect(subMsgs[subMsgs.length - 1]!.text).not.toContain("cost isn't known");
-    expect(store.openLeadTurn({
-      approver: who.name,
-      session: subSession,
-      thread: subThread.id,
-      credentialKey: "sub:codex-subscription",
-      reservedMicrousd: 0,
-      dailyTurns: 100,
-      weeklyCeilingMicrousd: 0,
-      deadlineMs: 30_000,
-      provider: "codex-subscription",
-    }, afterDeadline).ok).toBe(true);
+    // 2. A turn whose own recorded billing says subscription settles at zero without latching.
+    const proved = startedStep("sub:claude-subscription", "claude-subscription", false);
+    store.handle.prepare("UPDATE chat_turn SET billing_reported = 'subscription' WHERE id = ?").run(proved.step);
+    expect(sweep()).toBe(1);
+    expect(store.getChatTurn(proved.step)).toMatchObject({ state: "failed", unknownSpend: false, settledMicrousd: 0 });
+    expect(store.latchedChatTurns("sub:claude-subscription")).toHaveLength(0);
+    expect(lastWords(proved.thread)).not.toContain("cost isn't known");
+    expect(proved.again().ok).toBe(true);
 
-    // 2. Metered API turn (anthropic-api) still latches unknown_spend on crash sweep.
-    const apiSession = store.mintLeadSession({
-      approver: who.name,
-      approverGeneration: who.generation,
-      credentialKey: "api:anthropic-test",
-      ceilingMicrousd: 5_000_000,
-      ceilingDigest: who.ceilingDigest,
-      termsDigest: "t".repeat(64),
-    }, afterDeadline);
-    const apiThread = store.openLeadThread(who.name, who.ceilingDigest, afterDeadline).thread;
-    const apiTurn = store.openLeadTurn({
-      approver: who.name,
-      session: apiSession,
-      thread: apiThread.id,
-      credentialKey: "api:anthropic-test",
-      reservedMicrousd: 500_000,
-      dailyTurns: 100,
-      weeklyCeilingMicrousd: 5_000_000,
-      deadlineMs: 30_000,
-      provider: "anthropic-api",
-    }, afterDeadline);
-    if (!apiTurn.ok) throw new Error(apiTurn.reason);
-    const apiStarted = store.startLeadTurn(apiTurn.id, afterDeadline);
-    if (!apiStarted.ok) throw new Error("api start failed");
-    const apiStep = store.openLeadStep({
-      leadTurn: apiTurn.id,
-      generation: apiStarted.generation,
-      approver: who.name,
-      credentialKey: "api:anthropic-test",
-      provider: "anthropic-api",
-      model: "claude-sonnet-4-6",
-      deadlineMs: 30_000,
-    }, afterDeadline);
-    if (!apiStep.ok) throw new Error(apiStep.reason);
-    expect(store.startChatTurn(apiStep.id, afterDeadline).ok).toBe(true);
+    // 3. A subscription-labelled turn whose recorded billing says an API key latches like a metered one.
+    const keyed = startedStep("sub:claude-key", "claude-subscription", false);
+    store.handle.prepare("UPDATE chat_turn SET billing_reported = 'api-key' WHERE id = ?").run(keyed.step);
+    sweep();
+    expect(store.getChatTurn(keyed.step)!.unknownSpend).toBe(true);
 
-    const later = new Date(afterDeadline.getTime() + 120_000);
-    expect(store.sweepStaleLeadTurns(later)).toBe(1);
-    const apiStepAfter = store.getChatTurn(apiStep.id)!;
-    expect(apiStepAfter.unknownSpend).toBe(true);
+    // 4. A metered API turn still latches.
+    const api = startedStep("api:anthropic-test", "anthropic-api", true);
+    sweep();
+    expect(store.getChatTurn(api.step)!.unknownSpend).toBe(true);
     expect(store.latchedChatTurns("api:anthropic-test")).toHaveLength(1);
-    const apiMsgs = store.listLeadMessages(apiThread.id, 20);
-    expect(apiMsgs[apiMsgs.length - 1]!.text).toContain("cost isn't known");
-    const blocked = store.openLeadTurn({
-      approver: who.name,
-      session: apiSession,
-      thread: apiThread.id,
-      credentialKey: "api:anthropic-test",
-      reservedMicrousd: 500_000,
-      dailyTurns: 100,
-      weeklyCeilingMicrousd: 5_000_000,
-      deadlineMs: 30_000,
-      provider: "anthropic-api",
-    }, later);
-    expect(blocked).toEqual({ ok: false, reason: "latched" });
+    expect(api.again()).toEqual({ ok: false, reason: "latched" });
   });
 });
