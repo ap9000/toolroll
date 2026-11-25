@@ -1,0 +1,285 @@
+# Build, sign, notarize, and attach the native macOS Toolroll.dmg to GitHub Releases,
+# and generate/open the matching Homebrew Cask update in ap9000/homebrew-toolroll.
+#
+# Runs automatically when a GitHub Release is published (right after publish.yml creates
+# the release for a v* tag), or on demand via workflow_dispatch (dry-run by default).
+# Actions are pinned to full commit SHAs.
+name: macOS Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.9.116); defaults to current branch HEAD"
+        required: false
+        type: string
+      publish_release:
+        description: "Upload Toolroll.dmg + checksum to the GitHub Release"
+        required: false
+        default: false
+        type: boolean
+      allow_unsigned:
+        description: "Allow ad-hoc/unsigned dry-run packaging when signing secrets are not set"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS DMG build
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      dmg_name: ${{ steps.pack.outputs.dmg_name }}
+      dmg_sha256: ${{ steps.pack.outputs.dmg_sha256 }}
+      signed: ${{ steps.pack.outputs.signed }}
+      notarized: ${{ steps.pack.outputs.notarized }}
+    steps:
+      - name: Resolve target ref
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
+            REF="$RELEASE_TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+            REF="$INPUT_TAG"
+          else
+            TAG=""
+            REF="$GITHUB_SHA"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ steps.meta.outputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+          check-latest: true
+
+      - name: Determine release version
+        id: ver
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if [ -n "$TAG" ]; then
+            VERSION="${TAG#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Run Swift unit tests
+        run: |
+          cd mac
+          swift test
+
+      - name: Build, sign, notarize, and package Toolroll.dmg
+        id: pack
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="$RUNNER_TEMP/mac-release"
+          mkdir -p "$OUT_DIR"
+          DMG_NAME="Toolroll-${APP_VERSION}-macos.dmg"
+          DMG_PATH="$OUT_DIR/$DMG_NAME"
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/toolroll-signing.keychain-db"
+          P12_PATH="$RUNNER_TEMP/dev-id.p12"
+          P8_PATH="$RUNNER_TEMP/notary-key.p8"
+          cleanup() {
+            rm -f "$P12_PATH" "$P8_PATH"
+            if [ -f "$KEYCHAIN_PATH" ]; then
+              security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true # guard: allow — best-effort cleanup of temporary signing keychain on job exit
+            fi
+          }
+          trap cleanup EXIT
+
+          HAS_SIGNING=0
+          if [ -n "$APPLE_DEVELOPER_ID_P12" ] && [ -n "$APPLE_DEVELOPER_ID_PASSWORD" ] && [ -n "$APPLE_SIGN_IDENTITY" ]; then
+            HAS_SIGNING=1
+          fi
+
+          HAS_NOTARY=0
+          if [ -n "$APPLE_NOTARY_KEY_BASE64" ] && [ -n "$APPLE_NOTARY_KEY_ID" ] && [ -n "$APPLE_NOTARY_ISSUER_ID" ]; then
+            HAS_NOTARY=1
+          fi
+
+          if [ "$EVENT_NAME" = "release" ] && { [ "$HAS_SIGNING" -eq 0 ] || [ "$HAS_NOTARY" -eq 0 ]; }; then
+            echo "::error::Published releases require APPLE_DEVELOPER_ID_P12, APPLE_DEVELOPER_ID_PASSWORD, APPLE_SIGN_IDENTITY, APPLE_NOTARY_KEY_BASE64, APPLE_NOTARY_KEY_ID, and APPLE_NOTARY_ISSUER_ID secrets. See docs/guide/mac-release.md."
+            exit 1
+          fi
+
+          if [ "$HAS_SIGNING" -eq 0 ] && [ "$ALLOW_UNSIGNED" != "true" ]; then
+            echo "::error::Signing secrets are missing and allow_unsigned is false."
+            exit 1
+          fi
+
+          DMG_ARGS=(--universal --version "$APP_VERSION" --output "$DMG_PATH")
+
+          if [ "$HAS_SIGNING" -eq 1 ]; then
+            KEYCHAIN_PASS="$(openssl rand -hex 24)"
+            echo "$APPLE_DEVELOPER_ID_P12" | base64 --decode > "$P12_PATH"
+            security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security import "$P12_PATH" -P "$APPLE_DEVELOPER_ID_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+            export TOOLROLL_SIGN_IDENTITY="$APPLE_SIGN_IDENTITY"
+            DMG_ARGS+=(--require-signing)
+          fi
+
+          if [ "$HAS_SIGNING" -eq 1 ] && [ "$HAS_NOTARY" -eq 1 ]; then
+            echo "$APPLE_NOTARY_KEY_BASE64" | base64 --decode > "$P8_PATH"
+            export APPLE_NOTARY_KEY_PATH="$P8_PATH"
+            export APPLE_NOTARY_KEY_ID
+            export APPLE_NOTARY_ISSUER_ID
+            DMG_ARGS+=(--notarize)
+          fi
+
+          bash mac/build-dmg.sh "${DMG_ARGS[@]}"
+
+          SHA256="$(awk '{print $1}' "${DMG_PATH}.sha256")"
+          node mac/scripts/render-homebrew-cask.mjs \
+            --version "$APP_VERSION" \
+            --sha256 "$SHA256" \
+            --asset "$DMG_NAME" \
+            --out "$OUT_DIR/toolroll.rb"
+
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "signed=$([ "$HAS_SIGNING" -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "notarized=$([ "$HAS_SIGNING" -eq 1 ] && [ "$HAS_NOTARY" -eq 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-dmg
+          path: ${{ runner.temp }}/mac-release
+          if-no-files-found: error
+
+  publish-dmg:
+    name: macOS DMG publish
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-dmg
+          path: ${{ runner.temp }}/mac-release
+
+      - name: Verify DMG checksum
+        env:
+          DMG_NAME: ${{ needs.build.outputs.dmg_name }}
+          DMG_SHA256: ${{ needs.build.outputs.dmg_sha256 }}
+        run: |
+          cd "$RUNNER_TEMP/mac-release"
+          echo "$DMG_SHA256  $DMG_NAME" | sha256sum --strict -c -
+
+      - name: Upload DMG and checksum to GitHub Release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DMG_NAME: ${{ needs.build.outputs.dmg_name }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT_NAME" != "release" ] && [ "$PUBLISH_RELEASE" != "true" ]; then
+            echo "Dry-run dispatch complete; skipping GitHub Release upload (artifact macos-dmg is attached to this workflow run)."
+            exit 0
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Cannot upload to GitHub Release without a release tag."
+            exit 1
+          fi
+          if [ "$SIGNED" != "true" ]; then
+            echo "::error::Refusing to upload an unsigned DMG to GitHub Release $TAG."
+            exit 1
+          fi
+          gh release upload "$TAG" \
+            "$RUNNER_TEMP/mac-release/$DMG_NAME" \
+            "$RUNNER_TEMP/mac-release/${DMG_NAME}.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Open Homebrew Cask PR in ap9000/homebrew-toolroll
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ "$EVENT_NAME" != "release" ] && [ "$PUBLISH_RELEASE" != "true" ]; then
+            echo "Dry-run dispatch complete; skipping Homebrew Cask PR."
+            exit 0
+          fi
+          if [ "$SIGNED" != "true" ] || [ -z "$TAG" ]; then
+            exit 0
+          fi
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping automatic Cask PR. Generated Casks/toolroll.rb is in the macos-dmg workflow artifact."
+            exit 0
+          fi
+          export GH_TOKEN="$HOMEBREW_TAP_TOKEN"
+          TAP_DIR="$RUNNER_TEMP/homebrew-toolroll"
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ap9000/homebrew-toolroll.git" "$TAP_DIR"
+          cd "$TAP_DIR"
+          git config user.name "toolroll-release-bot"
+          git config user.email "release-bot@toolroll.dev"
+          BRANCH="cask-toolroll-${VERSION}"
+          git checkout -B "$BRANCH"
+          mkdir -p Casks
+          cp "$RUNNER_TEMP/mac-release/toolroll.rb" Casks/toolroll.rb
+          if git diff --quiet && git ls-files --others --exclude-standard | grep -vq .; then
+            echo "Homebrew Cask is already up to date for $VERSION."
+            exit 0
+          fi
+          git add Casks/toolroll.rb
+          git commit -m "Update toolroll cask to ${VERSION}"
+          git push --force-with-lease origin "$BRANCH"
+          if ! gh pr list --repo ap9000/homebrew-toolroll --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh pr create \
+              --repo ap9000/homebrew-toolroll \
+              --title "Update toolroll cask to ${VERSION}" \
+              --body "Automated macOS Cask update for signed & notarized Toolroll ${VERSION} (\`${TAG}\`)." \
+              --head "$BRANCH" \
+              --base main
+          fi
