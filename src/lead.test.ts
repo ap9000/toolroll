@@ -428,12 +428,12 @@ describe("the lead's turn", () => {
   });
 
   test("project lookup gives names without exposing paths, sensitive labels or unadmitted projects", () => {
-    const projects = ["/private/standing-orders", "C:\\private\\job-scraper", "/private/alex", "/private/" + "a".repeat(64), "/private/<script>bad</script>", "/private/" + "AKIA" + "ABCDEFGHIJKLMNOP", "/private/" + "x".repeat(81)];
+    const projects = ["/private/standing-orders", "C:\\private\\my-tool", "/private/alex", "/private/" + "a".repeat(64), "/private/<script>bad</script>", "/private/" + "AKIA" + "ABCDEFGHIJKLMNOP", "/private/" + "x".repeat(81)];
     const admitted = principal("alex", projects);
     const ctx = { store, who: admitted, now: clock(), draft: () => null, step: 1, readDecisions: new Map<number, number>() };
     const result = executeLeadTool(ctx, "list_repos", {});
     expect(result).toEqual({ ok: true, body: { repos: [
-      { repo: "r1", name: "standing-orders" }, { repo: "r2", name: "job-scraper" },
+      { repo: "r1", name: "standing-orders" }, { repo: "r2", name: "my-tool" },
       ...[3, 4, 5, 6, 7].map(index => ({ repo: `r${index}`, name: `Project ${index}` })),
     ] } });
     expect(JSON.stringify(result)).not.toContain("private");

@@ -35,7 +35,7 @@ It had no native app association, no provider calls, no task database writes
 and no access grants. Each project probe uses the existing bounded child and
 tests reading the directory plus a unique, cleaned-up Git-metadata scratch file.
 At **2026-09-13T16:56:04.348Z**, all three saved Documents repositories
-(`job-scraper`, `oddcircle`, `standing-orders`) returned **unavailable** because
+(`my-tool`, `my-site`, `standing-orders`) returned **unavailable** because
 their access checks timed out. This is not proof of a particular missing grant
 or a visible prompt. Foreground shell access is not background-worker evidence.
 

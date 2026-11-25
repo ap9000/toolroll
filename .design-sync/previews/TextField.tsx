@@ -14,7 +14,7 @@ export function MonoMachineFact() {
       <TextField
         label="Repository"
         mono
-        defaultValue="~/Documents/job-scraper"
+        defaultValue="~/Documents/my-tool"
         hint="Cloned under your project root"
       />
     </div>

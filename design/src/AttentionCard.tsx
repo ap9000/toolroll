@@ -3,7 +3,7 @@ import { Card, CardAction, CardContent, CardFooter, CardHeader, CardTitle } from
 import { cn } from "./lib/utils.js";
 
 export interface AttentionCardProps {
-  /** What is waiting, e.g. "Approve scope for job-scraper". */
+  /** What is waiting, e.g. "Approve scope for my-tool". */
   title: string;
   /** Mono machine fact beside the title, e.g. "claude · sonnet" or "task #93". */
   meta?: string;
