@@ -2952,7 +2952,7 @@ public final class WorkbenchStore {
     }
 
     public func promoteCandidate(taskId: String, candidateId: String) async {
-        busyLabel = "Promoting Candidate…"
+        busyLabel = "Applying result…"
         defer { busyLabel = nil }
 
         if activeProfile.isDemo {
@@ -2968,14 +2968,14 @@ public final class WorkbenchStore {
                 }
                 candidatesResponse = CandidatesListResponse(ok: true, taskId: taskId, currentBaseCommit: existing.currentBaseCommit, candidates: updated)
             }
-            notice = WorkbenchNotice(kind: .info, message: "Promoted Candidate \(candidateId.prefix(8)) to Run #15 — checks passed.")
+            notice = WorkbenchNotice(kind: .info, message: "Applied result \(candidateId.prefix(8)) — checks passed.")
             return
         }
         guard let client else { return }
         do {
             let res = try await client.promoteCandidate(taskId: taskId, candidateId: candidateId)
-            let runStr = res.runId.map { "Run #\($0)" } ?? "central Run"
-            notice = WorkbenchNotice(kind: .info, message: "Promoted Candidate \(candidateId.prefix(8)) → \(runStr). Checks queued.")
+            let runStr = res.runId.map { "Run #\($0)" } ?? "task"
+            notice = WorkbenchNotice(kind: .info, message: "Applied result \(candidateId.prefix(8)) to \(runStr). Checks queued.")
             await loadSelectedTaskDetails(taskId: taskId)
         } catch {
             notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
@@ -3001,7 +3001,7 @@ public final class WorkbenchStore {
                 }
                 candidatesResponse = CandidatesListResponse(ok: true, taskId: taskId, currentBaseCommit: existing.currentBaseCommit, candidates: updated)
             }
-            notice = WorkbenchNotice(kind: .info, message: "Opened PR #488 for Candidate \(candidateId.prefix(8)).")
+            notice = WorkbenchNotice(kind: .info, message: "Opened PR #488.")
             return
         }
         guard let client else { return }

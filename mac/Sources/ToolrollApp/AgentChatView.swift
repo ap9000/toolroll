@@ -193,7 +193,7 @@ public struct AgentChatView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(ToolrollPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Changes stay in an isolated local clone with no remote until you press Ship.")
+                    Text("Changes stay isolated locally until you press Ship (⌘⏎).")
                         .font(.system(size: 11))
                         .foregroundStyle(ToolrollPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -472,11 +472,11 @@ public struct AgentChatView: View {
     private var diffPreviewDrawer: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Isolated clone changes (\(gitDiff.changedFiles.count))")
+                Text("Changed files (\(gitDiff.changedFiles.count))")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                 Spacer()
-                Button("Ship…") {
+                Button("Ship (⌘⏎)") {
                     Task { await store.openChatShipSheet(threadId: thread.id) }
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))

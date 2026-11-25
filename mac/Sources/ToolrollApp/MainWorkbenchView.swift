@@ -139,7 +139,7 @@ public struct MainWorkbenchView: View {
             titleVisibility: .visible
         ) {
             if let target = store.chatDeleteConfirmationThread {
-                Button("Keep Clone & Archive") {
+                Button("Keep Branch & Archive") {
                     store.deleteChatThread(id: target.id, discardChanges: false, keepBranch: true)
                 }
                 Button("Discard Changes & Delete", role: .destructive) {
@@ -150,7 +150,7 @@ public struct MainWorkbenchView: View {
                 store.chatDeleteConfirmationThread = nil
             }
         } message: {
-            Text("This chat's isolated clone has unmerged edits. Archive while keeping the clone on disk, or discard the clone permanently.")
+            Text("This chat has unmerged edits. Archive while keeping its local branch, or discard the edits permanently.")
         }
         .modifier(CancelConfirmation(store: store))
         .modifier(ModelPickConfirmation(store: store))
@@ -420,8 +420,9 @@ public struct MainWorkbenchView: View {
             }
             .buttonStyle(.plain)
             .toolrollGlassCapsule(interactive: true)
+            .keyboardShortcut(.return, modifiers: [.command])
             .disabled(thread.id.hasPrefix("pending-") || store.runningChatThreadIds.contains(thread.id) || thread.running)
-            .help("Freeze a snapshot commit from this chat, run checks, and merge or save a branch")
+            .help("Ship changes from this chat (⌘⏎)")
 
             Menu {
                 Button("Open Shell in \(thread.projectName)") {
@@ -434,7 +435,7 @@ public struct MainWorkbenchView: View {
                 Button("Refresh Diff") {
                     Task { await store.refreshChatDiff(threadId: thread.id) }
                 }
-                Button("Repair Workspace Git Binding") {
+                Button("Repair Git Workspace") {
                     Task { await store.repairChatGitBinding(threadId: thread.id) }
                 }
                 Divider()

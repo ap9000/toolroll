@@ -731,7 +731,7 @@ public struct InboxSidebarView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .contextMenu {
-            Button("Ship Snapshot…") {
+            Button("Ship…") {
                 Task { await store.openChatShipSheet(threadId: thread.id) }
             }
             Divider()

@@ -439,7 +439,7 @@ public struct TaskCockpitView: View {
                 Task { await store.cancelSelectedTask() }
             }
             Divider()
-            Button("Open Web View ↗") {
+            Button("Open in Browser ↗") {
                 store.openTaskInBrowser(taskId: row.id)
             }
         } label: {
@@ -898,10 +898,11 @@ public struct TaskCockpitView: View {
                         sendBackOpen.toggle()
                     }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                    Button("Accept Report") {
+                    Button("Accept Report (⌘⏎)") {
                         Task { await store.acceptSelectedResult() }
                     }
                     .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .keyboardShortcut(.return, modifiers: [.command])
                     .disabled(!review.accept.blockers.isEmpty)
                 }
             }
@@ -1149,10 +1150,11 @@ public struct TaskCockpitView: View {
                         sendBackOpen.toggle()
                     }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                    Button("Accept Result") {
+                    Button("Accept & Ship (⌘⏎)") {
                         Task { await store.acceptSelectedResult() }
                     }
                     .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .keyboardShortcut(.return, modifiers: [.command])
                 }
             }
 
@@ -1281,10 +1283,11 @@ public struct TaskCockpitView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Accept Result") {
+                Button("Accept & Ship (⌘⏎)") {
                     Task { await store.acceptSelectedResult() }
                 }
                 .buttonStyle(KitButtonStyle(.primary))
+                .keyboardShortcut(.return, modifiers: [.command])
 
                 Button(sendBackOpen ? "Close Note" : "Send Back…") {
                     sendBackOpen.toggle()
@@ -1519,17 +1522,12 @@ public struct TaskCockpitView: View {
     private func candidatesSection(taskId: String, candidates: [HandoffCandidate]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Candidates")
+                Text("Submitted Results")
                     .font(.system(size: 11, weight: .semibold))
                     .textCase(.uppercase)
                     .tracking(0.6)
                     .foregroundStyle(ToolrollPalette.muted)
                 Spacer()
-                if let base = store.candidatesResponse?.currentBaseCommit {
-                    Text("base \(base.prefix(8))")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                }
             }
 
             VStack(spacing: 8) {
@@ -1586,7 +1584,7 @@ public struct TaskCockpitView: View {
                         .buttonStyle(KitButtonStyle(.ghost, compact: true))
                     }
                 } else if candidate.promotedAt == nil {
-                    Button("Promote to Run") {
+                    Button("Apply to Task") {
                         Task { await store.promoteCandidate(taskId: taskId, candidateId: candidate.id) }
                     }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))

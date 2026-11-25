@@ -5,9 +5,9 @@ import ToolrollCore
 public struct SetupWorkbenchView: View {
     @Bindable var store: WorkbenchStore
     @State private var showMoreAgents: Bool = false
+    @State private var showMoreOptions: Bool = false
     @State private var isModelPickerOpen: Bool = false
     @State private var confirmingInstallAgent: AgentRow? = nil
-    @State private var copiedMCP: Bool = false
 
     public init(store: WorkbenchStore) {
         self.store = store
@@ -246,77 +246,65 @@ public struct SetupWorkbenchView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.ink.opacity(0.35), lineWidth: 1))
                     }
 
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
-                                Text("MCP Workspace Gateway")
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.ink)
-                                Text("25 tools")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 3))
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            if !store.isLocalSession && store.activeProfile.isDemo {
+                                Button("Start Local Engine") {
+                                    Task { await store.startLocalEngine() }
+                                }
+                                .buttonStyle(KitButtonStyle(.ghost))
                             }
-                            Text("Lets Claude, Codex, and Cursor read sibling worktrees, task queues, and code maps at \(store.mcpGatewayEndpoint)")
-                                .font(.system(size: 11))
+
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.14)) {
+                                    showMoreOptions.toggle()
+                                }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: showMoreOptions ? "chevron.down" : "ellipsis")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                    Text("More options")
+                                        .font(.system(size: 12, weight: .medium))
+                                }
                                 .foregroundStyle(ToolrollPalette.muted)
-                                .lineLimit(2)
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+
+                            Button {
+                                store.completeSetup()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text("Start")
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                            }
+                            .buttonStyle(KitButtonStyle(.primary))
+                            .keyboardShortcut(.return, modifiers: [])
                         }
-                        Spacer()
-                        Button(copiedMCP ? "Copied JSON" : "Copy MCP Config") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(store.mcpConfigSnippet, forType: .string)
-                            copiedMCP = true
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.6))
-                                copiedMCP = false
+
+                        if showMoreOptions {
+                            HStack(spacing: 10) {
+                                Button("Connect Remote Server…") {
+                                    store.isPairSheetOpen = true
+                                }
+                                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                                Button("Pair Phone (QR)…") {
+                                    store.isPhonePairSheetOpen = true
+                                }
+                                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                                Button("Rescan") {
+                                    Task { await store.refreshSetupState() }
+                                }
+                                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+
+                                Spacer()
                             }
                         }
-                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
-                    }
-                    .padding(14)
-                    .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ToolrollPalette.line, lineWidth: 1))
-
-                    HStack(spacing: 10) {
-                        if !store.isLocalSession && store.activeProfile.isDemo {
-                            Button("Start Local Engine") {
-                                Task { await store.startLocalEngine() }
-                            }
-                            .buttonStyle(KitButtonStyle(.ghost))
-                        }
-
-                        Button("Connect Team / Remote Server…") {
-                            store.isPairSheetOpen = true
-                        }
-                        .buttonStyle(KitButtonStyle(.ghost))
-
-                        Button("Pair Phone (QR)…") {
-                            store.isPhonePairSheetOpen = true
-                        }
-                        .buttonStyle(KitButtonStyle(.ghost))
-
-                        Button("Rescan") {
-                            Task { await store.refreshSetupState() }
-                        }
-                        .buttonStyle(KitButtonStyle(.ghost))
-
-                        Spacer()
-
-                        Button {
-                            store.completeSetup()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text("Start Building")
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                        }
-                        .buttonStyle(KitButtonStyle(.primary))
-                        .keyboardShortcut(.return, modifiers: [])
                     }
                     .padding(.top, 4)
                 }
@@ -347,9 +335,9 @@ public struct SetupWorkbenchView: View {
                 .fill(store.isLocalSession || !store.activeProfile.isDemo ? ToolrollPalette.success : ToolrollPalette.muted)
                 .frame(width: 6, height: 6)
             Text(store.isLocalSession
-                 ? "Local Engine · \(store.activeProfile.origin.replacingOccurrences(of: "http://", with: ""))"
+                 ? "Running locally"
                  : store.activeProfile.displayTitle)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ToolrollPalette.ink)
         }
         .padding(.horizontal, 9)

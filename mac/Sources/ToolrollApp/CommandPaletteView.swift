@@ -29,7 +29,7 @@ public struct CommandPaletteView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(ToolrollPalette.muted)
 
-                    TextField("Jump to task, promote Candidate, hand off, or attach terminal…", text: $query)
+                    TextField("Jump to a task, chat, project, or action…", text: $query)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14))
                         .foregroundStyle(ToolrollPalette.ink)

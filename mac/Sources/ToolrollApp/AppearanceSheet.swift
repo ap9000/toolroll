@@ -115,7 +115,7 @@ struct AppearanceSheet: View {
                             }
                             .buttonStyle(KitButtonStyle(.primary))
                         }
-                        Text("Lead calls toolroll_view_set to save & apply your custom theme live — zero restarts.")
+                        Text("Lead updates your theme live — no restart needed.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(ToolrollPalette.muted)
                     }
@@ -262,8 +262,8 @@ struct AppearanceSheet: View {
     private func sendCustomizationToLead() {
         let userAsk = leadStylePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt = userAsk.isEmpty
-            ? "Let's customize my Toolroll workspace theme using toolroll_view_set. I'm currently using \"\(cfg.activeTheme)\". Propose a refined custom color palette and save + apply it so I can see it live."
-            : "Update my Toolroll workspace appearance using toolroll_view_set (save a custom theme and apply it live): \(userAsk)"
+            ? "Customize my Toolroll theme (currently \"\(cfg.activeTheme)\"). Suggest a refined color palette and apply it live."
+            : "Update my Toolroll appearance live: \(userAsk)"
         leadStylePrompt = ""
         dismiss()
         store.isInspectorVisible = true
