@@ -18,7 +18,7 @@ struct StaleSessionTests {
         var all: [LocalSessionCredentials] { lock.lock(); defer { lock.unlock() }; return seen }
     }
 
-    private func setUp(refuseReconnect: Bool, old: @escaping @Sendable (RecordedRequest, Int) -> StubReply,
+    private func setUp(refuseReconnect: Bool, account: String = "alice", databasePath: String = "\(FakeConsole.shared.dir)/orders.db", old: @escaping @Sendable (RecordedRequest, Int) -> StubReply,
                        resend: @escaping @Sendable (RecordedRequest) -> StubReply) async -> (ToolrollClient, StubServer, StubServer, Renewals) {
         FakeConsole.shared.reset(refuse: refuseReconnect)
         let oldServer = StubServer(handler: old)
@@ -27,7 +27,7 @@ struct StaleSessionTests {
         }
         StubRegistry.bind(port: FakeConsole.port, to: freshServer)
         let port = StubRegistry.register(oldServer)
-        let client = ToolrollClient(localSession: .stub(port: port), session: StubURLProtocol.session())
+        let client = ToolrollClient(localSession: .stub(port: port, account: account, databasePath: databasePath), session: StubURLProtocol.session())
         let renewals = Renewals()
         await client.onSessionRenewed { renewals.add($0) }
         return (client, oldServer, freshServer, renewals)
@@ -108,5 +108,20 @@ struct StaleSessionTests {
         #expect(old.requests.count == 1)
         #expect(fresh.requests.isEmpty)
         #expect(FakeConsole.shared.handshakeCount == 0)
+    }
+
+    @Test("A stale session is never renewed with another install or account: the password is not resent elsewhere",
+          arguments: [("bob", nil), ("alice", "/elsewhere/orders.db")] as [(String, String?)])
+    func neverRenewsElsewhere(_ account: String, _ databasePath: String?) async throws {
+        let (client, old, fresh, renewals) = await setUp(refuseReconnect: false, account: account,
+                                                          databasePath: databasePath ?? "\(FakeConsole.shared.dir)/orders.db",
+                                                          old: { _, _ in .refused(409, Self.restarted) },
+                                                          resend: { _ in .done("Saved.") })
+        await #expect(throws: ToolrollClientError.self) {
+            try await client.setProjectNetwork(repo: "/work/my-site", open: false, localAny: false, hosts: "", password: "pw")
+        }
+        #expect(old.requests.count == 1)
+        #expect(fresh.requests.filter { $0.path == "/settings/project/network" }.isEmpty)
+        #expect(renewals.all.isEmpty)
     }
 }

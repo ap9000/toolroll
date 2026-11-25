@@ -3633,9 +3633,18 @@ public final class WorkbenchStore {
     /// password verified moments ago on this session stands in (docs/guide/security.md: standard plan approval and
     /// chat messages, 15 minutes, direct local requests only). Every other step-up needs a password typed now or a
     /// Touch ID unlock that actually runs.
+    ///
+    /// The password unlocked belongs to the Toolroll this act started on: if the app reconnected elsewhere while the
+    /// person confirmed, nothing is returned (and so nothing is sent).
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
+        let bound = connectionBinding
         do {
-            return try await TouchIDVault.unlockPassword(account: activeProfile.account, origin: activeProfile.origin, reason: reason)
+            let unlocked = try await TouchIDVault.unlockPassword(account: bound.account, origin: bound.origin, reason: reason)
+            guard connectionBinding == bound else {
+                notice = WorkbenchNotice(kind: .refusal, message: Self.reconnectedWords)
+                return nil
+            }
+            return unlocked
         } catch TouchIDVaultError.cancelled {
             return nil
         } catch {
@@ -3643,6 +3652,18 @@ public final class WorkbenchStore {
             return nil
         }
     }
+
+    /// Which Toolroll and account an act is talking to. A password is only ever sent where it was asked for.
+    struct ConnectionBinding: Equatable {
+        let origin: String
+        let account: String
+    }
+
+    var connectionBinding: ConnectionBinding {
+        ConnectionBinding(origin: activeProfile.origin, account: activeProfile.account)
+    }
+
+    static let reconnectedWords = "Toolroll reconnected while you confirmed. Nothing was sent; try again."
 
     public func approveSelectedTaskWithTouchID() async {
         let title = selectedRow?.title ?? selectedTaskId ?? "this task"
@@ -3712,6 +3733,9 @@ public final class WorkbenchStore {
         } else if request.appliedWords == nil {
             return (false, "This request names nothing to approve.")
         }
+        // Bound before any wait: the password goes only to the Toolroll and client this approval started on.
+        let bound = connectionBinding
+        guard let boundClient = client else { return (false, "Not connected.") }
         resolvingAgentRequestId = request.id
         defer { resolvingAgentRequestId = nil }
 
@@ -3726,13 +3750,14 @@ public final class WorkbenchStore {
             }
             password = unlocked
         }
+        guard connectionBinding == bound, client === boundClient else { return (false, Self.reconnectedWords) }
 
         let outcome: (ok: Bool, message: String)
         switch request.kind {
         case .network:
-            guard let terms, let client else { return (false, "Not connected.") }
+            guard let terms else { return (false, "Update Toolroll to review this request.") }
             do {
-                let reply = try await client.approveNetworkRequest(repo: terms.repo, id: terms.id, digest: terms.digest, password: password)
+                let reply = try await boundClient.approveNetworkRequest(repo: terms.repo, id: terms.id, digest: terms.digest, password: password)
                 outcome = (true, reply)
             } catch {
                 handleSignInRefusal(error)
@@ -3744,13 +3769,15 @@ public final class WorkbenchStore {
             outcome = (ok, notice?.message ?? (ok ? "Approved worktree setup." : "Could not approve worktree setup."))
         case .liveView:
             let show = request.params.showCommands ?? true
-            let snap = await loadProjectSettings(repoPath: request.repo)
-            outcome = await updateProjectLiveCommands(
-                repoPath: request.repo,
-                show: show,
-                nonce: snap?.liveViewNonce,
-                password: password
-            )
+            do {
+                let snap = try await boundClient.fetchProjectSettings(repo: request.repo)
+                let reply = try await boundClient.setProjectLiveCommands(repo: request.repo, show: show, nonce: snap.liveViewNonce, password: password)
+                notice = WorkbenchNotice(kind: .info, message: reply)
+                outcome = (true, reply)
+            } catch {
+                handleSignInRefusal(error)
+                return (false, error.localizedDescription)
+            }
         }
 
         guard outcome.ok else {
