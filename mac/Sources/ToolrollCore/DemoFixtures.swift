@@ -338,7 +338,6 @@ public enum DemoFixtures {
         ]
     )
 
-    // Tiny valid 1x1 emerald PNG used for Demo Mode artifact gallery preview.
     public static let demoArtifactPngData: Data = Data(
         base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAGklEQVR42mP8z8DwnwEPYMQqzsDAwDBqIwAAA2kC/U32MuoAAAAASUVORK5CYII="
     ) ?? Data()

@@ -454,8 +454,6 @@ public struct DirectChatAttachedResponse: Codable, Equatable, Sendable {
     public let error: String?
 }
 
-// MARK: - View Models (Derived from Server DTOs)
-
 public enum AgentChatRole: String, Codable, Sendable {
     case user
     case assistant

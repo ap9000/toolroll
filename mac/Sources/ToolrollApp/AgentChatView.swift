@@ -119,8 +119,6 @@ public struct AgentChatView: View {
         }
     }
 
-    // MARK: - Workspace Posture, Dirty Main, Git Repair & Ship Banners
-
     private var workspaceStatusStrip: some View {
         HStack(spacing: 8) {
             if !thread.branch.isEmpty {
@@ -293,8 +291,6 @@ public struct AgentChatView: View {
         .background(tone.opacity(0.08))
     }
 
-    // MARK: - Rich Syntax-Colored Diff Drawer
-
     private var filteredDiffLines: [String] {
         let rawLines = gitDiff.diffText.components(separatedBy: "\n")
         guard let targetFile = selectedDiffFileFilter else { return rawLines }
@@ -404,8 +400,6 @@ public struct AgentChatView: View {
         return .clear
     }
 
-    // MARK: - Inline Image Galleries
-
     private var threadAttachmentsStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Attached to this chat")
@@ -426,8 +420,6 @@ public struct AgentChatView: View {
             }
         }
     }
-
-    // MARK: - Messages
 
     @ViewBuilder
     private func messageRow(_ msg: AgentChatMessage) -> some View {
@@ -626,8 +618,6 @@ public struct AgentChatView: View {
         }
     }
 
-    // MARK: - Composer Footer
-
     private var composerFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !currentAttachments.isEmpty {
@@ -716,8 +706,6 @@ public struct AgentChatView: View {
         }
     }
 }
-
-// MARK: - Authenticated Image Artifact Thumbnail & Lightbox
 
 private struct DirectChatArtifactCard: View {
     @Bindable var store: WorkbenchStore

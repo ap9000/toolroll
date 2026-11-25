@@ -1051,7 +1051,6 @@ public final class WorkbenchStore {
             }
             ensureDirectChatPolling()
         } catch {
-            // Keep existing cached list on transient network blip.
         }
     }
 
@@ -1079,7 +1078,6 @@ public final class WorkbenchStore {
             }
             ensureDirectChatPolling()
         } catch {
-            // Non-fatal during SSE bursts.
         }
     }
 
@@ -1212,8 +1210,6 @@ public final class WorkbenchStore {
             return
         }
 
-        // Upload image attachments directly into the isolated clone (`.toolroll-attachments/`)
-        // so sandboxed Codex & Gemini can inspect them inside their working tree.
         let uploadedPaths = await uploadImageAttachments(attachments, to: threadId, client: client)
         let nonImageAttachments = attachments.filter { $0.kind != .image }
         var promptParts: [String] = []
@@ -3426,9 +3422,6 @@ public final class WorkbenchStore {
     public func setBackgroundServiceEnabled(_ enabled: Bool) async -> (ok: Bool, message: String) {
         isUpdatingBackgroundService = true
         defer { isUpdatingBackgroundService = false }
-        // Safe launchd handoff: if this app spawned its own foreground `up --laptop` child,
-        // stop it and wait for exit BEFORE calling `toolroll background on --json` so launchd
-        // never hits `running-elsewhere`. Detached Direct Chat turns survive the swap seamlessly.
         if enabled, let child = managedLocalEngineProcess, child.isRunning {
             child.terminate()
             for _ in 0..<20 {

@@ -376,8 +376,6 @@ public actor ToolrollClient {
         return try await send(try makeRequest(path: path), as: LeadChatResponse.self)
     }
 
-    // MARK: - Server-Backed Direct Chat (/engine/direct-chats)
-
     private func sendDirectChatForm<T: Decodable>(
         path: String,
         fields: [(String, String)],
@@ -410,7 +408,6 @@ public actor ToolrollClient {
             if http.statusCode == 401 {
                 throw ToolrollClientError.unauthenticated
             }
-            // Many Direct Chat endpoints return structured `{ ok: false, error, code }` even on 400/403/404/409.
             if let decoded = try? decoder.decode(T.self, from: data) {
                 return decoded
             }
