@@ -19,7 +19,7 @@ import { mainRunKey, releaseBranchFor } from "./release-main.js";
 import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
 import { settleDeployment, takeReleaseRun, type RunLockSeams, type SettleWorld } from "./release-next.js";
-import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, releaseProgressFor, revokeRelease, type Database } from "./store.js";
+import { databasePath, elapsedSeconds, latestReleaseStepTask, openStore, readSchemaVersion, releaseProgressFor, revokeRelease, SCHEMA_VERSION, type Database } from "./store.js";
 import { dur, plural } from "./design/kit.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
@@ -298,6 +298,12 @@ async function runMainRelease(given: string | undefined, flags: { repo: string |
   const refuse = (reason: string, message: string, code: number) => { write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason, message }) : message); return code; };
   const checkout = resolve(deps.cwd ?? process.cwd(), flags.repo ?? ".");
   const stateDir = deps.stateDir ?? dirname(databasePath(process.env, homedir()));
+  // The coordinator talks to this computer's database through its own build: one that isn't the database's own build
+  // (a candidate's checkout run before its deploy, say) would migrate it under the running services. Refused first.
+  if (deps.adapters === undefined) {
+    const problem = liveSchemaProblem(deps.database ?? databasePath(process.env, homedir()));
+    if (problem !== null) return refuse("mixed-runtime", problem, 3);
+  }
   const lines: string[] = [];
   const say = (line: string) => { if (json) lines.push(line); else write(line); };
   const adapters = deps.adapters === undefined
@@ -321,6 +327,23 @@ async function runMainRelease(given: string | undefined, flags: { repo: string |
     const outcome = await runRelease({ branch: releaseBranchFor(version), version, full: flags.full, checkout, stateDir, limits: flags.limits, fresh: flags.fresh }, adapters);
     return report(outcome, write, json, lines);
   } finally { taken.release(); }
+}
+
+/**
+ * Why this build mustn't coordinate a release against `database`, or null: its schema (read without opening it as a
+ * store, so nothing migrates) isn't this build's. The installed build always matches; a newer candidate's own build,
+ * run before it is deployed, doesn't — it would migrate the live database under the running services, which then
+ * refuse it (release-from-main.md, Bootstrap).
+ */
+export function liveSchemaProblem(database: string): string | null {
+  if (!existsSync(database)) return null;
+  let version: number | null = null;
+  try {
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    try { const read = readSchemaVersion(db); version = read.ok ? read.version : null; } finally { db.close(); }
+  } catch { return "This computer's Toolroll database can't be read, so no release starts. Check it, then run the installed `toolroll release` again."; }
+  if (version === null || version === SCHEMA_VERSION) return null;
+  return `This Toolroll build (database schema ${SCHEMA_VERSION}) isn't the one this computer's database belongs to (schema ${version}): coordinating a release with it would ${version < SCHEMA_VERSION ? "upgrade the live database under the running services" : "use a database written by a newer build"}. Nothing was changed. Run \`toolroll release\` with the build this database belongs to${version < SCHEMA_VERSION ? " (the installed one)" : " (the one a deploy already put in place)"}.`;
 }
 
 /** `toolroll release prepare <version>`: the version pull request (release-adapters.ts prepareRelease). */

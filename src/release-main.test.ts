@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { journalFile, readJournal, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, RELEASE_TAG_CHECKS, runRelease, type CheckRun, type GateState, type HomebrewState, type MainProof, type ReleaseAdapters } from "./release.js";
+import { DatabaseSync } from "node:sqlite";
 import { purposeCheckMode, readReleaseCheckPurpose } from "./contracts/release-terms.js";
+import { liveSchemaProblem } from "./release-cli.js";
+import { openStore, SCHEMA_VERSION } from "./store.js";
 import { bumpVersion, changelogWith, firstParentAfter, harnessChanges, mainJournalFile, sameRelease } from "./release-main.js";
 
 const M = "a".repeat(40), TREE = "c".repeat(40), HEAD = "d".repeat(40), LATER = "e".repeat(40), PARENT = "f".repeat(40), OTHER = "9".repeat(40);
@@ -257,5 +260,19 @@ describe("a release from main's sealed purpose", () => {
     expect(purposeCheckMode({ ...base, purpose: "main-release", check: "full" })).toBe("full");
     expect(purposeCheckMode({ ...base, purpose: "release-check" })).toBe("full");
     expect(purposeCheckMode(null)).toBeNull();
+  });
+});
+
+describe("the coordinator's own build", () => {
+  test("refuses a database another build's schema wrote: a candidate's checkout never migrates the live one", () => {
+    const dir = stateDir();
+    expect(liveSchemaProblem(join(dir, "none.db"))).toBeNull();
+    const file = join(dir, "orders.db");
+    openStore(file).close();
+    expect(liveSchemaProblem(file)).toBeNull();
+    const db = new DatabaseSync(file);
+    db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION - 8}`);
+    db.close();
+    expect(liveSchemaProblem(file)).toMatch(/upgrade the live database under the running services\. Nothing was changed/);
   });
 });
