@@ -298,10 +298,15 @@ async function destinationOf(store: Store, project: { repo: string; common: stri
   return { ok: true, ref, recorded: false };
 }
 
+// eslint-disable-next-line no-control-regex
+const UNSAFE_MESSAGE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]+/g;
 /** The one landed commit's message: "<task title> (Toolroll task <id>)", one plain line. */
 function squashMessage(title: string | null, taskId: string): string {
-  const line = (title ?? "").replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
-  return line === "" ? `Toolroll task ${taskId}` : `${line} (Toolroll task ${taskId})`;
+  // Every character that could restyle or reorder what a terminal shows (UNSAFE_SHOWN, the backslash aside) becomes a
+  // space, so `git log` in the person's terminal is as safe as the yes.
+  const plain = (text: string) => text.replace(UNSAFE_MESSAGE, " ").replace(/\s+/g, " ").trim();
+  const line = plain(title ?? "").slice(0, 200), id = plain(taskId).slice(0, 100);
+  return line === "" ? `Toolroll task ${id}` : `${line} (Toolroll task ${id})`;
 }
 
 /** The git command the person can run themselves in their own checkout, for a refusal. */
@@ -381,7 +386,7 @@ export function shownName(name: string): string {
 
 /** The lines a person reads before saying yes. */
 export function landingWords(plan: LandingPlan): string[] {
-  const where = `${plan.branch} in ${plan.repo} (no folder has it checked out; only the branch moves)`;
+  const where = `${plan.branch} in ${shownName(plan.repo)} (no folder has it checked out; only the branch moves)`;
   if (plan.kind === "undo") {
     return [`Undo the landing of ${short(plan.reverts!.landed)} on ${where}.`,
       "A new commit reverts exactly what it changed; nothing is rewritten. No check runs on the undo."];
@@ -389,7 +394,7 @@ export function landingWords(plan: LandingPlan): string[] {
   const squash = plan.squash!;
   const names = squash.files.slice(0, 3).map(shownName).join(", ") + (squash.fileCount > 3 ? ` and ${squash.fileCount - 3} more` : "");
   return [`Lands 1 commit on ${plan.branch}: ${squash.fileCount === 0 ? "no file changes" : names} (+${squash.added} −${squash.removed}).`,
-    `"${squash.message}", on top of ${short(plan.old)} in ${shownName(plan.repo)} (no folder has ${plan.branch} checked out; only the branch moves).`,
+    `"${shownName(squash.message)}", on top of ${short(plan.old)} in ${shownName(plan.repo)} (no folder has ${plan.branch} checked out; only the branch moves).`,
     plan.checks === "passed" ? `Checks passed on ${short(plan.candidate!)}, whose files it lands exactly.` : "No check ran: this project has no check command.",
     ...(plan.recorded ? [] : [`Toolroll remembers ${plan.branch} as where this project's work lands.`])];
 }

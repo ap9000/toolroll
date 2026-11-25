@@ -239,6 +239,14 @@ describe("attack: the repository's own config, hooks and attributes", () => {
     const shown = landingWords(read.plan).join("\n");
     expect(shown).not.toMatch(/[\u001b\u202e]/);
     expect(shown.split("\n")[0]).toContain("a\\u{1b}[2J\\u{a}b\\u{202e}c.txt");
+    // A task title with ESC, U+202E, U+200B and U+FEFF: neither the yes nor the commit message (git log) carries them.
+    store.handle.prepare("UPDATE task SET title = ? WHERE id = 't'").run("fix\u001b[31m it\u202e\u200b\ufeffnow");
+    const again = await readLanding(store, "t", access(), NOW, options());
+    if (!again.ok || !("plan" in again)) throw new Error("plan");
+    expect(again.plan.squash?.message).toBe("fix [31m it now (Toolroll task t)");
+    expect(landingWords(again.plan).join("\n")).not.toMatch(/[\u001b\u202e\u200b\ufeff]/);
+    expect((await land(store, "t", { key: again.plan.key, into: "main" }, person, access(), NOW, options())).ok).toBe(true);
+    expect(git(repo, "log", "-1", "--format=%B", "main")).toBe("fix [31m it now (Toolroll task t)");
     // Two names that would show alike never share a key: the key is over the raw names.
     expect(shownName("a\\u{1b}")).not.toBe(shownName("a\u001b"));
   });
