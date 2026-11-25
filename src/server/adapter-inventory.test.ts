@@ -56,7 +56,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     // (flows.ts triggerAct re-checks it); share, renew, secret, setup, sender, scope, remove, unshare and dropped stay denied.
     "flow.trigger.check=trigger-run", "flow.trigger.pause=trigger-pause", "flow.trigger.press=trigger-run", "flow.trigger.resume=trigger-resume",
     "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
-    "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
+    "projects.open=add-project", "projects.select=read", "run.act.checks=run-checks", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
     // Threads' setup from the workbench's `w` link (threads-everyday S6): saving, checking and turning terms on take a
     // password typed into the form (local-owner.ts LOCAL_PASSWORD_ACTS); removing your own sign-in only narrows.
     "settings.flexible-sign-in-check=flexible-sign-in-check", "settings.flexible-sign-in-clear=flexible-sign-in-clear", "settings.flexible-sign-in=flexible-sign-in-save",

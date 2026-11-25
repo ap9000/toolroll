@@ -207,6 +207,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "flow.trigger.resume": "trigger-resume",
   "flow.trigger.check": "trigger-run",
   "flow.trigger.press": "trigger-run",
+  // Run checks on a result from the local owner's session (everyday 9 A6): the already-approved command only, on a solo
+  // install, for work it could approve again now; the handler checks this exact act (local-checks.ts).
+  "run.act.checks": "run-checks",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",

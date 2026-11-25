@@ -125,7 +125,8 @@ import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskO
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow, btn } from "./kit.js";
 import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
-import { localOwnerRefusal, withLocalAct } from "../local-owner.js";
+import { localActNow, localOwnerRefusal, withLocalAct } from "../local-owner.js";
+import { localChecksRefusal } from "../local-checks.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
 
@@ -1314,10 +1315,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const typedNote = (body.get("note") ?? "").trim();
     const sentNote = withContext(body.get("context"), typedNote);
     if (body.get("intent") === "revise") {
-      // Send back and build (everyday-8 #7): this computer's local owner, who may approve a plan with no password, says
-      // yes to the revision in the same act; approve() re-proves the approve-plan act and every rule. Anyone else (and
-      // a refusal) keeps the revised plan's own approval.
-      const buildNow = body.get("approve") === "1" && who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
+      // Send back and build (everyday-8 #7; everyday 9 A6): the person says yes to the revision in the same act, through
+      // the ordinary approval (approve(): every rule, the exact digest, in the revision's own transaction). This computer's
+      // local owner as the approve-plan act (approve() re-proves it and its eligibility); a signed-in approver only where
+      // their own session stands in for a password (Passwordless, or a solo install), as the Approve button's token-less
+      // yes does. Anyone else, and any refusal (a vote kept for protected work included, taken back whole), keeps the
+      // revised plan's own approval.
+      const localBuild = who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
+      const sessionBuild = who.via === "cookie" && who.authority !== "local-owner" && who.role === "approver" && passwordlessSessionFor(store, who.name);
+      const buildNow = body.get("approve") === "1" && (localBuild || sessionBuild);
       const result = requestResultChanges(store, evidenceRoot, {
         ...(buildNow ? {
           // Only the exact result this form was drawn for, while it is still its task's current one.
@@ -1327,10 +1333,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             return current !== null && current.activeTaskId === task && current.receipt?.runId === id ? null
               : "A newer build of this task came in since this page was drawn. Open the current result, then send it back.";
           },
-          approveNow: (child: string) => withLocalAct("approve-plan", () => {
+          approveNow: localBuild ? (child: string) => withLocalAct("approve-plan", () => {
             const filed = store.getScope(child);
             return filed !== null && !approvalOf(filed).approved && approveScope(store, child, who.name, now, filed.digest, "").ok;
-          }),
+          }) : (child: string) => sessionYesNow(store, child, who.name, now),
         } : {}),
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
@@ -1475,7 +1481,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (who.role !== "approver") return refuse(response, who, 403, "An approver runs checks.", back);
       if (store.isDemo()) return refuse(response, who, 403, "The demo runs no checks.", back);
       const level = body.get("level") === "full" ? "full" as const : "quick" as const;
-      const asked = requestFollowUpChecks(store, { runId: id, level, actor: who.name }, now);
+      // This computer's local owner (everyday 9 A6): the already-approved command only, as the exact act run-checks, on
+      // work it could approve again now, on a solo install (local-checks.ts); the worker holds it under its ceiling.
+      // Read with the request in one transaction.
+      const asked = who.authority === "local-owner"
+        ? store.transact(() => {
+          if (localActNow(store, "run-checks") === null) return { ok: false as const, message: "Sign in with your password to do this." };
+          const task = store.externalIdFor(found.taskRef);
+          const problem = task === null ? "No such result." : localChecksRefusal(store, who.name, task);
+          if (problem !== null) return { ok: false as const, message: problem };
+          return requestFollowUpChecks(store, { runId: id, level, actor: who.name, why: "local-owner" }, now);
+        })
+        : requestFollowUpChecks(store, { runId: id, level, actor: who.name }, now);
       if (!asked.ok) return refuse(response, who, 409, asked.message, back);
       // Back where it was asked: the task page's status row says the checks are running; a result page shows them under #follow-ups.
       // The task page's Result section is the one result view: there too, under #follow-ups.
@@ -3622,4 +3639,27 @@ export function localOwnerRoute(store: Store, taskId: string, body: { get(name: 
   if (when === null) return { ok: false, status: 400, message: "Say when: now, next run, or restart." };
   const done = localOwnerChangeAgents(store, taskId, { phase, provider, model, sawDigest }, when, now);
   return done.ok ? { ok: true, words: done.words } : done;
+}
+
+/** Thrown inside a savepoint to take a refused yes back whole. */
+const NOT_SEALED = Symbol("not sealed");
+/**
+ * Send back and build for a signed-in approver whose own session stands in for a password (everyday 9 A6): the revision
+ * approved through the ordinary approve() (its proof re-read there: `session` only while Passwordless or solo still holds
+ * and the session is live), in the revision's own transaction. Anything but a seal (a refusal, or a first vote on
+ * protected work) is rolled back to nothing, and the revision is then planned and approved as before. Appended here:
+ * src/password-freshness.test.ts pins this file's functions by position.
+ */
+function sessionYesNow(store: Store, child: string, by: string, now: Date): boolean {
+  try {
+    return store.savepoint(() => {
+      const filed = store.getScope(child);
+      if (filed === null || approvalOf(filed).approved || !passwordlessSessionFor(store, by)) throw NOT_SEALED;
+      if (!approveScope(store, child, by, now, filed.digest, "").ok) throw NOT_SEALED;
+      return true;
+    });
+  } catch (error) {
+    if (error === NOT_SEALED) return false;
+    throw error;
+  }
 }

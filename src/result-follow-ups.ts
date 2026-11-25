@@ -13,6 +13,7 @@ import { keepCheckScreenshots } from "./check-screenshots.js";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
 import type { CheckAccess } from "./check-access.js";
 import { widerThan } from "./check-access.js";
+import { localChecksStanding } from "./local-checks.js";
 import { recheckStanding } from "./check-only-standing.js";
 import { actualCheckAccess, checkoutLaunchOf, checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -47,7 +48,7 @@ export type RunLevel = Exclude<CheckLevel, "off">;
  * with the others, so it was checked on its own; `alone`: nothing joined it within the window. */
 export type BatchFacts = { mode: "together" | "split" | "conflict" | "alone"; tested: string; base: string | null; members: { task: string; run: number; head: string }[] };
 export type FollowUpCheck = {
-  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request" | "batch" | "recheck";
+  request: number; runId: number; level: RunLevel; head: string; actor: string; at: string; why: "person" | "pull-request" | "batch" | "recheck" | "local-owner";
   /** The approved command's digest when checks were asked for: only that exact command runs. */
   digest: string;
   state: "waiting" | "running" | "passed" | "failed" | "not-run"; exitCode: number | null; logArtifactId: number | null; note: string | null;
@@ -110,7 +111,7 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
     const started = rows.find(row => row.action === CHECKS_STARTED && row.outcome === String(request.id)) ?? null;
     const finished = rows.find(row => row.action === CHECKS_FINISHED && row.outcome.startsWith(`${request.id}:`)) ?? null;
     const base = { request: request.id, runId, level: request.outcome as RunLevel, head, digest, actor: request.actor, at: request.at,
-      why: why === "pull-request" ? "pull-request" as const : why === "batch" ? "batch" as const : why === "recheck" ? "recheck" as const : "person" as const, exitCode: null, logArtifactId: null, note: null,
+      why: why === "pull-request" ? "pull-request" as const : why === "batch" ? "batch" as const : why === "recheck" ? "recheck" as const : why === "local-owner" ? "local-owner" as const : "person" as const, exitCode: null, logArtifactId: null, note: null,
       ...(why === "batch" ? { base: /^[a-f0-9]{40}$/.test(recordedBase) ? recordedBase : null } : {}) };
     if (finished !== null) {
       const status = finished.outcome.slice(String(request.id).length + 1);
@@ -168,7 +169,7 @@ function checkTarget(store: Store, runId: number, level: RunLevel): { ok: true; 
 
 /** Ask for checks on a result's exact commit. Asking twice while one is waiting
  * or running returns the same request; a worker runs it once. */
-export function requestFollowUpChecks(store: Store, input: { runId: number; level: RunLevel; actor: string; why?: "person" | "pull-request" | "recheck" }, now: Date):
+export function requestFollowUpChecks(store: Store, input: { runId: number; level: RunLevel; actor: string; why?: "person" | "pull-request" | "recheck" | "local-owner" }, now: Date):
   { ok: true; request: number; level: RunLevel; existing: boolean } | Refusal {
   return store.transact(() => {
     const blocked = recoveryCheckBlock(store, input.runId);
@@ -241,8 +242,10 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   // The commit asked about is the one checked, even if the result changed since.
   if (target.head !== wanted.head) { const held = finish("not-run", "The result's commit changed after checks were asked for."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   // An automatic recheck runs only on its check-only authorization, read again now (check-only.ts): no record, no run.
-  const authorized = wanted.why === "recheck" ? recheckStanding(store, { request, runId, head: target.head, digest: wanted.digest }) : null;
-  if (wanted.why === "recheck" && !authorized?.ok) { const held = finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
+  // A local owner's Run checks (local-checks.ts) runs under its own ceiling the same way, read again now.
+  const authorized = wanted.why === "recheck" ? recheckStanding(store, { request, runId, head: target.head, digest: wanted.digest })
+    : wanted.why === "local-owner" ? localChecksStanding(store) : null;
+  if ((wanted.why === "recheck" || wanted.why === "local-owner") && !authorized?.ok) { const held = finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   /** Every command of an automatic recheck, refused at the moment it would run wider than the build's own access. */
   const proveLaunch = (): void => { const held = heldNow(); if (held !== null) throw new CheckRecoveryBlocked(held); };
   const guardedRunner: Runner = (file, args, options) => { proveLaunch(); return runner(file, args, options); };

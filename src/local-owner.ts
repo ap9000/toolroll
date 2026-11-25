@@ -65,6 +65,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Local-owner slice 3 (§2): retry the owner's own approved build after it stopped. Only the owner's own person yes,
   // on work it could approve again now, three times per seal; the writer (local-owner-acts.ts retryAsLocalOwner) checks it.
   "retry-build",
+  // Everyday 9 A6: run a result's checks again from the local owner's session, on a solo install: the already-approved
+  // command only (changing a check still takes the password), on work the owner could approve again now, never wider
+  // than sign-ins at launch (local-checks.ts). The handler (server/tasks.ts runFollowUp) checks this exact act.
+  "run-checks",
   // Settings → Advanced (the eight plan, W4): this person's own "Show advanced features". It hides or shows entry points
   // on their own pages and grants nothing; the writer (advanced.ts setAdvancedPreference) checks this exact act.
   "view-preference",

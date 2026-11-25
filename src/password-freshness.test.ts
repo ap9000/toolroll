@@ -1121,6 +1121,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
+    // Everyday 9 A6 (reviewed new sites): Send back and build for a signed-in approver whose session stands in. The page
+    // offers the box on the same reading; the send re-reads it, then approve() decides inside the revision's savepoint.
+    "src/server/task-views.ts#<module>": 2,
+    "src/server/task-views.ts#createTaskViews@1>resultDetailOf@31": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>runComment@32": 1,
+    "src/server/tasks.ts#sessionYesNow@19>store.savepoint(_)@1": 1,
   },
 };
 describe("the tripwire", () => {
