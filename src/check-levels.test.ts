@@ -422,6 +422,21 @@ describe("full checks before merge", () => {
 });
 
 describe("Settings → Projects → Checks", () => {
+  test("opened without a project (the Projects page's link): the current or only project, or a picker; never a 404 (everyday-8 #4)", async () => {
+    for (const path of ["/settings/checks", "/settings/pull-requests"]) {
+      const opened = await fetch(`${base}${path}`, { headers: { cookie } });
+      expect(opened.status, path).toBe(200);
+      const markup = await opened.text();
+      // Several projects here and none chosen: the picker, acting on the same page.
+      expect(markup, path).toMatch(new RegExp(`action="${path}"[\\s\\S]*name="repo"`));
+      // A project the address names opens as before.
+      const chosen = await fetch(`${base}${path}?repo=${encodeURIComponent(REPO)}`, { headers: { cookie } });
+      expect(chosen.status, path).toBe(200);
+      // An address naming a project that isn't one is refused, never swapped for another.
+      expect((await fetch(`${base}${path}?repo=${encodeURIComponent("/not/a/project")}`, { headers: { cookie } })).status, path).toBe(404);
+    }
+  });
+
   test("an approver chooses the level and approves the quick command, with the password", async () => {
     const settings = await page(`/settings/checks?repo=${encodeURIComponent(REPO)}`);
     const csrf = csrfOf(settings);
