@@ -33,7 +33,7 @@ const receipt = (id: string) => assignmentOf(store, id, NOW, { principal: "opera
 const accepted = (run: number) => store.proofAcceptance(run) !== null;
 
 /** A finished, checked build of `id`, ready for a person to accept. */
-function built(id: string): number {
+function built(id: string, exit = 0): number {
   store.createTask({ id, title: id }, NOW);
   const ref = store.refFor("built-in", id).id;
   store.placeTask(ref, REPO, {}, NOW);
@@ -51,8 +51,8 @@ function built(id: string): number {
   store.saveProofVerdict(runId, "verified", [], NOW, [{ id: "c1", statement: "it works", requiredEvidence: ["check"], state: "pass", detail: [], answered: [{ kind: "check", ref: "true" }], review: null }] as never, "verified");
   storeEvidence(store, root(), runId, "terminal-diff", "diff.patch", Buffer.from("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n"), "git diff (exit 0)", NOW, { captureStatus: "ok" });
   storeEvidence(store, root(), runId, "check-log", "checks.txt", Buffer.from("1 passed\n"), "true", NOW, { captureStatus: "ok" });
-  sealVerificationReceipt(store, root(), runId, HEAD, store.liveVerifyCommand(REPO)!, { configured: true, ran: true, exitCode: 0 }, NOW);
-  store.recordRunCheck(runId, { status: "passed", exitCode: 0, suites: [] }, NOW);
+  sealVerificationReceipt(store, root(), runId, HEAD, store.liveVerifyCommand(REPO)!, { configured: true, ran: true, exitCode: exit }, NOW);
+  store.recordRunCheck(runId, { status: exit === 0 ? "passed" : "failed", exitCode: exit, suites: [] }, NOW);
   return runId;
 }
 
@@ -188,5 +188,54 @@ describe("a completion stays complete when the check command changes", () => {
     const log = store.artifactsFor(runId).find(a => a.kind === "check-log")!;
     rmSync(join(root(), log.key), { force: true });
     expect(snapshot("t-damaged").state).not.toBe("complete");
+  });
+});
+
+/** Accept owes exactly what the completion's own rule says (everyday-8 #5, assignment.ts owedAcceptance): a person's own
+ * check needs no reason, an exception does, a failed check is a hard stop, and a stale result refuses. */
+describe("what Accept and finish owes", () => {
+  const MANUAL = (id: string) => `criterion "${id}" requires manual-review evidence — an operator must accept it before this can verify`;
+  const c1 = { id: "c1", statement: "it works", requiredEvidence: ["check"], state: "pass", detail: [], answered: [{ kind: "check", ref: "true" }], review: null };
+  const shapes = {
+    "a person's own check": (runId: number) => store.saveProofVerdict(runId, "short", [MANUAL("c2")], NOW, [c1, { id: "c2", statement: "Reads well on a phone", requiredEvidence: ["manual-review"], state: "manual-review",
+      detail: [MANUAL("c2")], answered: [{ kind: "manual-review", ref: "Looked at it" }], review: null }] as never, "short"),
+    "an exception": (runId: number) => store.saveProofVerdict(runId, "short", ["no proof for c2"], NOW, [c1, { id: "c2", statement: "Reads well on a phone", requiredEvidence: ["screenshot"], state: "missing",
+      detail: ["no proof for c2"], answered: [], review: null }] as never, "short"),
+  };
+  const rows: Array<{ name: string; shape: keyof typeof shapes; note: string | null; stale?: true; owes: string; ok: boolean; reason?: string }> = [
+    { name: "own check, no note: completes", shape: "a person's own check", note: null, owes: "person-check", ok: true },
+    { name: "exception, no reason: refused", shape: "an exception", note: null, owes: "exception", ok: false, reason: "needs-reason" },
+    { name: "exception with a reason: completes", shape: "an exception", note: "Checked it on a phone myself", owes: "exception", ok: true },
+    { name: "a stale result: refused", shape: "a person's own check", note: null, stale: true, owes: "person-check", ok: false, reason: "stale" },
+  ];
+  test("the table", async () => {
+    const { verifyApproverByPassword } = await import("./principal.js");
+    const { acceptAndCompleteAsOperator, owedAcceptance } = await import("./assignment.js");
+    let n = 0;
+    for (const row of rows) {
+      const id = `owe-${++n}`;
+      const runId = built(id);
+      shapes[row.shape](runId);
+      const read = assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, root())!;
+      expect(owedAcceptance(read.receipt, read.readiness?.blockers ?? []), row.name).toBe(row.owes);
+      const who = verifyApproverByPassword(store, "alex", password, [REPO]);
+      if (!who.ok) throw new Error("alex");
+      const done = acceptAndCompleteAsOperator(store, id, { runId, receiptDigest: row.stale ? "f".repeat(64) : read.receipt!.digest, note: row.note }, who.who, NOW, root());
+      expect(done.ok, row.name).toBe(row.ok);
+      if (!done.ok) expect(done.reason, row.name).toBe(row.reason);
+      expect(state(id) === "complete", row.name).toBe(row.ok);
+    }
+  });
+
+  test("a failed check is a hard stop: no reason makes it complete", async () => {
+    const { verifyApproverByPassword } = await import("./principal.js");
+    const { acceptAndCompleteAsOperator } = await import("./assignment.js");
+    const runId = built("owe-failed", 1);
+    store.saveProofVerdict(runId, "refuted", ["the project's check failed (exit 1)"], NOW, [] as never, "refuted");
+    const read = assignmentOf(store, "owe-failed", NOW, { principal: "operator", repos: [REPO] }, root())!;
+    const who = verifyApproverByPassword(store, "alex", password, [REPO]);
+    if (!who.ok) throw new Error("alex");
+    expect(acceptAndCompleteAsOperator(store, "owe-failed", { runId, receiptDigest: read.receipt!.digest, note: "I'm sure" }, who.who, NOW, root()).ok).toBe(false);
+    expect(state("owe-failed")).not.toBe("complete");
   });
 });

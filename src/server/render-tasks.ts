@@ -2018,7 +2018,7 @@ export function taskBodyParts(data: {
         accepted || data.csrf === ""
           ? ""
           : html`<details class="proof-exception"><summary>${humanReview ? "Accept result" : "Accept with exception"}</summary>${
-            postForm(`${taskHref(task.id)}/accept-proof`, html`<input type="text" name="note" maxlength="500" placeholder="${humanReview ? "What did you verify?" : "Why is this safe to accept?"}" aria-label="${humanReview ? "review note" : "exception reason"}" required><button type="submit">${humanReview ? "Accept result" : "Accept with exception"}</button>`, {
+            postForm(`${taskHref(task.id)}/accept-proof`, html`<input type="text" name="note" maxlength="500" placeholder="${humanReview ? "What did you verify?" : "Why is this safe to accept?"}" aria-label="${humanReview ? "review note" : "exception reason"}"${humanReview ? "" : html` required`}><button type="submit">${humanReview ? "Accept result" : "Accept with exception"}</button>`, {
               attrs: { class: "proof-exception-form" },
               hidden: { run: proof.runId },
             })}</details>`;

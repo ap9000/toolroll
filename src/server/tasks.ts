@@ -24,7 +24,8 @@ import { existsSync,lstatSync,realpathSync } from "node:fs";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
-import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
+import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator,owedAcceptance } from '../assignment.js';
+import { ACCEPT_NEEDS_REASON } from '../result-acts.js';
 import { attentionCardForUnverifiedDone,classify } from "../board.js";
 import { nightlyNeedsYou } from "../nightly-github.js";
 import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
@@ -2507,6 +2508,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           const back = body.get("return") === null ? null : safeReturn(body.get("return"));
           if (back !== null && (back.startsWith("/review?") || /^\/t\/[^/?#]+\?(?:[^#]*&)?tab=result(?:[&#]|$)/.test(back))) return redirect(response, withRefusal(back, "reason"));
           return taskScreen(response, who, taskId, ACCEPT_ANYWAY_NEEDS_REASON, 400);
+        }
+        // An exception is accepted only with its reason, by the completion's own rule (assignment.ts owedAcceptance):
+        // an acceptance recorded here without one would let the completion that follows skip it (everyday-8 #5).
+        if (note === null) {
+          const current = assignmentOf(store, taskId, now, { principal: "operator", repos: admissionList() }, evidenceRoot);
+          if (current?.receipt?.runId === latest.id && owedAcceptance(current.receipt, current.readiness?.blockers ?? []) === "exception") return taskScreen(response, who, taskId, `${ACCEPT_NEEDS_REASON}.`, 400);
         }
         store.acceptProof(latest.id, verifiedAuthor(who.name), note, now);
         return redirect(response, body.get("return") === null ? taskHref(taskId) : safeReturn(body.get("return")));

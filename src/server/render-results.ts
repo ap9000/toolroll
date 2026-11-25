@@ -862,8 +862,11 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const youCheck = panel.panel.youCheck;
   // Accept and finish posts the completion; when an acceptance is owed (the person's own checks, or a reason a
   // report that doesn't match its changes asks for), the same request records it first.
+  // Otherwise exactly what the completion itself owes (assignment.ts owedAcceptance, the rule acceptAndComplete enforces): a
+  // person's own check needs no reason, only an exception does (everyday-8 #5).
+  const shared = accepted || assignment?.receipt == null ? null : owedAcceptance(assignment.receipt, assignment.readiness?.blockers ?? []);
   const owed = accepted ? null : youCheck?.accept != null ? { note: null } : panel.panel.need?.accept != null ? { note: panel.panel.need.accept.note }
-    : blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
+    : shared === "person-check" ? { note: null } : shared === "exception" || blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
   const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
     ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed, ...(host.kind === "task" ? { returnTo: at() } : {}) } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
