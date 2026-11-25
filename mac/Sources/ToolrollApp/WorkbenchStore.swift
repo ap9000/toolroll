@@ -120,6 +120,9 @@ public final class WorkbenchStore {
     public var isForkSheetOpen: Bool = false
     public var isPhonePairSheetOpen: Bool = false
     public var isAppearanceSheetOpen: Bool = false
+    public var isSignInSheetOpen: Bool = false
+    public var signInProblem: String? = nil
+    public var signInBusy: Bool = false
     public var isProjectSettingsOpen: Bool = false
     public var projectSettingsTargetName: String? = nil
     public private(set) var projectSettingsSnapshot: ToolrollClient.ProjectSettingsSnapshot? = nil
@@ -831,6 +834,7 @@ public final class WorkbenchStore {
     }
 
     public func refreshSetupState() async {
+        refreshLocalDiscovery()
         if activeProfile.isDemo {
             if await connectToLocalConsoleIfAvailable(silent: true) {
                 return
@@ -842,8 +846,17 @@ public final class WorkbenchStore {
         guard let client else { return }
         async let aReq = client.fetchAgents()
         async let mReq = client.fetchModels()
+        async let pReq = client.fetchProjects()
         if let a = try? await aReq { agentsRead = a }
         if let m = try? await mReq { modelsRead = m }
+        if let p = try? await pReq { projectsRead = p }
+    }
+
+    public func startFirstChatFromSetup(in projectName: String) {
+        activeProject = projectName
+        preferredOrchestrationMode = "chat"
+        completeSetup()
+        openWorkHome()
     }
 
     public var isTeamWorkspace: Bool {
@@ -2345,11 +2358,59 @@ public final class WorkbenchStore {
             notice = WorkbenchNotice(kind: .info, message: "Set a password first; then do this again.")
             return true
         case .fullSignInNeeded?:
-            notice = WorkbenchNotice(kind: .refusal, message: "This needs you signed in with your password: open Toolroll in your browser and sign in there.")
+            if isLocalSession {
+                signInProblem = nil
+                isSignInSheetOpen = true
+                notice = WorkbenchNotice(kind: .info, message: "Sign in with your password to continue.")
+            } else {
+                notice = WorkbenchNotice(kind: .refusal, message: "Sign in with your password to do this.")
+            }
             return true
         default:
             return false
         }
+    }
+
+    @discardableResult
+    public func signInWithPassword(_ password: String, saveToTouchID: Bool = false) async -> Bool {
+        signInProblem = nil
+        guard !password.isEmpty else {
+            signInProblem = "Enter your password."
+            return false
+        }
+        guard let client, isLocalSession else {
+            signInProblem = "Toolroll isn't connected locally. Run `toolroll up`, then try again."
+            return false
+        }
+        signInBusy = true
+        defer { signInBusy = false }
+        do {
+            let upgraded = try await client.signInWithPassword(account: activeProfile.account, password: password)
+            adoptRenewedSession(upgraded)
+            passwordSet = upgraded.passwordSet ?? true
+            var touchMsg = ""
+            if saveToTouchID && isTouchIDAvailable {
+                let saved = enableTouchID(password: password)
+                if saved.ok {
+                    touchMsg = " \(touchIDLabel) enabled."
+                }
+            }
+            isSignInSheetOpen = false
+            notice = WorkbenchNotice(kind: .info, message: "Signed in.\(touchMsg)")
+            let keep = selectedTaskId
+            await refreshAll()
+            if let keep { await selectTask(keep) }
+            return true
+        } catch {
+            signInProblem = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    public func signInWithTouchID() async -> Bool {
+        guard let pw = await unlockPasswordWithTouchID(reason: "Sign in to Toolroll") else { return false }
+        return await signInWithPassword(pw, saveToTouchID: false)
     }
 
     @discardableResult
@@ -2641,6 +2702,9 @@ public final class WorkbenchStore {
             if needsApproval && isLocalSession {
                 if let card = try? await client.fetchApprovalCard(taskId: taskId), card.digest != nil {
                     approvalCard = card
+                    if card.problem == "Enter your password to approve." && approvalPasswordPrompt == nil {
+                        approvalPasswordPrompt = card.problem
+                    }
                 } else {
                     approvalCard = nil
                 }

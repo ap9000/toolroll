@@ -126,6 +126,10 @@ public struct MainWorkbenchView: View {
             SetPasswordSheet(store: store)
                 .dismissSheetOnOutsideClick()
         }
+        .sheet(isPresented: $store.isSignInSheetOpen) {
+            SignInPasswordSheet(store: store)
+                .dismissSheetOnOutsideClick()
+        }
         .sheet(isPresented: $store.isChatShipSheetOpen) {
             DirectChatShipSheet(store: store)
                 .dismissSheetOnOutsideClick()

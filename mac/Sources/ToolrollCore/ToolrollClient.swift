@@ -18,7 +18,7 @@ public enum ToolrollClientError: Error, LocalizedError, Sendable, Equatable {
         case .refused(let m): return m
         case .passwordRequired(let m): return m
         case .passwordNotSet: return "Set a password to do this."
-        case .fullSignInNeeded: return "This needs you signed in with your password in Toolroll's browser page."
+        case .fullSignInNeeded: return "Sign in with your password to do this."
         case .httpStatus(let code, let m): return m.isEmpty ? "Server answered HTTP \(code)." : m
         case .unreachable(let m): return "Could not reach Toolroll: \(m)"
         case .decoding(let m): return "Unexpected response shape: \(m)"
@@ -206,6 +206,71 @@ public actor ToolrollClient {
         do { _ = try await session.data(for: req) } catch { throw ToolrollClientError.unreachable(error.localizedDescription) }
     }
 
+    private struct LocalLoginPayload: Decodable {
+        struct CookieObj: Decodable {
+            let name: String
+            let value: String
+        }
+        let version: Int
+        let account: String
+        let cookie: CookieObj
+        let csrf: String
+        let key: String
+        let epoch: String
+        let passwordSet: Bool?
+    }
+
+    public func signInWithPassword(account: String, password: String) async throws -> LocalSessionCredentials {
+        guard case .localSession(let current) = transport else {
+            throw ToolrollClientError.refused("Sign in with your password on a local workspace.")
+        }
+        let body = Self.formEncoded([("name", account), ("token", password)])
+        var req = try makeRequest(
+            path: "/login",
+            method: "POST",
+            body: Data(body.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            accept: "application/json"
+        )
+        req.setValue("terminal", forHTTPHeaderField: "X-Toolroll-Client")
+        req.setValue(nil, forHTTPHeaderField: "Cookie")
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw ToolrollClientError.unreachable(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ToolrollClientError.unreachable("No HTTP response from Toolroll.")
+        }
+        if http.statusCode != 200 {
+            struct ErrorPayload: Decodable { let error: String }
+            if let ref = try? decoder.decode(ErrorPayload.self, from: data), !ref.error.isEmpty {
+                throw ToolrollClientError.refused(ref.error)
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, "Sign-in failed (HTTP \(http.statusCode)).")
+        }
+        let parsed: LocalLoginPayload
+        do {
+            parsed = try decoder.decode(LocalLoginPayload.self, from: data)
+        } catch {
+            throw ToolrollClientError.decoding(error.localizedDescription)
+        }
+        let upgraded = LocalSessionCredentials(
+            origin: current.origin,
+            account: parsed.account,
+            cookieHeader: "\(parsed.cookie.name)=\(parsed.cookie.value)",
+            csrf: parsed.csrf,
+            key: parsed.key,
+            epoch: parsed.epoch,
+            databasePath: current.databasePath,
+            passwordSet: parsed.passwordSet ?? true
+        )
+        transport = .localSession(upgraded)
+        sessionRenewed?(upgraded)
+        return upgraded
+    }
+
     static let staleSessionWords = ["Toolroll restarted", "isn't connected to Toolroll"]
 
     static func isStaleSession(_ error: Error) -> Bool {
@@ -326,7 +391,7 @@ public actor ToolrollClient {
     public func fetchApprovalCard(taskId: String) async throws -> ApprovalCard {
         let enc = taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId
         return try await send(
-            try makeRequest(path: "/t/\(enc)/approval", includeMutationKey: true),
+            try makeRequest(path: "/t/\(enc)/approval?stepup=1", includeMutationKey: true),
             as: ApprovalCard.self
         )
     }

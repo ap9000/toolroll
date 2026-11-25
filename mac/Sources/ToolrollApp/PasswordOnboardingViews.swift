@@ -155,3 +155,107 @@ public struct ForgotPasswordLink: View {
             }
     }
 }
+
+public struct SignInPasswordSheet: View {
+    @Bindable var store: WorkbenchStore
+    @State private var password = ""
+    @State private var saveToTouchID = true
+
+    public init(store: WorkbenchStore) { self.store = store }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.shield")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Text("Sign in with your password")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Spacer()
+            }
+
+            Text("This action requires a password-verified session for \(store.activeProfile.account). Your password stays on this Mac.")
+                .font(.system(size: 12))
+                .foregroundStyle(ToolrollPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HairlineDivider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Password")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                    ForgotPasswordLink()
+                }
+                SecureField("Enter your Toolroll password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { submit() }
+            }
+
+            if let problem = store.signInProblem {
+                Text(problem)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ToolrollPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if store.isTouchIDAvailable && !store.isTouchIDEnabled {
+                Toggle(isOn: $saveToTouchID) {
+                    Text("Save in macOS Keychain for 1-tap \(store.touchIDLabel) approvals")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.ink)
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            }
+
+            HStack(spacing: 8) {
+                if store.isTouchIDEnabled {
+                    Button {
+                        Task {
+                            if await store.signInWithTouchID() {
+                                password = ""
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: store.touchIDSystemImage)
+                                .font(.system(size: 11.5))
+                            Text(store.touchIDLabel)
+                        }
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(store.signInBusy)
+                }
+
+                Spacer()
+
+                Button("Cancel") {
+                    store.isSignInSheetOpen = false
+                    store.signInProblem = nil
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button(store.signInBusy ? "Signing in…" : "Sign in") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(store.signInBusy || password.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+
+    private func submit() {
+        guard !store.signInBusy, !password.isEmpty else { return }
+        let typed = password
+        let enableBiometry = saveToTouchID && !store.isTouchIDEnabled
+        Task {
+            if await store.signInWithPassword(typed, saveToTouchID: enableBiometry) {
+                password = ""
+            }
+        }
+    }
+}

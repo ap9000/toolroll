@@ -1275,4 +1275,28 @@ struct ToolrollCoreTests {
         #expect(parsed.attachments[2].kind == .folder)
         #expect(parsed.attachments[2].displayName == "src")
     }
+
+    @Test("Step-up ApprovalCard preserves terms, digest, nonce, and inline prompt without browser detour wording")
+    func stepUpApprovalCardDecodesAndFullSignInStaysNative() throws {
+        let json = """
+        {
+          "version": 1,
+          "task": "t-protected",
+          "key": "0123456789abcdef0123456789abcdef",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "terms": [
+            { "label": "Goal", "words": "Rotate secrets cleanly." }
+          ],
+          "problem": "Enter your password to approve."
+        }
+        """
+        let card = try JSONDecoder().decode(ApprovalCard.self, from: Data(json.utf8))
+        #expect(card.digest == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        #expect(card.nonce == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        #expect(card.terms.count == 1)
+        #expect(card.problem == "Enter your password to approve.")
+        #expect(ToolrollClientError.fullSignInNeeded("Sign in with your password to do this.").errorDescription?.contains("browser") == false)
+        #expect(DemoFixtures.steps(for: "t-auth-refresh").headline?.contains("browser") == false)
+    }
 }

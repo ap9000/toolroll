@@ -25,17 +25,17 @@ struct TaskRowMenuItems: View {
 
     @ViewBuilder private var singleItems: some View {
         Button("Open") { Task { await store.selectTask(row.id) } }
-        Button("Open in Web View") { store.openTaskInBrowser(taskId: row.id) }
+        Button("Open in Browser") { store.openTaskInBrowser(taskId: row.id) }
         Divider()
         if store.canArchiveTasks {
             Button(row.status == .running ? "Stop & Archive" : "Archive") {
                 Task { await store.archiveTask(row) }
             }
         } else {
-            Button("Archive in Web View…") { store.openTaskInBrowser(taskId: row.id) }
+            Button("Archive in Browser…") { store.openTaskInBrowser(taskId: row.id) }
         }
         if isCancellable && !store.canArchiveTasks {
-            Button("Cancel in Web View…") { store.openTaskInBrowser(taskId: row.id) }
+            Button("Cancel in Browser…") { store.openTaskInBrowser(taskId: row.id) }
         } else if isCancellable {
             Button("Cancel Task…", role: .destructive) {
                 Task { await store.prepareCancel(taskId: row.id, alsoArchive: false) }
@@ -64,7 +64,7 @@ struct ArchivedRowMenuItems: View {
         Button("Open") { Task { await store.selectTask(row.id) } }
         Button("Restore") { Task { await store.restoreTask(taskId: row.id) } }
             .disabled(!store.canArchiveTasks)
-        Button("Open in Web View") { store.openTaskInBrowser(taskId: row.id) }
+        Button("Open in Browser") { store.openTaskInBrowser(taskId: row.id) }
         Divider()
         Button("Copy Task ID") { copyToPasteboard(row.id) }
     }

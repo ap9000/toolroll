@@ -389,18 +389,41 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const { url, response, who, request } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
     if (!runtime.browserKeys.terminalKeyed(who, request)) return refusal(response, 403, "key");
-    if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
+    const paramKeys = [...url.searchParams.keys()];
+    const allowStepUp = paramKeys.length === 1 && paramKeys[0] === "stepup" && url.searchParams.get("stepup") === "1";
+    if (paramKeys.length > 0 && !allowStepUp) return refusal(response, 400, "request");
     const family = familyAt(url, "approval");
     if (family === null) return refusal(response, 404, "task");
     const taskId = family.current.id;
     const none = (problem: string) => sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: null, digest: null, nonce: null, terms: [], problem });
     const waits = (view: NonNullable<ReturnType<typeof runtime.taskViewData>>) => view.nonce !== "" && view.approvalDigest != null && view.approvalSummary != null;
     // Read without minting (the page's own conditions say whether a yes can be taken); only a yes this session can give
-    // here gets a nonce, the one held for this person, task and digest if there is one.
+    // here gets a nonce, the one held for this person, task and digest if there is one. Clients with native password
+    // step-up UI (the Mac app) pass ?stepup=1 to still receive terms, digest, and a single-use nonce while POST /approve
+    // enforces the exact password/freshness/seal rules unchanged.
     const view = runtime.taskViewData(taskId, who, null, { mintNonce: false });
     if (view === null) return refusal(response, 404, "task");
     if (!waits(view)) return none(NOTHING_TO_APPROVE);
-    if (view.approvalLocal?.eligible !== true) return none(`${view.approvalLocal?.eligible === false ? `${view.approvalLocal.message} ` : "This approval needs your password. "}${APPROVE_IN_BROWSER}`);
+    if (view.approvalLocal?.eligible !== true) {
+      if (!allowStepUp) {
+        return none(`${view.approvalLocal?.eligible === false ? `${view.approvalLocal.message} ` : "This approval needs your password. "}${APPROVE_IN_BROWSER}`);
+      }
+      const passwordSet = runtime.store.accountOf(who.name)?.passwordSet === true;
+      const problem = !passwordSet
+        ? "Set a password to approve this."
+        : view.approvalFresh !== null
+          ? null
+          : "Enter your password to approve.";
+      return sendChecked(response, 200, "approvalCard", {
+        version: ENGINE_API_VERSION,
+        task: taskId,
+        key: view.approvalSummary!.key,
+        digest: view.approvalDigest,
+        nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!),
+        terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null),
+        problem,
+      });
+    }
     return sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: view.approvalSummary!.key, digest: view.approvalDigest,
       nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!), terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null), problem: null });
   }
