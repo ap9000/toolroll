@@ -241,6 +241,11 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     }
     const lastStatus = found.turns.at(-1)?.status ?? null;
     const ships = listDirectChatShips(store, found.thread.id).map(toShipSummary);
+    const diffScope = ctx.url.searchParams.get("scope");
+    const turnParam = ctx.url.searchParams.get("turn");
+    const responseDiff = (diffScope === "turn" || (turnParam !== null && HEX32.test(turnParam)))
+      ? (host.readTurnDiff(gate.who.name, found.thread.id, turnParam) ?? { changedFiles: [], diffText: "", dirty: false })
+      : found.diff;
     return checked(ctx, 200, "directChatDetail", {
       version: ENGINE_API_VERSION,
       room: `direct-chat:${found.thread.id}`,
@@ -266,7 +271,7 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
       })),
       attachments: found.attachments.map(toArtifactView),
       ships,
-      diff: found.diff,
+      diff: responseDiff,
     } satisfies DirectChatDetail);
   }
 

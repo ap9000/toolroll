@@ -235,6 +235,9 @@ public final class WorkbenchStore {
     public var selectedChatThreadId: String? = nil
     public private(set) var runningChatThreadIds: Set<String> = []
     public private(set) var chatThreadDiffs: [String: AgentChatGitDiff] = [:]
+    public private(set) var chatTurnDiffs: [String: AgentChatGitDiff] = [:]
+    public var chatDiffScope: DiffScopeMode = .branch
+    public private(set) var pendingChatReviewComments: [String: [InlineDiffComment]] = [:]
     public private(set) var chatArtifactImages: [String: Data] = [:]
     public private(set) var chatGitBindingErrors: [String: String] = [:]
     public private(set) var directChatAvailable: Bool = true
@@ -281,6 +284,8 @@ public final class WorkbenchStore {
     public private(set) var selectedDiffPath: String?
     public private(set) var selectedDiffFile: ResultDiffFileResponse?
     public private(set) var inlineDiffComments: [InlineDiffComment] = []
+    public private(set) var pendingTaskReviewComments: [InlineDiffComment] = []
+    public private(set) var selectedDiffRunId: Int? = nil
     public private(set) var terminalsResponse: TermStateResponse?
     public private(set) var leadChat: LeadChatResponse = LeadChatResponse()
 
@@ -1225,6 +1230,9 @@ public final class WorkbenchStore {
                 chatThreads.insert(updated, at: 0)
             }
             chatThreadDiffs[threadId] = AgentChatGitDiff(dto: detail.diff)
+            if chatDiffScope == .turn, let turnDetail = try? await client.fetchDirectChatDetail(threadId: threadId, diffScope: .turn) {
+                chatTurnDiffs[threadId] = AgentChatGitDiff(dto: turnDetail.diff)
+            }
             if updated.running {
                 runningChatThreadIds.insert(threadId)
             } else {
@@ -2733,6 +2741,8 @@ public final class WorkbenchStore {
         liveRunRecordsById = [:]
         selectedDiffPath = nil
         selectedDiffFile = nil
+        selectedDiffRunId = nil
+        pendingTaskReviewComments = []
         approvalCard = nil
         approvalPasswordPrompt = nil
         await loadSelectedTaskDetails(taskId: taskId)
@@ -2840,6 +2850,127 @@ public final class WorkbenchStore {
             return bytes
         }
         return nil
+    }
+
+    public func activeChatDiff(for threadId: String) -> AgentChatGitDiff {
+        if chatDiffScope == .turn {
+            return chatTurnDiffs[threadId] ?? AgentChatGitDiff()
+        }
+        return chatThreadDiffs[threadId] ?? AgentChatGitDiff()
+    }
+
+    public func setChatDiffScope(_ scope: DiffScopeMode, threadId: String) async {
+        chatDiffScope = scope
+        if scope == .branch {
+            await refreshDirectChatDetail(threadId: threadId)
+            return
+        }
+        if activeProfile.isDemo {
+            if chatTurnDiffs[threadId] == nil, let branchDiff = chatThreadDiffs[threadId] ?? DemoFixtures.directChatDiffs[threadId] {
+                chatTurnDiffs[threadId] = branchDiff
+            }
+            return
+        }
+        guard let client, isLocalSession else { return }
+        if let turnDetail = try? await client.fetchDirectChatDetail(threadId: threadId, diffScope: .turn) {
+            chatTurnDiffs[threadId] = AgentChatGitDiff(dto: turnDetail.diff)
+        }
+    }
+
+    public func queueChatReviewComment(
+        threadId: String,
+        path: String,
+        startLine: Int,
+        endLine: Int? = nil,
+        snippet: String? = nil,
+        text: String
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var list = pendingChatReviewComments[threadId] ?? []
+        list.append(InlineDiffComment(path: path, line: startLine, endLine: endLine, snippet: snippet, text: trimmed))
+        pendingChatReviewComments[threadId] = list
+    }
+
+    public func removeChatReviewComment(threadId: String, id: UUID) {
+        var list = pendingChatReviewComments[threadId] ?? []
+        list.removeAll { $0.id == id }
+        if list.isEmpty {
+            pendingChatReviewComments.removeValue(forKey: threadId)
+        } else {
+            pendingChatReviewComments[threadId] = list
+        }
+    }
+
+    public func clearChatReviewComments(threadId: String) {
+        pendingChatReviewComments.removeValue(forKey: threadId)
+    }
+
+    public func sendQueuedChatReviewBatch(threadId: String) async {
+        let queued = pendingChatReviewComments[threadId] ?? []
+        guard !queued.isEmpty else { return }
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: queued)
+        pendingChatReviewComments.removeValue(forKey: threadId)
+        await sendChatMessage(threadId: threadId, text: prompt)
+    }
+
+    public var availableDiffRuns: [Int] {
+        guard let steps = stepCards else { return [] }
+        let all = steps.cards.flatMap(\.runs) + [steps.liveRun, steps.review?.run].compactMap { $0 }
+        return Array(Set(all)).sorted()
+    }
+
+    public func selectDiffRun(_ runId: Int?) async {
+        selectedDiffRunId = runId
+        if activeProfile.isDemo {
+            return
+        }
+        guard let client, let taskId = selectedTaskId else { return }
+        do {
+            let diff = try await client.fetchDiff(taskId: taskId, runId: runId)
+            diffResponse = diff
+            if let current = selectedDiffPath, diff.files.contains(where: { $0.path == current }) {
+                await selectDiffFile(path: current)
+            } else if let first = diff.files.first?.path {
+                await selectDiffFile(path: first)
+            } else {
+                selectedDiffPath = nil
+                selectedDiffFile = nil
+            }
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func queueTaskReviewComment(
+        path: String,
+        startLine: Int,
+        endLine: Int? = nil,
+        snippet: String? = nil,
+        text: String
+    ) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingTaskReviewComments.append(
+            InlineDiffComment(path: path, line: startLine, endLine: endLine, snippet: snippet, text: trimmed)
+        )
+    }
+
+    public func removeTaskReviewComment(id: UUID) {
+        pendingTaskReviewComments.removeAll { $0.id == id }
+    }
+
+    public func clearTaskReviewComments() {
+        pendingTaskReviewComments.removeAll()
+    }
+
+    public func sendQueuedTaskReviewBatch() async {
+        guard !pendingTaskReviewComments.isEmpty, let taskId = selectedTaskId else { return }
+        let queued = pendingTaskReviewComments
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: queued)
+        pendingTaskReviewComments.removeAll()
+        inlineDiffComments.append(contentsOf: queued)
+        await steerTask(taskId: taskId, note: prompt)
     }
 
     public func addInlineDiffComment(path: String, line: Int, text: String) async {

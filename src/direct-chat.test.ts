@@ -12,6 +12,7 @@ import {
   directChatPostureOf,
   importLegacyDirectChatJson,
   parseDirectChatLine,
+  writeDirectChatLogFixture,
 } from "./direct-chat.js";
 import { assertTrustedCloneGit, pinnedConfigBackupPath, runTrustedCloneGit } from "./direct-chat-git.js";
 import type { CustodyIO, ProcessWitness, ProcRow } from "./flexible-custody.js";
@@ -993,6 +994,80 @@ describe("DirectChatHost & helpers", () => {
       expect(leadMsgs[0]!.text).toContain("Direct Chat finished");
       expect(leadMsgs[0]!.text).toContain("2 files changed — ready to review or ship.");
       expect(leadMsgs[0]!.text).toContain("Refactored header spacing");
+    } finally {
+      host.close();
+      store.close();
+    }
+  });
+
+  test("captures isolated per-turn diffs so Turn 2 diff shows only Turn 2 changes while Branch diff shows all", async () => {
+    const root = tempDir();
+    const repo = makeTempRepo(root, "turn-diff-repo");
+    const stateRoot = join(root, "state");
+    mkdirSync(stateRoot, { recursive: true });
+    const store = openStore(join(root, "orders.db"));
+    const custody = new FakeCustody();
+    let pidSeq = 180;
+
+    const host = new DirectChatHost(store, {
+      stateRoot,
+      custody,
+      bootId: () => "boot-1",
+      locateBinary: () => "/fake/claude",
+      spawnTurn: ({ logPath }) => {
+        const pid = fakePid(++pidSeq);
+        custody.add(pid, pid, `start-${pid}`);
+        writeDirectChatLogFixture(logPath, [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "sess-turn-diff" }),
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Done." }] } }),
+          JSON.stringify({ type: "result", subtype: "success", is_error: false }),
+        ]);
+        return { pid, pgid: pid, startIdentity: `start-${pid}` };
+      },
+    });
+
+    try {
+      const created = await host.createThread({
+        owner: "alex",
+        localGeneration: 1,
+        accountGeneration: 1,
+        requestId: "11".repeat(16),
+        repo,
+        provider: "claude",
+        modelId: "claude-sonnet-4-6",
+        prompt: "Add first file",
+      });
+      expect(created).toMatchObject({ ok: true });
+      if (!created.ok) return;
+
+      writeFileSync(join(created.thread.clonePath, "first.txt"), "hello from turn 1\n");
+      custody.kill(created.turn.pid!);
+      host.reconcileRunningTurns();
+
+      const turn1Diff = host.readTurnDiff("alex", created.thread.id, created.turn.id);
+      expect(turn1Diff?.changedFiles).toEqual(["first.txt"]);
+      expect(turn1Diff?.diffText).toContain("hello from turn 1");
+
+      const turn2 = host.sendMessage({
+        owner: "alex",
+        threadId: created.thread.id,
+        requestId: "22".repeat(16),
+        prompt: "Add second file",
+      });
+      expect(turn2.ok).toBe(true);
+      if (!turn2.ok) return;
+
+      writeFileSync(join(created.thread.clonePath, "second.txt"), "hello from turn 2\n");
+      custody.kill(turn2.turn.pid!);
+      host.reconcileRunningTurns();
+
+      const branchDetail = host.getThread("alex", created.thread.id);
+      expect(branchDetail?.diff.changedFiles.sort()).toEqual(["first.txt", "second.txt"]);
+
+      const turn2Diff = host.readTurnDiff("alex", created.thread.id, turn2.turn.id);
+      expect(turn2Diff?.changedFiles).toEqual(["second.txt"]);
+      expect(turn2Diff?.diffText).toContain("hello from turn 2");
+      expect(turn2Diff?.diffText).not.toContain("hello from turn 1");
     } finally {
       host.close();
       store.close();
