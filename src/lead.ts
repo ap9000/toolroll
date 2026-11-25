@@ -45,6 +45,7 @@ import {
   settleWithCache,
   subscriptionCredentialKey,
   type LeadHistoryMessage,
+  type LeadImageAttachment,
   type LeadToolSchema,
 } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
@@ -133,6 +134,8 @@ export type LeadTurnInput = {
   directChatStop?: (owner: string, threadId: string) => { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string };
   /** Notify SSE subscribers when Lead updates a Direct Chat thread. */
   publishDirectChat?: (threadId: string) => void;
+  /** Validated user-attached images for this turn (sent directly to multimodal Lead models). */
+  images?: readonly LeadImageAttachment[];
 };
 
 /** Why a chat's standing changed under a turn: each has its own plain words (LEAD_CHANNEL_COPY). */
@@ -261,7 +264,7 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_code_map", "get_project_activity", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_flaky_tests", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue", "list_direct_chats", "get_direct_chat", "get_usage_limits"]);
+const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_code_map", "get_project_activity", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_flaky_tests", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue", "list_direct_chats", "get_direct_chat", "get_usage_limits", "get_recent_updates"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
 export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
@@ -356,7 +359,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const quickOn = leadQuickAnswersOn(store);
   const quickModel = quickOn ? quickLeadModel(store) : config.model;
   let route: LeadRoute = quickRoute({ enabled: quickOn, provider: config.provider, mainModel: config.model, message,
-    hasContext: input.context !== undefined, hasReplyImage: input.replyImage !== undefined, askOpen: quickOn && leadAskAwaitsAnswer(store, thread.id, clock()),
+    hasContext: input.context !== undefined, hasReplyImage: input.replyImage !== undefined || (input.images !== undefined && input.images.length > 0), askOpen: quickOn && leadAskAwaitsAnswer(store, thread.id, clock()),
     quickModel, quickAllowed: quickOn && store.agentPolicyRefusal(config.provider, quickModel) === null }).route;
 
   let now = clock();
@@ -370,7 +373,12 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   // A team room names who wrote each message; a person's own queued message is just theirs.
   const authoredMessage = input.queuedMessageId === undefined || personalQueued ? message : `From ${who.name}:\n${message}`;
   const historyMessage = input.context === undefined ? authoredMessage : `${redactForLead(input.context, view)}\n\n${authoredMessage}`;
-  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId, input.queuedMessageId !== undefined && !personalQueued), { role: "operator", text: historyMessage }];
+  const turnImages = input.images !== undefined && input.images.length > 0 ? input.images : undefined;
+  const history: LeadHistoryMessage[] = [
+    ...historyFor(store, thread.id, input.queuedMessageId, input.queuedMessageId !== undefined && !personalQueued),
+    { role: "operator", text: historyMessage, ...(turnImages === undefined ? {} : { images: turnImages }) },
+  ];
+  const historyTextOnly = (): LeadHistoryMessage[] => history.map(one => (one.role === "operator" && "images" in one ? { role: one.role, text: one.text } : one));
   // Tools on demand (docs/plans/lead-deferred-tools.md): a request advertises the core tools, then the ones find_tools
   // found earlier in this reply, in that order (so the core prefix stays the same as tools are found).
   const findTools = { searches: 0, found: new Set<string>() };
@@ -378,18 +386,18 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     ...LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)),
     ...[...findTools.found].map(name => LEAD_TOOL_SCHEMAS.find(one => one.name === name)).filter((one): one is LeadToolSchema => one !== undefined),
   ];
-  const composeDirect = (key: string, tools: readonly LeadToolSchema[]): { url: string; headers: Record<string, string>; body: string } => {
+  const composeDirect = (key: string, tools: readonly LeadToolSchema[], includeImages = true): { url: string; headers: Record<string, string>; body: string } => {
     if (!direct) throw new Error("not a direct chat provider");
     // Anthropic prompt caching: the core tools (always first) end the first breakpoint (docs/plans/lead-deferred-tools.md).
     const cache = directProvider === "anthropic-api" ? { coreTools: tools.filter(one => LEAD_CORE_TOOLS.has(one.name)).length } : undefined;
-    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools, ...(cache === undefined ? {} : { cache }) });
+    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history: includeImages ? history : historyTextOnly(), tools, ...(cache === undefined ? {} : { cache }) });
   };
   const composeSubscription = (tools: readonly LeadToolSchema[]): string =>
     composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools });
   // The reservation-only base: the FULL registry, serialized as a request would be, so any tool found later in this
   // reply is already covered by the worst case. What is sent each round is smaller (the advertised set) and is scanned
   // whole before every dispatch. Only direct API traffic needs a dollar reservation; subscription traffic records zero.
-  const base = direct ? composeDirect("", LEAD_TOOL_SCHEMAS).body : composeSubscription(LEAD_TOOL_SCHEMAS);
+  const base = direct ? composeDirect("", LEAD_TOOL_SCHEMAS, false).body : composeSubscription(LEAD_TOOL_SCHEMAS);
   if (scanForSecrets(base).length > 0) return refuse("secret-in-context");
   // Fit the bounded tool loop to the already-authorized remaining allowance.
   // Context/history growth must not demand a larger budget for a simple reply.
@@ -550,9 +558,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const advertised = quick ? LEAD_TOOL_SCHEMAS.filter(one => quickAdvertises(one.name)) : advertisedTools();
     const advertisedNames = new Set(advertised.map(one => one.name));
     const request = direct ? composeDirect(input.key as string, advertised) : composeSubscription(advertised);
-    // Tool results join the outbound body: scanned again before every dispatch.
+    // Tool results join the outbound body: scanned again before every dispatch (text-only so base64 image pixels never false-positive).
+    const outboundForScan = direct ? composeDirect(input.key as string, advertised, false).body : (request as string);
     const outbound = typeof request === "string" ? request : request.body;
-    if (scanForSecrets(outbound).length > 0) {
+    if (scanForSecrets(outboundForScan).length > 0) {
       return fail("secret-refused", LEAD_FAILURE_COPY.secretRead, false);
     }
     const step = store.openLeadStep(
@@ -594,6 +603,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           tools: advertised,
           timeoutMs: remainingMs,
           signal: controller.signal,
+          ...(turnImages === undefined ? {} : { images: turnImages }),
           // The reply as it is written; text that looks like a secret is
           // never shown (the finished reply is scanned again before saving).
           ...(input.onProgress === undefined ? {} : { onText: (text: string) => { if (controller.signal.aborted) return; if (scanForSecrets(text).length === 0) progress({ kind: "text", turn: turnId, step: steps, text }); else blockPreview(); } }),

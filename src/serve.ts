@@ -2464,6 +2464,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
   let directChatHandlersRef: ReturnType<typeof createDirectChatHandlers> | null = null;
   const chatHandlers = createChatHandlers(handlerRuntime, {
+    directChatHost: () => directChatHandlersRef?.host ?? null,
     directChatStop: (owner, threadId) => directChatHandlersRef === null
       ? { ok: false, status: 503, error: "Direct Chat host is not ready." }
       : directChatHandlersRef.host.stopThread(owner, threadId),

@@ -217,6 +217,9 @@ export const CHAT_ACTIONS = {
   // One-step start from chat (docs/plans/one-step-chat.md C2): files and approves one small task the lead drafted, under
   // exactly the fast start rules. Only the lead's turn loop drafts one (propose_start); a person's own yes starts it.
   task_start: { label: "Start work", protected: true, password: false },
+  direct_chat_start: { label: "Start Direct Chat", protected: false, password: false },
+  direct_chat_reply: { label: "Send to Direct Chat", protected: false, password: false },
+  direct_chat_promote: { label: "Promote to Task", protected: false, password: false },
 } as const;
 /** Shared actions that add what builds run or reach (a tool, a flow's browser): credential acts. Their secure screen
  * takes a password typed now or a one-use identity-provider re-check, never the session (solo or Passwordless). */
@@ -399,7 +402,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_") || operation === "task_start"
+    operation === "mode_revoke" || operation === "memory_decide" || operation === "incident_resolve" || operation === "finding_resend" || operation.startsWith("code_map_") || operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_") || operation.startsWith("suggestion_") || operation.startsWith("trial_") || operation === "task_start" || operation.startsWith("direct_chat_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -420,7 +423,49 @@ export function prepareSharedAction(
     terms: string[] = [];
   let state: Record<string, unknown>,
     title = CHAT_ACTIONS[operation].label as string;
-  if (PARITY_ACTIONS.has(operation)) {
+  if (operation.startsWith("direct_chat_")) {
+    if (operation === "direct_chat_start") {
+      const provider = text(input, "provider", 40);
+      const model = text(input, "model", 120);
+      const prompt = text(input, "prompt", 4000);
+      const effort = typeof input["effort"] === "string" ? input["effort"] : null;
+      if (scanForSecrets(prompt).length > 0) throw Error("Direct Chat prompt cannot contain credentials.");
+      state = { repo };
+      title = `Start ${provider} Direct Chat`;
+      terms.push(
+        `Agent: ${provider} · ${model}${effort ? ` (${effort} effort)` : ""}`,
+        `Prompt: ${prompt.slice(0, 280)}${prompt.length > 280 ? "…" : ""}`,
+        "Runs inside an isolated local clone with no remote until you press Ship.",
+      );
+    } else if (operation === "direct_chat_reply") {
+      const chat = text(input, "chat", 80);
+      const prompt = text(input, "prompt", 4000);
+      if (scanForSecrets(prompt).length > 0) throw Error("Direct Chat message cannot contain credentials.");
+      const row = store.handle.prepare("SELECT id, title, repo, provider, model_id FROM direct_chat_thread WHERE id = ? AND owner = ?").get(chat, who.name) as Record<string, unknown> | undefined;
+      if (row === undefined || String(row["repo"]) !== repo) throw Error("That Direct Chat is not available in this project.");
+      state = { chat, repo };
+      title = `Send to "${String(row["title"]).slice(0, 60)}"`;
+      terms.push(
+        `Direct Chat: ${String(row["title"])} (${String(row["provider"])} · ${String(row["model_id"])})`,
+        `Message: ${prompt.slice(0, 280)}${prompt.length > 280 ? "…" : ""}`,
+      );
+    } else {
+      const chat = text(input, "chat", 80);
+      const taskTitle = text(input, "title", 200);
+      const goal = text(input, "goal", 8000);
+      if ([taskTitle, goal].some(s => scanForSecrets(s).length > 0)) throw Error("Task text cannot contain credentials.");
+      const row = store.handle.prepare("SELECT id, title, repo, branch FROM direct_chat_thread WHERE id = ? AND owner = ?").get(chat, who.name) as Record<string, unknown> | undefined;
+      if (row === undefined || String(row["repo"]) !== repo) throw Error("That Direct Chat is not available in this project.");
+      state = { chat, repo };
+      title = `Promote "${String(row["title"]).slice(0, 50)}" to Task`;
+      terms.push(
+        `Task title: ${taskTitle}`,
+        `Goal: ${goal.slice(0, 280)}${goal.length > 280 ? "…" : ""}`,
+        `Source Direct Chat branch: ${String(row["branch"] ?? "")}`,
+        "Files an ordinary task. Building still requires your approval.",
+      );
+    }
+  } else if (PARITY_ACTIONS.has(operation)) {
     const made = parityAction(store, who, operation, input, repo, flowTarget?.flow ?? null, now, request, root);
     state = made.state;
     title = made.title;
@@ -1411,6 +1456,38 @@ export function executeSharedAction(
       let taskId = task;
       if (LATE_APPROVALS.has(payload.operation)) return runLateApproval(store, who, payload, repo => approvalBy(store, who, repo, now, options, drafted), approvalRoad(options), now);
       if (PARITY_ACTIONS.has(payload.operation) || OWNER_PARITY.has(payload.operation)) return runParityAction(store, who, payload, now, options.root);
+      if (payload.operation === "direct_chat_promote") {
+        const taskTitle = String(req["title"] ?? "").trim();
+        const goal = String(req["goal"] ?? "").trim();
+        const planning = req["planning"] === "required" || req["planning"] === "skip" ? req["planning"] : "auto";
+        const filed = fileTaskProposal(store, {
+          title: taskTitle,
+          repo,
+          goal,
+          outOfScope: null,
+          touches: [],
+          acceptance: [{ id: "c1", statement: taskTitle, evidence: ["manual-review"] }],
+          planning,
+          filedVia: "mate",
+          filedBy: { name: actor, kind: "person" as const },
+          proposedVia: "mate",
+          admittedRepos: [...who.repos],
+        }, now);
+        if (!filed.ok) throw Error(`Not filed: ${filed.message}`);
+        return {
+          ok: true as const,
+          taskId: filed.id,
+          said: `Promoted Direct Chat to task ${filed.id}. Review and approve its plan to start.`,
+          href: `/tasks/${encodeURIComponent(filed.id)}`,
+        };
+      }
+      if (payload.operation === "direct_chat_start") {
+        return { ok: true as const, taskId: null, said: "Direct Chat confirmed." };
+      }
+      if (payload.operation === "direct_chat_reply") {
+        const chatId = String(req["chat"] ?? "");
+        return { ok: true as const, taskId: null, said: "Message queued for Direct Chat.", href: `/direct-chats/${encodeURIComponent(chatId)}` };
+      }
       if (payload.operation === "lead_about_you") {
         const next = withAboutYouLine(aboutYouOf(store, actor), String(req["line"]), Number(req["replaces"] ?? 0));
         if (!next.ok) throw Error(next.message);

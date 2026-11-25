@@ -1045,7 +1045,28 @@ public actor ToolrollClient {
 
     /// Sends to the Lead. `session` is the conversation the person was looking at (as the web's form sends it), so a
     /// message never lands in a conversation that changed underneath; nil when none had started.
-    public func sendLeadMessage(message: String, project: String? = nil, session: Int? = nil) async throws -> String {
+    public struct LeadImageUpload: Encodable, Sendable, Equatable {
+        public let filename: String
+        public let mediaType: String
+        public let dataBase64: String
+
+        public init(filename: String, mediaType: String, dataBase64: String) {
+            self.filename = filename
+            self.mediaType = mediaType
+            self.dataBase64 = dataBase64
+        }
+    }
+
+    public func sendLeadMessage(
+        message: String,
+        project: String? = nil,
+        session: Int? = nil,
+        images: [LeadImageUpload] = []
+    ) async throws -> String {
+        let imagesJson: String? = {
+            guard !images.isEmpty, let data = try? JSONEncoder().encode(images) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }()
         if case .localSession(let s) = transport {
             var fields = [
                 ("message", message),
@@ -1053,6 +1074,7 @@ public actor ToolrollClient {
             ]
             if let session { fields.append(("request-session", String(session))) }
             if let project, !project.isEmpty { fields.append(("project", project)) }
+            if let imagesJson { fields.append(("images", imagesJson)) }
             _ = s
             return try await sendFormAct(path: "/chat", fields: fields, defaultDone: "Sent to Lead.")
         }
@@ -1064,6 +1086,9 @@ public actor ToolrollClient {
         if let session { items.append(URLQueryItem(name: "request-session", value: String(session))) }
         if let project, !project.isEmpty {
             items.append(URLQueryItem(name: "project", value: project))
+        }
+        if let imagesJson {
+            items.append(URLQueryItem(name: "images", value: imagesJson))
         }
         var comps = URLComponents()
         comps.queryItems = items

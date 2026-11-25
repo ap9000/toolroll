@@ -3282,8 +3282,78 @@ public final class WorkbenchStore {
         return await sendLeadMessage(message)
     }
 
+    private func encodeLeadImages(from attachments: [ComposerAttachment]) -> [ToolrollClient.LeadImageUpload] {
+        let imageItems = attachments.filter { $0.kind == .image }.prefix(4)
+        var uploads: [ToolrollClient.LeadImageUpload] = []
+        for item in imageItems {
+            let url = URL(fileURLWithPath: item.path)
+            guard let nsImage = NSImage(contentsOf: url) else { continue }
+            var pixelSize = nsImage.size
+            if let rep = nsImage.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
+                pixelSize = NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+            }
+            let maxSide: CGFloat = 1600
+            let scale = min(1.0, maxSide / max(pixelSize.width, pixelSize.height, 1))
+            let targetW = max(1, Int((pixelSize.width * scale).rounded()))
+            let targetH = max(1, Int((pixelSize.height * scale).rounded()))
+            guard let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: targetW,
+                pixelsHigh: targetH,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ) else { continue }
+            bitmap.size = NSSize(width: targetW, height: targetH)
+            NSGraphicsContext.saveGraphicsState()
+            if let ctx = NSGraphicsContext(bitmapImageRep: bitmap) {
+                NSGraphicsContext.current = ctx
+                ctx.imageInterpolation = .high
+                nsImage.draw(
+                    in: NSRect(x: 0, y: 0, width: targetW, height: targetH),
+                    from: .zero,
+                    operation: .copy,
+                    fraction: 1.0
+                )
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+            let pngData = bitmap.representation(using: .png, properties: [:])
+            let chosenData: Data
+            let mediaType: String
+            if let jpegData, let pngData {
+                if pngData.count <= 450_000 || pngData.count <= jpegData.count {
+                    chosenData = pngData
+                    mediaType = "image/png"
+                } else {
+                    chosenData = jpegData
+                    mediaType = "image/jpeg"
+                }
+            } else if let jpegData {
+                chosenData = jpegData
+                mediaType = "image/jpeg"
+            } else if let pngData {
+                chosenData = pngData
+                mediaType = "image/png"
+            } else {
+                continue
+            }
+            guard chosenData.count <= 3_500_000 else { continue }
+            uploads.append(ToolrollClient.LeadImageUpload(
+                filename: item.displayName,
+                mediaType: mediaType,
+                dataBase64: chosenData.base64EncodedString()
+            ))
+        }
+        return uploads
+    }
+
     @discardableResult
-    public func sendLeadMessage(_ text: String) async -> String? {
+    public func sendLeadMessage(_ text: String, attachments: [ComposerAttachment] = []) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         busyLabel = "Sending to Lead…"
@@ -3298,8 +3368,14 @@ public final class WorkbenchStore {
             return nil
         }
         guard let client else { return "Not connected to Toolroll." }
+        let imageUploads = encodeLeadImages(from: attachments)
         do {
-            _ = try await client.sendLeadMessage(message: trimmed, project: selectedProject, session: leadChat.session)
+            _ = try await client.sendLeadMessage(
+                message: trimmed,
+                project: selectedProject,
+                session: leadChat.session,
+                images: imageUploads
+            )
             if let refreshed = try? await client.fetchLeadChat(project: selectedProject) {
                 leadChat = refreshed
             }

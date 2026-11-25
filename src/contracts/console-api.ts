@@ -268,7 +268,7 @@ export const CONSOLE_FORMS = {
   agentWatch: formContract("POST /agents/watch", ["run", "view", "op"]),
   leadProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
   coordinatorProposal: formContract("POST /proposals/<id>/confirm|dismiss", ["return", "confirm"]),
-  chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "token"]),
+  chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "images", "token"]),
   chatFile: formContract("POST /chat/file/<id>", ["token"]),
   chatAck: formContract("POST /chat/ack/<id>", ["token", "nonce"]),
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).

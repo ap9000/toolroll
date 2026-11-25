@@ -23,6 +23,7 @@ import {
   strictJsonParse,
   tokenCount,
   type LeadHistoryMessage,
+  type LeadImageAttachment,
   type LeadProviderAnswer,
   type LeadToolCall,
   type LeadToolSchema,
@@ -55,6 +56,8 @@ export type SubscriptionLeadRequest = {
   /** The reply as it is written, cumulative, when the harness can stream it
    * (Claude). Display only: the finished answer is still parsed whole. */
   onText?: (text: string) => void;
+  /** Validated user-attached images for the current turn (passed via native multimodal input). */
+  images?: readonly LeadImageAttachment[];
 };
 
 export type SubscriptionLeadRunner = (
@@ -93,9 +96,10 @@ function outputSchema(tools: readonly LeadToolSchema[]): Record<string, unknown>
 
 /** The model-visible request. Tool results are already redacted by leadView. */
 export function composeSubscriptionLeadPrompt(request: Omit<SubscriptionLeadRequest, "provider" | "model" | "timeoutMs" | "signal">): string {
+  const sanitizedHistory = request.history.map(one => (one.role === "operator" && "images" in one ? { role: one.role, text: one.text } : one));
   if (request.outputSchema !== undefined) return [request.system,
     "STRUCTURED RESPONSE PROTOCOL: Return only the JSON object required by the supplied output schema. Do not use any harness tools or inspect the computer. DATA and CONVERSATION below are the only context.",
-    `DATA:\n${request.dataDocument}`, `CONVERSATION:\n${JSON.stringify(request.history)}`].join("\n\n");
+    `DATA:\n${request.dataDocument}`, `CONVERSATION:\n${JSON.stringify(sanitizedHistory)}`].join("\n\n");
   return [
     request.system,
     "SUBSCRIPTION HARNESS PROTOCOL:",
@@ -107,7 +111,7 @@ export function composeSubscriptionLeadPrompt(request: Omit<SubscriptionLeadRequ
     "The host validates and runs those calls, then gives you another step. When finished, return a non-empty text and an empty calls array.",
     `AVAILABLE HOST TOOLS:\n${JSON.stringify(request.tools)}`,
     `DATA:\n${request.dataDocument}`,
-    `CONVERSATION:\n${JSON.stringify(request.history)}`,
+    `CONVERSATION:\n${JSON.stringify(sanitizedHistory)}`,
   ].join("\n\n");
 }
 
@@ -254,17 +258,28 @@ export async function performSubscriptionLeadRequest(
   const dir = mkdtempSync(join(tmpdir(), "standing-orders-mate-"));
   try {
     const prompt = composeSubscriptionLeadPrompt(request);
-    const streaming = request.provider !== "codex-subscription" && request.onText !== undefined;
+    const images = request.images ?? [];
+    const hasImages = images.length > 0;
+    const streaming = request.provider !== "codex-subscription" && (request.onText !== undefined || hasImages);
     const schema = request.outputSchema ?? outputSchema(request.tools);
     let command: string;
     let args: string[];
+    let stdinPayload = prompt;
     if (request.provider === "codex-subscription") {
       const schemaFile = join(dir, "response-schema.json");
       writeFileSync(schemaFile, JSON.stringify(schema), { mode: 0o600 });
+      const imageArgs: string[] = [];
+      for (const [idx, img] of images.entries()) {
+        const ext = img.mediaType === "image/jpeg" ? "jpg" : img.mediaType === "image/webp" ? "webp" : img.mediaType === "image/gif" ? "gif" : "png";
+        const filePath = join(dir, `user-image-${idx + 1}.${ext}`);
+        writeFileSync(filePath, Buffer.from(img.dataBase64, "base64"), { mode: 0o600 });
+        imageArgs.push("--image", filePath);
+      }
       command = "codex";
       args = [
         "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
         "--sandbox", "read-only", "--output-schema", schemaFile,
+        ...imageArgs,
         "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
         "-c", "features.shell_tool=false", "-c", "features.unified_exec=false",
         "-c", "features.multi_agent=false", "-c", "features.skill_mcp_dependency_install=false",
@@ -275,22 +290,37 @@ export async function performSubscriptionLeadRequest(
     } else {
       command = "claude";
       args = [
-        // Streaming (someone is watching): the same answer, delivered as
+        // Streaming (someone is watching, or multimodal stream-json input): the same answer, delivered as
         // events whose final `result` line is the whole structured reply.
-        "-p", ...(streaming ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"]), "--json-schema", JSON.stringify(schema),
+        "-p",
+        ...(hasImages ? ["--input-format", "stream-json"] : []),
+        ...(streaming ? ["--output-format", "stream-json", "--verbose", ...(request.onText !== undefined ? ["--include-partial-messages"] : [])] : ["--output-format", "json"]),
+        "--json-schema", JSON.stringify(schema),
         ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ];
+      if (hasImages) {
+        stdinPayload = `${JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              ...images.map(img => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.dataBase64 } })),
+              { type: "text", text: prompt },
+            ],
+          },
+        })}\n`;
+      }
     }
     const result = await runner(command, args, {
       cwd: dir,
-      stdin: prompt,
+      stdin: stdinPayload,
       timeoutMs: request.timeoutMs,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       // Events repeat the answer (deltas, the message, the result line).
       maxBuffer: streaming ? RESPONSE_CAP_BYTES * 16 : RESPONSE_CAP_BYTES,
       omitEnv: ALL_CREDENTIAL_ENV,
       processGroup: true,
-      ...(streaming ? { onStdout: claudeStreamReader(request.onText!) } : {}),
+      ...(request.onText !== undefined && streaming ? { onStdout: claudeStreamReader(request.onText) } : {}),
     });
     // Whether the harness wrote anything at all before its deadline (v158, responsive-chat.md §7.5): a silent one never
     // started answering; one with output was answering slowly. Recorded, never shown.

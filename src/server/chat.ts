@@ -18,6 +18,7 @@ buildDataDocument,
 composeRequest,
 isSubscriptionChatProvider,
 parseAssistantEnvelope,
+parseLeadImagesField,
 performChatRequest,
 plausibleChatKey,
 priceOf,
@@ -75,6 +76,7 @@ import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from
 export function createChatHandlers(
   runtime: ServerRuntime,
   extras?: {
+    directChatHost?: () => import("../direct-chat.js").DirectChatHost | null;
     directChatStop?: (owner: string, threadId: string) => { ok: true; stopped: boolean; stopping: boolean } | { ok: false; status: number; error: string };
     publishDirectChat?: (threadId: string) => void;
   },
@@ -776,8 +778,60 @@ export function createChatHandlers(
     // settlement included). Any other action spends it whatever comes of it (its effects aren't all in the database).
     const confirmIt = () => confirmLeadProposal(store, principal, id, now, { authority: who.authority, chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", person: who.via === "cookie", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
     const proposed = store.getLeadProposal(id);
-    const approving = proposed?.kind === "action" && sharedActionPayload(proposed.payload)?.operation === "scope_approve";
+    const proposedAction = proposed?.kind === "action" ? sharedActionPayload(proposed.payload) : null;
+    const approving = proposedAction?.operation === "scope_approve";
     const outcome = approving ? spendingOnlyOnSuccess(confirmIt, result => !result.ok || ("already" in result && result.already === true)) : confirmIt();
+    if (outcome.ok && proposedAction !== null && (proposedAction.operation === "direct_chat_start" || proposedAction.operation === "direct_chat_reply")) {
+      const host = extras?.directChatHost?.() ?? null;
+      if (host === null) {
+        const msg = "Direct Chat host is not available on this server.";
+        store.handle.prepare("UPDATE lead_proposal SET state = 'refused', outcome_json = ? WHERE id = ?")
+          .run(JSON.stringify({ ok: false, kind: "action", reason: "refused", said: msg, via: "web" }), id);
+        return cardJson ? cardAnswer(503, false, msg) : refuse(response, who, 503, msg, back);
+      }
+      const req = proposedAction.request;
+      if (proposedAction.operation === "direct_chat_start") {
+        const created = await host.createThread({
+          owner: who.name,
+          localGeneration: who.authority === "local-owner" ? who.session.localGeneration : null,
+          accountGeneration: who.session.generation,
+          requestId: randomBytes(16).toString("hex"),
+          repo: proposedAction.repo,
+          provider: String(req["provider"]) as import("../direct-chat.js").DirectChatProvider,
+          modelId: String(req["model"] ?? ""),
+          ...(typeof req["effort"] === "string" && req["effort"] !== "" ? { effort: req["effort"] } : {}),
+          prompt: String(req["prompt"] ?? ""),
+        });
+        if (!created.ok) {
+          store.handle.prepare("UPDATE lead_proposal SET state = 'refused', outcome_json = ? WHERE id = ?")
+            .run(JSON.stringify({ ok: false, kind: "action", reason: "refused", said: created.error, via: "web" }), id);
+          return cardJson ? cardAnswer(created.status, false, created.error) : redirect(response, chatReturnWithLatest(back));
+        }
+        const said = `Started Direct Chat "${created.thread.title}".`;
+        const href = `/direct-chats/${encodeURIComponent(created.thread.id)}`;
+        store.handle.prepare("UPDATE lead_proposal SET outcome_json = ? WHERE id = ?")
+          .run(JSON.stringify({ ok: true, kind: "action", taskId: null, said, href, via: "web" }), id);
+        return cardJson ? cardAnswer(200, true, said, null) : redirect(response, chatReturnWithLatest(back));
+      } else {
+        const chatId = String(req["chat"] ?? "");
+        const sent = host.sendMessage({
+          owner: who.name,
+          threadId: chatId,
+          requestId: randomBytes(16).toString("hex"),
+          prompt: String(req["prompt"] ?? ""),
+        });
+        if (!sent.ok) {
+          store.handle.prepare("UPDATE lead_proposal SET state = 'refused', outcome_json = ? WHERE id = ?")
+            .run(JSON.stringify({ ok: false, kind: "action", reason: "refused", said: sent.error, via: "web" }), id);
+          return cardJson ? cardAnswer(sent.status, false, sent.error) : redirect(response, chatReturnWithLatest(back));
+        }
+        const said = "Sent follow-up message to Direct Chat.";
+        const href = `/direct-chats/${encodeURIComponent(chatId)}`;
+        store.handle.prepare("UPDATE lead_proposal SET outcome_json = ? WHERE id = ?")
+          .run(JSON.stringify({ ok: true, kind: "action", taskId: null, said, href, via: "web" }), id);
+        return cardJson ? cardAnswer(200, true, said, null) : redirect(response, chatReturnWithLatest(back));
+      }
+    }
     if (cardJson) {
       if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
       return cardAnswer(200, true, outcome.said, outcome.taskId);
@@ -965,7 +1019,9 @@ export function createChatHandlers(
       const { promise: admission, resolve: finishAdmission } = deferredAdmission<Admission>();
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
       const canActLocally = viewAllowed(request, who);
+      const userImages = parseLeadImagesField(body.get("images"));
       void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
+        ...(userImages.length > 0 ? { images: userImages } : {}),
         onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id, liveShape); finishAdmission({ queued: false }); }, onProgress: event => onProgress?.(event), channel: "console", requestId,
         // The workbench's look and safe reversible local actions are this computer's person's own: a browser session
         // from this computer, signed in as this computer's local owner, or as the one person of a single-person install.

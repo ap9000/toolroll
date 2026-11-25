@@ -511,6 +511,9 @@ const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
   get_direct_chat: ["direct chat", "chat", "chats", "thread", "threads", "claude", "codex", "gemini", "conversation", "messages", "reply", "tokens", "context"],
   manage_direct_chat: ["direct chat", "chat", "chats", "thread", "threads", "stop", "archive", "unarchive", "rename", "model", "effort", "switch", "claude", "codex", "gemini"],
   get_usage_limits: ["usage", "limit", "limits", "quota", "budget", "spend", "rate", "window", "percent", "remaining", "claude", "codex", "gemini", "subscription"],
+  get_recent_updates: ["away", "since", "recent", "updates", "catch up", "catchup", "continuity", "happened", "missed", "summary", "today", "digest", "morning", "overnight"],
+  propose_direct_chat: ["direct chat", "chat", "start chat", "open chat", "follow up", "reply", "promote", "handoff", "claude", "codex", "gemini"],
+  propose_report_followups: ["scout", "report", "follow-up", "followups", "follow ups", "triage", "file", "findings", "homepage", "batch"],
   show_card: ["findings", "handover", "card", "table", "chart", "graph", "report", "summary", "numbers", "data", "spend", "projects", "builders", "workers", "integrations", "show", "dashboard"],
   propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
   get_findings: ["finding", "findings", "review", "handover", "follow-through", "failed check", "send back"],
@@ -2487,6 +2490,232 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         detail: t.detail,
       }));
       return { ok: true, body: { summary: chip?.text ?? null, windows, budgets } };
+    },
+  },
+  get_recent_updates: {
+    description: "Read a unified 'since you were away' continuity digest across Tasks (newly Ready results, Scout Reports, completions, failures), Direct Chats (updated/running/completed replies), open Decisions, and recent Lead actions. Omit since/hours to automatically look back to your previous Lead turn (or last 24h). Read-only.",
+    handle: (ctx, args) => {
+      const repoFilter = args["repo"] === undefined ? null : repoPathOf(ctx.who, args["repo"]);
+      if (args["repo"] !== undefined && repoFilter === null) return { ok: false, message: "repo must be one of the ids from list_repos" };
+      const allowedRepos = repoFilter === null ? ctx.who.repos : [repoFilter];
+      let sinceMs: number;
+      if (typeof args["since"] === "string") {
+        if (!ISO_STAMP.test(args["since"]) || Number.isNaN(Date.parse(args["since"]))) {
+          return { ok: false, message: "since is an ISO timestamp like 2026-11-24T12:00:00Z" };
+        }
+        sinceMs = Date.parse(args["since"]);
+      } else if (typeof args["hours"] === "number") {
+        sinceMs = ctx.now.getTime() - Math.min(168, Math.max(1, Math.floor(args["hours"]))) * 3_600_000;
+      } else {
+        const prevTurn = ctx.store.handle.prepare(
+          `SELECT finished_at FROM mate_turn WHERE approver = ? AND state = 'answered' AND finished_at IS NOT NULL
+           AND (? IS NULL OR id != ?) ORDER BY id DESC LIMIT 1`,
+        ).get(ctx.who.name, ctx.turn ?? null, ctx.turn ?? null) as Record<string, unknown> | undefined;
+        const prevMs = typeof prevTurn?.["finished_at"] === "string" ? Date.parse(prevTurn["finished_at"]) : NaN;
+        const minLookback = ctx.now.getTime() - 3_600_000;
+        const maxLookback = ctx.now.getTime() - 72 * 3_600_000;
+        sinceMs = Number.isFinite(prevMs)
+          ? Math.min(minLookback, Math.max(maxLookback, prevMs))
+          : ctx.now.getTime() - 24 * 3_600_000;
+      }
+      const sinceIso = new Date(sinceMs).toISOString();
+      const families = ctx.store.taskFamiliesAdmitted(allowedRepos, false, { limit: 60, order: "updated" })
+        .filter(one => !refArchived(ctx.store, one.current.refId));
+      const tasksReady: Record<string, unknown>[] = [];
+      const tasksCompleted: Record<string, unknown>[] = [];
+      const tasksFailed: Record<string, unknown>[] = [];
+      for (const fam of families) {
+        const updatedMs = Date.parse(fam.current.updatedAt);
+        const runs = ctx.store.runsFor(fam.current.refId);
+        const latest = runs.find(r => r.outcome !== null) ?? null;
+        const repoId = `r${ctx.who.repos.indexOf(fam.current.repo!) + 1}`;
+        const report = reportSummaryFor(ctx.store, ctx.evidenceRoot, fam.current.refId);
+        if (fam.current.state === "done" && updatedMs >= sinceMs) {
+          tasksCompleted.push({ task: fam.root.id, title: fam.root.title, repo: repoId, updatedAt: fam.current.updatedAt });
+        } else if (fam.current.state === "failed" && updatedMs >= sinceMs) {
+          tasksFailed.push({ task: fam.root.id, title: fam.root.title, repo: repoId, updatedAt: fam.current.updatedAt });
+        } else if (latest !== null && latest.outcome === "built" && ctx.store.proofAcceptance(latest.id) === null && fam.current.state !== "done" && fam.current.state !== "cancelled") {
+          tasksReady.push({
+            task: fam.root.id,
+            execution: fam.current.id,
+            title: fam.root.title,
+            repo: repoId,
+            run: latest.id,
+            deliverable: ctx.store.refForId(fam.current.refId)?.deliverable ?? "branch",
+            ...(report !== null && !("problem" in report) ? { reportSummary: report.summary.slice(0, 260), followUpCount: report.followUps.length } : {}),
+            updatedAt: fam.current.updatedAt,
+          });
+        }
+      }
+      const chatRows = ctx.store.handle.prepare(
+        `SELECT id, title, repo, branch, provider, model_id, effort, updated_at
+         FROM direct_chat_thread
+         WHERE owner = ? AND archived_at IS NULL AND updated_at >= ?
+         ORDER BY updated_at DESC LIMIT 15`,
+      ).all(ctx.who.name, sinceIso) as Record<string, unknown>[];
+      const directChatsUpdated = chatRows
+        .filter(row => typeof row["repo"] === "string" && allowedRepos.includes(row["repo"]))
+        .map(row => {
+          const chatId = String(row["id"]);
+          const lastTurn = ctx.store.handle.prepare(
+            "SELECT seq, status, assistant_text, finished_at FROM direct_chat_turn WHERE thread_id = ? ORDER BY seq DESC LIMIT 1",
+          ).get(chatId) as Record<string, unknown> | undefined;
+          const artifacts = Number((ctx.store.handle.prepare("SELECT COUNT(*) AS n FROM direct_chat_artifact WHERE thread_id = ?").get(chatId) as Record<string, unknown> | undefined)?.["n"] ?? 0);
+          return {
+            chat: chatId,
+            title: String(row["title"] ?? ""),
+            repo: `r${ctx.who.repos.indexOf(String(row["repo"])) + 1}`,
+            provider: String(row["provider"] ?? "claude"),
+            model: String(row["model_id"] ?? ""),
+            effort: typeof row["effort"] === "string" ? row["effort"] : null,
+            running: lastTurn?.["status"] === "running",
+            lastStatus: lastTurn === undefined ? null : String(lastTurn["status"] ?? ""),
+            lastReplyPreview: lastTurn === undefined ? null : String(lastTurn["assistant_text"] ?? "").slice(0, 260),
+            artifacts,
+            updatedAt: String(row["updated_at"] ?? ""),
+          };
+        });
+      const decisionView = labelRepos(decisionsOver(ctx.store, allowedRepos, ctx.now), index => `r${ctx.who.repos.indexOf(allowedRepos[index] ?? "") + 1}`) as { decisions?: unknown };
+      const openDecisions = Array.isArray(decisionView.decisions) ? decisionView.decisions.slice(0, 10) : [];
+      const ledgerRows = ctx.store.handle.prepare(
+        "SELECT at, action, outcome, task_id FROM action_ledger WHERE actor = ? AND at >= ? AND outcome = 'done' ORDER BY id DESC LIMIT 10",
+      ).all(ctx.who.name, sinceIso) as Record<string, unknown>[];
+      const recentActions = ledgerRows.map(r => ({
+        at: String(r["at"] ?? ""),
+        action: String(r["action"] ?? ""),
+        task: typeof r["task_id"] === "string" ? r["task_id"] : null,
+      }));
+      const parts: string[] = [];
+      if (tasksReady.length > 0) parts.push(`${tasksReady.length} ready ${tasksReady.length === 1 ? "result" : "results"}`);
+      if (tasksCompleted.length > 0) parts.push(`${tasksCompleted.length} completed`);
+      if (tasksFailed.length > 0) parts.push(`${tasksFailed.length} failed`);
+      if (directChatsUpdated.length > 0) parts.push(`${directChatsUpdated.length} updated Direct ${directChatsUpdated.length === 1 ? "Chat" : "Chats"}`);
+      if (openDecisions.length > 0) parts.push(`${openDecisions.length} open ${openDecisions.length === 1 ? "decision" : "decisions"}`);
+      const hoursSpan = Math.max(1, Math.round((ctx.now.getTime() - sinceMs) / 3_600_000));
+      const headline = parts.length === 0
+        ? `All quiet over the last ${hoursSpan}h.`
+        : `Over the last ${hoursSpan}h: ${parts.join(", ")}.`;
+      return {
+        ok: true,
+        body: {
+          since: sinceIso,
+          headline,
+          tasksReady,
+          tasksCompleted,
+          tasksFailed,
+          directChatsUpdated,
+          openDecisions,
+          recentActions,
+        },
+      };
+    },
+  },
+  propose_direct_chat: {
+    description: "Draft a 1-click confirmation card for Direct Chats: operation 'start' (repo, prompt, optional provider/model/effort) starts a new Direct Chat in an isolated clone; 'reply' (chat, prompt) sends a follow-up message to an existing Direct Chat; 'promote' (chat, optional title/goal/planning) promotes a Direct Chat into a scoped Task. Always waits for the owner's 1-click confirmation.",
+    handle: (ctx, args) => {
+      const op = String(args["operation"]);
+      try {
+        if (op === "start") {
+          const repo = repoPathOf(ctx.who, args["repo"]);
+          if (repo === null) return { ok: false, message: "Choose a project from list_repos." };
+          const prompt = typeof args["prompt"] === "string" ? args["prompt"].trim() : "";
+          if (prompt === "" || !honest(prompt, LIMITS.note)) return { ok: false, message: `Give a plain prompt up to ${LIMITS.note} characters.` };
+          const provider = args["provider"] === undefined ? "claude" : String(args["provider"]);
+          if (!isDirectChatProvider(provider)) return { ok: false, message: "Choose claude, codex, or gemini." };
+          const model = typeof args["model"] === "string" && args["model"].trim() !== "" ? args["model"].trim() : defaultModelForProvider(provider);
+          const effort = args["effort"] === undefined || args["effort"] === null ? null : normalizeDirectChatEffort(String(args["effort"]), provider);
+          const action = prepareSharedAction(ctx.store, ctx.who, "direct_chat_start", { repo, prompt, provider, model, effort }, ctx.evidenceRoot, ctx.now);
+          const id = ctx.draft("action", { ...action });
+          return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+        }
+        const chatId = typeof args["chat"] === "string" ? args["chat"].trim() : "";
+        if (chatId === "") return { ok: false, message: "Name a Direct Chat id from list_direct_chats." };
+        const row = ctx.store.handle.prepare(
+          "SELECT id, title, repo, branch FROM direct_chat_thread WHERE id = ? AND owner = ?",
+        ).get(chatId, ctx.who.name) as Record<string, unknown> | undefined;
+        if (row === undefined || typeof row["repo"] !== "string" || !ctx.who.repos.includes(row["repo"])) {
+          return { ok: false, message: "No such Direct Chat in your projects." };
+        }
+        if (op === "reply") {
+          const prompt = typeof args["prompt"] === "string" ? args["prompt"].trim() : "";
+          if (prompt === "" || !honest(prompt, LIMITS.note)) return { ok: false, message: `Give a plain follow-up message up to ${LIMITS.note} characters.` };
+          const action = prepareSharedAction(ctx.store, ctx.who, "direct_chat_reply", { repo: row["repo"], chat: chatId, prompt }, ctx.evidenceRoot, ctx.now);
+          const id = ctx.draft("action", { ...action });
+          return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+        }
+        if (op === "promote") {
+          const lastTurn = ctx.store.handle.prepare(
+            "SELECT user_prompt, assistant_text FROM direct_chat_turn WHERE thread_id = ? ORDER BY seq DESC LIMIT 1",
+          ).get(chatId) as Record<string, unknown> | undefined;
+          const title = typeof args["title"] === "string" && args["title"].trim() !== ""
+            ? args["title"].trim()
+            : String(row["title"] ?? "Follow up from Direct Chat").slice(0, 200);
+          const fallbackGoal = [
+            `Promoted from Direct Chat "${String(row["title"] ?? chatId)}" (branch ${String(row["branch"] ?? "")}).`,
+            typeof lastTurn?.["user_prompt"] === "string" ? `Original ask: ${String(lastTurn["user_prompt"]).slice(0, 600)}` : "",
+            typeof lastTurn?.["assistant_text"] === "string" && lastTurn["assistant_text"] !== "" ? `Latest findings: ${String(lastTurn["assistant_text"]).slice(0, 1200)}` : "",
+          ].filter(Boolean).join("\n\n");
+          const goal = typeof args["goal"] === "string" && args["goal"].trim() !== "" ? args["goal"].trim() : fallbackGoal;
+          const planning = args["planning"] === "required" || args["planning"] === "skip" ? args["planning"] : "auto";
+          const action = prepareSharedAction(ctx.store, ctx.who, "direct_chat_promote", { repo: row["repo"], chat: chatId, title, goal, planning }, ctx.evidenceRoot, ctx.now);
+          const id = ctx.draft("action", { ...action });
+          return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+        }
+        return { ok: false, message: "Choose start, reply, or promote." };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That Direct Chat card could not be drafted." };
+      }
+    },
+  },
+  propose_report_followups: {
+    description: "Batch-draft ordinary Task proposal cards directly from a verified Scout Report's follow-up recommendations (up to 5 per turn). Pass task and optional 1-based indices (e.g. [1, 2] for the top two follow-ups). Every drafted card still waits for the owner's confirmation.",
+    handle: (ctx, args) => {
+      const taskId = taskIdOf(args);
+      const ref = taskId === null ? null : admittedRef(ctx, taskId);
+      if (taskId === null || ref === null) return notFound();
+      if (ctx.evidenceRoot === undefined) return { ok: false, message: "Saved reports are unavailable on this connection." };
+      const verified = readVerifiedReport(ctx.store, ctx.evidenceRoot, ref.id);
+      if (verified === null) return { ok: false, message: "That task does not have a Scout Report." };
+      if (!verified.ok) return { ok: false, message: verified.problem };
+      const followUps = verified.report.followUps;
+      if (followUps.length === 0) return { ok: false, message: "That Scout Report has no follow-up items to file." };
+      const rawIndices = Array.isArray(args["indices"]) ? (args["indices"] as number[]) : followUps.slice(0, LEAD_MAX_PROPOSALS_PER_TURN).map((_, i) => i + 1);
+      const uniqueIndices = [...new Set(rawIndices)];
+      const invalid = uniqueIndices.find(i => !Number.isInteger(i) || i < 1 || i > followUps.length);
+      if (invalid !== undefined) return { ok: false, message: `Choose follow-up numbers between 1 and ${followUps.length}.` };
+      const planning = args["planning"] === "required" || args["planning"] === "skip" ? args["planning"] : "auto";
+      const drafted: { index: number; proposal: number; title: string }[] = [];
+      let skipped = 0;
+      for (const index of uniqueIndices) {
+        const item = followUps[index - 1]!;
+        const title = item.title.trim().slice(0, 200);
+        const goal = `${item.goal.trim()}\n\n(Follow-up #${index} from Scout Report "${verified.report.title}" on ${taskId}.)`.slice(0, 8000);
+        if ([title, goal].some(s => scanForSecrets(s).length > 0)) { skipped++; continue; }
+        const id = ctx.draft("task", {
+          repo: ref.repo,
+          repoId: ref.repoId,
+          title,
+          goal,
+          not: null,
+          touches: [],
+          acceptance: [{ id: "c1", statement: title, evidence: ["manual-review"] }],
+          planning,
+          report: false,
+        });
+        if (id === null) { skipped++; break; }
+        drafted.push({ index, proposal: id, title });
+      }
+      if (drafted.length === 0) return tooMany();
+      return {
+        ok: true,
+        body: {
+          task: taskId,
+          reportTitle: verified.report.title,
+          drafted,
+          skipped,
+          awaiting: "the operator's confirmation on each drafted task card",
+        },
+      };
     },
   },
 };

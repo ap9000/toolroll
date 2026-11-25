@@ -882,7 +882,7 @@ private struct LeadThreadView: View {
         draft = ""
         attachments = []
         Task {
-            if await store.sendLeadMessage(composed.combinedMessage) != nil, draft.isEmpty {
+            if await store.sendLeadMessage(composed.combinedMessage, attachments: keptAttachments) != nil, draft.isEmpty {
                 draft = keptDraft
                 attachments = keptAttachments
             }

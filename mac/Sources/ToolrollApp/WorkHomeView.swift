@@ -6,6 +6,7 @@ struct WorkHomeView: View {
     @Bindable var store: WorkbenchStore
     @State private var isComposerDropTargeted = false
     @State private var expandedFleetSection: String? = nil
+    @State private var isContinuityDismissed = false
     @FocusState private var quickPromptFocused: Bool
 
     private enum ComposerGear: String {
@@ -201,6 +202,14 @@ struct WorkHomeView: View {
                     .background(ToolrollPalette.raised, in: Capsule())
                     .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
                 }
+                if !recentContinuityChats.isEmpty || needsTotal > 0 {
+                    fleetPill(
+                        id: "updates",
+                        dotColor: ToolrollPalette.success,
+                        isLive: false,
+                        title: "Recent updates"
+                    )
+                }
                 Spacer(minLength: 8)
             }
             .padding(.horizontal, 24)
@@ -208,7 +217,13 @@ struct WorkHomeView: View {
             .frame(maxWidth: 848, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
 
-            if expandedFleetSection == "needs" && needsTotal > 0 {
+            if expandedFleetSection == "updates" {
+                sinceAwayContinuityCard(compact: true)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: 848)
+                    .frame(maxWidth: .infinity)
+            } else if expandedFleetSection == "needs" && needsTotal > 0 {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(waiting.enumerated()), id: \.element.id) { idx, row in
                         if idx > 0 { HairlineDivider() }
@@ -284,6 +299,10 @@ struct WorkHomeView: View {
                     Spacer().frame(height: 52)
                 }
 
+                if !isContinuityDismissed && (!waiting.isEmpty || !recentContinuityChats.isEmpty) {
+                    sinceAwayContinuityCard(compact: false)
+                }
+
                 if needsTotal > 0 {
                     needsAttentionSection
                 }
@@ -309,11 +328,145 @@ struct WorkHomeView: View {
         }
     }
 
+    private var recentContinuityChats: [AgentChatThread] {
+        Array(
+            store.filteredChatThreads
+                .filter { !$0.messages.isEmpty }
+                .prefix(3)
+        )
+    }
+
+    private func sinceAwayContinuityCard(compact: Bool) -> some View {
+        let readyTasks = Array(waiting.prefix(3))
+        let recentChats = recentContinuityChats
+        let summaryParts: [String] = {
+            var parts: [String] = []
+            if !readyTasks.isEmpty {
+                parts.append(readyTasks.count == 1 ? "1 ready result" : "\(readyTasks.count) ready results")
+            }
+            if !recentChats.isEmpty {
+                parts.append(recentChats.count == 1 ? "1 active Direct Chat" : "\(recentChats.count) Direct Chats")
+            }
+            if inFlightTotal > 0 {
+                parts.append("\(inFlightTotal) in flight")
+            }
+            return parts
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.live)
+                Text("Since you were away")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.ink)
+                if !summaryParts.isEmpty {
+                    Text("· \(summaryParts.joined(separator: " · "))")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    expandedFleetSection = nil
+                    Task {
+                        _ = await store.sendLeadMessage("Catch me up on what changed while I was away across my tasks and Direct Chats.")
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Catch me up")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(ToolrollPalette.ground, in: Capsule())
+                    .overlay(Capsule().strokeBorder(ToolrollPalette.inputLine, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
+                if !compact {
+                    Button {
+                        withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                            isContinuityDismissed = true
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(readyTasks.enumerated()), id: \.element.id) { idx, row in
+                    if idx > 0 { HairlineDivider() }
+                    taskRow(row)
+                }
+                ForEach(Array(recentChats.enumerated()), id: \.element.id) { idx, thread in
+                    if idx > 0 || !readyTasks.isEmpty { HairlineDivider() }
+                    continuityChatRow(thread)
+                }
+            }
+            .background(ToolrollPalette.ground.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .padding(12)
+        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+    }
+
+    private func continuityChatRow(_ thread: AgentChatThread) -> some View {
+        let isLive = store.runningChatThreadIds.contains(thread.id)
+        let preview = thread.messages.last(where: { $0.role == .assistant })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let firstLine = preview.components(separatedBy: .newlines).first ?? ""
+        return Button {
+            expandedFleetSection = nil
+            store.selectChatThread(thread.id)
+        } label: {
+            HStack(spacing: 10) {
+                if isLive {
+                    ToolrollKineticLoader(provider: thread.provider.rawValue, height: 10)
+                        .frame(width: 14, height: 14)
+                } else {
+                    ProviderBrandGlyph(provider: thread.provider.rawValue, size: 13, tinted: true, inTile: false)
+                        .frame(width: 14, height: 14)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(thread.title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                    Text(firstLine.isEmpty ? "\(thread.projectName) · \(thread.provider.label(for: thread.modelId))" : firstLine)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 10)
+                Text(isLive ? "Running" : thread.relativeAge)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(isLive ? ToolrollPalette.live : ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+        }
+        .buttonStyle(.plain)
+    }
+
     private var leadStarterChips: some View {
         let prompts = [
+            "Catch me up since I was away",
             "What needs my attention right now?",
-            "Summarize recent progress across my projects",
-            "Check my agents and project setup",
+            "Check my subscription usage and agents",
         ]
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -976,7 +1129,7 @@ struct WorkHomeView: View {
 
         switch currentGear {
         case .lead:
-            Task { _ = await store.sendLeadMessage(composed.combinedMessage) }
+            Task { _ = await store.sendLeadMessage(composed.combinedMessage, attachments: attachments) }
         case .task:
             let planFirst = store.workDraftPlanFirst
             Task {

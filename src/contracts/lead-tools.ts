@@ -69,7 +69,7 @@ const viewColors = z.strictObject({
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
 /** The shared actions the lead proposes with propose_action; flows and subagents have their own tools. */
-const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_") && one !== "task_start");
+const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_") && !one.startsWith("direct_chat_") && one !== "task_start");
 
 /** A card's spec as the lead sees it: one flat props object. Each element's own props are read strictly by card-catalog.ts. */
 const cardProps = z.strictObject({
@@ -234,6 +234,28 @@ export const LEAD_TOOL_INPUTS = {
     title: z.string().min(1).max(160).optional(),
   }),
   get_usage_limits: z.strictObject({}),
+  get_recent_updates: z.strictObject({
+    repo: repoId.optional(),
+    since: text("recapSince").optional(),
+    hours: z.int().min(1).max(168).optional(),
+  }),
+  propose_direct_chat: z.strictObject({
+    operation: z.enum(["start", "reply", "promote"]),
+    repo: repoId.optional(),
+    chat: z.string().min(1).max(80).optional(),
+    prompt: note.optional(),
+    provider: z.enum(["claude", "codex", "gemini"]).optional(),
+    model: z.string().min(1).max(120).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).nullable().optional(),
+    title: text("taskTitle").optional(),
+    goal: scopeText.optional(),
+    planning: z.enum(["auto", "required", "skip"]).optional(),
+  }),
+  propose_report_followups: z.strictObject({
+    task: taskRef,
+    indices: z.array(z.int().min(1).max(20)).min(1).max(5).optional(),
+    planning: z.enum(["auto", "required", "skip"]).optional(),
+  }),
 } as const;
 
 export type LeadToolName = keyof typeof LEAD_TOOL_INPUTS;
@@ -376,6 +398,9 @@ export const LEAD_TOOL_OUTPUTS = {
   get_direct_chat: z.looseObject({ chat: str, title: str, provider: str, model: str, running: z.boolean(), turns: list }),
   manage_direct_chat: z.looseObject({ chat: str, operation: str, said: str }),
   get_usage_limits: z.looseObject({ summary: nullable(str), windows: list, budgets: list }),
+  get_recent_updates: z.looseObject({ since: str, headline: str, tasksReady: list, tasksCompleted: list, tasksFailed: list, directChatsUpdated: list, openDecisions: list }),
+  propose_direct_chat: cardDrafted,
+  propose_report_followups: z.looseObject({ task: str, reportTitle: str, drafted: rows({ index: int, proposal: int, title: str }), awaiting: str }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
 
 /**

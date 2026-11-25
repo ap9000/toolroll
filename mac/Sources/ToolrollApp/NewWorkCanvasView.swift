@@ -665,7 +665,7 @@ public struct NewWorkCanvasView: View {
         if mode == .askLead {
             store.isInspectorVisible = true
             store.inspectorTab = .lead
-            Task { await store.sendLeadMessage(composed.combinedMessage) }
+            Task { await store.sendLeadMessage(composed.combinedMessage, attachments: draftAttachments) }
             return
         }
 

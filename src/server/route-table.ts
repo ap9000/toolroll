@@ -917,7 +917,7 @@ post("chat", "chat.queued-remove", "^\\/chat\\/queued\\/[1-9][0-9]{0,14}\\/remov
 // /t/:id/approve (chat-actions.ts scopes it); every other operation it confirms still needs a password typed now.
 for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}`, ...(one === "confirm" ? { freshness: "allowlist" as const } : {}) });
 for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
-post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist" });
+post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist", bodyCap: 16 * 1024 * 1024 });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });

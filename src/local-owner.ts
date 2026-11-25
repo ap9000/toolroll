@@ -318,6 +318,9 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   task_resume: "resume-run",
   // A Start card: the fast start's own act (approve() allows it only with a fast marker).
   task_start: "build-now",
+  direct_chat_start: "direct-chat-start",
+  direct_chat_reply: "direct-chat-send",
+  direct_chat_promote: "file-task",
 });
 
 /** Every task card operation (chat-task-actions.ts), decided for the local owner. */
