@@ -4,6 +4,16 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.118 — 2026-11-25
+
+Agents can read the project skills they are told about.
+
+### Fixed
+
+- **Project skills reach the agent.** Planner, builder, scout and coding-terminal agents were told about a project's
+  skills but couldn't open them inside their sandbox. Each now gets exactly its own skill files, read-only, checked
+  against what Toolroll prepared; a file changed in between stops the launch instead of opening anything else.
+
 ## 0.9.117 — 2026-11-25
 
 Interactive agent threads keep working reply after reply, Direct Chat arrives, and agents get tighter fences.

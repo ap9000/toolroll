@@ -4,8 +4,9 @@ import { TextDecoder } from "node:util";
 import { homedir, hostname } from "node:os";
 import { readDenyPath } from "./project-sandbox.js";
 import { dirname, join } from "node:path";
-import { codexFenceConfig, fenceFor, FENCE_POLICY_CURRENT, runFolders, taskBoundary, trustedWorktreeBinding } from "./agent-fence.js";
+import { codexFenceConfig, ExactFileChanged, fenceFor, FENCE_POLICY_CURRENT, runFolders, taskBoundary, trustedWorktreeBinding } from "./agent-fence.js";
 import type { CodingPermissions } from "./coding-workspace.js";
+import { skillsGrant, type SkillsManifest } from "./skills-manifest.js";
 import type { Store } from "./store.js";
 import { poolRootOf } from "./worktree.js";
 import { currentBootId } from "./boot-identity.js";
@@ -409,11 +410,11 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
  * sessions have never had one). The worktree is bound to its project by the plane's own records first; anything that
  * doesn't prove refuses the session.
  */
-export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string }) => Promise<CodingPermissions> {
+export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, worktreeRoot: string): (input: { repo: string; worktree: string; skills?: SkillsManifest | null }) => Promise<CodingPermissions> {
   return input => sessionPermissions(store, { ...input, worktreeRoot });
 }
 
-async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string }): Promise<CodingPermissions> {
+async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string; skills?: SkillsManifest | null }): Promise<CodingPermissions> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { problem: "The coding session has no state folder to fence, so it was not started." };
   try {
@@ -424,10 +425,14 @@ async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorkt
     const boundary = taskBoundary({ worktree: input.worktree, provider: "codex", binding, policy: FENCE_POLICY_CURRENT, storage });
     // The project's read denies, read live (a session seals none; they only narrow).
     const readDeny = store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, homedir()));
-    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, policy: FENCE_POLICY_CURRENT, storage });
+    // The session's project skills, rechecked after the storage check, right before the profile is made: every
+    // session's skills folder denied, and exactly this session's files read back, or no session.
+    const skills = skillsGrant({ root: join(dirname(databaseFile), "coding-context"), manifest: input.skills ?? null });
+    if (skills.problem !== null) return { problem: `${skills.problem}, so the session was not started.` };
+    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, extra: skills.deny, policy: FENCE_POLICY_CURRENT, storage, exactFiles: skills.files });
     return { config: codexFenceConfig(launch.fence, false, launch.fenceGrants) };
   } catch (error) {
     // The storage check's own words survive: what didn't finish, and which program macOS may need to allow.
-    return { problem: storageRefusalOf(error)?.message ?? "The session's worktree couldn't be bound to its project, so the session was not started." };
+    return { problem: storageRefusalOf(error)?.message ?? (error instanceof ExactFileChanged ? error.message : "The session's worktree couldn't be bound to its project, so the session was not started.") };
   }
 }
