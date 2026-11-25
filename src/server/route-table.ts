@@ -229,6 +229,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.ship": "direct-chat-ship",
   "direct-chat.page-ship-review": "read",
   "direct-chat.page-ship": "direct-chat-ship",
+  // Reply from the Direct Chat page (everyday 9 B4): the app's own send, the same act.
+  "direct-chat.page-reply": "direct-chat-send",
   "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
@@ -693,6 +695,7 @@ post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/shi
 // Ship from the page: its terms read in the chat's clone (a POST, never a GET), then the yes, as the API's ship is.
 post("tasks", "direct-chat.page-ship-review", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
 post("tasks", "direct-chat.page-ship", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/ship` });
+post("tasks", "direct-chat.page-reply", `^\\/direct-chats\\/${TERMINAL}\\/reply$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/reply` });
 post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page

@@ -255,6 +255,14 @@ describe("Direct Chat HTTP + SSE routes", () => {
     expect((await world.send(`/direct-chats/${"f".repeat(32)}`, "GET", { cookie: world.cookie })).status).toBe(404);
     expect((await world.send("/direct-chats", "GET", { authorization: "Bearer tr_fake_token" })).status).not.toBe(200);
     expect((await world.post(`/direct-chats/${started.threadId}/ship`, { mode: "ship", termsDigest: "0".repeat(32) }, { "x-forwarded-for": "100.64.0.1" })).status).toBe(403);
+    // Reply from the page (everyday 9 B4): the app's own send, with its admission; once stopped, a reply is a new turn.
+    expect((await world.post(`/direct-chats/${started.threadId}/reply`, { prompt: "Now list the modules", request: "a".repeat(32) }, { "x-forwarded-for": "100.64.0.1" })).status).toBe(403);
+    expect((await world.post(`/direct-chats/${"f".repeat(32)}/reply`, { prompt: "Now list the modules", request: "a".repeat(32) })).status).toBe(404);
+    await world.post(`/engine/direct-chats/${started.threadId}/stop`, {});
+    expect((await world.post(`/direct-chats/${started.threadId}/reply`, { prompt: "  ", request: "a".repeat(32) })).status).toBe(400);
+    const replied = await world.post(`/direct-chats/${started.threadId}/reply`, { prompt: "Now list the modules", request: "a".repeat(32) });
+    expect(replied.status).toBe(303);
+    expect(world.store.handle.prepare("SELECT count(*) AS n FROM direct_chat_turn WHERE thread_id = ?").get(started.threadId)?.["n"]).toBe(2);
     expect(addApprover(world.store, "jordan", T0, { name: "alex", token: world.token }).ok).toBe(true);
     expect((await world.send("/direct-chats", "GET", { cookie: world.cookie })).status).toBe(403);
   });
