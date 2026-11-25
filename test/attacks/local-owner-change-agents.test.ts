@@ -10,10 +10,10 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { asLocalOwner, type LocalOwnerAct, type LocalPrincipal } from "../../src/local-owner.js";
 import { withActor } from "../../src/actor.js";
-import { AGENTS_PICK_AGAIN, applyPendingAgentChanges, localOwnerChangeAgents, LOCAL_AGENT_CHANGE_ACTION, pendingAgentChangeOf, TASK_RUNNING_NOW, type AgentPick } from "../../src/local-owner-acts.js";
+import { AGENTS_PICK_AGAIN, AGENTS_TOOLS_CHANGED, applyPendingAgentChanges, localOwnerChangeAgents, LOCAL_AGENT_CHANGE_ACTION, pendingAgentChangeOf, TASK_RUNNING_NOW, type AgentPick } from "../../src/local-owner-acts.js";
 import { approve } from "../../src/scope.js";
 import { register } from "../../src/runner.js";
-import { acquire, release } from "../../src/claim.js";
+import { acquire, finalize, release } from "../../src/claim.js";
 import { archiveTaskFamily, setLocalModeOff } from "../../src/store.js";
 import { presented } from "../serve-kit.js";
 
@@ -221,5 +221,61 @@ describe("the browser road", () => {
     expect(picked.status).toBe(303);
     expect(decodeURIComponent(String(picked.headers.location))).toContain("The builder is now Claude claude-opus-5-5.");
     expect(JSON.parse(String(rows("SELECT detail FROM action_ledger WHERE task_id = ? AND action = ?", id, LOCAL_AGENT_CHANGE_ACTION)[0]!["detail"]))).toMatchObject({ via: "browser", act: "change-task-agents" });
+  });
+});
+
+describe("the project's tools", () => {
+  // Approved with tool A; tool B added since. A carried yes would seal today's tools, B included.
+  const toolOf = (name: string) => world.store.addProjectTool({ repo: world.repo, name, specJson: "{}", digest: `d-${name}`, source: "test", by: "alex" }, T0);
+  const unsealed = (id: string, saw: { name: string; digest: string }[] = [{ name: "a", digest: "d-a" }]) => {
+    const scope = world.store.getScope(id)!;
+    expect(scope.approvedDigest).not.toBe(scope.digest);
+    expect(world.store.toolSealFor(id, scope.digest)).toBeNull();
+    expect(world.store.toolSealFor(id, scope.approvedDigest!)).toEqual(saw);
+  };
+  const drifted = { ok: true, outcome: "drifted", words: `The builder is now Claude claude-opus-5-5. ${AGENTS_TOOLS_CHANGED}` };
+
+  test("a pick applied now: the task is left unapproved and the new tool is not sealed", () => {
+    toolOf("a");
+    const id = task();
+    toolOf("b");
+    expect(asLocalOwner(owner("change-task-agents"), () => change(id))).toEqual({ ...drifted, sealed: null });
+    unsealed(id);
+    // approve()'s narrow branch refuses on its own too.
+    expect(asLocalOwner(owner("change-task-agents"), () => approve(world.store, id, "alex", T0, world.store.getScope(id)!.digest, ""))).toMatchObject({ ok: false, reason: "policy" });
+    unsealed(id);
+  });
+
+  test("a waiting pick (next run) and a restart apply as the same unapproved change", () => {
+    toolOf("a");
+    for (const when of ["next-run", "restart"] as const) {
+      const id = task();
+      const run = running(id);
+      expect(asLocalOwner(owner("change-task-agents"), () => change(id, pickOf(id), when))).toMatchObject({ ok: true, outcome: "pending" });
+      const sawTools = world.store.toolSealFor(id, world.store.getScope(id)!.approvedDigest!);
+      toolOf(`b-${when}`);
+      if (when === "restart") {
+        expect(finalize(world.store, run.lease, { kind: "interrupted", runId: run.run, taskId: id, stopRun: run.run, now: T0 })).toMatchObject({ ok: true });
+        if (world.store.stopOf(run.run)?.settledAt == null) world.store.settleRunStop(run.run, "interrupted", T0);
+      } else {
+        world.store.finishRun(run.run, { outcome: "failed", reason: "retryable-infra", now: T0 });
+        release(world.store, run.lease, T0);
+      }
+      expect(applyPendingAgentChanges(world.store, T0)).toBe(1);
+      unsealed(id, sawTools!);
+      expect(rows("SELECT outcome FROM action_ledger WHERE task_id = ? AND action = ?", id, LOCAL_AGENT_CHANGE_ACTION)).toEqual([{ outcome: "drifted" }]);
+    }
+  });
+
+  test("a missing or damaged seal proves nothing: fails closed", () => {
+    const missing = task();
+    world.store.handle.prepare("DELETE FROM tool_seal WHERE task = ?").run(missing);
+    expect(asLocalOwner(owner("change-task-agents"), () => change(missing))).toMatchObject({ ok: true, outcome: "drifted", sealed: null });
+    const damaged = task();
+    world.store.handle.prepare("UPDATE tool_seal SET tools_json = '[{\"name\":1}]' WHERE task = ?").run(damaged);
+    expect(asLocalOwner(owner("change-task-agents"), () => change(damaged))).toMatchObject({ ok: true, outcome: "drifted", sealed: null });
+    // The control: unchanged tools (none) carry the yes.
+    const same = task();
+    expect(asLocalOwner(owner("change-task-agents"), () => change(same))).toMatchObject({ ok: true, outcome: "resealed" });
   });
 });
