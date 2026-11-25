@@ -159,7 +159,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, settleUnfinished, type LandAuthority } from "./local-landing.js";
+import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding, type LandAuthority } from "./local-landing.js";
 import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
@@ -961,6 +961,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "say", "ceiling-usd", "cap-usd",
   // Plan again (task plan --incident): the planning incident the terminal read.
   "incident",
+  // task land --into <branch> (everyday-8 #1).
+  "into",
   // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
   // stuck campaign a person ends (recover --abandon).
   "case", "k", "world", "deny", "abandon",
@@ -15953,7 +15955,6 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
     authority = { kind: "person", who: proved.who };
   }
   const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
-  await settleUnfinished(store, store.lookupRef(id)?.repo ?? "", now, { root: context.evidenceRoot });
   const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
   if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
   return succeed(write, json, command, { landing: result }, () => [
