@@ -80,6 +80,7 @@ public final class WorkbenchStore {
         didSet {
             guard oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account else { return }
             projectsRead = nil
+            refreshTouchIDState()
         }
     }
     public private(set) var isLocalSession: Bool = false
@@ -3604,7 +3605,7 @@ public final class WorkbenchStore {
         isTouchIDAvailable = TouchIDVault.isAuthenticationAvailable()
         touchIDLabel = TouchIDVault.biometryLabel()
         touchIDSystemImage = TouchIDVault.biometrySystemImage()
-        isTouchIDEnabled = isTouchIDAvailable && TouchIDVault.hasStoredPassword(account: activeProfile.account)
+        isTouchIDEnabled = isTouchIDAvailable && TouchIDVault.hasStoredPassword(account: activeProfile.account, origin: activeProfile.origin)
     }
 
     @discardableResult
@@ -3614,7 +3615,7 @@ public final class WorkbenchStore {
             return (false, "Enter your Toolroll password to enable \(touchIDLabel).")
         }
         do {
-            try TouchIDVault.savePassword(trimmed, account: activeProfile.account)
+            try TouchIDVault.savePassword(trimmed, account: activeProfile.account, origin: activeProfile.origin)
             refreshTouchIDState()
             return (true, "\(touchIDLabel) enabled for quick approvals.")
         } catch {
@@ -3623,7 +3624,7 @@ public final class WorkbenchStore {
     }
 
     public func disableTouchID() {
-        TouchIDVault.deletePassword(account: activeProfile.account)
+        TouchIDVault.deletePassword(account: activeProfile.account, origin: activeProfile.origin)
         refreshTouchIDState()
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
@@ -3634,7 +3635,7 @@ public final class WorkbenchStore {
     /// Touch ID unlock that actually runs.
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
         do {
-            return try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
+            return try await TouchIDVault.unlockPassword(account: activeProfile.account, origin: activeProfile.origin, reason: reason)
         } catch TouchIDVaultError.cancelled {
             return nil
         } catch {

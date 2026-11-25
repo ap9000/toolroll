@@ -64,3 +64,32 @@ struct WebContentPolicyTests {
         #expect(WebContentPolicy.consoleNavigation(to: nil, consoleOrigin: Self.console, userClickedLink: true) == .refuse)
     }
 }
+
+@Suite("Local secrets at rest")
+struct LocalSecretsTests {
+    @Test("A Touch ID password belongs to one account on one Toolroll")
+    func vaultItemPerAccountAndOrigin() {
+        let here = TouchIDVault.itemAccount(account: "alice", origin: "http://127.0.0.1:4180")
+        #expect(here == TouchIDVault.itemAccount(account: " alice ", origin: "HTTP://127.0.0.1:4180"))
+        #expect(here != TouchIDVault.itemAccount(account: "alice", origin: "https://team.example.com"))
+        #expect(here != TouchIDVault.itemAccount(account: "bob", origin: "http://127.0.0.1:4180"))
+        #expect(TouchIDVault.itemAccount(account: "", origin: "http://127.0.0.1:4180") == "local-owner|http://127.0.0.1:4180")
+    }
+
+    @Test("The profiles file is 0600 from creation and never written through an existing file or symlink")
+    func privateWrite() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tr-profiles-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("a.tmp").path
+        try ProfileStore.writePrivate(Data("x".utf8), to: path)
+        let mode = try #require(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)
+        #expect(mode.intValue & 0o777 == 0o600)
+        #expect(throws: (any Error).self) { try ProfileStore.writePrivate(Data("y".utf8), to: path) }
+        let target = dir.appendingPathComponent("target").path
+        let link = dir.appendingPathComponent("link.tmp").path
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        #expect(throws: (any Error).self) { try ProfileStore.writePrivate(Data("z".utf8), to: link) }
+        #expect(!FileManager.default.fileExists(atPath: target))
+    }
+}

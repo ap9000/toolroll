@@ -102,13 +102,29 @@ public struct ProfileStore: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let bytes = try encoder.encode(file)
-        let tmp = dir.appendingPathComponent("profiles.json.tmp")
-        try bytes.write(to: tmp, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+        let tmp = dir.appendingPathComponent("profiles.json.\(UUID().uuidString.prefix(8)).tmp")
+        try Self.writePrivate(bytes, to: tmp.path)
         _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tmp)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         existing = load()
         _ = existing
+    }
+
+    /// Writes a new file that is 0600 from the moment it exists: created exclusively (never through an existing file or a
+    /// symlink), so the tokens in it are never readable by anyone else, even briefly.
+    static func writePrivate(_ bytes: Data, to path: String) throws {
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: path]) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: bytes)
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? handle.close()
+            unlink(path)
+            throw error
+        }
     }
 
     public func setActive(name: String) throws {
