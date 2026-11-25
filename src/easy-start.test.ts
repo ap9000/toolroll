@@ -40,6 +40,8 @@ type Script = {
   tui?: (session: TuiSession) => Promise<TuiExit>;
   asked?: boolean;
   backgroundOk?: boolean;
+  /** The failed hand-over stopped this terminal's `up` and started it again (what a real failed service start does). */
+  backgroundRestarts?: boolean;
   repo?: string | null;
   enrolled?: boolean;
   /** l1: the Linux sandbox programs this computer lacks, and why it can't sandbox (default: none, it can). */
@@ -76,7 +78,11 @@ function scripted(script: Script = {}) {
     openBrowser: url => { calls.push(`browser ${url}`); },
     openSignedIn: async () => { calls.push("signed-in browser"); return { ok: true, wait: async () => { calls.push("wait for the browser"); } }; },
     openTui: async session => { calls.push("tui"); return script.tui === undefined ? "stop" : script.tui(session); },
-    backgroundOn: async foreground => { calls.push(`background ${foreground?.controllerPid ?? "-"}`); return script.backgroundOk === false ? { ok: false, message: "no" } : { ok: true, message: "Toolroll now runs in the background." }; },
+    backgroundOn: async foreground => {
+      calls.push(`background ${foreground?.controllerPid ?? "-"}`);
+      if (script.backgroundRestarts === true && foreground !== null) { children.at(-1)!.dies([], 0); await foreground.restart(); }
+      return script.backgroundOk === false ? { ok: false, message: "no" } : { ok: true, message: "Toolroll now runs in the background." };
+    },
     backgroundAsked: () => asked,
     recordBackgroundAnswer: yes => { asked = true; calls.push(`answer ${yes ? "yes" : "no"}`); },
     findRepo: async () => script.repo ?? null,
@@ -388,6 +394,14 @@ describe("ask once, and quitting", () => {
     await runEasyStart("start", bare, failed.seams);
     expect(failed.children[0]!.stopped).toBe(1);
     expect(failed.lines).toContain("Toolroll stopped.");
+    // The hand-over stopped this terminal's `up` and started a new one before failing: the new one is what stops, and
+    // "stopped" is said only once it has (everyday-8 #9: the old one was stopped again while the new one ran on).
+    const restarted = scripted({ proofs: [NONE, LIVE, LIVE], local: ["absent", "on"], backgroundOk: false, backgroundRestarts: true, tui: async () => "keep" });
+    await runEasyStart("start", bare, restarted.seams);
+    expect(restarted.children).toHaveLength(2);
+    expect(restarted.children[1]!.stopped).toBe(1);
+    expect(restarted.children[1]!.running()).toBe(false);
+    expect(restarted.lines).toContain("Toolroll stopped.");
   });
 });
 
