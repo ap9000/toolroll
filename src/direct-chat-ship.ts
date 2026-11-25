@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { join } from "node:path";
 import { assignmentOf } from "./assignment.js";
 import { canonicalJson } from "./canonical-json.js";
 import { runCheckLevel } from "./check-levels.js";
@@ -136,55 +137,116 @@ function bindingFromThreadRow(stateRoot: string, thread: Record<string, unknown>
   return { stateRoot, clonePath, gitDir, configSha256 };
 }
 
-function inspectCloneForShip(binding: TrustedCloneBinding, baseSha: string): { changedFiles: string[]; worktreeDigest: string; headSha: string; dirty: boolean } {
-  const headSha = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
-  const status = runTrustedCloneGit(binding, ["status", "--porcelain"]);
-  const committed = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", baseSha, "HEAD"])
-    .split("\n")
-    .map(s => s.trim())
-    .filter(Boolean);
-  const working = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD"])
-    .split("\n")
-    .map(s => s.trim())
-    .filter(Boolean);
-  const untracked = status
-    .split("\n")
-    .filter(line => line.startsWith("?? "))
-    .map(line => line.slice(3).trim())
-    .filter(Boolean);
-  const changedFiles = [...new Set([...committed, ...working, ...untracked])].sort();
-  const diffRaw = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--binary", baseSha]);
-  const untrackedHash = createHash("sha256");
-  for (const rel of untracked.sort()) {
-    untrackedHash.update(`${rel}\0`);
-    try {
-      const blob = runTrustedCloneGit(binding, ["hash-object", "--no-filters", "--", rel]).trim();
-      untrackedHash.update(`${blob}\n`);
-    } catch {
-      untrackedHash.update("?\n");
-    }
+/** A ship the clone can't prove: a change that can't be read, or what would be committed isn't what was previewed. */
+class ShipUnreadable extends Error {}
+const SHIP_UNREADABLE = "A changed file in this chat couldn't be read, so nothing was shipped. Check the chat's files and try again.";
+const SHIP_CHANGED = "The chat's files changed while shipping, so nothing was shipped. Review the updated Ship preview first.";
+
+/** NUL-separated git output as paths (no quoting, no collapsing). */
+const nulPaths = (raw: string): string[] => raw.split("\0").filter(one => one !== "");
+
+/**
+ * What one changed path holds in the clone's working tree, as git would store it: a blob id for a file, the link's own
+ * text for a symlink (never followed), `deleted` when it is gone. Anything else (a folder, a FIFO, a device) or a read
+ * that fails is refused: it proves nothing about what would be shipped.
+ */
+function contentOf(binding: TrustedCloneBinding, realClone: string, rel: string): string {
+  let info;
+  try { info = lstatSync(join(realClone, rel)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "deleted";
+    throw new ShipUnreadable(SHIP_UNREADABLE);
   }
+  if (info.isSymbolicLink()) {
+    try { return `link:${createHash("sha256").update(readlinkSync(join(realClone, rel))).digest("hex")}`; } catch { throw new ShipUnreadable(SHIP_UNREADABLE); }
+  }
+  if (!info.isFile()) throw new ShipUnreadable(SHIP_UNREADABLE);
+  let blob: string;
+  // The id `git add` would store for it (the same line-ending rules; the clone's pinned config allows no filter programs).
+  try { blob = runTrustedCloneGit(binding, ["hash-object", "--", rel]).trim(); } catch { throw new ShipUnreadable(SHIP_UNREADABLE); }
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(blob)) throw new ShipUnreadable(SHIP_UNREADABLE);
+  return `blob:${blob}`;
+}
+
+type CloneInspection = {
+  changedFiles: string[];
+  worktreeDigest: string;
+  headSha: string;
+  dirty: boolean;
+  /** Every path the working tree changes against HEAD (tracked and untracked, each file listed on its own), with what
+   * it holds: exactly what a snapshot stages and commits. */
+  working: Map<string, string>;
+};
+
+function inspectCloneForShip(binding: TrustedCloneBinding, baseSha: string): CloneInspection {
+  const verified = assertTrustedCloneGit(binding);
+  if (!verified.ok) throw new Error(verified.error);
+  const headSha = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
+  // Untracked files one by one (-uall): a folder's entry would hide every change made inside it.
+  const status = runTrustedCloneGit(binding, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  const committed = nulPaths(runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only", baseSha, "HEAD"]));
+  const tracked = nulPaths(runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-only", "HEAD"]));
+  const untracked = nulPaths(runTrustedCloneGit(binding, ["ls-files", "-z", "--others", "--exclude-standard"]));
+  const working = new Map<string, string>();
+  for (const rel of [...new Set([...tracked, ...untracked])].sort()) working.set(rel, contentOf(binding, verified.realClone, rel));
+  const changedFiles = [...new Set([...committed, ...working.keys()])].sort();
+  const diffRaw = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary", baseSha]);
+  const manifest = createHash("sha256");
+  for (const [rel, content] of working) manifest.update(`${rel}\0${content}\n`);
   const worktreeDigest = createHash("sha256")
-    .update(`${headSha}\n${status}\n${diffRaw}\n${untrackedHash.digest("hex")}`)
+    .update(`${headSha}\n${status}\n${diffRaw}\n${manifest.digest("hex")}`)
     .digest("hex")
     .slice(0, 32);
   return {
     changedFiles,
     worktreeDigest,
     headSha,
-    dirty: status.trim() !== "",
+    dirty: working.size > 0,
+    working,
   };
 }
 
-function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseSha: string): string {
-  const status = runTrustedCloneGit(binding, ["status", "--porcelain"]).trim();
-  if (status !== "") {
-    runTrustedCloneGit(binding, ["add", "-A"]);
+/**
+ * Commit exactly the previewed working-tree changes: the index is reset to HEAD, only the previewed paths are staged
+ * (literal pathspecs), and what was staged is read back and must hold exactly the previewed content before the commit.
+ * Anything else changed since the preview is refused, and the index is put back to HEAD.
+ */
+function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseSha: string, previewed: CloneInspection): string {
+  const verified = assertTrustedCloneGit(binding);
+  if (!verified.ok) throw new Error(verified.error);
+  const head = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
+  if (head !== previewed.headSha) throw new ShipUnreadable(SHIP_CHANGED);
+  if (previewed.working.size > 0) {
+    const paths = [...previewed.working.keys()];
+    runTrustedCloneGit(binding, ["reset", "-q"]);
+    try {
+      // Pathspecs on stdin, NUL-separated and literal: a name never reads as a glob or an option.
+      // A previewed path that no longer matches anything (a new file deleted since) is a change too.
+      try { runTrustedCloneGit(binding, ["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], `${paths.join("\0")}\0`); }
+      catch { throw new ShipUnreadable(SHIP_CHANGED); }
+      // What the index now holds against HEAD, path by path (full ids): exactly the previewed paths and content.
+      const staged = new Map<string, string>();
+      const raw = nulPaths(runTrustedCloneGit(binding, ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--raw", "--no-abbrev", "-z", "HEAD"]));
+      for (let index = 0; index < raw.length; index += 2) {
+        const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ ([0-9a-f]{40,64}) ([A-Z])$/.exec(raw[index]!);
+        const rel = raw[index + 1];
+        if (match === null || rel === undefined) throw new ShipUnreadable(SHIP_CHANGED);
+        staged.set(rel, match[4] === "D" ? "deleted"
+          : match[2] === "120000" ? `link:${createHash("sha256").update(runTrustedCloneGit(binding, ["cat-file", "blob", match[3]!])).digest("hex")}`
+          : `blob:${match[3]}`);
+      }
+      if (staged.size !== previewed.working.size) throw new ShipUnreadable(SHIP_CHANGED);
+      for (const [rel, content] of previewed.working) {
+        if (staged.get(rel) !== content) throw new ShipUnreadable(SHIP_CHANGED);
+      }
+    } catch (error) {
+      try { runTrustedCloneGit(binding, ["reset", "-q"]); } catch { /* the refusal stands either way */ }
+      throw error;
+    }
     const msg = `Direct chat snapshot: ${title.slice(0, 72)}`;
     runTrustedCloneGit(binding, [
       "-c", "user.name=Toolroll Direct Chat",
       "-c", "user.email=direct-chat@toolroll.local",
-      "commit", "-m", msg,
+      "commit", "-q", "--no-verify", "-m", msg,
     ]);
   }
   const sha = runTrustedCloneGit(binding, ["rev-parse", "HEAD"]).trim();
@@ -194,17 +256,28 @@ function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseS
   return sha;
 }
 
+type ShipPreviewInput = {
+  stateRoot: string;
+  owner: string;
+  threadId: string;
+  mode?: DirectChatShipMode | undefined;
+  title?: string | undefined;
+  goal?: string | undefined;
+};
+
 export function previewDirectChatShip(
   store: Store,
-  input: {
-    stateRoot: string;
-    owner: string;
-    threadId: string;
-    mode?: DirectChatShipMode | undefined;
-    title?: string | undefined;
-    goal?: string | undefined;
-  },
+  input: ShipPreviewInput,
 ): { ok: true; preview: DirectChatShipPreview } | { ok: false; status: number; error: string } {
+  const read = previewWithInspection(store, input);
+  return read.ok ? { ok: true, preview: read.preview } : read;
+}
+
+/** The preview, and the inspection it was made from (what a snapshot of these terms commits, path by path). */
+function previewWithInspection(
+  store: Store,
+  input: ShipPreviewInput,
+): { ok: true; preview: DirectChatShipPreview; inspected: CloneInspection } | { ok: false; status: number; error: string } {
   if (!/^[0-9a-f]{32}$/.test(input.threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
   const thread = store.handle
     .prepare("SELECT * FROM direct_chat_thread WHERE id = ? AND owner = ? AND archived_at IS NULL")
@@ -243,6 +316,7 @@ export function previewDirectChatShip(
   try {
     inspected = inspectCloneForShip(binding, baseSha);
   } catch (error) {
+    if (error instanceof ShipUnreadable) return { ok: false, status: 409, error: error.message };
     return { ok: false, status: 500, error: `Could not inspect chat clone: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (inspected.changedFiles.length === 0) {
@@ -293,6 +367,7 @@ export function previewDirectChatShip(
 
   return {
     ok: true,
+    inspected,
     preview: {
       threadId: input.threadId,
       mode,
@@ -335,7 +410,7 @@ export function executeDirectChatShip(
     return { ok: false, status: 403, error: "Direct chat shipping is only available on solo local installs." };
   }
 
-  const previewRes = previewDirectChatShip(store, {
+  const previewRes = previewWithInspection(store, {
     stateRoot: input.stateRoot,
     owner: input.owner,
     threadId: input.threadId,
@@ -344,7 +419,7 @@ export function executeDirectChatShip(
     goal: input.goal,
   });
   if (!previewRes.ok) return previewRes;
-  const { preview } = previewRes;
+  const { preview, inspected } = previewRes;
   if (preview.termsDigest !== input.termsDigest) {
     return {
       ok: false,
@@ -378,8 +453,9 @@ export function executeDirectChatShip(
 
   let candidateSha: string;
   try {
-    candidateSha = freezeSnapshotCommit(binding, preview.title, baseSha);
+    candidateSha = freezeSnapshotCommit(binding, preview.title, baseSha, inspected);
   } catch (error) {
+    if (error instanceof ShipUnreadable) return { ok: false, status: 409, code: "terms_changed", error: error.message };
     return { ok: false, status: 409, error: error instanceof Error ? error.message : String(error) };
   }
 
