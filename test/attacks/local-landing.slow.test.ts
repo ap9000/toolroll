@@ -12,6 +12,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { git, useScratch, write } from "./harness.js";
 import { openStore, type Store } from "../../src/store.js";
@@ -398,7 +399,7 @@ describe("undo: a new commit that reverts exactly what landed", () => {
     const landedAt = at();
     const read = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
     expect(read).toMatchObject({ ok: false, reason: "occupied" });
-    expect(!read.ok && read.message).toContain("revert --no-edit");
+    expect(!read.ok && read.message).toContain(`git -C '${repo}' revert --no-edit`);
     expect(at()).toBe(landedAt);
   });
 });
@@ -449,7 +450,7 @@ describe("checked-out main (everyday-9 A1): in place only when the folder is com
       expect(at(), name).toBe(before);
       expect(plain(join(repo, "a.txt")), name).toBe(files);
       expect(git(repo, "rev-parse", landed.handoff.ref)).toBe(landed.commit);
-      expect(landed.handoff.command).toBe(`git -C ${repo} merge --ff-only ${landed.commit}`);
+      expect(landed.handoff.command).toBe(`git -C '${repo}' merge --ff-only ${landed.commit}`);
       expect(git(repo, "rev-parse", `${landed.commit}^{tree}`)).toBe(git(repo, "rev-parse", `${head}^{tree}`));
       expect(git(repo, "rev-parse", `${landed.commit}^`)).toBe(before);
       // The same yes again names the same commit.
@@ -457,17 +458,38 @@ describe("checked-out main (everyday-9 A1): in place only when the folder is com
     });
   }
 
-  test("main checked out in another folder: a handoff naming that folder; neither folder is touched", async () => {
+  test("main checked out in another folder (an agent's checkout, say): refused with no command to run there; nothing touched", async () => {
     built("t", { "a.txt": "two\n" });
     const other = join(scratch(), "other");
     git(repo, "worktree", "add", "-q", other, "main");
     const before = at();
-    const { landed } = await landNow("t");
-    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
-    expect(landed.handoff.command).toContain(`merge --ff-only ${landed.commit}`);
-    expect(landed.handoff.command).toContain(realpathSync(other));
+    const read = await readLanding(store, "t", access(), NOW, options());
+    expect(read).toMatchObject({ ok: false, reason: "occupied" });
+    expect(!read.ok && read.message).not.toContain("git ");
+    expect(!read.ok && read.message).not.toContain(other);
     expect(at()).toBe(before);
     expect(plain(join(other, "a.txt"))).toBe("one\n");
+  });
+
+  test("a project folder named with a space, $(…), a quote and a newline: the copied command runs exactly git in that folder", async () => {
+    const weird = join(scratch(), "my proj $(touch PWNED) it's\nx");
+    renameSync(repo, weird);
+    repo = weird;
+    store.setVerifyCommand({ repo, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    const proved = verifyApproverByPassword(store, "alex", password, [repo]);
+    if (!proved.ok) throw new Error("alex password");
+    who = proved.who;
+    person = { kind: "person", who };
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, "notes.txt"), "mine\n");
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    expect(landed.handoff.command).not.toContain("\n");
+    // As the shell reads it: printf stands in for git and shows each argument.
+    const shown = execFileSync("/bin/sh", ["-c", landed.handoff.command.replace(/^git /, "printf '%s\\n' ")], { cwd: markers, encoding: "utf8" });
+    expect(shown.split("\n").slice(0, 4)).toEqual(["-C", shownName(weird), "merge", "--ff-only"]);
+    expect(existsSync(join(markers, "PWNED"))).toBe(false);
   });
 
   test("HEAD elsewhere (detached at main's commit): only the branch moves; the folder stays where it was", async () => {

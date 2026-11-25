@@ -286,7 +286,9 @@ async function placeOf(git: Git, project: { repo: string; common: string }, ref:
   if (on.length === 0) return { kind: "free" };
   let repoReal = project.repo;
   try { repoReal = realpathSync(project.repo); } catch { /* compared as recorded */ }
-  if (on.length !== 1 || on[0] !== repoReal) return { kind: "busy", folder: on.find(one => one !== repoReal) ?? on[0]!, why: `${branch} is checked out in another folder` };
+  // Checked out in any folder but the recorded project folder (an agent's checkout, say, whose git config and hooks are
+  // its own): refused with no command at all, so nobody is told to run git there.
+  if (on.length !== 1 || on[0] !== repoReal) return { kind: "problem", reason: "occupied", message: `${branch} is checked out in another folder, so Toolroll won't move it or suggest a command to run there. Switch that folder to another branch, then land it.` };
   const blocked = to === null ? null : await inTheWay(git, project, old ?? now, to);
   const problem = await folderProblem(git, project, ref, old ?? now) ?? (blocked === null ? null : `a file it adds is already there, not tracked (${blocked})`);
   return problem === null ? { kind: "here" } : { kind: "busy", folder: project.repo, why: `your project folder has ${branch} checked out and ${problem}` };
@@ -429,7 +431,7 @@ async function planFor(git: Git, project: { repo: string; common: string }, dest
   const place = await placeOf(git, project, ref, old, fixed.candidate ?? fixed.reverts!.old);
   if (place.kind === "problem") return refuse(place.reason, place.message);
   // An undo over a busy checkout: the person reverts it there (Toolroll touches no checkout with changes).
-  if (place.kind === "busy" && fixed.kind === "undo") return refuse("occupied", `${place.why[0]!.toUpperCase()}${place.why.slice(1)}, so Toolroll won't touch its files. To do it yourself there: git -C ${place.folder} revert --no-edit ${fixed.reverts!.old}..${fixed.reverts!.landed}`);
+  if (place.kind === "busy" && fixed.kind === "undo") return refuse("occupied", `${place.why[0]!.toUpperCase()}${place.why.slice(1)}, so Toolroll won't touch its files. To do it yourself there: ${gitCommand(project.repo, ["revert", "--no-edit", `${oidOrThrow(fixed.reverts!.old)}..${oidOrThrow(fixed.reverts!.landed)}`])}`);
   const mode = place.kind === "free" ? "ref" as const : place.kind === "here" ? "files" as const : "handoff" as const;
   const plan: Omit<LandingPlan, "key"> = { ...fixed, squash, repo: project.repo, ref, branch, old, mode, ...(place.kind === "busy" ? { handoff: { folder: place.folder, why: place.why } } : {}), recorded: destination.recorded };
   return { ok: true, plan: { ...plan, key: keyOf({ v: 1, ...plan, common: project.common }) } };
@@ -562,7 +564,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
       const who = standing(store, authority, repo);
       if (!who.ok) return who;
       return { ok: true, replayed: true, kind: "land", ref: handedOff.ref, branch: handedOff.ref.slice("refs/heads/".length), commit: handedOff.commit, old: handedOff.old, mode: "handoff", warning: null,
-        handoff: { ref: handedOff.keep, command: handoffCommand(handedOff.folder, handedOff.commit) } };
+        handoff: { ref: handedOff.keep, command: handoffCommand(repo, handedOff.commit) } };
     }
     await settleUnfinished(store, repo, now, options);
     const read = await readLanding(store, taskId, access, now, { ...options, ...(input.into === undefined ? {} : { into: input.into }), ...(input.undo === true ? { undo: true } : {}) });
@@ -618,7 +620,7 @@ export async function land(store: Store, taskId: string, input: { key: string; i
       const kept = await git(["update-ref", "--no-deref", "-m", `toolroll: landing commit for ${plan.taskId}`, keep, commit]);
       if (kept.code !== 0) return refuse("git", "Toolroll made the landing commit but couldn't keep it. Look again, then land it.");
       return { ok: true, replayed: false, kind: "land", ref: plan.ref, branch: plan.branch, commit, old: plan.old, mode: "handoff", warning: null,
-        handoff: { ref: keep, command: handoffCommand(place.folder, commit) } };
+        handoff: { ref: keep, command: handoffCommand(project.repo, commit) } };
     }
     // The intent, with everything re-read in one transaction (the durable lock: one unsettled intent per project).
     let intentId: number;
@@ -676,9 +678,21 @@ export async function land(store: Store, taskId: string, input: { key: string; i
   });
 }
 
-/** The exact command that brings a handed-off landing commit onto the branch checked out in `folder`. */
+/** A full commit id, or a throw: only ever a 40-hex OID goes into a command a person copies. */
+function oidOrThrow(oid: string): string {
+  if (!OID.test(oid)) throw new Error("not a commit id");
+  return oid;
+}
+/** A git command a person can copy and paste, run in the recorded project folder: the folder POSIX single-quoted
+ * (after the visible-escape display, so it can't spoof the screen either), every other argument fixed words or a
+ * validated commit id. */
+export function gitCommand(folder: string, args: readonly string[]): string {
+  const quoted = `'${shownName(folder).replace(/'/g, "'\\''")}'`;
+  return ["git", "-C", quoted, ...args].join(" ");
+}
+/** The exact command that brings a handed-off landing commit onto the branch the project folder has checked out. */
 function handoffCommand(folder: string, commit: string): string {
-  return `git -C ${shownName(folder)} merge --ff-only ${commit}`;
+  return gitCommand(folder, ["merge", "--ff-only", oidOrThrow(commit)]);
 }
 
 type Handoff = { id: number; task: string; key: string; ref: string; old: string; commit: string; keep: string; folder: string; candidate: string };
