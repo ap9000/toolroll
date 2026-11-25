@@ -21,7 +21,8 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, recognisedOnBranch, shownName, type LandAuthority } from "../../src/local-landing.js";
+import { readGit } from "../../src/task-base.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
 import type { Runner } from "../../src/backend.js";
@@ -517,6 +518,45 @@ describe("checked-out main (everyday-9 A1): in place only when the folder is com
     expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options({ git: appears }))).toMatchObject({ ok: false, reason: "dirty" });
     expect(at()).toBe(before);
     expect(plain(join(repo, "b.txt"))).toBe("my secret\n");
+  });
+});
+
+describe("already on main (everyday-9 A3): recognised for display, never granting anything", () => {
+  test("merged by hand: the page says On main, Land offers nothing; Toolroll records no landing", async () => {
+    const { head } = built("t", { "a.txt": "two\n" });
+    git(repo, "update-ref", "refs/heads/main", head);
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull(); // nothing recorded and the folder is on work
+    git(repo, "checkout", "-q", "main");
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
+    expect(landingOf(store, "t")).toBeNull();
+  });
+
+  test("a handed-off landing commit brought in by the person: recognised once main contains it", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, "notes.txt"), "mine\n");
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    const head = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)!.receipt!.head;
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBeNull();
+    git(repo, "merge", "-q", "--ff-only", landed.commit);
+    expect(recognisedOnBranch(store, repo, "t", head, readGit)).toBe("On main");
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "nothing" });
+  });
+
+  test("recognition never grants acceptance: work not accepted stays not accepted, and Land still refuses it", async () => {
+    const { head } = built("t", { "a.txt": "two\n" }, { complete: false });
+    git(repo, "update-ref", "refs/heads/main", head);
+    git(repo, "checkout", "-q", "main");
+    const before = assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)?.state;
+    expect(before).not.toBe("complete");
+    // A build-writable branch containing the commit changes nothing about the task.
+    recognisedOnBranch(store, repo, "t", head, readGit);
+    expect(assignmentOf(store, "t", NOW, { principal: "operator", repos: [repo] }, root)?.state).toBe(before);
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: false, reason: "not-complete" });
+    expect(await land(store, "t", { key: "0".repeat(16), into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: false });
+    expect(landingOf(store, "t")).toBeNull();
   });
 });
 

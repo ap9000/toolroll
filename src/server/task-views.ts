@@ -1,5 +1,5 @@
 import { localOwnerRefusal } from "../local-owner.js";
-import { landedWords, landingOf, publishesThroughPullRequests } from "../local-landing.js";
+import { landedWords, landingOf, publishesThroughPullRequests, recognisedOnBranch } from "../local-landing.js";
 import type { TaskLanding } from "./render-tasks.js";
 import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
@@ -771,9 +771,14 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (repo === null || publishesThroughPullRequests(runtime.store, repo)) return null;
     const rootId = runtime.familyOf(taskId)?.root.id ?? taskId;
     const record = landingOf(runtime.store, rootId);
-    const complete = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot)?.state === "complete";
+    const assignment = assignmentOf(runtime.store, taskId, runtime.clock(), runtime.workAccess(), runtime.evidenceRoot);
+    const complete = assignment?.state === "complete";
     if (!complete && record === null) return null;
     const person = who.via === "cookie" && who.role === "approver";
+    // Already on the branch though Toolroll didn't land it (merged by hand, or its handed-off commit brought in): said,
+    // with no Land. Display only (everyday-9 A3): it grants nothing.
+    const onBranch = record === null || record.undone ? recognisedOnBranch(runtime.store, repo, rootId, complete ? assignment?.receipt?.head ?? null : null, baseGit) : null;
+    if (onBranch !== null) return { taskId: rootId, landed: onBranch, canLand: false, canUndo: false };
     return { taskId: rootId, landed: landedWords(runtime.store, rootId), canLand: person && complete && (record === null || record.undone), canUndo: person && record !== null && !record.undone };
   }
 

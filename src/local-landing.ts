@@ -344,7 +344,8 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   const run = store.getRun(receipt.runId);
   const base = run === null || run.branch === null ? null : wholeChangeBaseOf(store, run.taskRef, run.branch) ?? run.baseRevision;
   return planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, candidate, checks,
-    bindings: checkBindingsOf(store, project.repo) }, { base, message: squashMessage(store.getTask(receipt.taskId)?.title ?? null, receipt.taskId) });
+    bindings: checkBindingsOf(store, project.repo) }, { base, message: squashMessage(store.getTask(receipt.taskId)?.title ?? null, receipt.taskId),
+    handedOff: handoffsOf(store, project.repo, assignment.rootId).filter(one => one.candidate === candidate).map(one => one.commit) });
 }
 
 async function destinationOf(store: Store, project: { repo: string; common: string }, git: Git, into: string | undefined): Promise<{ ok: true; ref: string; recorded: boolean } | { ok: false; reason: LandRefusal; message: string }> {
@@ -394,7 +395,7 @@ async function changesOf(git: Git, old: string, candidate: string): Promise<Pick
 
 async function planFor(git: Git, project: { repo: string; common: string }, destination: { ref: string; recorded: boolean },
   fixed: Pick<LandingPlan, "kind" | "taskId" | "rootId" | "runId" | "receipt" | "candidate" | "checks" | "reverts" | "bindings">,
-  squashing: { base: string | null; message: string } | null = null): Promise<LandingRead> {
+  squashing: { base: string | null; message: string; handedOff: readonly string[] } | null = null): Promise<LandingRead> {
   const { ref } = destination;
   const branch = ref.slice("refs/heads/".length);
   const read = await git(["rev-parse", "--verify", "-q", `${ref}^{commit}`]);
@@ -404,6 +405,11 @@ async function planFor(git: Git, project: { repo: string; common: string }, dest
     if (old === fixed.candidate) return refuse("nothing", ALREADY_MSG(ref, old));
     const type = await git(["cat-file", "-t", fixed.candidate]);
     if (type.code !== 0 || type.stdout.trim() !== "commit") return refuse("git", `This result's commit ${short(fixed.candidate)} is no longer in the project.`);
+    // Already there (everyday-9 A3): the person merged it themselves, or brought in the landing commit Toolroll handed
+    // them. Nothing more lands.
+    for (const landed of [fixed.candidate, ...(squashing?.handedOff ?? [])]) {
+      if ((await git(["merge-base", "--is-ancestor", landed, old])).code === 0) return refuse("nothing", ALREADY_MSG(ref, landed));
+    }
     const ancestor = await git(["merge-base", "--is-ancestor", old, fixed.candidate]);
     if (ancestor.code === 1) {
       return refuse("moved", `${branch} moved on since this work started (it's at ${short(old)} now): bring this task up to date first. `
@@ -746,3 +752,19 @@ export function landedWords(store: Store, rootId: string): string | null {
     : `Landed on ${landed.intent.ref.replace(/^refs\/heads\//, "")} (${short(landed.intent.commit)}).`;
 }
 
+/**
+ * Whether a completed task's work is already on its project's branch though Toolroll didn't land it (everyday-9 A3): the
+ * branch contains the result's commit (the person merged it themselves) or a landing commit Toolroll handed them. For
+ * display only ("On main"): it never accepts, completes or lands anything, and nothing reads it for a decision. The
+ * branch is the recorded destination, else the one the project folder stands on; `read` is the page's bounded git read
+ * (null when git can't say: then nothing is claimed).
+ */
+export function recognisedOnBranch(store: Store, repo: string, rootId: string, candidate: string | null,
+  read: (cwd: string, args: readonly string[]) => string | null): string | null {
+  if (candidate === null || !OID.test(candidate)) return null;
+  const recorded = recordedDestination(store, repo)?.ref ?? null;
+  const ref = recorded ?? (() => { const head = read(repo, ["symbolic-ref", "-q", "HEAD"]); return head !== null && head.startsWith("refs/heads/") ? head : null; })();
+  if (ref === null || !landableBranch(ref.slice("refs/heads/".length))) return null;
+  const commits = [candidate, ...handoffsOf(store, repo, rootId).filter(one => one.candidate === candidate && one.ref === ref).map(one => one.commit)];
+  return commits.some(commit => read(repo, ["merge-base", "--is-ancestor", commit, ref]) !== null) ? `On ${ref.slice("refs/heads/".length)}` : null;
+}
