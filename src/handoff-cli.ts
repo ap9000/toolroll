@@ -3,13 +3,13 @@
  * Pull a central task's changes into an isolated local git worktree (never touching your dirty working tree),
  * then upload a verified, bounded patch candidate back to the central task.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { centralProfile, serviceOrigin, type ConnectOptions } from "./connect-cli.js";
 import { MAX_HANDOFF_PATCH_BYTES, validateHandoffPatch } from "./local-handoff.js";
+import { refusal, teardownGit } from "./teardown-git.js";
 
 const HELP = `toolroll handoff pull <task> [--repo <local-dir>] [--profile <name>]
   Open a central task's code in an isolated local git worktree (never touches your dirty checkout).
@@ -124,28 +124,53 @@ function httpJson<T>(
   });
 }
 
-function gitRun(cwd: string, args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 }).trim();
+/**
+ * Every git command here runs through the plane's hardened git (teardown-git.ts teardownGit): a view of the
+ * repository whose config is read once and refused when it includes a file or names a command (a filter, an fsmonitor,
+ * an external diff), no hooks, no system or global config, an allowlisted environment. A handoff worktree's content
+ * comes from the central server, and its repository may have been written by anyone with access to it, so nothing
+ * either names runs here.
+ */
+const handoffGit = teardownGit();
+
+/** The repository names something that could run a program, so no git ran: never read as "not a repository". */
+class GitRefused extends Error {}
+
+/** git's answer, untrimmed; throws with the reason (a refusal, or git's own words) when it didn't succeed. */
+async function gitRaw(cwd: string, args: string[]): Promise<string> {
+  const result = await handoffGit(cwd, args);
+  if (result.code === 0) return result.stdout;
+  const refused = refusal(result);
+  if (refused !== null) throw new GitRefused(`Toolroll won't run git in this repository: ${refused}.`);
+  const said = result.stderr.trim().split("\n")[0] ?? "";
+  throw new Error(said === "" ? `git ${args[0] ?? ""} failed` : said);
 }
 
-function gitDirOf(cwd: string): string {
-  const raw = gitRun(cwd, ["rev-parse", "--git-dir"]);
+async function gitRun(cwd: string, args: string[]): Promise<string> {
+  return (await gitRaw(cwd, args)).trim();
+}
+
+/** A diff for a patch: never an external diff program or a text conversion, whatever the repository says. */
+async function gitDiff(cwd: string, base: string): Promise<string> {
+  const patch = await gitRaw(cwd, ["diff", "--no-ext-diff", "--no-textconv", base]);
+  if (Buffer.byteLength(patch, "utf8") > MAX_HANDOFF_PATCH_BYTES + 1024 * 1024) throw new Error("the local diff is too large to hand off");
+  return patch;
+}
+
+async function gitDirOf(cwd: string): Promise<string> {
+  const raw = await gitRun(cwd, ["rev-parse", "--git-dir"]);
   return raw.startsWith("/") ? raw : join(cwd, raw);
 }
 
-function gitCommonDirOf(cwd: string): string {
-  const raw = gitRun(cwd, ["rev-parse", "--git-common-dir"]);
+async function gitCommonDirOf(cwd: string): Promise<string> {
+  const raw = await gitRun(cwd, ["rev-parse", "--git-common-dir"]);
   return raw.startsWith("/") ? raw : join(cwd, raw);
 }
 
-function commitExistsLocally(repo: string, sha: string | null | undefined): string | null {
+async function commitExistsLocally(repo: string, sha: string | null | undefined): Promise<string | null> {
   if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return null;
-  try {
-    gitRun(repo, ["cat-file", "-e", `${sha}^{commit}`]);
-    return sha;
-  } catch {
-    return null;
-  }
+  const result = await handoffGit(repo, ["cat-file", "-e", `${sha}^{commit}`]);
+  return result.code === 0 ? sha : null;
 }
 
 /**
@@ -155,14 +180,18 @@ function commitExistsLocally(repo: string, sha: string | null | undefined): stri
  * materializes a clean local synthetic base commit so subsequent `git diff <localHead>`
  * produces the exact delta against the central `baseCommit`.
  */
-function syncWorktreeToCentralBase(
+async function syncWorktreeToCentralBase(
   worktree: string,
   info: HandoffPullResponse,
-): { ok: true; localHead: string; centralBase: string } | { ok: false; error: string } {
-  const direct = commitExistsLocally(worktree, info.baseCommit);
+): Promise<{ ok: true; localHead: string; centralBase: string } | { ok: false; error: string }> {
+  const direct = await commitExistsLocally(worktree, info.baseCommit);
   if (direct !== null) {
-    gitRun(worktree, ["reset", "--hard", direct]);
-    gitRun(worktree, ["clean", "-fd"]);
+    try {
+      await gitRun(worktree, ["reset", "--hard", direct]);
+      await gitRun(worktree, ["clean", "-fd"]);
+    } catch (error) {
+      return { ok: false, error: `Could not reset the worktree to ${direct.slice(0, 12)}: ${error instanceof Error ? error.message : String(error)}` };
+    }
     return { ok: true, localHead: direct, centralBase: direct };
   }
   // Build the shortest contiguous patch chain starting from any commit already present locally.
@@ -173,7 +202,7 @@ function syncWorktreeToCentralBase(
       : [];
   let startIndex = -1;
   for (let i = chain.length - 1; i >= 0; i -= 1) {
-    if (commitExistsLocally(worktree, chain[i]!.parentCommit) !== null) {
+    if (await commitExistsLocally(worktree, chain[i]!.parentCommit) !== null) {
       startIndex = i;
       break;
     }
@@ -187,21 +216,26 @@ function syncWorktreeToCentralBase(
       }
     }
     const anchor = steps[0]!.parentCommit;
-    gitRun(worktree, ["reset", "--hard", anchor]);
-    gitRun(worktree, ["clean", "-fd"]);
-    const patchFile = join(gitDirOf(worktree), "central-base.patch");
+    let patchFile: string;
+    try {
+      await gitRun(worktree, ["reset", "--hard", anchor]);
+      await gitRun(worktree, ["clean", "-fd"]);
+      patchFile = join(await gitDirOf(worktree), "central-base.patch");
+    } catch (error) {
+      return { ok: false, error: `Could not reset the worktree to ${anchor.slice(0, 12)}: ${error instanceof Error ? error.message : String(error)}` };
+    }
     try {
       for (const step of steps) {
         writeFileSync(patchFile, step.patch, { mode: 0o600 });
-        execFileSync("git", ["-C", worktree, "apply", "--index", "--", patchFile], { stdio: "pipe" });
+        await gitRun(worktree, ["apply", "--index", "--", patchFile]);
       }
-      gitRun(worktree, [
+      await gitRun(worktree, [
         "-c", "user.name=Toolroll Handoff",
         "-c", "user.email=toolroll@local",
         "commit", "--no-verify", "--no-gpg-sign",
         "-m", `Toolroll central base ${(info.baseCommit ?? anchor).slice(0, 12)}`,
       ]);
-      const syntheticHead = gitRun(worktree, ["rev-parse", "HEAD"]);
+      const syntheticHead = await gitRun(worktree, ["rev-parse", "HEAD"]);
       return { ok: true, localHead: syntheticHead, centralBase: info.baseCommit ?? syntheticHead };
     } catch (error) {
       return {
@@ -224,6 +258,18 @@ export async function maybeRunHandoffCommand(
   options: ConnectOptions & { cwd?: string } = {},
 ): Promise<number | null> {
   if (argv[0] !== "handoff") return null;
+  try { return await runHandoff(argv, write, options); } catch (error) {
+    // A git command that failed or was refused (teardownGit): said plainly, nothing more run.
+    write(`Stopped: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
+async function runHandoff(
+  argv: readonly string[],
+  write: (line: string) => void,
+  options: ConnectOptions & { cwd?: string },
+): Promise<number | null> {
   const sub = argv[1];
   if (sub === undefined || sub === "--help" || sub === "-h" || argv.includes("--help")) {
     write(HELP);
@@ -261,13 +307,14 @@ export async function maybeRunHandoffCommand(
   if (sub === "clean") {
     const targetDir = repoFlag ?? cwd;
     let repoRoot: string;
-    try { repoRoot = realpathSync(gitRun(targetDir, ["rev-parse", "--show-toplevel"])); } catch {
+    try { repoRoot = realpathSync(await gitRun(targetDir, ["rev-parse", "--show-toplevel"])); } catch (error) {
+      if (error instanceof GitRefused) throw error;
       write("Run this inside your local repository or handoff worktree (or pass --repo <dir>).");
       return 2;
     }
-    const common = gitCommonDirOf(repoRoot);
+    const common = await gitCommonDirOf(repoRoot);
     const poolDir = join(common, "toolroll-handoff");
-    const hereMetaPath = join(gitDirOf(repoRoot), "toolroll-handoff.json");
+    const hereMetaPath = join(await gitDirOf(repoRoot), "toolroll-handoff.json");
     let worktree: string;
     let taskId: string | undefined = positionals[0];
     if (existsSync(hereMetaPath)) {
@@ -291,16 +338,16 @@ export async function maybeRunHandoffCommand(
       write("Refused: target directory is not an isolated Toolroll handoff worktree.");
       return 1;
     }
-    const wtMetaPath = join(gitDirOf(wtReal), "toolroll-handoff.json");
+    const wtMetaPath = join(await gitDirOf(wtReal), "toolroll-handoff.json");
     let meta: HandoffMeta | null = null;
     if (existsSync(wtMetaPath)) {
       try { meta = JSON.parse(readFileSync(wtMetaPath, "utf8")) as HandoffMeta; } catch { meta = null; }
     }
-    const diffBase = (meta?.localHead && commitExistsLocally(wtReal, meta.localHead))
-      ?? (meta?.baseCommit && commitExistsLocally(wtReal, meta.baseCommit))
-      ?? gitRun(wtReal, ["rev-parse", "HEAD"]);
-    const dirtyDiff = execFileSync("git", ["-C", wtReal, "diff", diffBase], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
-    const untracked = gitRun(wtReal, ["status", "--porcelain"]);
+    const diffBase = (meta?.localHead && await commitExistsLocally(wtReal, meta.localHead))
+      ?? (meta?.baseCommit && await commitExistsLocally(wtReal, meta.baseCommit))
+      ?? await gitRun(wtReal, ["rev-parse", "HEAD"]);
+    const dirtyDiff = await gitDiff(wtReal, diffBase);
+    const untracked = await gitRun(wtReal, ["status", "--porcelain"]);
     if (!forceClean && (dirtyDiff.trim() !== "" || untracked.trim() !== "")) {
       write("Refused: handoff worktree has local changes. Push them first (`toolroll handoff push`) or re-run with `--force`.");
       return 1;
@@ -308,9 +355,9 @@ export async function maybeRunHandoffCommand(
     const resolvedTask = taskId ?? meta?.taskId ?? "";
     const safeTask = resolvedTask.replace(/[^A-Za-z0-9_.-]/g, "-");
     const mainWorktree = realpathSync(join(common, ".."));
-    gitRun(mainWorktree, ["worktree", "remove", "--force", "--", wtReal]);
+    await gitRun(mainWorktree, ["worktree", "remove", "--force", "--", wtReal]);
     if (safeTask !== "") {
-      try { gitRun(mainWorktree, ["branch", "-D", "--", `toolroll/handoff/${safeTask}`]); } catch { /* branch already gone */ }
+      try { await gitRun(mainWorktree, ["branch", "-D", "--", `toolroll/handoff/${safeTask}`]); } catch { /* branch already gone */ }
     }
     write(`Removed isolated handoff worktree for ${resolvedTask || wtReal} (your main checkout was untouched).`);
     return 0;
@@ -330,7 +377,8 @@ export async function maybeRunHandoffCommand(
     const taskId = positionals[0];
     if (!taskId) { write("Name a task id: toolroll handoff pull <task>"); return 2; }
     let localRepo: string;
-    try { localRepo = realpathSync(gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch {
+    try { localRepo = realpathSync(await gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch (error) {
+      if (error instanceof GitRefused) throw error;
       write("Run this inside a local Git checkout of the project, or pass --repo <local-dir>.");
       return 2;
     }
@@ -350,7 +398,7 @@ export async function maybeRunHandoffCommand(
       write("Refused: central server workspace identity does not match your saved profile.");
       return 1;
     }
-    const common = gitCommonDirOf(localRepo);
+    const common = await gitCommonDirOf(localRepo);
     const poolDir = join(common, "toolroll-handoff");
     mkdirSync(poolDir, { recursive: true, mode: 0o700 });
     const safeTask = taskId.replace(/[^A-Za-z0-9_.-]/g, "-");
@@ -359,29 +407,29 @@ export async function maybeRunHandoffCommand(
       write(`Handoff worktree already exists:\n  cd ${worktree}`);
       return 0;
     }
-    const startRef = commitExistsLocally(localRepo, info.baseCommit)
-      ?? commitExistsLocally(localRepo, info.parentCommit)
+    const startRef = await commitExistsLocally(localRepo, info.baseCommit)
+      ?? await commitExistsLocally(localRepo, info.parentCommit)
       ?? "HEAD";
     const branch = `toolroll/handoff/${safeTask}`;
     try {
-      gitRun(localRepo, ["worktree", "add", "-B", branch, "--", worktree, startRef]);
+      await gitRun(localRepo, ["worktree", "add", "-B", branch, "--", worktree, startRef]);
     } catch (error) {
       write(`Could not create isolated handoff worktree: ${error instanceof Error ? error.message : String(error)}`);
       return 1;
     }
-    let localHead = gitRun(worktree, ["rev-parse", "HEAD"]);
-    if (info.baseCommit && commitExistsLocally(worktree, info.baseCommit) === null && info.patch && info.patch.trim() !== "") {
-      const synced = syncWorktreeToCentralBase(worktree, info);
+    let localHead = await gitRun(worktree, ["rev-parse", "HEAD"]);
+    if (info.baseCommit && await commitExistsLocally(worktree, info.baseCommit) === null && info.patch && info.patch.trim() !== "") {
+      const synced = await syncWorktreeToCentralBase(worktree, info);
       if (synced.ok) {
         localHead = synced.localHead;
       } else {
         write(`Created isolated worktree at ${worktree}, but central patch could not auto-apply cleanly: ${synced.error}`);
       }
     } else if (!info.baseCommit && info.patch && info.patch.trim() !== "") {
-      const patchFile = join(gitDirOf(worktree), "central-initial.patch");
+      const patchFile = join(await gitDirOf(worktree), "central-initial.patch");
       writeFileSync(patchFile, info.patch, { mode: 0o600 });
       try {
-        execFileSync("git", ["-C", worktree, "apply", "--3way", "--", patchFile], { stdio: "pipe" });
+        await gitRun(worktree, ["apply", "--3way", "--", patchFile]);
       } catch {
         write(`Created isolated worktree at ${worktree}, but central patch could not auto-apply cleanly (base ${startRef}).`);
       } finally {
@@ -397,7 +445,7 @@ export async function maybeRunHandoffCommand(
       origin: profile.origin,
       profile: profile.name,
     };
-    writeFileSync(join(gitDirOf(worktree), "toolroll-handoff.json"), JSON.stringify(meta, null, 2), { mode: 0o600 });
+    writeFileSync(join(await gitDirOf(worktree), "toolroll-handoff.json"), JSON.stringify(meta, null, 2), { mode: 0o600 });
     write(`Opened task ${meta.taskId} (${info.title ?? "task"}) in an isolated local worktree (your main checkout was untouched):`);
     write(`  cd ${worktree}`);
     write(`When ready, push your changes back with:`);
@@ -407,11 +455,12 @@ export async function maybeRunHandoffCommand(
 
   if (sub === "push") {
     let worktreeRoot: string;
-    try { worktreeRoot = realpathSync(gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch {
+    try { worktreeRoot = realpathSync(await gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch (error) {
+      if (error instanceof GitRefused) throw error;
       write("Run this inside your local handoff worktree (or pass --repo <worktree>).");
       return 2;
     }
-    const metaPath = join(gitDirOf(worktreeRoot), "toolroll-handoff.json");
+    const metaPath = join(await gitDirOf(worktreeRoot), "toolroll-handoff.json");
     let meta: HandoffMeta | null = null;
     if (existsSync(metaPath)) {
       try { meta = JSON.parse(readFileSync(metaPath, "utf8")) as HandoffMeta; } catch { meta = null; }
@@ -425,10 +474,10 @@ export async function maybeRunHandoffCommand(
       write("Refused: this handoff worktree belongs to a different central workspace than your active profile.");
       return 1;
     }
-    const baseCommit = meta?.baseCommit ?? gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
-    const diffBase = (meta?.localHead && commitExistsLocally(worktreeRoot, meta.localHead)) ?? baseCommit;
+    const baseCommit = meta?.baseCommit ?? await gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
+    const diffBase = (meta?.localHead && await commitExistsLocally(worktreeRoot, meta.localHead)) ?? baseCommit;
     // Include both committed work on the handoff branch and unstaged edits against diffBase.
-    const patch = execFileSync("git", ["-C", worktreeRoot, "diff", diffBase], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
+    const patch = await gitDiff(worktreeRoot, diffBase);
     const checked = validateHandoffPatch(patch);
     if (!checked.ok) {
       write(`Cannot upload local diff: ${checked.error}`);
@@ -455,11 +504,12 @@ export async function maybeRunHandoffCommand(
 
   if (sub === "rebase") {
     let worktreeRoot: string;
-    try { worktreeRoot = realpathSync(gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch {
+    try { worktreeRoot = realpathSync(await gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch (error) {
+      if (error instanceof GitRefused) throw error;
       write("Run this inside your local handoff worktree (or pass --repo <worktree>).");
       return 2;
     }
-    const gdir = gitDirOf(worktreeRoot);
+    const gdir = await gitDirOf(worktreeRoot);
     const metaPath = join(gdir, "toolroll-handoff.json");
     let meta: HandoffMeta | null = null;
     if (existsSync(metaPath)) {
@@ -474,12 +524,9 @@ export async function maybeRunHandoffCommand(
       write("Refused: this handoff worktree belongs to a different central workspace than your active profile.");
       return 1;
     }
-    const oldBase = meta?.baseCommit ?? gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
-    const oldDiffBase = (meta?.localHead && commitExistsLocally(worktreeRoot, meta.localHead)) ?? oldBase;
-    const localPatch = execFileSync("git", ["-C", worktreeRoot, "diff", oldDiffBase], {
-      encoding: "utf8",
-      maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024,
-    });
+    const oldBase = meta?.baseCommit ?? await gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
+    const oldDiffBase = (meta?.localHead && await commitExistsLocally(worktreeRoot, meta.localHead)) ?? oldBase;
+    const localPatch = await gitDiff(worktreeRoot, oldDiffBase);
     const hasLocalChanges = localPatch.trim() !== "";
     if (hasLocalChanges) {
       const checkedLocal = validateHandoffPatch(localPatch);
@@ -522,7 +569,7 @@ export async function maybeRunHandoffCommand(
     const backupPath = join(gdir, "rebase-backup.patch");
     if (hasLocalChanges) writeFileSync(backupPath, localPatch, { mode: 0o600 });
 
-    const synced = syncWorktreeToCentralBase(worktreeRoot, info);
+    const synced = await syncWorktreeToCentralBase(worktreeRoot, info);
     if (!synced.ok) {
       write(`Rebase paused (your worktree was not modified; backup saved at ${backupPath}): ${synced.error}`);
       return 1;
@@ -541,7 +588,7 @@ export async function maybeRunHandoffCommand(
 
     if (hasLocalChanges) {
       try {
-        execFileSync("git", ["-C", worktreeRoot, "apply", "--3way", "--", backupPath], { stdio: "pipe" });
+        await gitRun(worktreeRoot, ["apply", "--3way", "--", backupPath]);
       } catch {
         write(`Rebased onto central head ${synced.centralBase.slice(0, 12)}, but your local changes hit merge conflicts.`);
         write(`Your original patch is safely backed up at: ${backupPath}`);
@@ -570,11 +617,12 @@ export async function maybeRunHandoffCommand(
 
   if (sub === "status") {
     let worktreeRoot: string;
-    try { worktreeRoot = realpathSync(gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch {
+    try { worktreeRoot = realpathSync(await gitRun(repoFlag ?? cwd, ["rev-parse", "--show-toplevel"])); } catch (error) {
+      if (error instanceof GitRefused) throw error;
       write("Run this inside your local handoff worktree (or pass --repo <worktree>).");
       return 2;
     }
-    const metaPath = join(gitDirOf(worktreeRoot), "toolroll-handoff.json");
+    const metaPath = join(await gitDirOf(worktreeRoot), "toolroll-handoff.json");
     let meta: HandoffMeta | null = null;
     if (existsSync(metaPath)) {
       try { meta = JSON.parse(readFileSync(metaPath, "utf8")) as HandoffMeta; } catch { meta = null; }
@@ -584,9 +632,9 @@ export async function maybeRunHandoffCommand(
       write("Not inside a handoff worktree. Name the task id: toolroll handoff status <task>");
       return 2;
     }
-    const baseCommit = meta?.baseCommit ?? gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
-    const diffBase = (meta?.localHead && commitExistsLocally(worktreeRoot, meta.localHead)) ?? baseCommit;
-    const localPatch = execFileSync("git", ["-C", worktreeRoot, "diff", diffBase], { encoding: "utf8", maxBuffer: MAX_HANDOFF_PATCH_BYTES + 1024 * 1024 });
+    const baseCommit = meta?.baseCommit ?? await gitRun(worktreeRoot, ["rev-parse", "HEAD"]);
+    const diffBase = (meta?.localHead && await commitExistsLocally(worktreeRoot, meta.localHead)) ?? baseCommit;
+    const localPatch = await gitDiff(worktreeRoot, diffBase);
     const checked = localPatch.trim() === "" ? null : validateHandoffPatch(localPatch);
 
     const reply = await httpJson<HandoffCandidatesListResponse>(
