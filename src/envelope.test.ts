@@ -160,6 +160,7 @@ describe("the machine envelope", () => {
       coordinator: ["list", "--json"],
       chat: ["--json"],
       proposals: ["list", "--json"],
+      request: ["list", "--json"],
       card: ["tasks", "--json"],
       finding: ["list", "--json"],
       captures: ["list", "--json"],

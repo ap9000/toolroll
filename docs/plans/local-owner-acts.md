@@ -396,3 +396,45 @@ has a password, Ship takes a password typed now (`toolroll thread ship`, a hidde
   carries its candidate by construction, so the candidate alone doesn't make it a deploy gate; signed release terms, a
   release check or a release's own task still refuse it.
 
+
+## Exception (owner's decisions, 2026-11-22): change a task's models from the Mac app
+
+The laptop's local owner may change one task's planner or builder with no password (docs/plans/mac-change-models.md,
+"Revised after critic review"). Settings → Models (`change-models`) is unchanged and separate: this changes no default.
+
+- **The act.** `change-task-agents` (local-owner.ts; not a password act), on `task.act.route` only, and only on the local
+  owner's own road (tasks.ts localOwnerRoute): `phase` plan or build, `agent` one of the role's configured agents,
+  `sawDigest` the scope digest the picker read, `when` now, next-run or restart. A size, risky flag, cleared role or the
+  older split fields are refused in words. A password session's route edit is unchanged.
+- **The writer** (local-owner-acts.ts localOwnerChangeAgents), one transaction: `localActNow("change-task-agents")`, the
+  owner's reach into the project, not put away or cancelled, the work rule (scope.ts localWorkEligible `agents`: asking
+  for a plan's rule), the digest picked against, a configured agent, then editTaskRoute.
+- **The approval.** On an approved task the pick is the owner's yes to the new agent only: approve() under this act seals
+  only the owner's own person-road yes that the pick just staled, and only when nothing but that agent (the builder with
+  its repair twin) changed (scope.ts agentChangeSealAllowed over agent-change-check.ts). A planner change with a drafted
+  plan asks for a new plan and waits for its yes; drift, or someone else's yes, waits for a yes. A refused carry-over
+  rolls the whole edit back. The author record is written after the seal; each change has a ledger row.
+- **A running task.** `now` is refused ("This task is running right now."); `next-run` keeps the pick
+  (pending_agent_change, v180); `restart` also asks the run to stop. The worker applies it once the claim is gone, as the
+  owner bound to the local-mode and account generations of the pick (still standing), through the same writer; a
+  restart then lifts its stop's hold. A refusal keeps the row with its words and (restart) the hold.
+
+## Exception (owner's decision, 2026-11-22): pause, resume and run now of an automation from the Mac app
+
+The laptop's local owner may pause, resume and run now a flow's existing trigger with no password, from the Mac app's
+Automations screen (docs/plans/mac-automations.md, "Revised after critic review"). Surfacing existing automations is
+Work-screen work under the feature freeze (AGENTS.md); nothing here creates, edits or widens a flow.
+
+- **The acts.** `trigger-pause`, `trigger-resume` and `trigger-run` (local-owner.ts; not password acts), on
+  `flow.trigger.pause`, `flow.trigger.resume`, and `flow.trigger.check` / `flow.trigger.press` only. Every other trigger
+  act stays refused to a local owner at the route table: share, unshare, renew, secret, setup, sender, scope, remove,
+  dropped. `pause-run` / `resume-run` stay a task's.
+- **The handler** (server/flows.ts triggerAct) keeps all of its own rules (the approver role from a browser sign-in,
+  the flow's project in the session's reach, the trigger on this flow and not removed) and, for a local owner, checks
+  `localActNow` for exactly the verb's act: inside the write's transaction for pause and resume (which re-reads the
+  trigger there) and press, and right before a check starts (each write it makes re-checks that the owner stands).
+- **What it can cause.** Pause only lowers (and, as for any person, ends a "runs on its own" grant over that schedule).
+  Resume and run now cause work only under the flow's terms as they are. A run now is never the clock's own firing
+  (`onTime` false), so its cards never run on their own under a grant: they wait for a person like any other card.
+- **The read.** `GET /engine/automations` is a console read (the same projects as `/flows`), with `canAct` true only for
+  an approver signed in through a browser or this computer's session.

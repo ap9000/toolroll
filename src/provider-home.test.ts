@@ -4,6 +4,7 @@
  * operator's sign-in and sessions and holds nothing else — fenced from the
  * agent, removed after the run, fresh and resumed alike.
  */
+import { macosFenceAvailable } from "./agent-fence.js";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,6 +66,10 @@ describe("what a build keeps of the provider's own home", () => {
     const bare = isolatedCodexHome(join(dir, "fresh"), dir);
     expect(readdirSync(bare.dir)).toEqual(["sessions"]);
     bare.cleanup();
+    // An OpenRouter build (its own key): the sessions, never the ChatGPT sign-in.
+    const keyed = isolatedCodexHome(source, dir, { signIn: false });
+    expect(readdirSync(keyed.dir)).toEqual(["sessions"]);
+    keyed.cleanup();
   });
 
   test("failed home setup removes the partial private directory", () => {
@@ -147,8 +152,14 @@ describe("what a build keeps of the provider's own home", () => {
       for (const launch of seen) {
         expect(launch.contents).toEqual(["auth.json", "sessions"]);
         expect(existsSync(launch.home)).toBe(false);
-        const filesystem = launch.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-        expect(filesystem).toContain(`"${realpathSync(join(launch.home, ".."))}/${launch.home.split("/").pop()}"="deny"`);
+        if (macosFenceAvailable()) {
+          // On a Mac its whole process runs inside the OS fence (its own sandbox off), where this home is the launch's own.
+          expect(launch.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+        } else {
+          // Elsewhere Codex's own profile denies its commands the home its harness reads.
+          const filesystem = launch.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
+          expect(filesystem).toContain(`"${realpathSync(join(launch.home, ".."))}/${launch.home.split("/").pop()}"="deny"`);
+        }
         expect(launch.args.join(" ")).toContain('-m gpt-5.6-sol -c model_reasoning_effort="high"');
       }
       expect(seen[1]!.args).toContain("resume");

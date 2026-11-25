@@ -17,7 +17,7 @@ Carry this check into Toolroll task acceptance criteria and review feedback for 
 
 ## Feature freeze (owner decision, 2026-11-14)
 
-No new features on flows, AI teammates (subagents), starter kits, email inboxes or evals until 20 people outside the project use Toolroll. Fixes, security work and removals there are fine; new capability is not. Spend the effort on speed, the Work screen, first-run and settings instead.
+No new features on flows, AI teammates (subagents), starter kits, email inboxes or evals until 20 people outside the project use Toolroll. Fixes, security work and removals there are fine; new capability is not. Spend the effort on speed, the Work screen, first-run and settings instead. Surfacing automations that already exist on the Work screen (what runs on its own, its next run and last result, pause, resume, run now) counts as Work-screen work (owner decision, 2026-11-22).
 
 ## Chat and UI consistency
 

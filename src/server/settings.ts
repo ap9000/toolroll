@@ -126,7 +126,7 @@ import { advancedShownNow } from "../advanced-view.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml,type ProjectSettingsView } from "../project-delete-ui.js";
 import { endHoldout,setCodeMapSwitch,type MapDoor } from "../code-map-acts.js";
-import { deleteProject,holdingsWords } from "../project-delete.js";
+import { deleteProject,holdingsWords,PROJECT_RECOVERY_DELETE_MESSAGE } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
 import { changeLearning } from "../project-learning.js";
 import { listDecisions,recordDecision,retireDecision,searchMemory } from "../project-memory.js";
@@ -181,6 +181,8 @@ import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
 import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
 import { loginHelpOf } from "./login-help.js";
+import { proposeNetworkChanges } from "../route-change.js";
+
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
@@ -977,9 +979,13 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
     if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change what builds may reach.");
-    const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+    // One transaction: the setting, and each idle task in the project re-filed on it, waiting for the same Approve.
+    const { changed, waiting } = store.transact(() => {
+      const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+      return { changed, waiting: proposeNetworkChanges(store, repo, now) };
+    });
     const same = JSON.stringify(changed.before) === JSON.stringify(changed.after);
-    return back("said", same ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep the network they were approved with.");
+    return back("said", same ? "Nothing changed." : `Saved.${waitingWords(waiting)}`);
   }
   // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
   async function projectDelete(ctx: HandlerContext): Promise<void> {
@@ -994,6 +1000,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if ((body.get("name") ?? "").trim() !== view.name) return back("problem", `Type ${view.name} exactly to delete it.`);
     const confirm = (problem: string | null) => sendScreen(response, 200, screen(`Delete ${view.name}?`, settingsSubPage("projects", `Delete ${view.name}?`, html`<p class="k-note"><a class="k-link" href="/settings/project?repo=${encodeURIComponent(repo)}">Back to ${view.name}, and delete nothing</a></p>${projectDeleteConfirmHtml(view, problem)}`),
       { chrome: chromeFor(repo, "settings"), forceSensitive: true }));
+    if (view.running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)) return back("problem", PROJECT_RECOVERY_DELETE_MESSAGE);
     if (view.running.length > 0) return back("problem", `Nothing was deleted: ${view.running.join(", ")}. Stop it, then try again.`);
     if (body.get("step") !== "delete") return confirm(null);
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return confirm("That password didn't match. Nothing was deleted.");
@@ -2280,10 +2287,12 @@ ${postForm("/settings/chat-approval/save", html`\
     // choice also starts the installation's models on that agent's default preset, in the same write, while nothing
     // is chosen yet (model-choices.ts fillDefaultRouting): its first task can then be planned and approved without a
     // password. A full session's choice is as before: its models are Settings → Models'.
+    const fromLeadChat = body.get("return") === "/chat";
     store.transact(() => {
-      if (store.getChatConfig()?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
+      const current = store.getChatConfig();
+      if (current?.provider !== provider) store.setChatConfig({ provider, model: "default", dailyTurns: (fromLeadChat ? current?.dailyTurns : undefined) ?? 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, who.name, now);
       const agent = defaultAgentOf(provider);
-      if (who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
+      if (!fromLeadChat && who.via === "cookie" && who.authority === "local-owner" && agent !== null) fillDefaultRouting(store, agent, who.name, { kind: "local-owner" }, now);
     });
     return redirect(response, back ?? "/chat");
   }
@@ -3250,3 +3259,5 @@ function savedLoginOf(store: Store): string | null {
   const help = loginHelpOf(store, { here: true });
   return help.kind === "password" ? help.savedAt : null;
 }
+
+const waitingWords = (count: number): string => count === 0 ? "" : ` ${count === 1 ? "1 task waits" : `${count} tasks wait`} for your Approve to use it.`;

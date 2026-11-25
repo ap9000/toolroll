@@ -23,6 +23,9 @@
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
  *   GET  /engine/models              the installation's planner, builder and reviewer and what each may be (models)
+ *   GET  /engine/automations         the flows the caller can see, as the web /flows list groups them (automations)
+ *   GET  /engine/projects            the projects the caller can see, and the repositories on the server's disk it could
+ *                                    add, for an approver signed in through a browser or this computer's session (projects)
  *   GET  /term/state                 this session's live terminals (termState): the browser's Live page reads it too
  *   POST /term/start                 start one (termStarted); a take-over names its task and build (solo-workbench T4)
  *                                    and attaches through the console's one WebSocket, GET /term/<id>/socket
@@ -33,6 +36,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { chatCardSchema } from "./chat-card.js";
 import { parseContract, type ContractIssue } from "./contract.js";
 
 /** Bumped on a change a client must know about; the client sends nothing, it checks this. */
@@ -232,6 +236,13 @@ export const workRowsSchema = z.object({
    * unpriced work counted as nothing) and the fullest current subscription window the providers last reported, rounded
    * (null: none reported). The Limits view's audience only (an instance operator); null for everyone else. */
   spend: z.object({ todayUsd: z.number(), planPercent: z.number().int().nullable() }).nullable(),
+  /** Each provider's subscription windows as last reported (provider_limit): used %, whether the limit is reached and
+   * when it resets (null: not reported). The installation's own accounts, so the same audience as `spend`, plus this
+   * computer's own local owner (it is their machine's subscriptions); null for everyone else. */
+  limits: z.array(z.object({
+    provider: z.string(), plan: z.string().nullable(), window: z.string(), usedPercent: z.number(),
+    reached: z.boolean(), resetsAt: z.string().nullable(), observedAt: z.string(),
+  })).nullable(),
 });
 
 // ---- Step cards ---------------------------------------------------------------------------------------------------
@@ -277,6 +288,11 @@ export const stepCardsSchema = z.object({
   chain: z.enum(["plan-first", "just-code"]),
   headline: z.string().nullable(),
   liveRun: z.number().int().nullable(),
+  /** The task's newest run, live or finished (null: none yet): the `run` a cancel names as the build it showed. */
+  latestRun: z.number().int().nullable(),
+  /** The agent each step of this task runs: its approved route, else the proposed or recommended one. `chosen` says
+   * whether a person overrode the recommendation for this task. Null when the task has no exact route to show. */
+  models: z.array(z.object({ phase: z.string(), provider: z.string(), model: z.string(), chosen: z.enum(["recommended", "override", "pinned"]) })).nullable(),
   cards: z.array(stepCardSchema).nullable(),
   /** The result waiting for this person's Accept or Send back, as the task page's own forms carry it: `run` and the
    * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to
@@ -332,6 +348,18 @@ export const stepCardsSchema = z.object({
   /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
    * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
   approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),
+  /** The task's current scope digest: what a model pick posts back to POST /t/<task>/route as `sawDigest` (a pick made
+   * against another digest is refused). Null while the task has no plan to pick against. */
+  scopeDigest: z.string().nullable(),
+  /** The agents a model pick may name for this task, by role (agentconfig.ts agentChoicesFor, selectable only: exactly the
+   * choices the route proves again), posted as `agent` = `provider|model`. Review is never per task. Null while the task
+   * has no plan to pick against. */
+  agentChoices: z.object({ plan: z.array(z.object({ provider: z.string(), model: z.string() })), build: z.array(z.object({ provider: z.string(), model: z.string() })) }).nullable(),
+  /** A model pick kept while a run held the task (local-owner-acts.ts): it applies when that run ends (`next-run`) or once
+   * it has stopped (`restart`), as the person who picked it (`by`, at `at`). `problem`: why it couldn't be applied then,
+   * in words; it waits for a new pick. Null when none waits. */
+  pendingAgentChange: z.object({ phase: z.enum(["plan", "build"]), provider: z.string(), model: z.string(), when: z.enum(["next-run", "restart"]), by: z.string(), at: z.string(),
+    problem: z.string().nullable() }).nullable(),
   room: z.string(),
 });
 
@@ -477,10 +505,10 @@ export const modelsReadSchema = z.object({
 export const termStateSchema = z.object({
   available: z.boolean(),
   problem: z.string().nullable(),
-  programs: z.array(z.enum(["claude", "codex", "shell"])),
+  programs: z.array(z.enum(["claude", "codex", "antigravity", "shell"])),
   projects: z.array(z.object({ path: z.string(), name: z.string() })),
   sessions: z.array(z.object({
-    id: z.string().regex(/^[0-9a-f]{32}$/), repo: z.string(), project: z.string(), program: z.enum(["claude", "codex", "shell"]), branch: z.string(),
+    id: z.string().regex(/^[0-9a-f]{32}$/), repo: z.string(), project: z.string(), program: z.enum(["claude", "codex", "antigravity", "shell"]), branch: z.string(),
     startedAt: iso, endedAt: iso.nullable(), exit: z.object({ code: z.number().int().nullable(), signal: z.number().int().nullable() }).nullable(),
     cleanup: z.enum(["clean", "uncertain"]).nullable(), task: z.string().nullable(), run: z.number().int().nullable(),
   })),
@@ -490,6 +518,358 @@ export const termStartedSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), id: z.string().regex(/^[0-9a-f]{32}$/) }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
+
+// ---- Central Lead chat ----------------------------------------------------------------------------------------------
+
+/** An internal Toolroll link inside a Lead card or proposal; `task` and `tab` are parsed on the server from fixed paths,
+ * never inferred from model prose, so a terminal client can jump its Peek inspector directly to that task and tab. */
+const leadLinkSchema = z.object({
+  label: z.string(),
+  href: z.string(),
+  task: z.string().nullable(),
+  tab: z.enum(["live", "steps", "diff"]).nullable(),
+});
+
+const leadCardPrimarySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("confirm"), label: z.string(), irreversible: z.boolean(), native: z.boolean() }),
+  z.object({ kind: z.literal("link"), label: z.string(), href: z.string(), task: z.string().nullable(), tab: z.enum(["live", "steps", "diff"]).nullable() }),
+]);
+
+/** One card attached to a Lead reply: either a Toolroll data card (`data: true`, with `card` carrying the validated
+ * `ChatCard` blocks) or an actionable proposal (`data: false`, plain-text `lines`, confirmable via POST /chat/proposal/<id>/confirm). */
+export const leadChatCardSchema = z.object({
+  id: z.number().int(),
+  kind: z.string(),
+  label: z.string(),
+  state: z.enum(["pending", "confirmed", "refused", "dismissed", "expired"]),
+  data: z.boolean(),
+  lines: z.array(z.string()),
+  card: chatCardSchema.nullable(),
+  said: z.string().nullable(),
+  note: z.string().nullable(),
+  primary: leadCardPrimarySchema.nullable(),
+  dismissable: z.boolean(),
+  links: z.array(leadLinkSchema),
+});
+
+const leadAskSchema = z.object({
+  turn: z.number().int(),
+  question: z.string(),
+  options: z.array(z.string()),
+  open: z.boolean(),
+  stale: z.boolean(),
+});
+
+const leadMessageSchema = z.object({
+  id: z.number().int(),
+  role: z.enum(["operator", "assistant"]),
+  text: z.string(),
+  activity: z.string().nullable(),
+  createdAt: iso,
+  cards: z.array(leadChatCardSchema),
+  ask: leadAskSchema.nullable(),
+});
+
+const leadQueuedSchema = z.object({
+  id: z.number().int(),
+  text: z.string(),
+  status: z.enum(["queued", "starting", "cancelled", "failed", "uncertain"]),
+  detail: z.string().nullable(),
+});
+
+/** `GET /engine/chat[?project=]`: the person's central Lead conversation (the same thread `/chat` renders, as structured
+ * plain text, validated `ChatCard` blocks, and confirmable proposals — never HTML). Sends go to `POST /chat` and live
+ * reply updates arrive on `GET /live?room=<room>` as `event: turn` and `event: change`. */
+export const leadChatSchema = z.object({
+  version,
+  room: z.string(),
+  session: z.number().int().nullable(),
+  leadName: z.string(),
+  canSend: z.boolean(),
+  problem: z.string().nullable(),
+  project: z.string().nullable(),
+  busy: z.boolean(),
+  pendingProposals: z.number().int(),
+  queued: z.array(leadQueuedSchema),
+  messages: z.array(leadMessageSchema),
+});
+
+// ---- Automations ---------------------------------------------------------------------------------------------------
+
+/** One trigger of an automation (flows-ui.ts automationsOf). Removed triggers are never sent. `canCheck`: Run now / Check
+ * now runs it (an active polled trigger, a schedule that runs a script, a plane review; a plain schedule only fires when
+ * due); `canPress`: an active button, whose `label` and `questions` are its form; `resumeRunsNow`: it is paused, fell due
+ * while off, and a live "runs on its own" grant covers it, so Resume may run it once right away. Times are ISO. */
+const automationTriggerSchema = z.object({
+  id: z.number().int(),
+  kind: z.string(),
+  words: z.string(),
+  state: z.enum(["active", "paused"]),
+  nextAt: iso.nullable(),
+  lastAt: iso.nullable(),
+  lastOutcome: z.string().max(200).nullable(),
+  failures: z.number().int(),
+  canPress: z.boolean(),
+  canCheck: z.boolean(),
+  label: z.string().nullable(),
+  questions: z.array(z.string()).nullable(),
+  resumeRunsNow: z.boolean(),
+});
+/** `GET /engine/automations`: the flows the web /flows list shows (the projects the caller can see, at most 100), each
+ * grouped as that list groups it. Pause, resume and run now post the canvas's own trigger forms,
+ * POST /flows/<id>/triggers/<trigger>/{pause,resume,check,press}; `canAct` says whether this caller may (an approver
+ * signed in through a browser or this computer's session). */
+export const automationsSchema = z.object({
+  version,
+  canAct: z.boolean(),
+  automations: z.array(z.object({
+    id: z.number().int(),
+    name: z.string(),
+    project: z.string().nullable(),
+    group: z.enum(["needs", "running", "on", "paused"]),
+    starts: z.string(),
+    nextAt: iso.nullable(),
+    waiting: z.number().int(),
+    inProgress: z.number().int(),
+    trouble: z.string().nullable(),
+    triggers: z.array(automationTriggerSchema),
+  })),
+});
+
+// ---- Projects ------------------------------------------------------------------------------------------------------
+
+const namedPathSchema = z.object({ name: z.string(), path: z.string() });
+/** `GET /engine/projects` (the Mac app's project list): `projects` are the projects the caller can see, as the web's
+ * Projects page lists them (pages.ts visibleProjects, with or without tasks), each with the name it shows. `found` are
+ * git repositories on the server's disk that are not projects yet, from the folder picker's own look (pages.ts
+ * foundRepos: the picker's places inside a projects folder, one level down, hidden folders and Toolroll's own left
+ * out), at most 40 by name. Only for a caller who may add one: an approver signed in through a browser or this
+ * computer's session whose account isn't limited to listed projects (`canAdd`); everyone else gets `found: []`. Adding
+ * one posts the projects page's own form, POST /projects/open with `path`, which proves everything again. */
+export const projectsSchema = z.object({
+  version,
+  canAdd: z.boolean(),
+  projects: z.array(namedPathSchema),
+  found: z.array(namedPathSchema).max(40),
+});
+
+export const directChatProviderSchema = z.enum(["claude", "codex", "gemini"]);
+export const directChatPostureSchema = z.object({
+  summary: z.string(),
+  detail: z.string(),
+  sandboxed: z.boolean(),
+});
+export const directChatToolSchema = z.object({
+  id: z.string(),
+  ordinal: z.number().int(),
+  name: z.string(),
+  detail: z.string(),
+  status: z.enum(["running", "done", "error"]),
+  updatedAt: iso,
+});
+export const directChatArtifactSchema = z.object({
+  id: hex32,
+  kind: z.enum(["output", "attachment"]),
+  filename: z.string(),
+  mimeType: z.string(),
+  byteSize: z.number().int(),
+  url: z.string(),
+  sourcePath: z.string().nullable(),
+  createdAt: iso,
+});
+export const directChatShipSummarySchema = z.object({
+  id: hex32,
+  seq: z.number().int(),
+  mode: z.enum(["ship", "keep-branch"]),
+  branch: z.string(),
+  candidateSha: z.string(),
+  state: z.enum(["kept", "imported", "armed", "completed", "merging", "merged", "cancelled", "failed"]),
+  taskId: z.string().nullable(),
+  prUrl: z.string().nullable(),
+  detail: z.string().nullable(),
+  createdAt: iso,
+  stateAt: iso,
+});
+export const directChatUsageSchema = z.object({
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  cacheCreationTokens: z.number().int(),
+  thinkingTokens: z.number().int(),
+  contextTokens: z.number().int(),
+  contextWindow: z.number().int().nullable(),
+  costUsd: z.number().nullable(),
+});
+export const directChatModelOptionSchema = z.object({
+  provider: directChatProviderSchema,
+  id: z.string(),
+  label: z.string(),
+  efforts: z.array(z.string()),
+  defaultEffort: z.string().nullable(),
+  contextWindow: z.number().int().nullable(),
+});
+export const directChatTurnSchema = z.object({
+  id: hex32,
+  seq: z.number().int(),
+  userPrompt: z.string(),
+  switchedFromProvider: directChatProviderSchema.nullable(),
+  status: z.enum(["running", "completed", "stopped", "failed", "interrupted"]),
+  assistantText: z.string(),
+  errorText: z.string().nullable(),
+  createdAt: iso,
+  finishedAt: iso.nullable(),
+  usage: directChatUsageSchema.nullable(),
+  tools: z.array(directChatToolSchema),
+  artifacts: z.array(directChatArtifactSchema),
+});
+export const directChatSummarySchema = z.object({
+  id: hex32,
+  title: z.string(),
+  project: z.string(),
+  branch: z.string(),
+  provider: directChatProviderSchema,
+  modelId: z.string(),
+  effort: z.string().nullable(),
+  posture: directChatPostureSchema,
+  running: z.boolean(),
+  lastStatus: z.enum(["running", "completed", "stopped", "failed", "interrupted"]).nullable(),
+  changedFilesCount: z.number().int(),
+  mainDirtyFiles: z.array(z.string()),
+  usage: directChatUsageSchema.nullable(),
+  createdAt: iso,
+  updatedAt: iso,
+});
+export const directChatsListSchema = z.object({
+  version,
+  available: z.boolean(),
+  problem: z.string().nullable(),
+  backgroundOn: z.boolean(),
+  models: z.array(directChatModelOptionSchema),
+  threads: z.array(directChatSummarySchema),
+});
+export const directChatDetailSchema = z.object({
+  version,
+  room: z.string(),
+  thread: directChatSummarySchema,
+  turns: z.array(directChatTurnSchema),
+  attachments: z.array(directChatArtifactSchema),
+  ships: z.array(directChatShipSummarySchema),
+  diff: z.object({
+    changedFiles: z.array(z.string()),
+    diffText: z.string(),
+    dirty: z.boolean(),
+  }),
+});
+export const directChatShipPreviewSchema = z.object({
+  version,
+  threadId: hex32,
+  mode: z.enum(["ship", "keep-branch"]),
+  canAutoMerge: z.boolean(),
+  autoMergeReason: z.string().nullable(),
+  termsDigest: hex32,
+  title: z.string(),
+  goal: z.string(),
+  baseSha: z.string(),
+  branch: z.string(),
+  changedFiles: z.array(z.string()),
+  checkCommand: z.string().nullable(),
+  githubRepo: z.string().nullable(),
+  githubBase: z.string().nullable(),
+  mergeSummary: z.string(),
+});
+export const directChatShippedSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    ship: directChatShipSummarySchema,
+    said: z.string(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+export const directChatAttachedSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    artifact: directChatArtifactSchema,
+    cloneRelativePath: z.string().nullable(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export const directChatStartedSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), threadId: hex32, turnId: hex32, room: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+export const directChatMutatedSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), said: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+
+export const taskResultReportItemSchema = z.object({
+  title: z.string(),
+  why: z.string(),
+  url: z.string(),
+  image: z.string().nullable(),
+});
+
+export const taskResultReportFollowUpSchema = z.object({
+  title: z.string(),
+  goal: z.string(),
+});
+
+export const taskResultReportShotSchema = z.object({
+  file: z.string(),
+  caption: z.string(),
+  url: z.string(),
+  artifactUrl: z.string().nullable(),
+  problem: z.string().nullable(),
+});
+
+export const taskResultReportSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    title: z.string(),
+    summary: z.string(),
+    document: z.string(),
+    truncated: z.boolean(),
+    items: z.array(taskResultReportItemSchema),
+    followUps: z.array(taskResultReportFollowUpSchema),
+    shots: z.array(taskResultReportShotSchema),
+  }),
+  z.object({
+    ok: z.literal(false),
+    problem: z.string(),
+  }),
+]);
+
+export const taskResultHandoffSchema = z.object({
+  conclusion: z.string(),
+  changes: z.array(z.string()),
+  verification: z.array(z.string()),
+  followUps: z.array(z.string()),
+  decisions: z.array(z.string()),
+  assumptions: z.array(z.string()),
+  notDone: z.array(z.string()),
+  risks: z.array(z.string()),
+});
+
+export const taskResultScreenshotSchema = z.object({
+  caption: z.string(),
+  path: z.string(),
+  url: z.string(),
+});
+
+/** `GET /t/<task>/result[?run=<id>]`: the task's human-readable verified deliverable (scout report, builder handoff, and verified screenshots). */
+export const taskResultSchema = z.object({
+  version,
+  task: z.string(),
+  deliverable: z.enum(["code", "report"]),
+  run: z.number().int().nullable(),
+  role: z.string().nullable(),
+  outcome: z.string().nullable(),
+  verdict: z.string().nullable(),
+  summary: z.string().nullable(),
+  report: taskResultReportSchema.nullable(),
+  handoff: taskResultHandoffSchema.nullable(),
+  screenshots: z.array(taskResultScreenshotSchema),
+});
 
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
@@ -503,6 +883,9 @@ export const linkRedemptionSchema = z.object({
   /** The mutation key (header x-toolroll-key), bound to this console start (`epoch`). */
   key: z.string().regex(/^[0-9a-f]{64}$/),
   epoch: z.string(),
+  /** Whether the account has a password yet (password-onboarding.md): the Mac app offers to set one when it hasn't.
+   * Optional: an older console doesn't say. */
+  passwordSet: z.boolean().optional(),
 });
 /** What a terminal client posts to `POST /login/once`: the link's code, nothing else. */
 export const linkRedemptionRequestSchema = z.strictObject({ code: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
@@ -528,13 +911,24 @@ export const ENGINE_RESPONSES = {
   resultDiff: { route: "GET /t/<task>/diff", schema: resultDiffSchema },
   resultDiffFile: { route: "GET /t/<task>/diff?run=&file=", schema: resultDiffFileSchema },
   resultDiffContext: { route: "GET /t/<task>/diff?run=&file=&from=&count=", schema: resultDiffContextSchema },
+  taskResult: { route: "GET /t/<task>/result", schema: taskResultSchema },
   linkRedemption: { route: "POST /login/once", schema: linkRedemptionSchema },
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
   agents: { route: "GET /engine/agents", schema: agentsReadSchema },
   models: { route: "GET /engine/models", schema: modelsReadSchema },
+  leadChat: { route: "GET /engine/chat", schema: leadChatSchema },
+  automations: { route: "GET /engine/automations", schema: automationsSchema },
+  projects: { route: "GET /engine/projects", schema: projectsSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
   termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
+  directChatsList: { route: "GET /engine/direct-chats", schema: directChatsListSchema },
+  directChatDetail: { route: "GET /engine/direct-chats/<id>", schema: directChatDetailSchema },
+  directChatStarted: { route: "POST /engine/direct-chats, /engine/direct-chats/<id>/messages", schema: directChatStartedSchema },
+  directChatMutated: { route: "POST /engine/direct-chats/<id>/{stop,model,delete,apply-main-edits,ship-cancel}", schema: directChatMutatedSchema },
+  directChatShipPreview: { route: "POST /engine/direct-chats/<id>/ship-preview", schema: directChatShipPreviewSchema },
+  directChatShipped: { route: "POST /engine/direct-chats/<id>/ship", schema: directChatShippedSchema },
+  directChatAttached: { route: "POST /engine/direct-chats/<id>/attachments", schema: directChatAttachedSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -547,10 +941,23 @@ export type ApprovalCard = z.infer<typeof approvalCardSchema>;
 export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
+export type TaskResult = z.infer<typeof taskResultSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
 export type ModelsRead = z.infer<typeof modelsReadSchema>;
+export type LeadChat = z.infer<typeof leadChatSchema>;
+export type LeadChatCard = z.infer<typeof leadChatCardSchema>;
+export type LeadChatLink = z.infer<typeof leadLinkSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
+export type AutomationsRead = z.infer<typeof automationsSchema>;
+export type ProjectsRead = z.infer<typeof projectsSchema>;
+export type DirectChatsList = z.infer<typeof directChatsListSchema>;
+export type DirectChatDetail = z.infer<typeof directChatDetailSchema>;
+export type DirectChatStarted = z.infer<typeof directChatStartedSchema>;
+export type DirectChatMutated = z.infer<typeof directChatMutatedSchema>;
+export type DirectChatShipPreviewRead = z.infer<typeof directChatShipPreviewSchema>;
+export type DirectChatShipped = z.infer<typeof directChatShippedSchema>;
+export type DirectChatAttached = z.infer<typeof directChatAttachedSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

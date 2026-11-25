@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "available": true,
+  "problem": null,
+  "backgroundOn": true,
+  "models": [
+    {
+      "provider": "claude",
+      "id": "opus",
+      "label": "Claude Opus 5.5",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "defaultEffort": "high",
+      "contextWindow": 1000000
+    }
+  ],
+  "threads": [
+    {
+      "id": "0123456789abcdef0123456789abcdef",
+      "title": "Fix navbar spacing",
+      "project": "payments-api",
+      "branch": "toolroll/chat-01234567",
+      "provider": "claude",
+      "modelId": "claude-sonnet-4-6",
+      "effort": "high",
+      "posture": {
+        "summary": "Runs commands without asking",
+        "detail": "Claude runs inside this chat's isolated local clone with auto-approved tools and no remote configured.",
+        "sandboxed": false
+      },
+      "running": false,
+      "lastStatus": "completed",
+      "changedFilesCount": 1,
+      "mainDirtyFiles": ["README.md"],
+      "usage": {
+        "inputTokens": 420,
+        "outputTokens": 1280,
+        "cacheReadTokens": 18400,
+        "cacheCreationTokens": 2100,
+        "thinkingTokens": 320,
+        "contextTokens": 20920,
+        "contextWindow": 1000000,
+        "costUsd": 0.14
+      },
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:01:30.000Z"
+    }
+  ]
+}

@@ -143,6 +143,15 @@ beside the selected task. **Live** shows the agent's output, **Steps** shows
 progress and failures, **Diff** shows the result and your notes, and
 **Terminal** holds a shell on the build. The top bar shows today's cost.
 
+Click a stage in the progress bar or its row in **Steps** to inspect it.
+A running **Build** opens live output. **Ready** opens the diff when a result is available.
+In **Steps**, use **j/k** or the arrow keys to select a stage, **Enter** to open it,
+and the mouse wheel to read longer details.
+
+When a plan needs your approval, click its **Approval** card in **Steps**, or
+press **a**. Read the terms with the wheel, **Read more**, or **Space**.
+Choose **Approve build** to start, or **Back** to leave it waiting.
+
 ### Keys and layout
 
 These are the default keys from the workbench's keymap. Press `?` for help
@@ -155,14 +164,19 @@ This is a local layout action; use the terminal palette to reach it from chat.
 
 | Key | Action |
 |---|---|
-| `j` / `k`, Down / Up | Next / previous item in the list |
-| Enter | Open the changes for a result, otherwise its live output |
+| `j` / `k`, Down / Up | Move through the list (when List is focused) or scroll / move lines (when the task panel is focused) |
+| Left / Right | Focus the task list / focus the task panel. Focusing the list reveals it when hidden or zoomed |
+| Enter | Open and focus the changes for a result, otherwise its live output |
 | Tab / Shift-Tab | Next / previous tab: Live, Steps, Diff, Terminal |
-| `n` | New task (in Diff, next note instead) |
+| `n` | New task (in focused Diff, next note instead) |
+| `C` | Central Lead chat (open / focus the Lead conversation shared with `/chat`; also pinned at the top of the Work rail) |
+| `Tab` in Message Lead | Browse the choices in the conversation. Click a choice, or select its visible number and press Enter. Up and Down move between choices. |
+| `F2` in Lead | Check membership sign-ins, switch Lead to Codex or Claude, or connect a provider. A failed provider reply opens the same dialog. Send the draft again when ready. |
+| `D` | Dock Central Lead chat beside the Peeked Task panel (`o` switches focus between Chat and Peek; task links inside Lead cards jump the Peek panel straight to that task's Diff / Steps / Live) |
 | `T` | New [interactive agent thread](#interactive-agent-threads-beta) (beta, off by default) |
 | `s` / `a` / `x` / `X` on a thread | Reply to it / Ship its work / stop its agent's turn / end it (asks first) |
 | `x` / `r` on a thread that is shipping | Stop the Ship for good / send it back with a note |
-| `s` | Send the running agent a note |
+| `s` | Focus the running agent’s message field. You can also click the field, type, and press Enter to send. |
 | `p` | Pause the build; press again to resume |
 | `x` | Stop a build or its retries; resume retries on a task you held |
 | `X` | Cancel the task |
@@ -175,17 +189,18 @@ This is a local layout action; use the terminal palette to reach it from chat.
 | `=` | Even the splits and restore the usual list width |
 | `b` | Cycle the list: full, slim status rail, hidden |
 | `z` | Zoom the focused panel; press again to return |
-| `!` / `@` | Next / previous thing that needs you, oldest first |
+| `!` / `@` | Cycle through waiting items, oldest first. Click the "need you" chip to go directly to the oldest |
 | `'` | Return to where you were before jumping |
-| `/` | Search the focused pane |
+| `/` | Filter the task list live (when List is focused) or search the focused pane (when Detail is focused) |
 | Ctrl-E | Open the focused pane's text in your editor |
 | Page Up / `u`, Page Down / `d` | Scroll up / down |
 | End / `G` | Follow the newest output |
 | `y` | Copy a hunk or terminal output to the terminal's scrollback |
 | `A` | Open Agents |
+| `M` | Choose model assignments for new tasks |
 | `w` | Open Toolroll in the browser |
 | `1`–`9` | Answer the agent's question |
-| Esc | Cancel, close, or go back |
+| Esc | Return focus to the list, clear a filter/search, or close a dialog |
 | `q` / Ctrl-C | Quit |
 
 In Diff, `j` / `k` move by line, `[` / `]` by hunk, and `{` / `}` by file.
@@ -312,9 +327,19 @@ runs. Toolroll never runs `curl | bash` installers. For agents that only
 offer those installers, copy the command and run it yourself if you trust
 it. The screen also lets you copy sign-in commands.
 
-The Models section chooses the default agent and the agents and models
-for planning, building and review. Read the before-and-after confirmation
-before saving. These are the same saved choices as Settings → Models.
+For an existing idle task, click **Change builder** beside its model in Work, or press
+`m`. If Toolroll asks for your password, open the task in your browser,
+then choose **Agents → Change agents → Builder → Use**. In a session that can
+save directly, select the model and choose **Use builder**. Review the updated
+approval before resuming a held task. The model in the previous attempt stays in
+its history. The picker shows configured choices; provider quota can change.
+
+From Work, press `M` or find **Models for new tasks** in the command palette.
+Select a role and press Enter. Press `/` to find a model by provider or name,
+use the arrows to select it, and press Enter to preview the change. Enter
+again saves it. The default-agent row applies a preset across roles.
+These installation defaults apply to newly filed tasks. Settings → Models
+in the browser also offers per-project overrides and task-size tiers.
 Changing models here requires the operator on a solo install; otherwise
 open Settings → Models in the browser with `w`.
 

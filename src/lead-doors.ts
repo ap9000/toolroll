@@ -275,6 +275,92 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
   return result;
 }
 
+/**
+ * Reversible, non-security, non-code-approval proposals safe to execute immediately inside the owner's own local
+ * solo conversation on this computer (never team chats, Telegram/Slack/Discord/Teams, remote bearers, or protected acts).
+ */
+const SAFE_INSTANT_TASK_ACTIONS = new Set([
+  "stop", "plan", "retry", "wait_for", "stop_waiting", "run_checks", "run_full_checks", "add_tests",
+]);
+const SAFE_INSTANT_SHARED_ACTIONS = new Set([
+  "lead_identity", "lead_about_you", "task_archive", "task_restore",
+  "decision_record", "decision_retire", "knowledge_instructions",
+  "suggestion_not_now", "trial_stop", "mode_revoke",
+  "flow_unattended_off", "flow_browser_off", "flow_trigger_pause",
+]);
+
+export function isSafeInstantLocalProposal(kind: ProposalKind, payload: Record<string, unknown>): boolean {
+  if (kind === "hold" || kind === "unhold" || kind === "next" || kind === "reserve" || kind === "steer") return true;
+  if (kind === "review") return payload["operation"] === "note" || payload["operation"] === "revise";
+  if (kind === "task_action") return typeof payload["operation"] === "string" && SAFE_INSTANT_TASK_ACTIONS.has(payload["operation"]);
+  if (kind === "action") {
+    const action = sharedActionPayload(payload);
+    return action !== null && !sharedActionNeedsReview(action) && SAFE_INSTANT_SHARED_ACTIONS.has(action.operation);
+  }
+  return false;
+}
+
+/**
+ * Execute one safe, reversible proposal immediately while its local solo turn is still running, through the exact
+ * same doors and authority checks as `confirmLeadProposal`. Protected actions, approvals, merges, team rooms and
+ * disallowed local-owner acts are refused cleanly (leaving the proposal drafting so it becomes a normal card).
+ */
+export function executeLocalInstantProposal(
+  store: Store,
+  who: VerifiedApprover,
+  proposalId: number,
+  now: Date,
+  options: { authority: Authority; evidenceRoot?: string; chatProvider?: TeamChatProviderResolver },
+): DoorOutcome {
+  if (!isVerifiedApprover(who)) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." };
+  const signals: (() => void)[] = [];
+  const defer = (signal: () => void) => signals.push(signal);
+  const result = store.transact(() => {
+    if (!reproveApprover(store, who).ok) return { ok: false, kind: null, reason: "standing", said: "Your sign-in changed. Sign in again." } as const;
+    const proposal = store.getLeadProposal(proposalId);
+    if (proposal === null || proposal.state !== "drafting") return { ok: false, kind: proposal?.kind ?? null, reason: "not-pending", said: "That proposal is not ready." } as const;
+    const thread = store.getLeadThread(proposal.thread);
+    const shared = thread !== null && store.handle.prepare("SELECT id FROM team_conversation WHERE thread=?").get(thread.id);
+    if (thread === null || shared || thread.approver !== who.name) return { ok: false, kind: proposal.kind, reason: "not-yours", said: "Instant actions are only for your own local conversation." } as const;
+    if (proposal.ceilingDigest !== who.ceilingDigest) return { ok: false, kind: proposal.kind, reason: "ceiling-changed", said: "Your projects changed." } as const;
+    if (!isSafeInstantLocalProposal(proposal.kind, proposal.payload)) {
+      return { ok: false, kind: proposal.kind, reason: "needs-confirm", said: "This action still requires your confirmation." } as const;
+    }
+    const localAct = localDoor(options)
+      ? proposalLocalAct(proposal.kind, proposal.kind === "action" ? sharedActionPayload(proposal.payload)?.operation : proposal.payload["operation"])
+      : null;
+    if (localDoor(options) && localAct === null) {
+      return { ok: false, kind: proposal.kind, reason: "refused", said: localDoorWords(store, who.name) } as const;
+    }
+    const execute = <T,>(body: () => T): T => localAct === null ? body() : withLocalAct(localAct, body);
+    const outcome: DoorOutcome = proposal.kind === "action"
+      ? {
+          ...execute(() => executeSharedAction(store, who, proposal.id, sharedActionPayload(proposal.payload)!, now, {
+            via: "web",
+            person: true,
+            authority: localAct === null ? "full" : "local-owner",
+            ...(options.evidenceRoot === undefined ? {} : { root: options.evidenceRoot }),
+          })),
+          kind: proposal.kind,
+        }
+      : execute(() => executeProposal(store, who, proposal.kind, proposal.payload, now, {
+          authority: options.authority,
+          via: "web",
+          person: true,
+          allowMode: false,
+          ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }),
+          ...(options.chatProvider === undefined ? {} : { chatProvider: options.chatProvider }),
+          deferSignal: defer,
+        }));
+    if (!outcome.ok) return outcome;
+    store.casLeadProposal(proposalId, "drafting", "confirmed", who.name, { ...outcome, via: "web", instant: true }, now);
+    recordInTaskChat(store, who, proposal, outcome, "web", now);
+    return outcome;
+  });
+  for (const signal of signals) signal();
+  return result;
+}
+
 /** The operator declines the lead's card: `pending → dismissed`. */
 export function dismissLeadProposal(store: Store, who: VerifiedApprover, proposalId: number, now: Date): boolean {
   if (!isVerifiedApprover(who)) return false;
@@ -351,7 +437,7 @@ function executeProposal(
   kind: ProposalKind,
   payload: Record<string, unknown>,
   now: Date,
-  options: DoorOptions & { scopeAuthor?: "mate" | "coordinator"; deferSignal: NonNullable<import("./task-control.js").StopRequest["deferSignal"]> },
+  options: DoorOptions & { scopeAuthor?: "mate" | "coordinator"; allowMode?: boolean; deferSignal: NonNullable<import("./task-control.js").StopRequest["deferSignal"]> },
 ): DoorOutcome {
   if (!isVerifiedApprover(actor) || !reproveApprover(store, actor).ok) return { ok: false, kind, reason: "standing", said: "Your sign-in changed. Sign in again." };
   // A chat app's yes on a solo install stands only from the owner's own paired chat identity: read here, inside the
@@ -446,7 +532,8 @@ function executeProposal(
     if (request.snapshot == null || request.snapshot.task !== taskId || (request.operation !== "note" && request.operation !== "revise")) return refuse("refused", "This feedback card is incomplete. Ask again.");
     // A review card is the lead's (or a coordinator's) proposal; a person confirming it here decided the result needs
     // these changes, so the revision is theirs. Under the lead's own chain or a remote run nobody confirmed it: lead.
-    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, options.via !== "cli", machineActing() ? "lead" : "person");
+    const allowMode = options.allowMode ?? (options.via !== "cli");
+    const result = applyChatReview(store, actor, options.evidenceRoot, request, now, allowMode, machineActing() ? "lead" : "person");
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 

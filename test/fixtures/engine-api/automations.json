@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "canAct": true,
+  "automations": [
+    {
+      "id": 3,
+      "name": "Nightly tests",
+      "project": "payments-api",
+      "group": "on",
+      "starts": "Daily at 02:00",
+      "nextAt": "2026-11-23T02:00:00.000Z",
+      "waiting": 0,
+      "inProgress": 0,
+      "trouble": null,
+      "triggers": [
+        {
+          "id": 5,
+          "kind": "schedule",
+          "words": "Daily at 02:00",
+          "state": "active",
+          "nextAt": "2026-11-23T02:00:00.000Z",
+          "lastAt": "2026-11-22T02:00:04.112Z",
+          "lastOutcome": "Added a card.",
+          "failures": 0,
+          "canPress": false,
+          "canCheck": false,
+          "label": null,
+          "questions": null,
+          "resumeRunsNow": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Support replies",
+      "project": "payments-api",
+      "group": "paused",
+      "starts": "New email",
+      "nextAt": null,
+      "waiting": 0,
+      "inProgress": 0,
+      "trouble": null,
+      "triggers": [
+        {
+          "id": 2,
+          "kind": "email",
+          "words": "New email",
+          "state": "paused",
+          "nextAt": "2026-11-22T09:14:00.000Z",
+          "lastAt": "2026-11-21T17:02:10.540Z",
+          "lastOutcome": "Nothing new.",
+          "failures": 0,
+          "canPress": false,
+          "canCheck": false,
+          "label": null,
+          "questions": null,
+          "resumeRunsNow": false
+        }
+      ]
+    }
+  ]
+}

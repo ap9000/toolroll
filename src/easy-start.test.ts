@@ -123,6 +123,33 @@ describe("which invocations are an easy start", () => {
     expect(opened).not.toHaveBeenCalled();
   });
 
+  test("an explicit workbench launch explains why it needs a personal terminal", async () => {
+    const openTui = vi.fn(async () => "leave" as const);
+    const argv = ["--tui-binary", "/path/to/toolroll-tui"];
+    for (const [terminal, expected] of [[false, "interactive input and output"], [true, "coding-agent session"]] as const) {
+      const lines: string[] = [];
+      expect(await main(argv, line => lines.push(line), { easyStart: { terminal, underAgent: true, seams: { openTui } } })).toBe(2);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(expected);
+    }
+    expect(openTui).not.toHaveBeenCalled();
+    const { seams, calls } = scripted({ proofs: [LIVE], tui: async () => "leave" });
+    expect(await main(argv, () => {}, { easyStart: { terminal: true, underAgent: false, seams } })).toBe(0);
+    expect(calls).toEqual(["tui"]);
+  });
+
+  test("Lead provider recovery opens the existing settings form on the proven console", async () => {
+    const { seams, calls } = scripted({ proofs: [LIVE], tui: async session => {
+      expect(await session.openBrowser("lead-providers")).toBe("Opened Lead settings in your browser.");
+      expect(await session.openBrowser("projects")).toBe("Opened Projects in your browser.");
+      await session.openBuilderPassword!("homepage-nameplate", false);
+      await session.openBuilderPassword!("homepage-nameplate", true);
+      return "leave";
+    } });
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(calls).toEqual(["tui", `browser ${new URL("/settings/lead#lead-config", LIVE.url).href}`, `browser ${new URL("/projects", LIVE.url).href}`, `browser ${new URL("/t/homepage-nameplate#agents", LIVE.url).href}`, `browser ${new URL("/password/set?next=%2Ft%2Fhomepage-nameplate", LIVE.url).href}`]);
+  });
+
   test("cli.ts: at a person's terminal, bare `toolroll` is the easy start", async () => {
     const { seams, calls } = scripted({ proofs: [LIVE], tui: async () => "leave" });
     const code = await main([], () => {}, { easyStart: { terminal: true, underAgent: false, seams } });

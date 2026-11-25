@@ -39,7 +39,8 @@ export function taskFingerprint(store: Store, root: string, now: Date, livenessM
       (SELECT count(*) || ':' || coalesce(max(d.id), 0) || ':' || coalesce(sum(d.state = 'answered'), 0) FROM decision d JOIN run r ON r.id = d.run WHERE r.task_ref IN (SELECT ref FROM family)) AS decisions,
       (SELECT coalesce(max(c.id), 0) FROM run_checkpoint c WHERE c.task_ref IN (SELECT ref FROM family)) AS progress,
       (SELECT coalesce(max(a.at), '') FROM run_activity a JOIN run r ON r.id = a.run WHERE r.task_ref IN (SELECT ref FROM family) AND r.outcome IS NULL) AS activity,
-      (SELECT coalesce(group_concat(w.heartbeat_at > ?2), '') FROM run r JOIN runner w ON w.name = r.runner WHERE r.task_ref IN (SELECT ref FROM family) AND r.outcome IS NULL) AS workers
+      (SELECT coalesce(group_concat(w.heartbeat_at > ?2), '') FROM run r JOIN runner w ON w.name = r.runner WHERE r.task_ref IN (SELECT ref FROM family) AND r.outcome IS NULL) AS workers,
+      (SELECT coalesce(max(l.id), 0) FROM action_ledger l WHERE l.task_id IN (SELECT ext FROM family)) AS ledger
     WHERE EXISTS (SELECT 1 FROM family)`).get(root, new Date(now.getTime() - livenessMs).toISOString(), BUILT_IN) as Record<string, unknown> | undefined;
   return row === undefined ? null : createHash("sha256").update(Object.values(row).map(String).join("|")).digest("hex").slice(0, 16);
 }

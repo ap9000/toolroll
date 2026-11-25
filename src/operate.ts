@@ -1,5 +1,9 @@
 import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
+import { clearResolvedAgentRequests, fileAgentRequest, listAgentRequests, resolveAgentRequest, waitForAgentRequest, type AgentRequest } from "./agent-requests.js";
+import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usage.js";
+import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
+import { directChatArmedPass } from "./direct-chat-ship.js";
 import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -98,7 +102,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
-import { planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
+import { applyPendingAgentChanges, planAgainAsLocalOwner, requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -131,6 +135,7 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
 
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
@@ -143,7 +148,7 @@ import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
 import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
-import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
+import { deleteProject, holdingsWords, projectHoldings, projectRunning, PROJECT_RECOVERY_DELETE_MESSAGE } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
 import { BRANCH_PREFIX, envValue, existingOrFirst, taskBranches } from "./names.js";
@@ -346,7 +351,7 @@ import { resumeAllowedReleases } from "./release-next.js";
 import { fileGithubItem, readGithubItem } from "./github-import.js";
 import { runRelease } from "./release.js";
 import { releaseAdapters } from "./release-adapters.js";
-import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
+import { proposeNetworkChanges, routeChangeOf, routeLegacyPlans } from "./route-change.js";
 import { installModeNow, sessionStandsIn } from "./install-mode.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
@@ -1045,6 +1050,9 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "preview", "apply",
   // config set flexible-sign-in: save without the live check; config show flexible-sign-in --check: check it again.
   "no-check", "check",
+  // agent --request: wait until the person approves or declines the filed request in Toolroll.app.
+  "wait",
+  "live",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -1639,7 +1647,10 @@ async function dispatch(
       if (positional[0] === "flexible") return projectFlexibleCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
+      if (positional[0] === "live-view") return projectLiveViewCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
+    case "request":
+      return requestCommand(positional, flags, context);
     case "assignment":
       // The person's own lead (its lead token) claims as the lead; coordinator credentials keep their own path.
       if (positional[0] === "claim" && currentActor()?.lead === true && !flags.has("token-env") && !flags.has("token-file")) return leadClaimCommand(positional, flags, context);
@@ -2845,6 +2856,8 @@ async function tickCommand(
   // in. Statuses land in the store; the gate inside the claim transaction is
   // what acts on them.
   await probeRepo(store, repo, runner, clock());
+  // A model pick kept for when its run ended applies before the ready set is read, so the next run is the one it named.
+  applyPendingAgentChanges(store, clock());
 
   // Flows move before the ready set is read: a card entering
   // a build or research zone files its task now (as does a schedule's
@@ -4033,6 +4046,8 @@ async function reconcileCommand(
   // asked to confirm a build stopped, so a release waiting on its check moves on by itself.
   await proveFinishedRunsStopped(store, clock);
   store.settleQuiescentStops(clock());
+  // A model pick kept for when its run ended (or stopped) applies now, as the person who picked it (local-owner-acts.ts).
+  applyPendingAgentChanges(store, clock());
   // A vanished build whose old process is now proven stopped gets its retry decision (vanished-retry.ts).
   retryVanishedWhenStopped(store, clock());
   // A fast start that didn't start in time goes back to the ordinary Approve plan (fast-start.ts).
@@ -5927,8 +5942,30 @@ async function setupCommand(
     return EXIT.ok;
   }
 
-  if (action !== "set" && action !== "clear") return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] --yes|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
+  if (action !== "set" && action !== "clear") return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] [--yes|--request <why>]|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
   if (repo === undefined) return fail(write, json, `setup ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
+
+  if (action === "set" && flags.has("request")) {
+    const reqCmd = text(flags, "command");
+    if (reqCmd === undefined || reqCmd.trim() === "") return fail(write, json, "setup set", "usage", "--command <cmd> is what every fresh checkout will run", EXIT.usage);
+    if (reqCmd.length > 2000 || hasDisguisedText(reqCmd)) return fail(write, json, "setup set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
+    const reqCredShaped =
+      /([A-Za-z0-9_-]*(?:token|secret|password|passwd|apikey|api_key|authorization|bearer|credential)[A-Za-z0-9_-]*\s*[=:]\s*)(?![$"']?\$)\S+/i.test(reqCmd) ||
+      /\/\/[^\s/@]+:[^\s/@]+@/.test(reqCmd);
+    if (reqCredShaped) return fail(write, json, "setup set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
+    const reqTimeoutSeconds = Number(text(flags, "timeout-seconds") ?? "300");
+    if (!Number.isInteger(reqTimeoutSeconds) || reqTimeoutSeconds < 1 || reqTimeoutSeconds > 3600) return fail(write, json, "setup set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
+    const resolvedRepo = (await knownProject(context, repo, { listed: true, canonical: true })) ?? resolve(repo);
+    const req = fileAgentRequest(context.databaseFile, {
+      kind: "worktree-setup",
+      repo: resolvedRepo,
+      ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+      summary: `Set worktree setup: ${reqCmd}`,
+      why: text(flags, "why") ?? text(flags, "request") ?? "",
+      params: { command: reqCmd, timeoutSeconds: reqTimeoutSeconds },
+    }, clock());
+    return finishFiledRequest("setup set", req, flags, context);
+  }
 
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -7145,6 +7182,13 @@ async function runWatchLoop(args: {
           if (shipped.ok && shipped.cancelled > 0) progress(`watch: stopped ${shipped.cancelled} Flexible merge(s) whose terms no longer held`);
         } catch (error) {
           progress(`watch: the Flexible ship pass failed — ${describe(error)}; retrying on its next interval`);
+        }
+        try {
+          const dcShipped = await directChatArmedPass(store, { root: context.evidenceRoot, ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
+          if (dcShipped.merged > 0) progress(`watch: merged ${dcShipped.merged} Direct Chat result(s) whose checks passed`);
+          if (dcShipped.cancelled > 0) progress(`watch: stopped ${dcShipped.cancelled} Direct Chat merge(s) whose terms no longer held`);
+        } catch (error) {
+          progress(`watch: the Direct Chat ship pass failed — ${describe(error)}; retrying on its next interval`);
         }
       }
       if (!stopping() && store.openedPublications().length > 0) {
@@ -8920,6 +8964,7 @@ async function publishCommand(
       // other — a moved head refuses rather than authorizing the unseen.
       const released = store.authorizeMergeIntent(intent.id, intent.headSha, acting.name, clock());
       if (!released.ok) {
+        if (released.reason === "recovery-held") return fail(write, json, "publish merge", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
         return fail(
           write, json, "publish merge",
           released.reason,
@@ -8936,6 +8981,7 @@ async function publishCommand(
     }
     const refired = store.refireMergeIntent(intent.id, acting.name, clock());
     if (!refired.ok) {
+      if (refired.reason === "recovery-held") return fail(write, json, "publish refire", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
       return fail(
         write, json, "publish refire",
         refired.reason,
@@ -8970,6 +9016,7 @@ async function publishCommand(
       ]);
     }
     const rearmed = store.rearmMergeIntent(publication.id);
+    if (rearmed === "recovery-held") return fail(write, json, "publish rearm", "recovery-held", "Checks are on hold after recovery. Earlier execution is unverified.", EXIT.refused);
     store.resolveEpisodes(`merge-attn:${publication.id}`, context.clock());
     return succeed(write, json, "publish rearm", { pr, rearmed }, () => [
       rearmed
@@ -9714,6 +9761,7 @@ async function addTask(
   // Re-filing: the new task replaces an earlier one, which is cancelled and reads "Replaced by <id>".
   const replaces = text(flags, "replaces");
   if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) return fail(write, json, "task add", "unknown-task", `no task \`${replaces}\` to replace`, EXIT.refused);
+  if (replaces !== undefined && builtinReplacementHeld(store, replaces, id)) return fail(write, json, "task add", "recovery-held", "This task can't be replaced while earlier check execution is unverified after recovery.", EXIT.refused);
   noteActingPerson(flags, context);
 
   // The existence check goes *inside* the replayed body. Outside it, a retry
@@ -9729,12 +9777,17 @@ async function addTask(
       // The deliverable rides the SAME transaction as the filing (v4
       // review, finding 2): a crash can never leave a scout ask as a
       // branch task.
+      if (replaces !== undefined) return createBuiltinReplacement(store, { id, title, report: flags.has("report"), repo: text(flags, "repo") ?? null, replaces, now });
       return { ok: true as const, task: store.createTask({ id, title, ...(flags.has("report") ? { deliverable: "report" as const } : {}) }, now) };
     },
     result => result.ok,
   );
 
-  if (!outcome.ok) return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
+  if (!outcome.ok) {
+    if ("reason" in outcome) return fail(write, json, "task add", outcome.reason,
+      outcome.reason === "recovery-held" ? "This task can't be replaced while earlier check execution is unverified after recovery." : "The replacement couldn't be filed. Nothing was changed.", EXIT.refused);
+    return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
+  }
 
   const filedId = outcome.task.id;
   const remote = activeRemote();
@@ -9746,17 +9799,15 @@ async function addTask(
     }
   }
   remote?.noteTask(filedId);
-  store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
+  if (replaces === undefined) store.stampFiledVia(store.refFor(BUILT_IN, filedId).id, "cli");
 
   // Placement is explicit, never inferred from where the command happened to
   // run: a task filed from the wrong directory would silently bind to it.
   const placedIn = text(flags, "repo");
-  if (placedIn !== undefined) {
+  if (placedIn !== undefined && replaces === undefined) {
     const placed = store.placeTask(store.refFor(BUILT_IN, filedId).id, canonicalProject(placedIn) ?? resolve(placedIn));
     if (typeof placed === "object" && !placed.ok) return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
   }
-
-  if (replaces !== undefined) store.setTaskState(replaces, "cancelled", now, {}, undefined, outcome.task.id);
 
   if (checks !== undefined) {
     const chosen = setTaskCheckLevel(store, outcome.task.id, checks, "cli", now);
@@ -9833,6 +9884,7 @@ async function runTaskChecks(positional: readonly string[], flags: Map<string, s
   const asked = requestFollowUpChecks(store, { runId: result.runId, level, actor: "cli" }, clock());
   if (!asked.ok) return fail(write, json, "task checks", asked.reason, asked.message, EXIT.refused);
   const done = await runFollowUpCheck(store, context.evidenceRoot, asked.request, { now: clock });
+  if (done?.state === "recovery-held") return fail(write, json, "task checks", "recovery-held", done.note!, EXIT.refused);
   const state = done?.state ?? "waiting";
   const words = `${CHECK_LEVEL_WORDS[asked.level]} checks`;
   const payload = { task: taskId, run: result.runId, head: result.head, request: asked.request, level: asked.level, state, exitCode: done?.exitCode ?? null };
@@ -10456,6 +10508,7 @@ async function stateTask(
   noteActingPerson(flags, context);
   const moved = store.setTaskState(id, state as TaskState, now, mutationFrom(flags, now), text(flags, "reason"), replacedBy);
   if (!moved.ok) {
+    if (moved.reason === "recovery-held") return fail(write, json, "task state", "recovery-held", "This task can't be replaced while earlier check execution is unverified after recovery.", EXIT.refused);
     if (moved.reason === "reason-required" || moved.reason === "bad-reason") {
       return fail(write, json, "task state", moved.reason,
         moved.reason === "reason-required"
@@ -11876,16 +11929,16 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
 /**
  * `project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]`: what the project's
  * builds may reach (egress.ts). New scopes are written with it and their approvals seal it; scopes already approved
- * keep the network they were approved with. Widening or narrowing it is an approver's act with a password typed now,
+ * keep the network they were approved with until their re-filed plan is approved (route-change.ts proposeNetworkChanges). Widening or narrowing it is an approver's act with a password typed now,
  * kept in the ledger as before → after.
  */
 async function projectNetworkCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const command = "project network";
-  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "as", "token", "token-file", "token-env", "db", "json"]);
+  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "request", "why", "by", "wait", "timeout", "as", "token", "token-file", "token-env", "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project network option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
   const local = flags.get("local");
-  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none].", EXIT.usage);
+  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none] [--request <why>].", EXIT.usage);
   const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.projectNetwork(repo);
@@ -11909,13 +11962,35 @@ async function projectNetworkCommand(positional: readonly string[], flags: Map<s
     loopback: local === "any" ? "any" : local === "none" ? "proxy-only" : current.loopback,
   };
   if (next.hosts.length > MAX_NETWORK_HOSTS) return fail(context.write, context.json, command, "usage", `A project lists at most ${MAX_NETWORK_HOSTS} hosts.`, EXIT.usage);
+  if (flags.has("request")) {
+    const parts: string[] = [];
+    if (local === "any") parts.push("Allow this Mac's local services (localhost / ::1)");
+    if (local === "none") parts.push("Block local services (proxy-only)");
+    if (flags.has("open")) parts.push("Switch build network to open (any host)");
+    if (flags.has("allowlist")) parts.push("Switch build network to allowlist");
+    if (add.length > 0) parts.push(`Allow hosts: ${add.join(", ")}`);
+    if (remove.length > 0) parts.push(`Remove hosts: ${remove.join(", ")}`);
+    const req = fileAgentRequest(context.databaseFile, {
+      kind: "network",
+      repo,
+      ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+      summary: parts.join(" · ") || "Update project network policy",
+      why: text(flags, "why") ?? text(flags, "request") ?? "",
+      params: { local: next.loopback, mode: next.mode, hosts: next.hosts },
+    }, context.clock());
+    return finishFiledRequest(command, req, flags, context);
+  }
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
   if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes what its builds may reach, with their password: pass --as and --token.", EXIT.refused);
-  const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
-  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after }, () => [
+  // One transaction: the setting, and each idle task in the project re-filed on it, waiting for the same Approve.
+  const { changed, waiting } = context.store.transact(() => {
+    const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
+    return { changed, waiting: proposeNetworkChanges(context.store, repo, context.clock()) };
+  });
+  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after, waiting }, () => [
     ...words(changed.after),
-    "Scopes written from now on use this; scopes already approved keep the network they were approved with.",
+    waiting === 0 ? "Scopes written from now on use this." : `${waiting === 1 ? "1 task waits" : `${waiting} tasks wait`} for your Approve to use it; a running task keeps the network it started with.`,
   ]);
 }
 
@@ -12086,6 +12161,7 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
   if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator deletes projects: pass --as and --token (or use the remembered login).", EXIT.refused);
   const holdings = projectHoldings(store, repo);
   const running = projectRunning(store, repo, context.clock());
+  if (running.includes(PROJECT_RECOVERY_DELETE_MESSAGE)) return fail(context.write, context.json, command, "recovery-held", PROJECT_RECOVERY_DELETE_MESSAGE, EXIT.refused);
   if (running.length > 0) return fail(context.write, context.json, command, "running", `Nothing was deleted: ${running.join(", ")}. Stop it, then try again.`, EXIT.refused);
   if (!flags.has("yes")) {
     return succeed(context.write, context.json, command, { repo, deleted: false, holdings }, () => [
@@ -12094,7 +12170,7 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
     ]);
   }
   const done = await deleteProject(store, repo, { actor: acting.name, via: "command line", now: context.clock(), evidenceRoot: context.evidenceRoot ?? join(dirname(context.databaseFile), "evidence"), poolRoot: join(dirname(context.databaseFile), "worktrees") });
-  if (!done.ok) return fail(context.write, context.json, command, done.reason, done.said, done.reason === "running" ? EXIT.refused : EXIT.failed);
+  if (!done.ok) return fail(context.write, context.json, command, done.reason, done.said, (done.reason === "running" || done.reason === "recovery-held") ? EXIT.refused : EXIT.failed);
   if (!("error" in registered) && registered.repos.includes(repo)) await updateRepos(registryFile, repos => removeRepos(repos, [repo])).catch(() => undefined);
   return succeed(context.write, context.json, command, { repo, deleted: true, removed: done.removed, left: done.left, ledgerEntry: done.ledgerId }, () => [
     `Deleted ${repo}: ${holdingsWords(done.removed)}.`, ...done.left.map(one => `Git kept ${one}.`), `The ledger records it as entry #${done.ledgerId}.`,
@@ -12102,11 +12178,15 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
 }
 
 /** `spend [--month YYYY-MM] [--csv]` (v105): what agent work cost in a month, by project, person, subagent and model. */
-function spendCommand(flags: Map<string, string | true>, context: Context): number {
+async function spendCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
   const command = "spend";
-  for (const name of flags.keys()) if (!["month", "csv", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
+  for (const name of flags.keys()) if (!["month", "csv", "live", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
   const month = text(flags, "month") === undefined ? monthOf(context.clock()) : monthNamed(text(flags, "month") ?? null);
   if (month === null) return fail(context.write, context.json, command, "usage", "Use spend --month YYYY-MM.", EXIT.usage);
+  const refreshed = flags.has("live")
+    ? await refreshSubscriptions(context.store, context.databaseFile, { forceClaude: true, forceGemini: true, now: context.clock() })
+    : null;
+  const gemini = refreshed?.gemini ?? readStoredGeminiStatus(context.databaseFile);
   const items = spendItems(context.store.handle, month.from, month.to);
   const names = subagentNames(context.store.handle);
   if (flags.has("csv")) { context.write(spendCsv(items, names).replace(/^\ufeff/, "").trimEnd()); return EXIT.ok; }
@@ -12115,14 +12195,11 @@ function spendCommand(flags: Map<string, string | true>, context: Context): numb
   const unpriced = items.filter(item => item.microusd === null && (item.tokensIn !== null || item.kind !== "run")).length;
   const byProject = new Map<string, number>();
   for (const item of items) if (item.project !== null) byProject.set(item.project, (byProject.get(item.project) ?? 0) + (item.microusd ?? 0));
-  // v105: subscription work is $0; what binds it is its plan's windows, as the provider last said.
   const limits = context.store.providerLimits();
   const windows = limitsView(limits, [], { project: repo => basename(repo), subagent: id => String(id) }, context.clock())?.tiles ?? [];
-  // Sized routing: each tier's tasks, time to a result and plan use, and what the tiers saved.
   const tiers = tierReport(context.store.handle, month.from, month.to, items);
-  // Suggestions and rules (results-routing slice 4): what each rule, trial and suggestion observed, over 90 days a side.
   const suggestions = savingsReportOrError(context.store, context.store.knownRepos(), context.clock());
-  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
+  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, ...(gemini !== null ? { gemini } : {}), tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
     `${month.name}: ${spendUsd(total)} (${items.length} pieces of work${unpriced > 0 ? `, ${unpriced} unpriced` : ""}; subscription work is $0)`,
     ...windows.map(tile => `  ${`${tile.name} ${tile.window}`.padEnd(24)} ${tile.value}% · ${tile.detail}`),
     ...[...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([repo, microusd]) => `  ${basename(repo).padEnd(24)} ${spendUsd(microusd)}`),
@@ -15639,4 +15716,175 @@ export function threadStateWord(one: { ended: boolean; turn: string | null; ship
 export function shipOutcomeWord(ship: string | null): string {
   const word = ship === "merged" ? "Merged" : ship === "sent-back" ? "sent back" : null;
   return word === null ? "" : ` · Ship: ${word}`;
+}
+
+// Replacement helpers stay at EOF: existing password-proof function ordinals must not move.
+class BuiltinReplacementRefused extends Error { constructor(readonly reason: string) { super(reason); } }
+function createBuiltinReplacement(store: Store, input: { id: string; title: string; report: boolean; repo: string | null; replaces: string; now: Date }):
+  { ok: true; task: ReturnType<Store["createTask"]> } | { ok: false; reason: string } {
+  try {
+    return store.transact(() => store.savepoint(() => {
+      if (store.getTask(input.replaces) === null) return { ok: false as const, reason: "unknown-task" };
+      const task = store.createTask({ id: input.id, title: input.title, ...(input.report ? { deliverable: "report" as const } : {}) }, input.now);
+      const ref = store.refFor(BUILT_IN, task.id).id;
+      store.stampFiledVia(ref, "cli");
+      if (input.repo !== null) {
+        const placed = store.placeTask(ref, canonicalProject(input.repo) ?? resolve(input.repo));
+        if (typeof placed === "object" && !placed.ok) throw new BuiltinReplacementRefused("scoped");
+      }
+      const moved = store.setTaskState(input.replaces, "cancelled", input.now, {}, undefined, task.id);
+      if (!moved.ok) throw new BuiltinReplacementRefused(moved.reason);
+      return { ok: true as const, task };
+    }));
+  } catch (error) {
+    if (error instanceof BuiltinReplacementRefused) return { ok: false, reason: error.reason };
+    throw error;
+  }
+}
+function builtinReplacementHeld(store: Store, source: string, target: string): boolean {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return false;
+  for (const taskId of [source, target]) {
+    const ref = store.lookupRef(taskId);
+    if (ref === null ? store.getTask(taskId) !== null : readCheckRecoveryHoldsForTaskRef(store, ref.id).kind !== "no-evidence") return true;
+  }
+  return false;
+}
+
+// Agent request helpers stay at EOF so existing password-proof function ordinals never shift.
+async function finishFiledRequest(
+  command: string,
+  req: AgentRequest,
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  if (flags.get("wait") === true) {
+    const timeoutSeconds = Number(text(flags, "timeout") ?? "300");
+    const safeTimeout = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.min(3600, Math.round(timeoutSeconds)) : 300;
+    const settled = await waitForAgentRequest(context.databaseFile, req.id, safeTimeout);
+    if (settled?.status === "approved") {
+      return succeed(context.write, context.json, command, { requested: true, request: settled }, () => [
+        `Approved (${settled.id}): ${settled.summary}`,
+      ]);
+    }
+    const reason = settled?.status === "declined" ? "declined" : "timeout";
+    const msg = settled?.status === "declined"
+      ? `Request ${req.id} was declined${settled.resolutionNote ? `: ${settled.resolutionNote}` : "."}`
+      : `Request ${req.id} is still pending in Toolroll.app after ${safeTimeout}s.`;
+    return fail(context.write, context.json, command, reason, msg, EXIT.refused);
+  }
+  return succeed(context.write, context.json, command, { requested: true, request: req }, () => [
+    `Requested (${req.id}): ${req.summary}`,
+    `Project: ${req.repo}`,
+    ...(req.why ? [`Why: ${req.why}`] : []),
+    `Waiting for your 1-click approval in Toolroll.app (or run \`toolroll request wait ${req.id}\`).`,
+  ]);
+}
+
+async function projectLiveViewCommand(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const command = "project live-view";
+  const allowed = new Set(["repo", "request", "why", "by", "wait", "timeout", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project live-view option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) {
+    return fail(context.write, context.json, command, "usage", "Use project live-view --repo <project path> [on | off] [--request <why>].", EXIT.usage);
+  }
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = liveCommandsShown(context.store, repo);
+  if (wanted === undefined) {
+    return succeed(context.write, context.json, command, { repo, showCommands: current }, () => [
+      `${repo}: Live View shell commands are ${current ? "shown" : "hidden (redacted)"}.`,
+    ]);
+  }
+  if (!flags.has("request")) {
+    return fail(context.write, context.json, command, "refused", "Changing Live View shell commands takes operator approval in Toolroll.app → Project Settings, or pass --request \"<why>\" to ask for 1-click approval.", EXIT.refused);
+  }
+  const showCommands = wanted === "on";
+  const req = fileAgentRequest(context.databaseFile, {
+    kind: "live-view",
+    repo,
+    ...(text(flags, "by") === undefined ? {} : { requester: text(flags, "by")! }),
+    summary: showCommands ? "Show live shell commands in Activity" : "Hide live shell commands in Activity",
+    why: text(flags, "why") ?? text(flags, "request") ?? "",
+    params: { showCommands },
+  }, context.clock());
+  return finishFiledRequest(command, req, flags, context);
+}
+
+async function requestCommand(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const action = positional[0] ?? "list";
+  const command = `request ${action}`;
+  const allowed = new Set(["all", "repo", "timeout", "note", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a request option.`, EXIT.usage);
+
+  if (action === "list") {
+    const repoFlag = text(flags, "repo");
+    const repo = repoFlag === undefined ? undefined : (await knownProject(context, repoFlag, { listed: true, canonical: true })) ?? resolve(repoFlag);
+    const items = listAgentRequests(context.databaseFile, {
+      ...(flags.has("all") ? {} : { status: "pending" }),
+      ...(repo === undefined ? {} : { repo }),
+    });
+    return succeed(context.write, context.json, command, { requests: items }, () =>
+      items.length === 0
+        ? ["No pending agent requests."]
+        : items.map(one => `${one.id} [${one.status}] (${one.requester} · ${one.projectName}) ${one.summary}${one.why ? ` — ${one.why}` : ""}`),
+    );
+  }
+
+  if (action === "show") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request show <id>`.", EXIT.usage);
+    const found = listAgentRequests(context.databaseFile).find(one => one.id === id) ?? null;
+    if (found === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    return succeed(context.write, context.json, command, { request: found }, () => [
+      `${found.id} [${found.status}] ${found.summary}`,
+      `Project: ${found.repo}`,
+      `By: ${found.requester}`,
+      ...(found.why ? [`Why: ${found.why}`] : []),
+    ]);
+  }
+
+  if (action === "wait") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request wait <id> [--timeout <seconds>]`.", EXIT.usage);
+    const timeoutSeconds = Number(text(flags, "timeout") ?? "300");
+    const safeTimeout = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? Math.min(3600, Math.round(timeoutSeconds)) : 300;
+    const settled = await waitForAgentRequest(context.databaseFile, id, safeTimeout);
+    if (settled === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    if (settled.status === "approved") {
+      return succeed(context.write, context.json, command, { request: settled }, () => [`Approved (${settled.id}): ${settled.summary}`]);
+    }
+    return fail(
+      context.write,
+      context.json,
+      command,
+      settled.status === "declined" ? "declined" : "timeout",
+      settled.status === "declined" ? `Request ${settled.id} was declined.` : `Request ${settled.id} is still pending after ${safeTimeout}s.`,
+      EXIT.refused,
+    );
+  }
+
+  if (action === "decline") {
+    const id = positional[1];
+    if (id === undefined) return fail(context.write, context.json, command, "usage", "Use `toolroll request decline <id> [--note <reason>]`.", EXIT.usage);
+    const resolved = resolveAgentRequest(context.databaseFile, id, "declined", text(flags, "note"), context.clock());
+    if (resolved === null) return fail(context.write, context.json, command, "not-found", `No agent request ${id}.`, EXIT.refused);
+    return succeed(context.write, context.json, command, { request: resolved }, () => [`Declined (${resolved.id}): ${resolved.summary}`]);
+  }
+
+  if (action === "clear") {
+    const removed = clearResolvedAgentRequests(context.databaseFile);
+    return succeed(context.write, context.json, command, { removed }, () => [`Cleared ${removed} resolved agent request${removed === 1 ? "" : "s"}.`]);
+  }
+
+  return fail(context.write, context.json, "request", "usage", "Use `toolroll request [list [--all]|show <id>|wait <id>|decline <id>|clear]`.", EXIT.usage);
 }

@@ -43,9 +43,17 @@ test("every route row is marked for the local owner; an allow names one of its a
     "agents.seen=mark-seen", "agents.watch=watch-agent", "chat.file=file-task", "chat.mate-end=lead-send", "chat.mate-follow=lead-send", "chat.mate-mint=lead-send",
     "chat.mate-stop=lead-send", "chat.proposal.confirm=lead-send", "chat.proposal.dismiss=lead-send", "chat.queued-remove=lead-send", "chat.send=lead-send",
     "decision.answer=answer-question",
+    // Direct Chat (server-backed local-clone agent chats, loopback + solo only; src/server/direct-chat.ts re-checks each act).
+    "direct-chat.apply-main=direct-chat-manage", "direct-chat.attach=direct-chat-send", "direct-chat.delete=direct-chat-manage",
+    "direct-chat.model=direct-chat-manage", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
+    "direct-chat.ship-preview=read", "direct-chat.ship=direct-chat-ship", "direct-chat.start=direct-chat-start", "direct-chat.stop=direct-chat-stop",
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
-    "engine.agents-check=check-agents", "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
+    "engine.agents-check=check-agents",
+    // The Mac app's Automations screen: pause, resume and run now (check or press) of an existing trigger, each its own act
+    // (flows.ts triggerAct re-checks it); share, renew, secret, setup, sender, scope, remove, unshare and dropped stay denied.
+    "flow.trigger.check=trigger-run", "flow.trigger.pause=trigger-pause", "flow.trigger.press=trigger-run", "flow.trigger.resume=trigger-resume",
+    "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
     "projects.open=add-project", "projects.select=read", "run.act.comment=request-revision", "run.act.note=request-revision", "run.act.revise=request-revision", "settings.advanced=view-preference", "settings.code-map=code-map-switch",
     // Threads' setup from the workbench's `w` link (threads-everyday S6): saving, checking and turning terms on take a
     // password typed into the form (local-owner.ts LOCAL_PASSWORD_ACTS); removing your own sign-in only narrows.
@@ -58,14 +66,23 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.models-agent=change-models", "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
     // A project's Flexible terms: turning on takes a password typed into the form; lowering and off only narrow.
     "settings.project-flexible=project-flexible",
+    "settings.project-live-view=project-live-view",
+    "settings.project-network=project-network",
     // Settings → General: task sizing on or off (the handler re-checks `task-sizing-switch` in its write).
     "settings.task-sizing=task-sizing-switch",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
     "task.act.pause=pause-run", "task.act.plan=request-plan", "task.act.reply=answer-question", "task.act.requeue=retry-build", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
+    // The Mac app's Change Models for one task (local-owner-acts.ts localOwnerChangeAgents re-checks this exact act; an
+    // approved task stays approved only when nothing but the picked agent changed).
+    "task.act.route=change-task-agents",
     "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "tasks.fast=build-now",
     // Solo-workbench T4: one's own live terminal; terminals.ts admits a local owner only while the install is solo.
     "term.agent-install=agent-install", "term.agent-sign-in=agent-sign-in", "term.close=take-over", "term.remove=take-over", "term.start=take-over", "welcome.sample=add-project",
   ]);
+  // The engine API's Automations read is a console GET like the others (a read), never an edge row.
+  expect(ROUTES.find(row => row.id === "engine.automations")).toMatchObject({ stage: "console", method: "GET", local: "allow", localAct: "read" });
+  // So is its Projects read (the Mac app's project list and the repositories it could add).
+  expect(ROUTES.find(row => row.id === "engine.projects")).toMatchObject({ stage: "console", method: "GET", local: "allow", localAct: "read" });
   // Every console GET is a read.
   for (const row of ROUTES.filter(one => one.stage === "console" && one.method !== "POST")) expect([row.local, row.localAct], row.id).toEqual(["allow", "read"]);
 });
@@ -106,7 +123,8 @@ test("every lead proposal kind and chat operation is decided, and the decisions 
   expect(Object.keys(CHAT_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_ACTIONS).sort());
   expect(Object.keys(CHAT_TASK_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_TASK_ACTIONS).sort());
   expect(Object.entries(CHAT_ACTION_LOCAL_ACTS).filter(([, act]) => act !== null).sort()).toEqual([
-    ["code_map_switch", "code-map-switch"], ["result_accept", "complete-task"], ["scope_approve", "approve-plan"], ["suggestion_not_now", "dismiss-suggestion"], ["task_cancel", "stop-run"], ["task_resume", "resume-run"],
+    ["code_map_switch", "code-map-switch"], ["direct_chat_promote", "file-task"], ["direct_chat_reply", "direct-chat-send"], ["direct_chat_start", "direct-chat-start"],
+    ["result_accept", "complete-task"], ["scope_approve", "approve-plan"], ["suggestion_not_now", "dismiss-suggestion"], ["task_cancel", "stop-run"], ["task_resume", "resume-run"],
     // A Start card is the fast start's own act: the console's tasks.fast route, said in chat.
     ["task_start", "build-now"], ["trial_stop", "trial-stop"]]);
 });

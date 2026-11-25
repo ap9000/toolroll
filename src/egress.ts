@@ -113,6 +113,7 @@ export const PROVIDER_HOSTS: Readonly<Record<string, readonly string[]>> = {
   qwen: ["chat.qwen.ai", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"],
   // Goose talks to whatever model service it is set up with: a project using it adds that service's host.
   goose: [],
+  antigravity: ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com", "generativelanguage.googleapis.com", "oauth2.googleapis.com", "accounts.google.com"],
 };
 
 /** A package ecosystem a project's files name, and the registry hosts its installs read from. */
@@ -176,19 +177,26 @@ export function repositoryEcosystems(repo: string): Ecosystem[] {
 }
 
 /** The network a new scope is written with: the project's setting, its provider's hosts and its ecosystems' registries. */
+const PROVIDER_NEEDS_LOOPBACK: ReadonlySet<string> = new Set(["antigravity"]);
+
 export function resolveNetwork(provider: string, project: ProjectNetwork, ecosystems: readonly Ecosystem[]): NetworkProfile {
-  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback: project.loopback };
+  const loopback: LoopbackMode = PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : project.loopback;
+  if (project.mode === "open") return { version: NETWORK_POLICY_VERSION, mode: "open", hosts: [], loopback };
   const hosts = new Set<string>([
     ...(PROVIDER_HOSTS[provider] ?? []),
     ...ecosystems.flatMap(one => REGISTRY_HOSTS[one]),
     ...project.hosts,
   ]);
-  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback: project.loopback };
+  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...hosts].sort(), loopback };
 }
 
-/** The network of a launch nothing sealed one for (a planner, a check): its provider's own hosts and nothing else. */
 export function providerOnlyNetwork(provider: string): NetworkProfile {
-  return { version: NETWORK_POLICY_VERSION, mode: "allowlist", hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(), loopback: "proxy-only" };
+  return {
+    version: NETWORK_POLICY_VERSION,
+    mode: "allowlist",
+    hosts: [...new Set(PROVIDER_HOSTS[provider] ?? [])].sort(),
+    loopback: PROVIDER_NEEDS_LOOPBACK.has(provider) ? "any" : "proxy-only",
+  };
 }
 
 /**
@@ -240,9 +248,21 @@ export function unaccountedHosts(network: NetworkProfile, provider: string): str
   return network.hosts.filter(one => !known.has(one));
 }
 
-export function networkWords(network: NetworkProfile | null, provider: string): string {
-  if (network === null) return "Network: approved before network rules (provider and package registries only)";
-  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}`;
+/** Where Codex runs in its own command sandbox (no OS fence: off a Mac), it can't route through Toolroll's egress proxy
+ * (agent-fence.ts codexNetworkOn): its shell commands reach the network only with Full access and an open network. */
+export function codexCommandsOffline(profile: { provider: string; sandboxMode?: string; network?: NetworkProfile | null }, platform: NodeJS.Platform = process.platform): boolean {
+  if (profile.provider !== "codex" && profile.provider !== "openrouter") return false;
+  // On a Mac Codex runs inside the OS fence with the run's proxy, like every other agent (codex-os-fence.md).
+  if (platform === "darwin") return false;
+  return !(profile.sandboxMode === "danger-full-access" && profile.network?.mode === "open");
+}
+
+export function networkWords(network: NetworkProfile | null, provider: string, options?: { commandsOffline?: boolean }): string {
+  const offlineSuffix = options?.commandsOffline !== true ? ""
+    : network?.mode === "open" ? " (Codex commands run offline until Full access is on)"
+    : " (Codex commands run offline — set a worktree setup command for dependencies)";
+  if (network === null) return `Network: approved before network rules (provider and package registries only)${offlineSuffix}`;
+  if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}${offlineSuffix}`;
   // Only what is accounted for collapses into a name: this agent's own provider hosts, and a registry whose every host is
   // listed. Any other host — another provider's included, or part of a registry — is said exactly (the terms diet,
   // Codex r1 finding 3).
@@ -253,7 +273,8 @@ export function networkWords(network: NetworkProfile | null, provider: string): 
   const added = network.hosts.filter(one => !known.has(one));
   const parts = [...(named ? ["the agent's provider"] : []), ...full.map(([name]) => REGISTRY_NAMES[name])];
   return `Network: ${parts.length === 0 && added.length === 0 ? "no hosts" : [parts.join(", "), added.length === 0 ? "" : `${parts.length === 0 ? "" : "and "}${added.join(", ")}`].filter(Boolean).join(", ")}`
-    + (network.loopback === "any" ? "; and every local service on this Mac" : "");
+    + (network.loopback === "any" ? "; and every local service on this Mac" : "")
+    + offlineSuffix;
 }
 const REGISTRY_NAMES: Readonly<Record<Ecosystem, string>> = { npm: "npm", python: "PyPI", rust: "crates.io", go: "the Go proxy", ruby: "RubyGems", jvm: "Maven and Gradle" };
 

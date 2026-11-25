@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "ship": {
+    "id": "33333333333333333333333333333333",
+    "seq": 1,
+    "mode": "ship",
+    "branch": "task-dc-33333333333333333333333333333333",
+    "candidateSha": "9999999999999999999999999999999999999999",
+    "state": "armed",
+    "taskId": "dc-33333333333333333333333333333333",
+    "prUrl": null,
+    "detail": null,
+    "createdAt": "2026-10-20T10:02:00.000Z",
+    "stateAt": "2026-10-20T10:02:00.000Z"
+  },
+  "said": "Shipped snapshot 99999999 — verifying checks before auto-merge."
+}

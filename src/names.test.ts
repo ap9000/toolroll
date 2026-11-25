@@ -71,6 +71,20 @@ describe("the config home", () => {
     writeFileSync(join(h, ".config", "toolroll", "orders.db"), "");
     expect(databasePath({}, h)).toBe(join(h, ".config", "toolroll", "orders.db"));
   });
+
+  test("an active nightorders console wins over a stale legacy standing-orders orders.db", () => {
+    const h = home();
+    const stale = join(h, ".config", "standing-orders");
+    const active = join(h, ".config", "nightorders");
+    mkdirSync(stale, { recursive: true });
+    mkdirSync(active, { recursive: true });
+    writeFileSync(join(stale, "orders.db"), "");
+    writeFileSync(join(active, "orders.db"), "");
+    writeFileSync(join(active, "up-console.json"), '{"port":4180}');
+
+    expect(databasePath({}, h)).toBe(join(active, "orders.db"));
+    expect(configPath({}, h)).toBe(join(active, "repos.json"));
+  });
 });
 
 describe("TOOLROLL_* variables", () => {

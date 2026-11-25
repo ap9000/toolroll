@@ -6,7 +6,7 @@
 #   vendor/vt100          the Terminal tab's VT emulator: upstream vt100 0.16.2, faster scrolling and edge fixes (its README)
 [workspace]
 resolver = "2"
-members = ["crates/toolroll-api", "crates/toolroll-tui", "crates/toolroll-fake-engine", "crates/toolroll-tui-harness"]
+members = ["crates/toolroll-registry-io", "crates/toolroll-api", "crates/toolroll-tui", "crates/toolroll-fake-engine", "crates/toolroll-tui-harness"]
 # Third-party code kept as written (vendor/vt100: upstream's formatting and lints; its README lists our changes).
 exclude = ["vendor"]
 

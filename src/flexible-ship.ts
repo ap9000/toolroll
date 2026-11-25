@@ -62,6 +62,7 @@ import { assignmentOf } from "./assignment.js";
 import { completeAndOpenPullRequest, mergePullRequest, type PullRequestSeen } from "./pull-request-flow.js";
 import type { PublishExec } from "./publish.js";
 import { fullCheckGate } from "./result-follow-ups.js";
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun } from "./check-recovery-hold.js";
 import { runCheckLevel } from "./check-levels.js";
 import { FLEXIBLE_FILED_PREFIX } from "./flexible-merge-guard.js";
 import { run } from "./exec.js";
@@ -151,7 +152,7 @@ export function flexibleShipSummary(terms: FlexibleShipTerms, digest: string): A
 
 export type FlexibleShipReason = "not-available" | "thread-unknown" | "not-owner" | "not-an-approver" | "stale-generation" | "two-person" | "not-flexible"
   | "no-check" | "thread-running" | "invalid-request" | "changed" | "machine-proof" | "proof-refused" | "handoff-failed" | "approval-refused"
-  | "not-found" | "wrong-state" | "cancelled" | "no-publishing" | "merging" | "laptop";
+  | "recovery-held" | "not-found" | "wrong-state" | "cancelled" | "no-publishing" | "merging" | "laptop";
 export type FlexibleShipRefusal = { ok: false; reason: FlexibleShipReason; message: string };
 
 const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
@@ -170,6 +171,7 @@ const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
   "proof-refused": "That didn't prove it's you, or you can't approve work in this project. Nothing changed.",
   "handoff-failed": "The changes were imported, but their check task couldn't be made. The import is kept: ship again, or remove it.",
   "approval-refused": "The changes were imported, but their check task couldn't be approved. The import is kept: ship again, or remove it.",
+  "recovery-held": "Checks are on hold after recovery. Earlier execution is unverified.",
   "not-found": "There's no such Ship.",
   "wrong-state": "This Ship can't do that now.",
   "cancelled": "The merge was stopped for good.",
@@ -518,8 +520,9 @@ const inFlight = new Set<string>();
 export const FLEXIBLE_STALE_MERGE_MS = 15 * 60_000;
 
 /** End an armed (or completed) Ship for good, with why. Never a reserved one: that merge is past stopping. */
-function cancelArmed(store: Store, ship: Pick<FlexibleShipRow, "id" | "repo" | "taskId">, why: string, now: Date, actor = "toolroll"): boolean {
+function cancelArmed(store: Store, ship: Pick<FlexibleShipRow, "id" | "repo" | "taskId">, why: string, now: Date, actor = "toolroll", recoveryGuard = false): boolean {
   return store.transact(() => {
+    if (recoveryGuard) proveShipCheckRecovery(store, ship.taskId);
     const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'cancelled', detail = ?, state_at = ? WHERE id = ? AND state IN ('armed', 'completed')").run(why.slice(0, 2000), now.toISOString(), ship.id);
     if (Number(moved.changes) !== 1) return false;
     store.recordAction({ at: now.toISOString(), actor, repo: ship.repo, taskId: ship.taskId, runId: null, source: actor === "toolroll" ? "policy" : "work", action: "flexible merge cancelled", outcome: "cancelled", detail: why.slice(0, 2000) });
@@ -599,14 +602,22 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
   if (found === null) return refuse("not-found");
   if (found.state === "merging") return { ok: true, state: "waiting", why: "its merge is under way; its outcome is read back from GitHub" };
   if (found.state !== "armed" && found.state !== "completed") return refuse("wrong-state", found.state);
-  const stop = (why: string): FlexibleShipRefusal => { cancelArmed(store, found, why, clock()); return refuse("cancelled", why); };
+  if (shipCheckRecoveryHeld(store, found.taskId)) return refuse("recovery-held");
+  const stop = (why: string): FlexibleShipRefusal => {
+    try { cancelArmed(store, found, why, clock(), "toolroll", true); }
+    catch (error) { if (error instanceof ShipStop) return error.refusal; throw error; }
+    return refuse("cancelled", why);
+  };
   const lapsed = authorityProblem(store, found);
   if (lapsed !== null) return stop(lapsed);
   // The base still under the branch it merges into: a base rewritten out from under it is an incompatible move.
   let project: string;
   try { project = realpathSync(found.repo); } catch { return { ok: true, state: "waiting", why: "the project can't be read" }; }
-  const read = hardenedGit(input.runner ?? run, "read", { repo: project });
-  const based = await read("git", ["--no-replace-objects", "merge-base", "--is-ancestor", found.base, `refs/heads/${found.terms.github.base}`], { cwd: project, timeoutMs: 30_000 });
+  const read = hardenedGit((file, args, options) => { proveShipCheckRecovery(store, found.taskId); return (input.runner ?? run)(file, args, options); }, "read", { repo: project });
+  let based: Awaited<ReturnType<typeof read>>;
+  try { based = await read("git", ["--no-replace-objects", "merge-base", "--is-ancestor", found.base, `refs/heads/${found.terms.github.base}`], { cwd: project, timeoutMs: 30_000 }); }
+  catch (error) { if (error instanceof ShipStop) return error.refusal; throw error; }
+  if (shipCheckRecoveryHeld(store, found.taskId)) return refuse("recovery-held");
   if (based.code === 1) return stop(`its starting commit is no longer on ${found.terms.github.base}`);
   if (based.code !== 0) return { ok: true, state: "waiting", why: `${found.terms.github.base} couldn't be read` };
   const newest = newestRun(store, input.taskId);
@@ -628,22 +639,25 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
         if (!flexibleAvailable(store)) throw new ShipStop(refuse("not-available"));
         const again = rowOfTask(store, input.taskId);
         if (again === null || again.state !== "armed") throw new ShipStop(refuse("wrong-state"));
+        proveShipCheckRecovery(store, again.taskId);
         const problem = authorityProblem(store, again);
-        if (problem !== null) { cancelArmed(store, again, problem, clock()); cancelled = refuse("cancelled", problem); return; }
+        if (problem !== null) { cancelArmed(store, again, problem, clock(), "toolroll", true); cancelled = refuse("cancelled", problem); return; }
         const who = verifyApproverStanding(store, again.approvedBy, again.approvedGeneration, [again.repo]);
         if (!who.ok) throw new ShipStop(refuse("not-an-approver"));
+        proveShipCheckRecovery(store, again.taskId);
         const opened = completeAndOpenPullRequest(store, { taskId: input.taskId, digest: receipt.digest, runId: newest.id, who: who.who, root: input.root }, clock());
         if (!opened.ok) throw new ShipStop(refuse("wrong-state", opened.message));
         if (opened.publication.headSha !== head || opened.publication.githubRepo !== again.terms.github.repo || opened.publication.base !== again.terms.github.base) {
           throw new ShipStop(refuse("wrong-state", "its pull request would go somewhere other than the shipped commit and destination"));
         }
         const at = clock().toISOString();
+        proveShipCheckRecovery(store, again.taskId);
         store.handle.prepare("UPDATE flexible_ship SET state = 'completed', merge_head = ?, merge_at = ?, check_receipt = ?, state_at = ? WHERE id = ? AND state = 'armed'").run(head, at, check, at, again.id);
         store.recordAction({ at, actor: again.approvedBy, repo: again.repo, taskId: input.taskId, runId: newest.id, source: "work", action: "flexible ship completed", outcome: head,
           detail: `ship ${again.id} · checked head ${head} · check receipt ${check} · pull request owed to ${again.terms.github.repo} ${again.terms.github.base}` });
       });
     } catch (error) {
-      if (error instanceof ShipStop) return error.refusal.reason === "cancelled" ? error.refusal : { ok: true, state: "waiting", why: error.refusal.message };
+      if (error instanceof ShipStop) return error.refusal.reason === "cancelled" || error.refusal.reason === "recovery-held" ? error.refusal : { ok: true, state: "waiting", why: error.refusal.message };
       throw error;
     }
     if (cancelled !== null) return cancelled;
@@ -660,22 +674,27 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
   // Where it may land, on GitHub's own view: the signed repository, base and number, on exactly the checked head.
   const destination = (seen: PullRequestSeen): string | null =>
     pullRequestElsewhere(found, seen, prNumber) ?? (seen.head !== found.mergeHead ? "its pull request on GitHub shows another commit than the one whose check passed" : null);
+  if (shipCheckRecoveryHeld(store, found.taskId)) return refuse("recovery-held");
   inFlight.add(token);
   let merged: Awaited<ReturnType<typeof mergePullRequest>>;
   try {
     merged = await mergePullRequest(store, { runId: newest.id, by: found.approvedBy, flexibleShip: found.id, flexibleToken: token, clock, destination, ...(input.exec === undefined ? {} : { exec: input.exec }),
       proceed: seen => reserveMerge(store, { ship: found.id, token, runId: newest.id, root: input.root, now: clock(), seen, prNumber }) });
-  } finally { inFlight.delete(token); }
+  } catch (error) { if (error instanceof ShipStop) return error.refusal; throw error; }
+  finally { inFlight.delete(token); }
   // A merge GitHub shows somewhere else (another base or repository, another head, or merged by someone else there) is
   // never this Ship's: it ends cancelled, said as it is, whether GitHub reported it before the call or after.
   const landedElsewhere = merged.ok ? (merged.seen === undefined ? "GitHub didn't say where it merged" : destination(merged.seen)) : merged.reason === "elsewhere" ? merged.message : null;
   if (landedElsewhere !== null) {
+    let held = false;
     store.transact(() => {
+      if (shipCheckRecoveryHeld(store, found.taskId)) { held = true; return; }
       const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'cancelled', merge_token = NULL, merge_reserved_at = NULL, detail = ?, state_at = ? WHERE id = ? AND state IN ('completed', 'merging')")
         .run(`${landedElsewhere} (GitHub reports it merged there, not as this Ship's merge)`.slice(0, 2000), clock().toISOString(), found.id);
       if (Number(moved.changes) === 1) store.recordAction({ at: clock().toISOString(), actor: "toolroll", repo: found.repo, taskId: input.taskId, runId: newest.id, source: "policy",
         action: "flexible merge cancelled", outcome: "merged-elsewhere", detail: `ship ${found.id} · ${landedElsewhere}`.slice(0, 2000) });
     });
+    if (held) return { ok: true, state: "waiting", why: WORDS["recovery-held"] };
     return refuse("cancelled", landedElsewhere);
   }
   const after = rowOfTask(store, input.taskId);
@@ -705,15 +724,17 @@ function reserveMerge(store: Store, input: { ship: string; token: string; runId:
   if (!flexibleAvailable(store)) return false;
   const ship = readRow(store.handle.prepare("SELECT * FROM flexible_ship WHERE id = ?").get(input.ship) as Record<string, unknown> | undefined);
   if (ship === null || ship.state !== "completed" || ship.taskId === null) return false;
+  proveShipCheckRecovery(store, ship.taskId);
   // Where GitHub would actually merge it, read just before this: the pull request's own base branch and repository must
   // be the signed ones. A pull request retargeted elsewhere (same head, same green checks) ends the Ship.
   const elsewhere = pullRequestElsewhere(ship, input.seen, input.prNumber);
   const problem = elsewhere ?? authorityProblem(store, ship);
-  if (problem !== null) { cancelArmed(store, ship, problem, input.now); return false; }
+  if (problem !== null) { cancelArmed(store, ship, problem, input.now, "toolroll", true); return false; }
   const newest = newestRun(store, ship.taskId);
   if (newest === null || newest.id !== input.runId || newest.headRevision !== ship.candidate || ship.mergeHead !== ship.candidate) return false;
   if (passingCheck(store, input.root, newest.id, ship, input.now) !== ship.checkReceipt) return false;
   const at = input.now.toISOString();
+  proveShipCheckRecovery(store, ship.taskId);
   const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'merging', merge_token = ?, merge_reserved_at = ?, state_at = ? WHERE id = ? AND state = 'completed'").run(input.token, at, at, ship.id);
   if (Number(moved.changes) !== 1) return false;
   store.recordAction({ at, actor: ship.approvedBy, repo: ship.repo, taskId: ship.taskId, runId: newest.id, source: "work", action: "flexible merge reserved", outcome: ship.candidate, detail: `ship ${ship.id}` });
@@ -746,13 +767,16 @@ async function settleMerging(store: Store, ship: FlexibleShipRow, exec: PublishE
   const elsewhere = pullRequestElsewhere(ship, { base, url }, publication.prNumber);
   const outcome: "merged" | "completed" | "cancelled" = elsewhere !== null ? "cancelled" : state === "MERGED" ? "merged" : state === "OPEN" && headOid === ship.mergeHead ? "completed" : "cancelled";
   const why = elsewhere !== null ? `${elsewhere}${state === "MERGED" ? " (GitHub merged it there)" : ""}` : `its pull request is ${state.toLowerCase()} on GitHub${headOid !== ship.mergeHead ? " on another commit" : ""}`;
+  let held = false;
   store.transact(() => {
+    if (shipCheckRecoveryHeld(store, ship.taskId) && !(state === "MERGED" && elsewhere === null && headOid === ship.mergeHead)) { held = true; return; }
     const moved = store.handle.prepare(`UPDATE flexible_ship SET state = ?, merge_token = NULL, merge_reserved_at = NULL, state_at = ?${outcome === "cancelled" ? ", detail = ?" : ""} WHERE id = ? AND state = 'merging' AND merge_token = ?`)
       .run(...(outcome === "cancelled" ? [outcome, at, why.slice(0, 2000), ship.id, ship.mergeToken] : [outcome, at, ship.id, ship.mergeToken]));
     if (Number(moved.changes) !== 1) return;
     store.recordAction({ at, actor: "toolroll", repo: ship.repo, taskId: ship.taskId, runId: newest?.id ?? null, source: "policy", action: outcome === "merged" ? "flexible merged" : outcome === "completed" ? "flexible merge released" : "flexible merge cancelled",
       outcome: outcome === "merged" ? commit ?? "merged" : outcome, detail: `ship ${ship.id} · read back from GitHub: ${state.toLowerCase()}` });
   });
+  if (held) return { ok: true, state: "waiting", why: WORDS["recovery-held"] };
   if (outcome === "merged") return { ok: true, state: "merged" };
   if (outcome === "completed") return { ok: true, state: "waiting", why: "the merge didn't happen; it will be tried again once everything still holds" };
   return refuse("cancelled", why);
@@ -912,4 +936,15 @@ export async function removeFlexibleImport(store: Store, input: { ship: string; 
       detail: `ship ${ship.id} · ${ship.importRef}` });
   });
   return { ok: true };
+}
+
+/** Only trusted, already-bound task/run families. Pre-file/imports with no bound run remain unclosed. */
+function shipCheckRecoveryHeld(store: Store, taskId: string | null): boolean {
+  if (taskId === null || store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return false;
+  const ref = store.lookupRef(taskId);
+  const seed = ref === null ? undefined : store.handle.prepare("SELECT id FROM run WHERE task_ref = ? ORDER BY id DESC LIMIT 1").get(ref.id);
+  return seed === undefined || readCheckRecoveryHoldsForRun(store, Number(seed["id"])).kind !== "no-evidence";
+}
+function proveShipCheckRecovery(store: Store, taskId: string | null): void {
+  if (shipCheckRecoveryHeld(store, taskId)) throw new ShipStop(refuse("recovery-held"));
 }

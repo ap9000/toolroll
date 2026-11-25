@@ -58,17 +58,18 @@ const VIEW_THEME_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The workbench's theme roles (tui/crates/toolroll-tui/src/theme.rs Role), each to a #rrggbb colour. */
 /** The roles an agent may colour: never a status's (needs-you, running, passed, failed and their -soft badges), whose
  * colours come from the themes only (view_cli.rs STATUS_ROLES refuses them too). */
-export const VIEW_ROLES = ["paper", "ink", "muted", "line", "selection", "selection-ink", "ground", "raised", "fill"] as const;
+export const VIEW_ROLES = ["paper", "ink", "muted", "line", "selection", "selection-ink", "ground", "raised", "fill", "chat-bubble", "chat-bubble-ink"] as const;
 const viewHex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const viewColors = z.strictObject({
   paper: viewHex.optional(), ink: viewHex.optional(), muted: viewHex.optional(), line: viewHex.optional(), selection: viewHex.optional(),
   "selection-ink": viewHex.optional(), ground: viewHex.optional(), raised: viewHex.optional(), fill: viewHex.optional(),
+  "chat-bubble": viewHex.optional(), "chat-bubble-ink": viewHex.optional(),
 } satisfies Record<(typeof VIEW_ROLES)[number], z.ZodType>);
 /** Task states a list filters by. */
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
 /** The shared actions the lead proposes with propose_action; flows and subagents have their own tools. */
-const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_") && one !== "task_start");
+const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_") && !one.startsWith("direct_chat_") && one !== "task_start");
 
 /** A card's spec as the lead sees it: one flat props object. Each element's own props are read strictly by card-catalog.ts. */
 const cardProps = z.strictObject({
@@ -215,6 +216,46 @@ export const LEAD_TOOL_INPUTS = {
     show_costs: z.boolean().optional(),
     notifications: z.strictObject({ asks: z.boolean().optional(), finished: z.boolean().optional(), failed: z.boolean().optional() }).optional(),
   }),
+  list_direct_chats: z.strictObject({
+    repo: repoId.optional(),
+    include_archived: z.boolean().optional(),
+    limit: z.int().min(1).max(40).optional(),
+  }),
+  get_direct_chat: z.strictObject({
+    chat: z.string().min(1).max(80),
+    limit: z.int().min(1).max(30).optional(),
+  }),
+  manage_direct_chat: z.strictObject({
+    chat: z.string().min(1).max(80),
+    operation: z.enum(["stop", "archive", "unarchive", "set_model", "rename"]),
+    provider: z.enum(["claude", "codex", "gemini"]).optional(),
+    model: z.string().min(1).max(120).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).nullable().optional(),
+    title: z.string().min(1).max(160).optional(),
+  }),
+  get_usage_limits: z.strictObject({}),
+  get_recent_updates: z.strictObject({
+    repo: repoId.optional(),
+    since: text("recapSince").optional(),
+    hours: z.int().min(1).max(168).optional(),
+  }),
+  propose_direct_chat: z.strictObject({
+    operation: z.enum(["start", "reply", "promote"]),
+    repo: repoId.optional(),
+    chat: z.string().min(1).max(80).optional(),
+    prompt: note.optional(),
+    provider: z.enum(["claude", "codex", "gemini"]).optional(),
+    model: z.string().min(1).max(120).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).nullable().optional(),
+    title: text("taskTitle").optional(),
+    goal: scopeText.optional(),
+    planning: z.enum(["auto", "required", "skip"]).optional(),
+  }),
+  propose_report_followups: z.strictObject({
+    task: taskRef,
+    indices: z.array(z.int().min(1).max(20)).min(1).max(5).optional(),
+    planning: z.enum(["auto", "required", "skip"]).optional(),
+  }),
 } as const;
 
 export type LeadToolName = keyof typeof LEAD_TOOL_INPUTS;
@@ -353,6 +394,13 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_cancel: proposed("cancel", { task: str }),
   toolroll_view_read: z.looseObject({ settings: z.looseObject({}), allowed: z.looseObject({}), roles: list, themes: z.looseObject({}), guide: str }),
   toolroll_view_set: z.looseObject({ changed: z.array(str), said: str }),
+  list_direct_chats: z.looseObject({ chats: rows({ chat: str, title: str, provider: str, model: str, running: z.boolean() }), total: int }),
+  get_direct_chat: z.looseObject({ chat: str, title: str, provider: str, model: str, running: z.boolean(), turns: list }),
+  manage_direct_chat: z.looseObject({ chat: str, operation: str, said: str }),
+  get_usage_limits: z.looseObject({ summary: nullable(str), windows: list, budgets: list }),
+  get_recent_updates: z.looseObject({ since: str, headline: str, tasksReady: list, tasksCompleted: list, tasksFailed: list, directChatsUpdated: list, openDecisions: list }),
+  propose_direct_chat: cardDrafted,
+  propose_report_followups: z.looseObject({ task: str, reportTitle: str, drafted: rows({ index: int, proposal: int, title: str }), awaiting: str }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
 
 /**

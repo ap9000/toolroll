@@ -17,8 +17,8 @@ import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { sleep } from "./sleep.js";
 
-export type TerminalProgram = "claude" | "codex" | "shell";
-export const TERMINAL_PROGRAMS: readonly TerminalProgram[] = ["claude", "codex", "shell"];
+export type TerminalProgram = "claude" | "codex" | "antigravity" | "shell";
+export const TERMINAL_PROGRAMS: readonly TerminalProgram[] = ["claude", "codex", "antigravity", "shell"];
 
 /** At most this many running sessions per console, and this many kept at all (ended ones count until removed). */
 export const MAX_LIVE_TERMINALS = 8;
@@ -168,6 +168,8 @@ export class ScreenMirror {
 
 /** One attached page. The host never waits on it. */
 export type TerminalViewer = {
+  /** Account name of this viewer, for single-controller presence labels. */
+  actor?: string;
   output(data: Buffer): void;
   control(message: TerminalControl): void;
   /** Bytes sent to it and not yet taken by its connection (a socket's buffered amount): the program pauses past
@@ -190,6 +192,7 @@ export const ATTACH_HOLD_BYTES = 4 * 1024 * 1024;
 export const SNAPSHOT_MAX_CHARS = 8 * 1024 * 1024;
 export type TerminalControl =
   | { t: "hello"; cols: number; rows: number; program: TerminalProgram; ended: boolean }
+  | { t: "control"; role: "controller" | "observer"; controller: string | null; viewers: string[]; epoch: number }
   | { t: "exit"; code: number | null; signal: number | null }
   /** The program isn't reading what's typed: input waits until it does. */
   | { t: "input-full" };
@@ -250,6 +253,11 @@ type Session = TerminalSummary & {
   flowTimer: NodeJS.Timeout | null;
   attaching: number;
   viewers: Set<TerminalViewer>;
+  /** Single-controller lease: the viewer gate holding typing & resize authority, plus actor labels for presence. */
+  controller: TerminalViewer | null;
+  leaseEpoch: number;
+  viewerActors: Map<TerminalViewer, string>;
+  viewerGates: Map<TerminalViewer, TerminalViewer>;
   closing: Promise<void> | null;
   exited: Promise<void>;
   /**
@@ -336,6 +344,17 @@ export function takeOverEnvironment(from: NodeJS.ProcessEnv, buildWritable: read
 }
 
 /**
+ * Environment for an interactive agent take-over (`claude` / `codex`): keeps the console's coding environment (so the
+ * agent's own auth/config variables carry over, as in a standalone live terminal) while still scrubbing `PATH` to
+ * trusted folders outside every build-writable root.
+ */
+export function takeOverAgentEnvironment(from: NodeJS.ProcessEnv, buildWritable: readonly string[] = []): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...from };
+  if (env["PATH"] !== undefined) env["PATH"] = trustedPath(env["PATH"], buildWritable);
+  return env;
+}
+
+/**
  * PATH for a take-over's shell: only absolute folders outside every build-writable root (each registered project and
  * its worktrees, Toolroll's state folder with its build worktrees and live copies), compared both as written and as
  * their real paths, so a program a build wrote is never what the person's `git` or `npm` turns out to be. Relative and
@@ -368,15 +387,28 @@ export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): stri
   return null;
 }
 
-function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv): { file: string; args: string[] } | null {
+function sanitizePrompt(prompt: string | undefined): string | null {
+  if (prompt === undefined) return null;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = prompt.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").trim().slice(0, 1200);
+  if (cleaned === "") return null;
+  return cleaned.startsWith("-") ? `Task: ${cleaned}` : cleaned;
+}
+
+function defaultProgram(program: TerminalProgram, env: NodeJS.ProcessEnv, prompt?: string): { file: string; args: string[] } | null {
   if (program === "shell") {
     if (process.platform === "win32") return { file: onPath("pwsh", env) ?? onPath("powershell", env) ?? "cmd.exe", args: [] };
     const shell = env["SHELL"];
     const file = shell !== undefined && isAbsolute(shell) && existsSync(shell) ? shell : onPath("bash", env) ?? "/bin/sh";
     return { file, args: ["-l"] };
   }
-  const file = onPath(program, env);
-  return file === null ? null : { file, args: [] };
+  const binary = program === "antigravity" ? "agy" : program;
+  const file = onPath(binary, env);
+  if (file === null) return null;
+  const brief = sanitizePrompt(prompt);
+  if (brief === null) return { file, args: [] };
+  if (program === "antigravity") return { file, args: ["-i", brief] };
+  return { file, args: program === "claude" ? ["--", brief] : [brief] };
 }
 
 export class TerminalHost {
@@ -406,6 +438,11 @@ export class TerminalHost {
     return [...this.sessions.values()].filter(one => one.owner === owner).map(one => this.summary(one)).reverse();
   }
 
+  /** All non-sensitive sessions across accounts, newest first (callers filter by project access). */
+  listAll(): TerminalSummary[] {
+    return [...this.sessions.values()].filter(one => one.agent === null).map(one => this.summary(one)).reverse();
+  }
+
   get(id: string): TerminalSummary | null {
     const session = this.sessions.get(id);
     return session === undefined ? null : this.summary(session);
@@ -432,17 +469,22 @@ export class TerminalHost {
    */
   async start({ name: owner, generation, localGeneration = null }: { name: string; generation: number; localGeneration?: number | null }, repoPath: string, program: TerminalProgram,
     size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null,
-    from: { revision: string; task: string; run: number } | null = null): Promise<TerminalSummary> {
+    from: { revision: string; task: string; run: number; prompt?: string } | null = null): Promise<TerminalSummary> {
     if (this.stopped) throw new TerminalError("The console is stopping.");
-    if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
+    if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex, Antigravity or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
     if (this.kept() + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
     // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
-    // the person's login shell then reads its own startup files, as any new terminal does (the pane says so).
+    // an interactive agent take-over keeps coding auth variables while scrubbing PATH to trusted folders.
     const roots = [this.options.worktreeRoot, ...(this.options.buildWritable?.() ?? []), ...this.moreBuildWritable.flatMap(more => more())];
-    const env = { ...(from === null ? this.env() : takeOverEnvironment(this.env(), roots)), TERM: "xterm-256color", COLORTERM: "truecolor" };
-    const command = this.options.programs?.[program] ?? defaultProgram(program, env);
-    if (command === null) throw new TerminalError(`${program === "claude" ? "Claude Code" : "Codex"} isn't installed on this computer (\`${program}\` is not on PATH).`);
+    const baseEnv = from === null ? this.env() : program === "shell" ? takeOverEnvironment(this.env(), roots) : takeOverAgentEnvironment(this.env(), roots);
+    const env = { ...baseEnv, TERM: "xterm-256color", COLORTERM: "truecolor" };
+    const command = this.options.programs?.[program] ?? defaultProgram(program, env, from?.prompt);
+    if (command === null) {
+      const label = program === "claude" ? "Claude Code" : program === "codex" ? "Codex" : "Antigravity";
+      const binary = program === "antigravity" ? "agy" : program;
+      throw new TerminalError(`${label} isn't installed on this computer (\`${binary}\` is not on PATH).`);
+    }
     const id = randomBytes(16).toString("hex");
     // The slot is held, here and for the updater, before any slow work.
     this.starting += 1;
@@ -486,7 +528,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -559,7 +601,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), controller: null, leaseEpoch: 0, viewerActors: new Map(), viewerGates: new Map(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
       this.sessions.set(id, session);
@@ -700,6 +742,12 @@ export class TerminalHost {
       overflow: () => viewer.overflow?.(),
     };
     session.viewers.add(gate);
+    session.viewerActors.set(gate, viewer.actor ?? session.owner);
+    session.viewerGates.set(viewer, gate);
+    if (session.controller === null) {
+      session.controller = gate;
+      session.leaseEpoch += 1;
+    }
     session.attaching += 1;
     this.flow(session);
     session.screen.snapshot(screen => {
@@ -713,8 +761,92 @@ export class TerminalHost {
       } catch { /* the viewer's own close handles it */ }
       held.length = 0;
       live = true;
+      this.broadcastControl(session);
     });
-    return () => { session.viewers.delete(gate); done(); this.flow(session); };
+    return () => {
+      session.viewers.delete(gate);
+      session.viewerActors.delete(gate);
+      session.viewerGates.delete(viewer);
+      if (session.controller === gate) {
+        session.controller = null;
+        session.leaseEpoch += 1;
+      }
+      done();
+      this.flow(session);
+      this.broadcastControl(session);
+    };
+  }
+
+  private broadcastControl(session: Session): void {
+    const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+    const viewers = [...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner);
+    for (const one of session.viewers) {
+      try {
+        one.control({
+          t: "control",
+          role: session.controller === one ? "controller" : "observer",
+          controller,
+          viewers,
+          epoch: session.leaseEpoch,
+        });
+      } catch { /* gone */ }
+    }
+  }
+
+  /** Whether this attached viewer currently holds the single-controller lease. */
+  isController(id: string, viewer: TerminalViewer): boolean {
+    const session = this.sessions.get(id);
+    if (session === undefined) return false;
+    if (session.sensitive) return session.viewers.has(viewer);
+    const gate = session.viewerGates.get(viewer);
+    return gate !== undefined && session.controller === gate;
+  }
+
+  /** Transfer the single-controller lease to this attached viewer and notify all observers. */
+  takeControl(id: string, viewer: TerminalViewer): boolean {
+    const session = this.sessions.get(id);
+    if (session === undefined || session.sensitive) return false;
+    const gate = session.viewerGates.get(viewer);
+    if (gate === undefined || !session.viewers.has(gate)) return false;
+    if (session.controller !== gate) {
+      session.controller = gate;
+      session.leaseEpoch += 1;
+      this.broadcastControl(session);
+    }
+    return true;
+  }
+
+  /** Step back from controller to observer mode and notify all viewers. */
+  releaseControl(id: string, viewer: TerminalViewer): void {
+    const session = this.sessions.get(id);
+    if (session === undefined || session.sensitive) return;
+    const gate = session.viewerGates.get(viewer);
+    if (gate !== undefined && session.controller === gate) {
+      session.controller = null;
+      session.leaseEpoch += 1;
+      this.broadcastControl(session);
+    }
+  }
+
+  /** Current controller actor and viewer list for presence/status displays. */
+  controlState(id: string): { controller: string | null; viewers: string[]; epoch: number } | null {
+    const session = this.sessions.get(id);
+    if (session === undefined) return null;
+    const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+    const viewers = [...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner);
+    return { controller, viewers, epoch: session.leaseEpoch };
+  }
+
+  /** Read-only presence snapshot of every live (non-sensitive, non-ended) terminal session. */
+  activePresence(): Array<{ id: string; taskId: string | null; repo: string; program: TerminalProgram; controller: string | null; viewers: string[] }> {
+    const out: Array<{ id: string; taskId: string | null; repo: string; program: TerminalProgram; controller: string | null; viewers: string[] }> = [];
+    for (const session of this.sessions.values()) {
+      if (session.sensitive || session.endedAt !== null) continue;
+      const controller = session.controller === null ? null : session.viewerActors.get(session.controller) ?? session.owner;
+      const viewers = [...new Set([...session.viewers].map(one => session.viewerActors.get(one) ?? session.owner))].sort((a, b) => a.localeCompare(b));
+      out.push({ id: session.id, taskId: session.task, repo: session.repo, program: session.program, controller, viewers });
+    }
+    return out;
   }
 
   /** A sensitive pane's one page: what it printed so far (held in memory for this page alone), then live output; no
@@ -1117,7 +1249,11 @@ export function worktreeResidents(table: ProcessTable, worktreeReal: string, ter
 }
 
 /** One client frame, read strictly; null closes the socket. */
-export type TerminalInput = { t: "in"; d: string } | { t: "resize"; cols: number; rows: number };
+export type TerminalInput =
+  | { t: "in"; d: string }
+  | { t: "resize"; cols: number; rows: number }
+  | { t: "take-control" }
+  | { t: "release-control" };
 export const MAX_FRAME_BYTES = 64 * 1024;
 
 export function parseTerminalFrame(text: string): TerminalInput | null {
@@ -1128,6 +1264,8 @@ export function parseTerminalFrame(text: string): TerminalInput | null {
   const frame = value as Record<string, unknown>;
   const keys = Object.keys(frame).sort().join(",");
   if (frame["t"] === "in" && keys === "d,t" && typeof frame["d"] === "string") return { t: "in", d: frame["d"] };
+  if (frame["t"] === "take-control" && keys === "t") return { t: "take-control" };
+  if (frame["t"] === "release-control" && keys === "t") return { t: "release-control" };
   if (frame["t"] === "resize" && keys === "cols,rows,t") {
     const cols = frame["cols"], rows = frame["rows"];
     if (Number.isSafeInteger(cols) && Number.isSafeInteger(rows) && (cols as number) >= COLS.min && (cols as number) <= COLS.max && (rows as number) >= ROWS.min && (rows as number) <= ROWS.max) {

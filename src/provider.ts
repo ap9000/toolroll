@@ -20,7 +20,7 @@
  */
 
 import { INTERPRETER_INJECTION_ENV } from "./acp-attest.js";
-import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
+import { claudeFenceSettings, codexFenceArgv, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
 import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, runAcpSession, CLAUDE_COST_UNKNOWN } from "./exec.js";
@@ -90,6 +90,9 @@ export type Invocation = {
   /** What the fence gives back (agent-fence.ts): Codex renders read-only
    * paths as "read", Claude's file tools never edit them. */
   fenceGrants?: FenceGrants;
+  /** How the launch is fenced (invoke.ts fenceLaunch). Under `macos-sandbox` Codex's own sandbox is off: the OS fence
+   * around its whole process holds it instead (codex-os-fence.md). */
+  fenceMethod?: FenceMethod;
   /** The operator's own model choices, for a build routed with no model
    * (provider-home.ts): the model, Claude's always-on thinking and Codex's
    * reasoning effort. Never rendered for a review or an explicit model. */
@@ -715,7 +718,8 @@ const codexArgv = (extra: readonly string[]) => (invocation: Invocation): string
       // denied. Full access becomes that sandbox widened to write anywhere
       // with network, instead of no sandbox (which fenced nothing).
       : invocation.fence !== undefined && invocation.fence.length > 0
-        ? codexFenceArgv(invocation.fence, invocation.skipPermissions, invocation.fenceGrants)
+        ? invocation.fenceMethod === "macos-sandbox" ? ["--dangerously-bypass-approvals-and-sandbox"]
+          : codexFenceArgv(invocation.fence, invocation.skipPermissions, invocation.fenceGrants)
         : invocation.skipPermissions
           ? ["--dangerously-bypass-approvals-and-sandbox"]
           : codexSandboxArgv("workspace-write", resuming)),

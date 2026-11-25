@@ -552,7 +552,9 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", tools: [{ name: "notes" }], skipped: [{ name: "later", reason: expect.stringContaining("after this task was approved") }] });
   } finally { claude.cleanup(); }
 
-  const codex = await prepareRunTools(runs, 13, "codex", { home: dir, now: T0, containment: FENCED });
+  // Codex in its own profile (no OS fence: off a Mac) can't hide a server's environment; inside the macOS sandbox it
+  // takes Claude's rule (secretToolRefusal's table).
+  const codex = await prepareRunTools(runs, 13, "codex", { home: dir, now: T0, containment: { platform: "darwin", fence: "codex-profile" } });
   try {
     const argv = codex.argv.join(" ");
     expect(codex.argv).toEqual([]);
@@ -567,7 +569,7 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
   } finally { codex.cleanup(); }
 });
 
-test("a local tool with secrets starts only for a Claude build behind the macOS sandbox; every other launch leaves it out, saying why", () => {
+test("a local tool with secrets starts only for a build behind the macOS sandbox (Claude, Codex, OpenRouter); every other launch leaves it out, saying why", () => {
   const unsandboxed = "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
   const linux = "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
   const codex = "This tool needs a Claude build to protect its sign-in details.";
@@ -576,7 +578,12 @@ test("a local tool with secrets starts only for a Claude build behind the macOS 
   // Linux refuses outright, whatever fence it reports: hidepid hides nothing from the same user.
   for (const fence of ["linux-bubblewrap", "claude-rules", "none", "macos-sandbox"] as const) expect(secretToolRefusal("claude", { platform: "linux", fence })).toBe(linux);
   expect(secretToolRefusal("claude", { platform: "win32", fence: "macos-sandbox" })).toBe(unsandboxed);
-  for (const provider of ["codex", "openrouter"] as const) expect(secretToolRefusal(provider, FENCED)).toBe(codex);
+  // Codex and OpenRouter take Claude's rule inside the macOS sandbox; in Codex's own profile they never start one.
+  for (const provider of ["codex", "openrouter"] as const) {
+    expect(secretToolRefusal(provider, FENCED)).toBeNull();
+    for (const fence of ["codex-profile", "none"] as const) expect(secretToolRefusal(provider, { platform: "darwin", fence })).toBe(codex);
+    expect(secretToolRefusal(provider, { platform: "linux", fence: "codex-profile" })).toBe(codex);
+  }
 });
 
 test("a Linux build keeps its web and secret-free tools; only the local one with secrets is left out, and it never starts", async () => {

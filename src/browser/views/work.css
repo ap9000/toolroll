@@ -54,6 +54,9 @@
 [data-view] .so-work .so-work-steps [data-step-state="blocked"] { color: var(--so-ink); font-weight: 600; }
 [data-view] .so-work .so-work-decide { display: grid; gap: var(--so-space-md); min-width: 0; }
 [data-view] .so-work .so-work-send { margin: 0; }
+[data-view] .so-work .so-work-vitals { padding: var(--so-space-sm) 0; gap: var(--so-space-xs) 14px; }
+/* Keep the panel's primary decision reachable while reading long plans or steps (matches home.css .so-home-do). */
+[data-view] .so-work .so-work-act-dock { position: sticky; bottom: -40px; z-index: 2; padding: var(--so-space-sm) 0 var(--so-space-md); border-top: 1px solid var(--so-line); background: var(--so-paper); }
 
 /* 901-1149px: the panel as a drawer over the list. */
 .so-work-drawer { position: fixed; inset: 0 0 0 auto; z-index: 60; width: min(480px, 92vw); overflow: auto; background: var(--so-paper); box-shadow: var(--so-shadow-overlay); outline: none; }

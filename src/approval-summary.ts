@@ -18,7 +18,7 @@ import { resolveScopeProfile } from "./agentconfig.js";
 import { isProtectedWork, type ApprovalRules } from "./approval-policy.js";
 import { permissionPlainWords, scopeFullAccess } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
-import { networkWords, unaccountedHosts } from "./egress.js";
+import { codexCommandsOffline, networkWords, unaccountedHosts } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { makesNoPlan, NO_READINESS, PLANNED_FIRST_REASON, projectRoute, routeFromJson, sizeWords, type PhaseRoute, type ReadinessLookup } from "./phase-routing.js";
 import { sandboxTermsWords } from "./project-sandbox.js";
@@ -199,7 +199,7 @@ function releaseAuthorityWords(release: { repo: string; branch: string; base: st
  * read the raw values, never the words (words round: 1200 and 1201 seconds both read "20 min"). */
 type AccessGroup = { name: string; fields: readonly string[]; words: (profile: ExecutionProfile) => string };
 const ACCESS_GROUPS: readonly AccessGroup[] = [
-  { name: "network", fields: ["network"], words: profile => lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, "")) },
+  { name: "network", fields: ["network"], words: profile => lowerFirst(networkWords(profile.network ?? null, profile.provider, { commandsOffline: codexCommandsOffline(profile) }).replace(/^Network: /, "")) },
   { name: "tools", fields: PERMISSION_KEYS, words: profile => permissionPlainWords(profile) ?? "not known" },
   { name: "writes", fields: ["writes"], words: profile => writesWords(profile.writes) },
   { name: "reads", fields: ["fencePolicy", "readDeny"], words: profile => sandboxTermsWords(profile).reads },
@@ -312,7 +312,7 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   if (profile !== null) {
     const network = profile.network ?? null;
     const wide = network !== null && (network.mode === "open" || network.loopback === "any" || unaccountedHosts(network, profile.provider).length > 0);
-    decisions.push({ label: "Network", words: lowerFirst(networkWords(network, profile.provider).replace(/^Network: /, "")), fields: ["profile.network"], ...(wide ? { risky: true } : {}) });
+    decisions.push({ label: "Network", words: lowerFirst(networkWords(network, profile.provider, { commandsOffline: codexCommandsOffline(profile) }).replace(/^Network: /, "")), fields: ["profile.network"], ...(wide ? { risky: true } : {}) });
   }
   if (tools !== null) {
     decisions.push({ label: "Tools", words: `${tools}${usualTools !== null && usualTools !== tools ? " (not the project’s usual)" : ""}`,

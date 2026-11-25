@@ -268,7 +268,7 @@ export const CONSOLE_FORMS = {
   agentWatch: formContract("POST /agents/watch", ["run", "view", "op"]),
   leadProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
   coordinatorProposal: formContract("POST /proposals/<id>/confirm|dismiss", ["return", "confirm"]),
-  chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "token"]),
+  chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "images", "instant", "token"]),
   chatFile: formContract("POST /chat/file/<id>", ["token"]),
   chatAck: formContract("POST /chat/ack/<id>", ["token", "nonce"]),
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).
@@ -300,7 +300,7 @@ export const CONSOLE_FORMS = {
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),
   taskCancel: formContract("POST /t/<task>/cancel", ["reason", "state", "run"]),
-  taskRoute: formContract("POST /t/<task>/route", ["size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "return"]),
+  taskRoute: formContract("POST /t/<task>/route", ["size", "risky", "phase", "clear-phase", "agent", "provider", "model", "sawDigest", "when", "return"]),
   taskScope: formContract("POST /t/<task>/scope", ["sawDigest", "permission-mode", "quality-mode", "budget-usd", "budget-microusd", "requirement", "requirement-new", "requirement-how", "requirement-new-how", "goal-brief", "goal", "not", "touches", "acceptance"]),
   taskApprove: formContract("POST /t/<task>/approve", ["return", "digest", "token", "nonce", "rebuild", "sheet"]),
   taskAcceptProof: formContract("POST /t/<task>/accept-proof", ["run", "note", "return"]),
@@ -310,6 +310,14 @@ export const CONSOLE_FORMS = {
   // request id.
   taskPause: formContract("POST /t/<task>/pause", ["run", "request", "note", "mode", "return", "key"]),
   taskResume: formContract("POST /t/<task>/resume|resume-arm", ["run", "token", "nonce", "return"]),
+  directChatStart: formContract("POST /engine/direct-chats", ["project", "prompt", "provider", "model", "effort", "request"]),
+  directChatSend: formContract("POST /engine/direct-chats/<id>/messages", ["prompt", "request"]),
+  directChatModel: formContract("POST /engine/direct-chats/<id>/model", ["provider", "model", "effort"]),
+  directChatDelete: formContract("POST /engine/direct-chats/<id>/delete", ["discard", "keepBranch"]),
+  directChatAttach: formContract("POST /engine/direct-chats/<id>/attachments", ["filename", "mimeType", "dataBase64"]),
+  directChatShipPreview: formContract("POST /engine/direct-chats/<id>/ship-preview", ["mode", "title", "goal"]),
+  directChatShip: formContract("POST /engine/direct-chats/<id>/ship", ["mode", "title", "goal", "termsDigest", "password"]),
+  directChatShipCancel: formContract("POST /engine/direct-chats/<id>/ship-cancel", ["shipId"]),
 } as const;
 
 export type ConsoleFormName = keyof typeof CONSOLE_FORMS;
@@ -331,6 +339,9 @@ export const BODILESS_POSTS = [
   "POST /settings/storage/check",
   "POST /projects/github",
   "POST /code/<session>/ship/preview",
+  "POST /engine/direct-chats/<id>/stop",
+  "POST /engine/direct-chats/<id>/apply-main-edits",
+  "POST /engine/direct-chats/<id>/repair",
 ] as const;
 
 /** The field names a console form's handler may read. */

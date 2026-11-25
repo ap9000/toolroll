@@ -305,9 +305,9 @@ fn the_list_cycles_full_rail_hidden_and_says_so_on_top() {
     assert!(hidden.lines().next().unwrap().contains("LIST HIDDEN"));
     assert!(!hidden.contains("Needs you 2"), "{hidden}");
     insta::assert_snapshot!("qol3_hidden", hidden);
-    // Keys still move through the hidden list.
+    // Movement belongs to the only visible panel.
     app.key(key('j'));
-    assert_eq!(app.selected, 1);
+    assert_eq!(app.selected, 0);
     app.key(key('b'));
     assert_eq!(app.list_state, ListState::Full);
     assert!(!screen(&mut app, 120, 30)
@@ -543,6 +543,8 @@ fn search_the_focused_pane() {
     let unlit = reversed(&draw(&mut app, 120, 30));
     let live = screen(&mut app, 120, 30);
     assert!(live.contains("npm test"), "{live}");
+    // Focus the detail panel first so `/` searches pane content (in List focus, `/` filters the task list).
+    app.key(code(KeyCode::Right));
     app.key(key('/'));
     assert!(matches!(app.mode, Mode::Search(_)));
     for c in "NPM".chars() {

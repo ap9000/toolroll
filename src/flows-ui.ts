@@ -4,7 +4,7 @@ import { liveAttemptOf, steerControlsFor } from "./steer-controls.js";
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
 import { draftFor, flowDefinitionOf, NO_REPLY_MOVE_ON } from "./flow-engine.js";
 import { describeStandingOrder } from "./flow-schedule.js";
-import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
+import { canCheckTrigger, canPressTrigger, describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
 import { SENDER_WORDS } from "./webhook-signing.js";
 import { READER_CAPTURED } from "./webhook-readers.js";
 import { hostOf, linkWords, provedWords, snapshotOf } from "./task-source.js";
@@ -25,7 +25,7 @@ import { labelOf, nameOf } from "./subagent-admin.js";
 import { callWords, receiptWords } from "./subagent-tools.js";
 import { undoFor } from "./subagent-week.js";
 import { flowCardTaskLine } from "./flow-card-task.js";
-import { unattendedViewOf } from "./flow-unattended.js";
+import { activeUnattendedGrant, unattendedViewOf } from "./flow-unattended.js";
 import { browserViewOf } from "./flow-browser.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { html, htmlString, joinHtml, postForm, type Html, type HtmlValue } from "./html.js";
@@ -88,24 +88,47 @@ function nextWords(at: string, now: Date): string {
   return hours < 24 ? `in ${hours} h` : `in ${Math.round(hours / 24)} day${Math.round(hours / 24) === 1 ? "" : "s"}`;
 }
 
+/** One trigger's few words: a button's press, else its headline (what the Flows list and the Mac app both show). */
+function oneTriggerWords(store: Store, trigger: FlowTriggerRow): string | null {
+  const config = triggerConfigOf(trigger);
+  if (config === null) return null;
+  return config.kind === "button" ? `When someone presses ${config.label}` : triggerHeadline(config, store).name;
+}
+
 /** What starts a flow, in a few words: its active triggers, else the paused ones, else that cards are added by hand. */
 function triggerWords(store: Store, triggers: readonly FlowTriggerRow[]): string {
   const shown = triggers.filter(one => one.state === "active");
   const pick = shown.length > 0 ? shown : triggers.filter(one => one.state === "paused");
-  const words = pick.flatMap(one => {
-    const config = triggerConfigOf(one);
-    if (config === null) return [];
-    return [config.kind === "button" ? `When someone presses ${config.label}` : triggerHeadline(config, store).name];
-  });
+  const words = pick.flatMap(one => { const said = oneTriggerWords(store, one); return said === null ? [] : [said]; });
   if (words.length === 0) return "Cards added by hand";
   return words.length === 1 ? words[0]! : `${words[0]!} and ${words.length - 1} more`;
 }
 
-type FlowListGroup = "needs" | "running" | "on" | "paused";
-const FLOW_LIST_GROUPS: ReadonlyArray<readonly [FlowListGroup, string]> = [["needs", "Needs you"], ["running", "Running"], ["on", "Turned on"], ["paused", "Paused"]];
+export type AutomationGroup = "needs" | "running" | "on" | "paused";
+const FLOW_LIST_GROUPS: ReadonlyArray<readonly [AutomationGroup, string]> = [["needs", "Needs you"], ["running", "Running"], ["on", "Turned on"], ["paused", "Paused"]];
+/** The most flows GET /engine/automations sends, and the longest last result it sends for a trigger. */
+export const AUTOMATIONS_MAX = 100;
+export const AUTOMATION_OUTCOME_MAX = 200;
 
-/** One flow as a quiet row: what the store knows now (cards waiting on a decision, cards in progress, its triggers). */
-function flowListRow(store: Store, flow: FlowRow, now: Date, options: { canAct: boolean; showProject: boolean }): { group: FlowListGroup; row: Html } {
+/** One trigger as the Mac app's Automations screen reads it (contracts/engine-api.ts automationsSchema). */
+export type AutomationTrigger = {
+  id: number; kind: string; words: string; state: "active" | "paused"; nextAt: string | null; lastAt: string | null; lastOutcome: string | null;
+  failures: number; canPress: boolean; canCheck: boolean; label: string | null; questions: string[] | null; resumeRunsNow: boolean;
+};
+/** One flow as the Flows list groups it, as data (contracts/engine-api.ts automationsSchema). */
+export type Automation = {
+  id: number; name: string; project: string | null; group: AutomationGroup; starts: string; nextAt: string | null;
+  waiting: number; inProgress: number; trouble: string | null; triggers: AutomationTrigger[];
+};
+/** A time as ISO, or null when it doesn't read as one. */
+const isoOrNull = (at: string | null): string | null => {
+  const ms = at === null ? NaN : Date.parse(at);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+};
+
+/** What the store knows about one flow now: its row's facts (the HTML row and the JSON both read these), and what the
+ * HTML row also needs (the first card waiting, the button to start, the trigger that failed or ran last). */
+function automationFacts(store: Store, flow: FlowRow, now: Date) {
   const cards = store.flowCards(flow.id, false);
   const definition = flowDefinitionOf(flow);
   const kindOf = (card: FlowCardRow) => definition?.stages.find(one => one.id === card.stage)?.kind ?? "";
@@ -114,23 +137,55 @@ function flowListRow(store: Store, flow: FlowRow, now: Date, options: { canAct: 
   const active = triggers.filter(one => one.state === "active");
   const button = active.flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; })[0];
   const trouble = troubleWords(flowInsights(store, flow, now, 7)) ?? nightlyHealthOf(store, flow);
-  const starts = triggerWords(store, triggers);
   const next = active.map(one => one.nextAt).filter((one): one is string => one !== null).sort()[0];
-  const meta = html`${options.showProject ? html`<span>${projectName(flow.repo)}</span>` : ""}${next !== undefined && active.length > 0 && waiting.length === 0 ? html`<span class="k-num">Next ${nextWords(next, now)}</span>` : ""}`;
+  const group: AutomationGroup = waiting.length > 0 ? "needs" : cards.length > 0 ? "running" : active.length > 0 ? "on" : "paused";
+  // Resuming a paused schedule that fell due while off fires it once; under a live grant that covers it, on its own.
+  const grant = triggers.some(one => one.state === "paused") ? activeUnattendedGrant(store, flow.id, now) : null;
+  const covered = new Set(grant?.terms.triggers.map(one => one.id) ?? []);
+  const wire: AutomationTrigger[] = triggers.map(one => {
+    const config = triggerConfigOf(one);
+    const state = one.state === "active" ? "active" as const : "paused" as const;
+    const nextAt = isoOrNull(one.nextAt);
+    return {
+      id: one.id, kind: one.kind, words: oneTriggerWords(store, one) ?? one.kind, state, nextAt, lastAt: isoOrNull(one.lastAt),
+      lastOutcome: one.lastOutcome === null ? null : one.lastOutcome.slice(0, AUTOMATION_OUTCOME_MAX), failures: one.failures,
+      canPress: canPressTrigger(one), canCheck: state === "active" && config !== null && canCheckTrigger(config),
+      label: config?.kind === "button" ? config.label : null, questions: config?.kind === "button" ? [...config.questions] : null,
+      resumeRunsNow: state === "paused" && nextAt !== null && Date.parse(nextAt) <= now.getTime() && covered.has(one.id),
+    };
+  });
+  const automation: Automation = {
+    id: flow.id, name: flow.name, project: projectName(flow.repo) || null, group, starts: triggerWords(store, triggers), nextAt: next === undefined ? null : isoOrNull(next),
+    waiting: waiting.length, inProgress: cards.length, trouble, triggers: wire,
+  };
+  return { automation, firstWaiting: waiting[0] === undefined ? null : { card: waiting[0], choose: kindOf(waiting[0]) === "choose" }, button, active };
+}
+
+/** Every flow given, as the Flows list groups it, for GET /engine/automations: at most AUTOMATIONS_MAX, newest first. */
+export function automationsOf(store: Store, flows: readonly FlowRow[], now: Date): Automation[] {
+  return flows.slice(0, AUTOMATIONS_MAX).map(flow => automationFacts(store, flow, now).automation);
+}
+
+/** One flow as a quiet row: what the store knows now (cards waiting on a decision, cards in progress, its triggers). */
+function flowListRow(store: Store, flow: FlowRow, now: Date, options: { canAct: boolean; showProject: boolean }): { group: AutomationGroup; row: Html } {
+  const { automation: facts, firstWaiting, button, active } = automationFacts(store, flow, now);
+  const { trouble, starts, waiting } = facts;
+  const next = active.map(one => one.nextAt).filter((one): one is string => one !== null).sort()[0];
+  const meta = html`${options.showProject ? html`<span>${projectName(flow.repo)}</span>` : ""}${next !== undefined && active.length > 0 && waiting === 0 ? html`<span class="k-num">Next ${nextWords(next, now)}</span>` : ""}`;
   const start = button !== undefined && options.canAct ? btn(button.label, { sm: true, href: `/flows/${flow.id}?start=${button.id}` }) : html``;
   const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
   const tail = trouble === null ? "" : ` · ${trouble}`;
-  if (waiting.length > 0) {
-    const first = waiting[0]!;
-    const ask = kindOf(first) === "choose" ? chip("Choose", "ask") : chip("Approve", "ask");
-    const said = waiting.length === 1 ? `${first.title} waits for your decision` : `${plural(waiting.length, "card")} wait for your decision`;
+  if (facts.group === "needs" && firstWaiting !== null) {
+    const first = firstWaiting.card;
+    const ask = firstWaiting.choose ? chip("Choose", "ask") : chip("Approve", "ask");
+    const said = waiting === 1 ? `${first.title} waits for your decision` : `${plural(waiting, "card")} wait for your decision`;
     return { group: "needs", row: row({ href: `/flows/${flow.id}`, chip: ask, title: flow.name, desc: `${starts} · ${said}${tail}`, meta, wait: true,
       action: btn("Review", { sm: true, href: `/flows/${flow.id}?card=${first.id}`, attrs: { "aria-label": `Review ${first.title}` } }), attrs: { "data-flow": flow.id } }) };
   }
-  if (cards.length > 0) {
-    return { group: "running", row: row({ href: `/flows/${flow.id}`, chip: status("running"), title: flow.name, desc: `${starts} · ${plural(cards.length, "card")} in progress${tail}`, meta, action: start, attrs: { "data-flow": flow.id } }) };
+  if (facts.group === "running") {
+    return { group: "running", row: row({ href: `/flows/${flow.id}`, chip: status("running"), title: flow.name, desc: `${starts} · ${plural(facts.inProgress, "card")} in progress${tail}`, meta, action: start, attrs: { "data-flow": flow.id } }) };
   }
-  if (active.length > 0) {
+  if (facts.group === "on") {
     const failing = active.find(one => one.failures > 0);
     const last = active.filter(one => one.lastAt !== null).sort((a, b) => (b.lastAt ?? "").localeCompare(a.lastAt ?? ""))[0];
     const chipNow = failing !== undefined || trouble !== null ? status("failed") : last === undefined ? chip("Not run yet", "", { dot: false }) : status("finished");
@@ -138,7 +193,7 @@ function flowListRow(store: Store, flow: FlowRow, now: Date, options: { canAct: 
       : last === undefined ? "not run yet" : `last ran ${agoWords(last.lastAt!, now)}${last.lastOutcome ? `: ${last.lastOutcome}` : ""}`;
     return { group: "on", row: row({ href: `/flows/${flow.id}`, chip: chipNow, title: flow.name, desc: `${starts} · ${lastWords}${tail}`, meta, action: start, attrs: { "data-flow": flow.id } }) };
   }
-  const paused = triggers.length > 0;
+  const paused = facts.triggers.length > 0;
   return { group: "paused", row: row({ href: `/flows/${flow.id}`, chip: chip(paused ? "Paused" : "Off", "", { dot: false }), title: flow.name,
     desc: paused ? `${starts} · paused${tail}` : `${starts} · nothing starts it on its own${tail}`, meta, attrs: { "data-flow": flow.id } }) };
 }
@@ -398,7 +453,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       zone: title(config?.zone ?? definition?.start ?? ""), zoneId: config?.zone ?? definition?.start ?? "", state: trigger.state, status: trigger.lastOutcome, statusLink: planeStatusLink(config, trigger.lastOutcome), statusAt: trigger.lastAt, failing: trigger.failures > 0,
       button: config?.kind === "button" ? { label: config.label, questions: config.questions } : null,
       hook: config !== null && takesDeliveries(config) ? hookView(trigger, config, setup.dir) : null,
-      checkable: ((config?.kind === "github" || config?.kind === "linear") && config.delivery === "poll") || config?.kind === "email" || (config?.kind === "schedule" && config.script !== undefined) || config?.kind === "plane-review",
+      checkable: config !== null && canCheckTrigger(config),
       shared: config?.kind === "button" && trigger.hookHash !== null,
       ...(config?.kind === "schedule" && config.order !== undefined ? { order: describeStandingOrder(config.order, flow.repo, config.schedule) } : {}),
     };

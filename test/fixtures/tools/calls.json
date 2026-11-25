@@ -109,7 +109,18 @@
     "propose_answer": [{ "decision": 1, "option": "a", "rationale": "The reversible one first." }],
     "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }],
     "toolroll_view_read": [{}],
-    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8" }, "use": true } }, { "colors": { "muted": "#a39d8f" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }]
+    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8", "chat-bubble": "#ffbe98", "chat-bubble-ink": "#171717" }, "use": true } }, { "colors": { "muted": "#a39d8f", "chat-bubble": "#ffbe98" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }],
+    "list_direct_chats": [{}, { "repo": "r1", "include_archived": true, "limit": 10 }],
+    "get_direct_chat": [{ "chat": "dc-1234", "limit": 12 }],
+    "manage_direct_chat": [{ "chat": "dc-1234", "operation": "stop" }, { "chat": "dc-1234", "operation": "set_model", "provider": "codex", "model": "gpt-6-astra", "effort": "high" }, { "chat": "dc-1234", "operation": "rename", "title": "Homepage polish" }],
+    "get_usage_limits": [{}],
+    "get_recent_updates": [{}, { "repo": "r1", "hours": 12 }, { "since": "2026-11-24T00:00:00Z" }],
+    "propose_direct_chat": [
+      { "operation": "start", "repo": "r1", "provider": "codex", "model": "gpt-6-astra", "effort": "high", "prompt": "Audit the hero layout on mobile." },
+      { "operation": "reply", "chat": "dc-1234", "prompt": "Draft the first real case study now." },
+      { "operation": "promote", "chat": "dc-1234", "title": "Replace placeholder case studies", "goal": "Swap the sample case study with a real shipped project.", "planning": "auto" }
+    ],
+    "propose_report_followups": [{ "task": "t-42" }, { "task": "t-42", "indices": [1, 2], "planning": "skip" }]
   },
   "gateway": {
     "get_project_context": [{ "repo": "/repo/demo", "query": "footer" }, { "repo": "/repo/demo", "query": "src/serve.ts", "mode": "impact" }],

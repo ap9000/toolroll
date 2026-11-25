@@ -1,4 +1,5 @@
 /** Results and runs: the review cockpit, evidence, receipts, diffs and the result panel. */
+import { CHECK_SCREENSHOT_CAPTURE } from "../check-screenshots.js";
 import type { CheckAccess } from "../check-access.js";
 import type { RunNetworkRecord } from "../egress.js";
 import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialReason } from "../assignment-presentation.js";
@@ -1339,7 +1340,11 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
   const proof = proofView !== null && proofView.ok ? proofView.proof : null;
   const captionFor = (path: string): string => proof?.screenshots.find(one => one.path === path)?.caption ?? path;
   const screenshots = screenshotArtifacts.flatMap((artifact): ResultScreenshot[] => {
-    const path = SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1];
+    // The agent's own screenshot, or a project check's of exactly this result's commit (check-screenshots.ts): a check's
+    // image of an earlier commit is never shown for a newer one, and it never links to an acceptance criterion.
+    const fromCheck = CHECK_SCREENSHOT_CAPTURE.exec(artifact.capture);
+    if (fromCheck !== null && fromCheck[2] !== run.headRevision) return [];
+    const path = fromCheck?.[1] ?? SCREENSHOT_CAPTURE.exec(artifact.capture)?.[1];
     if (path === undefined) return [];
     // The bytes are re-verified at render (workspace package 3): a shot
     // whose file is gone or altered is named as unavailable, never shown
@@ -1351,7 +1356,7 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
     } catch {
       problem = "the file could not be read";
     }
-    return [{ path, caption: captionFor(path), artifactId: artifact.id, sha256: artifact.sha256, problem }];
+    return [{ path, caption: fromCheck !== null ? `From Checks: ${path.slice("evidence/checks/".length)}` : captionFor(path), artifactId: artifact.id, sha256: artifact.sha256, problem }];
   });
   const stored = new Set(screenshots.map(one => one.path));
   const uncapturedScreenshots = (proof?.screenshots ?? []).map(one => one.path).filter(path => !stored.has(path));

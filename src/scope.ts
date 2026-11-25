@@ -5,6 +5,8 @@ import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { sessionStandsIn } from "./install-mode.js";
 import { laptopShipSealAllowed } from "./flexible-laptop.js";
+import { directChatShipSealAllowed } from "./direct-chat-laptop.js";
+import { agentOnlyChange } from "./agent-change-check.js";
 import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
 import { issueImported } from "./task-source.js";
@@ -1586,8 +1588,14 @@ export function approve(
       // password (flexible-laptop.ts, read here in the seal's transaction); every rule below still applies.
       const laptopShip = local !== null && local.act === "ship-thread" && chat === undefined && fastStart === undefined
         && laptopShipSealAllowed(store, { by, taskId, candidate: store.getScope(taskId)?.candidate ?? null });
-      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined) && !laptopShip)) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
-      const eligible = laptopShip ? localWorkEligible(store, by, taskId, { act: "ship" }) : localApprovalEligible(store, by, taskId);
+      const directChatShip = local !== null && local.act === "direct-chat-ship" && chat === undefined && fastStart === undefined
+        && directChatShipSealAllowed(store, { by, taskId, candidate: store.getScope(taskId)?.candidate ?? null });
+      // The Mac app's model pick (docs/plans/mac-change-models.md): the change-task-agents act re-seals only this
+      // person's own standing yes that the pick itself staled, and only when nothing but the picked agent changed since.
+      const agentChange = local !== null && local.act === "change-task-agents" && chat === undefined && fastStart === undefined
+        && agentChangeSealAllowed(store, by, taskId);
+      if (local === null || (local.act !== "approve-plan" && !(local.act === "build-now" && fastStart !== undefined) && !laptopShip && !directChatShip && !agentChange)) return { ok: false as const, reason: "policy" as const, message: localOwnerRefusal(store.accountOf(by)?.passwordSet === true, "/").message };
+      const eligible = (laptopShip || directChatShip) ? localWorkEligible(store, by, taskId, { act: "ship" }) : localApprovalEligible(store, by, taskId);
       if (!eligible.ok) return { ok: false as const, reason: "policy" as const, message: eligible.message };
     }
 
@@ -2219,6 +2227,18 @@ const LOCAL_PLAN_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   unsandboxed: "This project's checks run without a sandbox, so planning needs your password.",
   imported: "A task from outside needs your password to plan.",
 };
+/** What a local owner hears when a task isn't one whose models it may change without a password (mac-change-models.md). */
+const LOCAL_AGENTS_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off, so changing this task's models needs your password.",
+  "not-owner": "Only this computer's owner changes a task's models here without a password.",
+  "no-scope": "This task has no plan yet.",
+  release: "Changing a release's models needs your password.",
+  protected: "This is protected work, so changing its models needs your password.",
+  escalated: "Work with wider permissions needs your password to change its models.",
+  coordinator: "Work a coordinator filed needs your password to change its models.",
+  unsandboxed: "This project's checks run without a sandbox, so changing models needs your password.",
+  imported: "A task from outside needs your password to change its models.",
+};
 /** What a local owner hears when a build isn't one it may retry without a password (local-owner slice 3). */
 const LOCAL_RETRY_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   "local-mode-off": "Local mode is off, so retrying needs your password.",
@@ -2250,6 +2270,9 @@ const LOCAL_REVISE_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
  * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). Sending a result back
  * (`revise`) is read exactly as completing it is. */
 export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" }
+  /** Change one task's planner or builder from the Mac app (docs/plans/mac-change-models.md): asking for a plan's rule
+   * exactly (a task that may have no plan yet), in its own words. */
+  | { act: "agents" }
   /** The laptop road's seal of a Ship's own verify-only task (threads-everyday S7, D1): approve's rule, except that its
    * prepared candidate (the thread's imported commit) is what that task is, not a release's or a deploy's. */
   | { act: "ship" };
@@ -2269,7 +2292,7 @@ export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"
  */
 export function localWorkEligible(store: Store, by: string, taskId: string, purpose: LocalWorkPurpose): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
   const words = purpose.act === "approve" || purpose.act === "ship" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "revise" ? LOCAL_REVISE_WORDS
-    : purpose.act === "plan" ? LOCAL_PLAN_WORDS : LOCAL_RETRY_WORDS;
+    : purpose.act === "plan" ? LOCAL_PLAN_WORDS : purpose.act === "agents" ? LOCAL_AGENTS_WORDS : LOCAL_RETRY_WORDS;
   const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: words[reason] });
   if (!localModeOn(store)) return no("local-mode-off");
   const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
@@ -2286,7 +2309,7 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
     if (scope!.profile == null || levelOfProfile(scope!.profile) === "escalated") return no("escalated");
-  } else if (purpose.act === "plan") {
+  } else if (purpose.act === "plan" || purpose.act === "agents") {
     // Approve's rule, read for a task that may have no scope yet: protected or two-person work (no declared paths count
     // as protected), and an escalated profile or task-level permission mode.
     const gate = store.approvalGate(taskId, by, "person");
@@ -2302,7 +2325,7 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
   // What the build may do was agreed at its approval; a result already built is judged by what it is and changed.
   if (purpose.act === "complete" || purpose.act === "revise") return { ok: true };
   // Asking for a plan (a new act, so no behaviour changes): never a task from outside (a GitHub import, or a revision of one).
-  if ((purpose.act === "plan" || purpose.act === "retry") && issueImported(store, taskId)) return no("imported");
+  if ((purpose.act === "plan" || purpose.act === "agents" || purpose.act === "retry") && issueImported(store, taskId)) return no("imported");
   // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
   const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
   if (stored === "unsandboxed" || scope?.profile?.checkAccess === "unsandboxed") return no("unsandboxed");
@@ -2313,4 +2336,23 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
  * outside it). Passwordless, a remembered password, a one-use provider re-check and a local owner all fail it. */
 export function typedPasswordNow(proved: { ok: true; method: AuthMethod } | { ok: false }): boolean {
   return proved.ok && proved.method === "password-now";
+}
+
+/**
+ * approve()'s narrow branch for the Mac app's model pick (docs/plans/mac-change-models.md), read in the seal's own
+ * transaction: the scope carries a standing seal that just went stale (approved, at a digest other than the current
+ * one), that seal was this same person's own yes on a person's road (the ceremony or a chat tap, never a mode, grant,
+ * schedule, lead or automatic seal), and between that seal and the re-filed scope nothing but one agent changed
+ * (agent-change-check.ts: the planner, or the builder with its repair twin; the route's terms, what builds may reach and
+ * do, the chain and billing all as sealed). Every other approve() rule still applies after it.
+ */
+export function agentChangeSealAllowed(store: Store, by: string, taskId: string): boolean {
+  const scope = store.getScope(taskId);
+  if (scope === null || scope.approvedAt === null || scope.approvedDigest === null || scope.approvedDigest === scope.digest) return false;
+  if (scope.approvedBy !== by || (scope.approvalBasis !== "password" && scope.approvalBasis !== "chat")) return false;
+  return agentOnlyChange(
+    { routeJson: scope.approvedRouteJson, profile: scope.approvedProfile, chainJson: scope.approvedChainJson },
+    { routeJson: scope.proposedRouteJson, profile: scope.profile, chainJson: scope.proposedChainJson },
+    provider => store.agentsFor([provider])[0]?.billing ?? null,
+  ).ok;
 }

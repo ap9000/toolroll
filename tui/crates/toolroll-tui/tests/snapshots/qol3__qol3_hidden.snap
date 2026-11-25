@@ -2,17 +2,17 @@
 source: crates/toolroll-tui/tests/qol3.rs
 expression: hidden
 ---
-" Toolroll  · shop  $1.84 today · plan 62%                                      ◐ 2 working   LIST HIDDEN    2 need you  "
+" Toolroll  · shop  $1.84 today · plan 62%                                        ◐ 2 working  LIST HIDDEN   2 need you  "
 "                                                                                                                        "
 " ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ "
 " │ Live · Steps · Diff · Terminal                                                                                     │ "
 " │                                                                                                                    │ "
 " │ Fix the login redirect   Question                                                                                  │ "
-" │ claude sonnet · Building now · 4m 12s · $0.31 · attempt 1                                                          │ "
-" │                                                                                                                    │ "
-" │ Plan ✓ ─── Approval ✓ ─── Build ◐ 4m ─── Checks ─── Ready                                                          │ "
+" │ claude sonnet · $0.31 · attempt 1                                                                                  │ "
+" │ ✓ Plan ── ✓ Approval ── ◐ Build · 4m 12s ── Checks ── Ready                                                        │ "
 " ├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤ "
 " │ Waiting for your answer.                                                                                           │ "
+" │                                                                                                                    │ "
 " │                                                                                                                    │ "
 " │                                                                                                                    │ "
 " │                                                                                                                    │ "
@@ -31,4 +31,4 @@ expression: hidden
 " │                                                                                                                    │ "
 " ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ "
 "  The list is hidden: b shows it again.                                                                                 "
-"  j/k move  ⏎ open  s steer  n new  : all actions                                                                       "
+"  j/k scroll  / search  s steer  Esc list  : all actions                                                                "

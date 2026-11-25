@@ -143,9 +143,11 @@ fn an_agent_error_longer_than_the_pane_exports_whole_without_key_hints() {
         // And what drawing adds beyond that is only hints and rules.
         let extra: Vec<&String> = drawn.iter().filter(|l| !hintless.contains(l)).collect();
         assert!(
-            extra
-                .iter()
-                .all(|l| l.trim().is_empty() || l.contains("Retry") || l.chars().all(|c| c == '─')),
+            extra.iter().all(|l| l.trim().is_empty()
+                || l.contains("Retry")
+                || l.strip_suffix("  ›")
+                    .is_some_and(|plain| hintless.iter().any(|h| folded(h) == folded(plain)))
+                || l.chars().all(|c| c == '─')),
             "{extra:?}"
         );
     }

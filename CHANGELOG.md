@@ -4,6 +4,13 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## Unreleased
+
+### Fixed
+
+- **Codex and OpenRouter builds follow your project's network settings on a Mac.** They now run in the same sandbox
+  as Claude, so **Allow this Mac's local services** (Vite prerender, local servers) and allowed hosts apply to them.
+
 ## 0.9.116 — 2026-11-19
 
 Clearer recovery for threads and AI teammates, with consistent light and dark colours.

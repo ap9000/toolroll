@@ -9,8 +9,8 @@
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
 import { agentSaidOf, planProblemsOf, type Run, type Store, type TaskFamily } from "./store.js";
-import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
-import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
+import { codexOfflineDependencySuggestion, failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
+import { pendingAgentChangeOf, planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
@@ -19,29 +19,47 @@ import { stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { approvalOf } from "./scope.js";
 import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
-import { terminalDiffView } from "./result-evidence-readers.js";
-import { parseReviewDiff } from "./server/render-results.js";
+import { structuredHandoffView, terminalDiffView } from "./result-evidence-readers.js";
+import { parseReviewDiff, proofBundleView } from "./server/render-results.js";
+import { parseReport } from "./scout-report.js";
 import { revisionSourceOf } from "./result-review.js";
-import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards, type TaskResult } from "./contracts/engine-api.js";
 import { agentSetupOf, detectionLines, NO_AGENT_YET, npmRegistryOf, type AgentDetection } from "./agent-detect.js";
-import { scanPatchForSecrets } from "./evidence.js";
+import { readVerifiedArtifact, reportShotsOf, scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
 import { wasInterrupted } from "./run-ending.js";
+import { agentChoicesFor, routeOfTask } from "./agentconfig.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
+
+/** Any builder or scout run a live terminal can open on (finished, failed, or still running). */
+export const isTakeOverRun = (run: Pick<Run, "role">): boolean => run.role === "builder" || run.role === "scout";
+
+const VALID_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** A recorded full git commit SHA (SHA-1 or SHA-256), or null. */
+export const validSha = (value: string | null | undefined): string | null =>
+  value !== null && value !== undefined && VALID_SHA.test(value) ? value : null;
+
+/** The commit Toolroll opens a build terminal on: the build's own saved commit when it made one, else the base commit it started from. */
+export const takeOverRevisionOf = (run: Pick<Run, "headRevision" | "baseRevision">): string | null =>
+  validSha(run.headRevision) ?? validSha(run.baseRevision);
 
 /** Approvals no person gave at the moment of approval (a check rule's own yes). */
 const AUTOMATIC = new Set(["auto-check", "auto-green"]);
 
 type StepRead = { store: Store; family: TaskFamily; now: Date; access: WorkSummaryAccess; evidenceRoot: string;
   /** Who is reading (their completion is what `review.accept.needs` speaks of); null: nobody in particular. */
-  viewer?: string | null };
+  viewer?: string | null;
+  /** Compute `agentChoices` (the model picker asks with `?choices=1`); every other read leaves it null — it is the
+   * costly part of the read and only the picker needs it. */
+  withChoices?: boolean };
 
 /** One task's step cards: the task page's road and rows (taskRoad, stepRowsOf) over the facts they read, each with
  * the agent, time and cost of the runs behind it. */
-export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer = null }: StepRead): StepCards {
+export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer = null, withChoices = false }: StepRead): StepCards {
   const current = family.current, root = family.root;
   const ref = store.lookupRef(current.id);
   const scope = store.getScope(current.id);
@@ -112,6 +130,13 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     // A cancelled task's own word (the stage's is "Stopped"): it ended because a person cancelled it.
     headline: current.state === "cancelled" ? "Cancelled" : card?.status.headline ?? null,
     liveRun: live?.id ?? null,
+    // The newest run of this task, live or finished: what a cancel names as the build it showed (store.cancelTask).
+    latestRun: runs.reduce<number | null>((max, run) => max === null || run.id > max ? run.id : max, null),
+    // The agent each step of THIS task runs (its approved, proposed or recommended route); null when it has no exact route.
+    models: (() => {
+      const routed = routeOfTask(store, current.id, ref, now);
+      return routed?.kind === "route" ? routed.route.legs.map(leg => ({ phase: leg.phase, provider: leg.provider, model: leg.model, chosen: leg.chosen })) : null;
+    })(),
     cards,
     // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
@@ -122,7 +147,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     shell: shellOf(store, family,
       assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
         ? assignment.receipt.runId : builds[0]?.id ?? null),
-    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, builds) : null,
+    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, current.repo, builds) : null,
     waiting: (() => {
       const waiting = waitingOf(store, current.id, now);
       if (waiting === null) return null;
@@ -139,6 +164,10 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     planQueued: planQueuedOf(store, current.state, ref, scope, live !== null, now),
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
+    // A model pick (POST /t/<task>/route): the digest it binds to, the configured choices it may name, and one waiting.
+    scopeDigest: scope?.digest ?? null,
+    agentChoices: scope === null || !withChoices ? null : agentChoicesOf(store, current.id, ref, now),
+    pendingAgentChange: ref === null ? null : pendingAgentChangeOf(store, ref.id),
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }
@@ -151,23 +180,30 @@ export const SHELL_NO_COMMIT = "This build has no saved commit to open a termina
 /** Open build shell's build (`run`) and why it can't be opened (null: it can be, as far as the saved facts say). */
 function shellOf(store: Store, family: TaskFamily, runId: number | null): StepCards["shell"] {
   if (runId === null) return null;
-  const run = resultRunsOf(store, family).find(one => one.id === runId) ?? null;
+  const run = resultRunsOf(store, family).find(one => one.id === runId)
+    ?? takeOverRunsOf(store, family).find(one => one.id === runId)
+    ?? null;
   if (run === null) return { run: runId, why: SHELL_NO_RESULT };
-  const revision = run.headRevision;
-  if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return { run: runId, why: SHELL_NO_COMMIT };
+  if (takeOverRevisionOf(run) === null) return { run: runId, why: SHELL_NO_COMMIT };
   return { run: runId, why: null };
 }
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
  * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
-function failureOf(store: Store, taskRef: number | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+function failureOf(store: Store, taskRef: number | null, repo: string | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
   const last = latestFinishedAttempt(builds);
   // The engine's own count (claim.ts addStrike): failures since the last success or the last person's Retry, which
   // clears them (store.requeueTask resetStrikes). The words "N consecutive failures" mean exactly that.
   const failedInARow = taskRef === null ? 0
     : Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(taskRef)?.["strikes"] ?? 0);
-  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason),
-    agentSaid: last === null ? null : agentSaidOf(store, last.id) };
+  const agentSaid = last === null ? null : agentSaidOf(store, last.id);
+  const codexHint = last === null || last.provider !== "codex" ? null : codexOfflineDependencySuggestion({
+    provider: last.provider,
+    agentSaid,
+    hasSetup: repo !== null && store.liveWorktreeSetup(repo) !== null,
+  });
+  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : (codexHint ?? stopSuggestionOf(last.reason)),
+    agentSaid };
 }
 
 /** A cancelled task's history: its builds as they ran, then Cancelled, the end (no road goes on from there). */
@@ -262,6 +298,11 @@ function runFacts(runs: readonly Run[]): Pick<StepCard, "agent" | "startedAt" | 
 /** The family's result runs, newest first: every run the Result tab can pick. */
 export function resultRunsOf(store: Store, family: TaskFamily): Run[] {
   return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isResultRun).sort((a, b) => b.id - a.id);
+}
+
+/** Every builder or scout run in the family that a live terminal can open on, newest first. */
+export function takeOverRunsOf(store: Store, family: TaskFamily): Run[] {
+  return family.versions.flatMap(version => store.runsFor(version.refId)).filter(isTakeOverRun).sort((a, b) => b.id - a.id);
 }
 
 /** The patch cut at each file's `diff --git` line: each file's own text, in the patch's order. */
@@ -417,6 +458,103 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
   return answer(lines, lineCount, null);
 }
 
+/** `GET /t/<task>/result[?run=<id>]`: the task's human-readable verified deliverable (scout report, builder handoff, and verified screenshots). */
+export function taskResultOf(store: Store, evidenceRoot: string, family: TaskFamily, run: Run | null): TaskResult {
+  const ref = store.lookupRef(family.current.id);
+  const deliverable: "code" | "report" = ref?.deliverable === "report" || run?.role === "scout" ? "report" : "code";
+  if (run === null) {
+    return {
+      version: ENGINE_API_VERSION,
+      task: family.root.id,
+      deliverable,
+      run: null,
+      role: null,
+      outcome: null,
+      verdict: null,
+      summary: null,
+      report: null,
+      handoff: null,
+      screenshots: [],
+    };
+  }
+  const artifacts = store.artifactsFor(run.id);
+  const reportArtifact = [...artifacts].reverse().find(one => one.kind === "report");
+  let report: TaskResult["report"] = null;
+  if (reportArtifact !== undefined) {
+    let read: ReturnType<typeof readVerifiedArtifact>;
+    try {
+      read = readVerifiedArtifact(evidenceRoot, reportArtifact);
+    } catch {
+      read = { ok: false, problem: "the report file could not be read" };
+    }
+    if (!read.ok) {
+      report = { ok: false, problem: read.problem };
+    } else {
+      const parsed = parseReport(read.content.toString("utf8"), { stored: true });
+      if (!parsed.ok) {
+        report = {
+          ok: false,
+          problem: reportArtifact.truncated
+            ? "the report was shortened at storage and cannot be read; the missing part was never captured"
+            : "the stored report is not a report this console can read",
+        };
+      } else {
+        const shots = reportShotsOf(artifacts, evidenceRoot, run.id, parsed.report.images).map(shot => ({
+          file: shot.file,
+          caption: shot.caption,
+          url: shot.url,
+          artifactUrl: shot.artifactId === null ? null : `/r/${run.id}/evidence/${shot.artifactId}`,
+          problem: shot.problem,
+        }));
+        report = {
+          ok: true,
+          title: parsed.report.title,
+          summary: parsed.report.summary,
+          document: parsed.report.report,
+          truncated: reportArtifact.truncated,
+          items: parsed.report.items,
+          followUps: parsed.report.followUps,
+          shots,
+        };
+      }
+    }
+  }
+  const handoffView = structuredHandoffView(artifacts, evidenceRoot);
+  const handoff: TaskResult["handoff"] = handoffView === null ? null : {
+    conclusion: handoffView.conclusion,
+    changes: handoffView.changes,
+    verification: handoffView.verification,
+    followUps: handoffView.followUps,
+    decisions: handoffView.report.decisions,
+    assumptions: handoffView.report.assumptions,
+    notDone: handoffView.report.notDone,
+    risks: handoffView.report.risks,
+  };
+  const proof = proofBundleView(store, run, artifacts, evidenceRoot);
+  const screenshots = (proof?.screenshots ?? [])
+    .filter(one => one.problem === null)
+    .map(one => ({
+      caption: one.caption,
+      path: one.path,
+      url: `/r/${run.id}/evidence/${one.artifactId}`,
+    }));
+  const verdictRow = store.proofVerdictFor(run.id);
+  const summary = (report !== null && report.ok ? report.summary : null) ?? handoff?.conclusion ?? null;
+  return {
+    version: ENGINE_API_VERSION,
+    task: family.root.id,
+    deliverable,
+    run: run.id,
+    role: run.role,
+    outcome: run.outcome,
+    verdict: verdictRow?.verdict ?? null,
+    summary,
+    report,
+    handoff,
+    screenshots,
+  };
+}
+
 /** An agent's setup as the agents read says it: Toolroll's own commands (agent-detect.ts AGENT_SETUP). */
 export function setupOf(id: string, home: string | null = null): AgentsRead["agents"][number]["setup"] {
   const setup = agentSetupOf(id);
@@ -554,4 +692,13 @@ function planQueuedOf(store: Store, state: string, ref: { id: number; plan: stri
   if (ref === null || ref.plan !== "requested" || state !== "queued" || live || store.hasLiveClaim(ref.id, now)) return false;
   if (scope !== null && approvalOf(scope).approved) return false;
   return store.activeHolds(ref.id, now).length === 0;
+}
+
+/** The agents a model pick may name for this task, by role: the configured, selectable choices the route edit proves again
+ * (agentconfig.ts agentChoicesFor over the task's own route). */
+function agentChoicesOf(store: Store, taskId: string, ref: ReturnType<Store["lookupRef"]>, now: Date): NonNullable<StepCards["agentChoices"]> {
+  const routed = routeOfTask(store, taskId, ref, now);
+  const choices = agentChoicesFor(store, ref?.repo ?? null, routed?.kind === "route" ? routed.route : null);
+  const pairs = (phase: "plan" | "build") => choices[phase].filter(one => one.selectable).map(one => ({ provider: one.provider, model: one.model }));
+  return { plan: pairs("plan"), build: pairs("build") };
 }

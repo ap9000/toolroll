@@ -261,6 +261,8 @@ test("Settings → Lead: one line, the full form under Advanced, and a lead turn
   expect(page).toContain("The lead uses your Claude Code sign-in.");
   expect(page).toContain("<summary>Advanced</summary>");
   expect(page).toContain('action="/chat/config"');
+  expect(page).toContain('name="weekly-usd"');
+  expect(page).toContain('name="key"');
   const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
   const off = await fetch(`${base}/chat/config`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual",
     body: new URLSearchParams({ csrf, return: "/settings/lead", off: "1", token: password }) });
@@ -299,6 +301,11 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   expect((await use("codex")).headers.get("location")).toBe("/welcome");
   expect(store.getChatConfig()?.provider).toBe("codex-subscription");
   expect((await use("gemini")).status).toBe(400);
+  store.setChatConfig({ provider: "claude-subscription", model: "default", dailyTurns: 7, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", new Date());
+  const switchLead = (agent: string) => fetch(`${base}/settings/lead/on`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, agent, return: "/chat" }) });
+  expect((await switchLead("claude")).headers.get("location")).toMatch(/^\/settings\/lead\?said=/);
+  expect((await switchLead("codex")).headers.get("location")).toBe("/chat");
+  expect(store.getChatConfig()).toMatchObject({ provider: "codex-subscription", model: "default", dailyTurns: 7 });
   // A full session's choice is as before: its models stay Settings → Models' step-up.
   expect(store.phaseConfig("installation", "build")).toBeNull();
 

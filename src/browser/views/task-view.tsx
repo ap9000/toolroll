@@ -25,6 +25,8 @@ import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask, WORKSPACE_NUDGE } from "../live-task.js";
+import { presenceSummary, useWorkspacePresence } from "../presence.js";
+import { TaskMultiplayerBar } from "../multiplayer-bar.js";
 import { cn } from "../kit/utils.js";
 import { HEADLINE_GLYPH, RetryPinFields, statusWhyLines, type RetryPins } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
@@ -607,6 +609,43 @@ export function attemptGlyph(label: string): GlyphKind {
   return headline === undefined ? "idle" : HEADLINE_GLYPH[HEADLINE_TONE[headline]];
 }
 
+/** Highest-signal provenance facts surfaced above the fold (Graphite/Linear pattern): Agent, Base, PR, Blockers, Usage.
+ * Purely read-only; full grouped facts stay in the Details drawer. */
+export function taskVitalsOf(details: readonly BrowserTaskDetailGroup[] | undefined): { label: string; fact: BrowserTaskFact }[] {
+  if (!details || details.length === 0) return [];
+  const byGroup = (title: string) => details.find(one => one.title === title)?.facts ?? [];
+  const find = (title: string, label: string) => byGroup(title).find(one => one.label === label);
+  const vitals: { label: string; fact: BrowserTaskFact }[] = [];
+  const agent = find("Work", "Agent");
+  if (agent !== undefined) vitals.push({ label: "Agent", fact: agent });
+  const base = find("Work", "Base");
+  if (base !== undefined) vitals.push({ label: "Base", fact: base });
+  const pr = find("Links", "Pull request");
+  if (pr !== undefined) vitals.push({ label: "Pull request", fact: pr });
+  const blocked = find("Links", "Blocked by");
+  if (blocked !== undefined) vitals.push({ label: "Blocked by", fact: blocked });
+  const usage = find("About", "Usage, this attempt") ?? find("About", "Usage, all attempts");
+  if (usage !== undefined) vitals.push({ label: "Usage", fact: usage });
+  return vitals;
+}
+
+/** Compact inline provenance strip under the task title: eliminates opening Details or scrolling for agent/base/PR/cost. */
+export function TaskVitals({ details, extra, className, dataAttr = "data-task-vitals" }: { details: readonly BrowserTaskDetailGroup[] | undefined; extra?: readonly { label: string; value: ReactNode }[]; className?: string; dataAttr?: "data-task-vitals" | "data-work-vitals" }) {
+  const vitals = taskVitalsOf(details);
+  const extras = extra ?? [];
+  if (vitals.length === 0 && extras.length === 0) return null;
+  return <dl className={cn("so-task-vitals", className)} {...(dataAttr === "data-task-vitals" ? { "data-task-vitals": "" } : { "data-work-vitals": "" })}>
+    {vitals.map(one => <div key={one.label} className="so-task-vital" data-vital={one.label.toLowerCase().replace(/\s+/g, "-")}>
+      <dt>{one.label}</dt>
+      <dd><FactValue fact={one.fact} /></dd>
+    </div>)}
+    {extras.map(one => <div key={one.label} className="so-task-vital" data-vital={one.label.toLowerCase().replace(/\s+/g, "-")}>
+      <dt>{one.label}</dt>
+      <dd>{one.value}</dd>
+    </div>)}
+  </dl>;
+}
+
 /** The Details drawer: the task's properties grouped Work, Links, Review and About. Read-only facts: every form lives
  * in a tab (docs/plans/one-page-task-and-agent.md). */
 export function TaskDetails({ view }: { view: BrowserTaskView }) {
@@ -971,8 +1010,13 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
   const editPlan = approve === null ? null : () => { show({ row: "approve" }); revealTarget("plan-editor", show, true); };
+  const workspacePresence = useWorkspacePresence();
+  const terminalPresence = workspacePresence?.tasks[view.id]?.terminalController
+    ? presenceSummary({ ...workspacePresence.tasks[view.id]!, viewers: [] })
+    : null;
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono so-task-id">{view.id}</span>{view.scout && <> · research only</>}
-    {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
+    {people.length > 0 && <> · <AlsoViewing people={people} /></>}
+    {terminalPresence !== null && <> · <span data-terminal-presence="" role="status">{terminalPresence}</span></>}</>;
   const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
@@ -1046,7 +1090,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       case "checks":
         return <>{status}{!here && view.status !== null && <StatusFacts card={view.status} runChecks={view.runChecks ?? null} only={key => key === "checks"} />}{leadCards(leadOf("checks"))}</>;
       case "ready":
-        return <>{status}{resultBody}{readyExtras(resultBody !== null)}{leadCards(leadOf("ready"))}</>;
+        return <>{status}{readyExtras(resultBody !== null)}{resultBody}{leadCards(leadOf("ready"))}</>;
     }
   };
   const items: KStepRowItem[] = (rows ?? []).map(row => {
@@ -1056,16 +1100,38 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
   if (view.historical != null) return <HistoricalResult view={view} loaded={loadedResult.current} csrf={csrf} result={result} />;
+  const earlierRunMatch = view.earlier?.attempts.map(a => /^\/r\/(\d+)\b/.exec(a.href)?.[1]).find(Boolean);
+  const terminalRunId = view.result?.selected.build
+    ?? view.status?.attempts.find(a => a.runId !== null)?.runId
+    ?? (earlierRunMatch ? Number(earlierRunMatch) : null);
+  const agentFact = (view.details ?? [])
+    .flatMap(g => g.facts)
+    .find(f => f.label === "Agent" || f.label === "Builder");
+  const terminalAgent = (agentFact?.parts ?? [])
+    .map(p => (typeof p === "string" ? p : "label" in p ? p.label : ""))
+    .join(" ")
+    .toLowerCase();
+  const terminalProgram = terminalAgent.includes("antigravity") || terminalAgent.includes("gemini")
+    ? "antigravity"
+    : terminalAgent.includes("codex")
+      ? "codex"
+      : "claude";
+  const terminalHref = terminalRunId === null
+    ? null
+    : `/term?task=${encodeURIComponent(view.id)}&run=${terminalRunId}&program=${terminalProgram}`;
   return <ResultStatusAct.Provider value={statusAct}><ResultStatusWarnings.Provider value={outcomeFirst ? statusWarnings : null}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/", "Work"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
+          {terminalHref !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label="Terminal" href={terminalHref} data-open-terminal="" />}
           <KButton ref={activityButton} variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : openActivity()} data-open-activity="" />
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
           <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} show={show} />
         </nav>} />
+      <TaskVitals details={view.details} />
+      <TaskMultiplayerBar taskId={view.id} csrf={csrf} presence={workspacePresence} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
         text={<>{view.archived.words} · <time dateTime={view.archived.at} title={fullWhen(view.archived.at, viewerZone())}>{shortWhen(view.archived.at, new Date(), viewerZone())}</time></>}
@@ -1076,8 +1142,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         terms={view.archived.restore !== null ? "Restoring puts it back in Work. Its history and results were kept." : "An approver can restore it."} />}
       {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
         {statusBox("ready", true)}
-        {resultBody}
         {readyExtras(resultBody !== null)}
+        {resultBody}
         {leadCards(leadOf("ready"))}
       </div>}
       {rows !== null ? outcomeFirst

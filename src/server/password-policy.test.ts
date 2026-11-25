@@ -69,6 +69,11 @@ const COOKIE_ONLY_POSTS = [
   // Settings → General: your own Claude sign-in for threads (saved as a credential act, checked again, removed; an
   // operator removes someone else's from People), from a browser only, never a token.
   'settings.flexible-sign-in', 'settings.flexible-sign-in-check', 'settings.flexible-sign-in-clear',
+  // Browser-confirmed CLI device pairing: credential step-up from a full browser session only, never a token.
+  'edge.connect-pair-confirm',
+  // Direct Chat: local-clone direct agent chats, loopback + cookie session only, never a token.
+  'direct-chat.start', 'direct-chat.send', 'direct-chat.stop', 'direct-chat.model', 'direct-chat.delete',
+  'direct-chat.attach', 'direct-chat.apply-main', 'direct-chat.repair', 'direct-chat.ship-preview', 'direct-chat.ship', 'direct-chat.ship-cancel',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {
@@ -93,6 +98,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/flexible-sign-in', '/settings/flexible-sign-in-check', '/settings/flexible-sign-in-clear',
   '/settings/provider-key', '/settings/telegram-token', '/settings/email', '/settings/google',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
+  '/connect/pair/ABCD-EFGH',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
 ];
 

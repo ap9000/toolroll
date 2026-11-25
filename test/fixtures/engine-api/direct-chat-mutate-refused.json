@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "This chat has unsaved changes on its branch.",
+  "code": "unmerged_changes"
+}

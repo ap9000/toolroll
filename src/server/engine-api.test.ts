@@ -310,6 +310,14 @@ describe("every answer is its contract's shape", () => {
     expect(steps.approval).toEqual({ by: "alex", you: true, automatic: false });
     // Its newest build failed without a saved commit: Open build shell is refused up front, in the start's own words.
     expect(steps.shell).toEqual({ run: last.id, why: "This build has no saved commit to open a terminal on." });
+    // When a failed build recorded its base commit (as real builds do before committing), a terminal can open on it.
+    store.handle.prepare("UPDATE run SET base_revision = ? WHERE id = ?").run("b".repeat(40), last.id);
+    try {
+      const withBase = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
+      expect(withBase.shell).toEqual({ run: last.id, why: null });
+    } finally {
+      store.handle.prepare("UPDATE run SET base_revision = NULL WHERE id = ?").run(last.id);
+    }
     // Another person reads who approved, not "you".
     expect(stepCardsSchema.parse((await read("approver", "/t/t-fail/steps")).body).approval).toEqual({ by: "alex", you: false, automatic: false });
     // A task that didn't fail has neither.
@@ -445,7 +453,13 @@ describe("every answer is its contract's shape", () => {
     const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(ref) as { lease_id?: string } | undefined;
     if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
     store.setTaskState("t-gone", "queued", T0);
-    expect(store.cancelTask("t-gone", new Date())).toEqual({ ok: true });
+    // Queued with a finished build: nothing is live, but the newest run is what a client's cancel names as shown.
+    const shown = stepCardsSchema.parse((await read("operator", "/t/t-gone/steps")).body);
+    expect([shown.liveRun, shown.latestRun]).toEqual([null, run]);
+    // The agent each step of this task runs, as its route says (the Mac shows and changes these per task).
+    expect(shown.models?.map(one => [one.phase, one.provider, one.model])).toContainEqual(["build", "claude", "sonnet"]);
+    expect(store.cancelTask("t-gone", new Date(), undefined, { state: shown.task.state, run: null })).toEqual({ ok: false, reason: "changed" });
+    expect(store.cancelTask("t-gone", new Date(), undefined, { state: shown.task.state, run: shown.latestRun })).toEqual({ ok: true });
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-gone/steps")).body);
     expect(steps.headline).toBe("Cancelled");
     expect(steps.cards?.map(card => [card.key, card.label, card.state])).toEqual([["build", "Build", "stuck"], ["ready", "Cancelled", "skipped"]]);
@@ -508,6 +522,8 @@ describe("the local owner reads them with the session a terminal client redeems"
     const link = world.server.mintLocalLink()!;
     const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
     const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    // The app learns whether a password is set yet (password-onboarding.md): none on a fresh laptop install.
+    expect(body.passwordSet).toBe(false);
     const cookie = `${body.cookie.name}=${body.cookie.value}`;
     const get = async (path: string) => { const answer = await world.send(path, "GET", { cookie, accept: "application/json" }); return { status: answer.status, body: JSON.parse(answer.body) as unknown }; };
     expect((await get("/engine/hello")).status).toBe(200);
@@ -831,5 +847,29 @@ describe("a file's length from its own patch (resultDiffFile.lineCount)", () => 
     expect(reads.patchLineCount([{ header: "@@ -0,0 +1,2 @@" }, { header: "@@ -5,1 +7,1 @@" }])).toBeNull();
     expect(reads.patchLineCount([])).toBeNull();
     expect(reads.patchLineCount([{ header: "not a header" }])).toBeNull();
+  });
+});
+
+describe("password onboarding from the Mac app (password-onboarding.md)", () => {
+  let world: LocalWorld;
+  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); }, LOCAL_WORLD_SETUP_MS);
+  afterAll(async () => { await world.close(); });
+  test("the Mac app sets its first password with exactly what it sends, and its next connect says so", async () => {
+    const redeem = async () => {
+      const link = world.server.mintLocalLink()!;
+      const answer = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+      return linkRedemptionSchema.parse(JSON.parse(answer.body));
+    };
+    const before = await redeem();
+    expect(before.passwordSet).toBe(false);
+    // The app's request (ToolrollClient.setFirstPassword): form-encoded, csrf in the body, the key header, its own Origin.
+    const origin = `http://127.0.0.1:${world.port}`;
+    const form = `csrf=${before.csrf}&password=${encodeURIComponent("a+b&c=d %e!")}&again=${encodeURIComponent("a+b&c=d %e!")}`;
+    const set = await world.send("/password/set", "POST", { cookie: `${before.cookie.name}=${before.cookie.value}`, origin, "x-csrf-token": before.csrf, "x-toolroll-key": before.key,
+      "x-toolroll-client": "terminal", "content-type": "application/x-www-form-urlencoded", accept: "text/html" }, form);
+    expect(set.status).toBeLessThan(400);
+    // Setting it ended the app's session; a fresh link connects again and now says a password is set.
+    expect((await world.send("/work/rows", "GET", { cookie: `${before.cookie.name}=${before.cookie.value}`, accept: "application/json" })).status).not.toBe(200);
+    expect((await redeem()).passwordSet).toBe(true);
   });
 });

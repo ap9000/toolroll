@@ -305,6 +305,21 @@ pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
     crate::state::path(env).map(|p| p.with_file_name("view.json"))
 }
 
+/// Central/remote view file, isolated per `(workspace_id, account)`.
+pub fn remote_path(
+    env: &crate::settings::Env,
+    workspace_id: &str,
+    account: &str,
+) -> Option<PathBuf> {
+    let tag = crate::state::remote_namespace_hash(workspace_id, account);
+    crate::state::path(env).map(|p| p.with_file_name(format!("view-remote-{tag}.json")))
+}
+
+/// Scoped view key for a central workspace + account + project (never collides with local folder paths).
+pub fn remote_project_key(workspace_id: &str, account: &str, project: &str) -> String {
+    project_key(&format!("central-v1\0{workspace_id}\0{account}\0{project}"))
+}
+
 /// Read the view file when it is safe to: every folder up to the root trusted, the file a plain owner-only file of
 /// this user's (never through a link), at most MAX_BYTES. Anything else: a fresh start.
 #[cfg(unix)]
@@ -473,5 +488,26 @@ mod tests {
         assert_eq!(load(&path, Some(&home)), ViewFile::default());
         assert!(save(&path, Some(&home), &f).is_err());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn remote_view_paths_and_project_keys_are_isolated_from_local_and_other_workspaces() {
+        let env = crate::settings::Env {
+            home: Some("/home/me".into()),
+            ..Default::default()
+        };
+        let local = path(&env).unwrap();
+        let a_alice = remote_path(&env, "11111111-1111-4111-8111-111111111111", "alice").unwrap();
+        let b_alice = remote_path(&env, "22222222-2222-4222-8222-222222222222", "alice").unwrap();
+        assert_ne!(local, a_alice);
+        assert_ne!(a_alice, b_alice);
+        assert_eq!(local.parent(), a_alice.parent());
+        let key_local = project_key("/srv/app");
+        let key_remote_a =
+            remote_project_key("11111111-1111-4111-8111-111111111111", "alice", "/srv/app");
+        let key_remote_b =
+            remote_project_key("22222222-2222-4222-8222-222222222222", "alice", "/srv/app");
+        assert_ne!(key_local, key_remote_a);
+        assert_ne!(key_remote_a, key_remote_b);
     }
 }

@@ -506,18 +506,28 @@ describe("the agent fence", () => {
       const seen: { file: string; args: readonly string[] }[] = [];
       const ask = { phase: "build" as const, brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null };
       const codexRun = open("t-codex", "codex");
-      await invokeAgent(store, codexRun, { provider: "codex", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args) => { seen.push({ file, args }); return OK; } });
+      let codexWrap: readonly string[] | undefined;
+      await invokeAgent(store, codexRun, { provider: "codex", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args, options) => { seen.push({ file, args }); codexWrap = options?.fence; return OK; } });
       const codex = seen.at(-1)!;
-      expect(codex.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-      const filesystem = codex.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-      expect(filesystem).toContain(`"${join(state, "up-login.txt")}"="deny"`);
-      expect(filesystem).toContain(`"${join(home, ".standing-orders")}"="deny"`);
-      // Codex keeps ancestors traversable, with explicit launch-time sibling denies.
-      expect(filesystem).toContain(`"${join(state, "worktrees")}"="read"`);
-      expect(filesystem).toContain(`"${worktree}"="write"`);
-      expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
-      expect(filesystem).not.toContain("[!");
-      expect(store.runFence(codexRun)).toMatchObject({ method: "codex-profile", paths: expect.any(Number) });
+      if (macosFenceAvailable()) {
+        // On a Mac Codex runs inside the OS fence like Claude: its own sandbox off, the spawn road wraps the whole process.
+        expect(codex.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(codex.args.some(one => one.startsWith("permissions.standing-orders"))).toBe(false);
+        expect(codexWrap).toContain(join(state, "up-login.txt"));
+        expect(store.runFence(codexRun)).toMatchObject({ method: "macos-sandbox", paths: expect.any(Number) });
+      } else {
+        expect(codex.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(codexWrap).toBeUndefined();
+        const filesystem = codex.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
+        expect(filesystem).toContain(`"${join(state, "up-login.txt")}"="deny"`);
+        expect(filesystem).toContain(`"${join(home, ".standing-orders")}"="deny"`);
+        // Codex keeps ancestors traversable, with explicit launch-time sibling denies.
+        expect(filesystem).toContain(`"${join(state, "worktrees")}"="read"`);
+        expect(filesystem).toContain(`"${worktree}"="write"`);
+        expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
+        expect(filesystem).not.toContain("[!");
+        expect(store.runFence(codexRun)).toMatchObject({ method: "codex-profile", paths: expect.any(Number) });
+      }
       const claudeRun = open("t-claude", "claude");
       let wrap: readonly string[] | undefined;
       await invokeAgent(store, claudeRun, { provider: "claude", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args, options) => { seen.push({ file, args }); wrap = options?.fence; return OK; } });

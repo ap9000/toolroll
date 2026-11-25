@@ -1,4 +1,5 @@
 import { advancedShownNow } from "../advanced-view.js";
+import { admitRemoteTerminalRequest, isRemoteTerminalRequest, sendTerminalConnectionRefusal } from "../terminal-connection.js";
 import { spendLineOf } from "../limits-ui.js";
 import { projectOutcomes } from '../project-outcomes.js';
 import { steerControlsFor } from "../steer-controls.js";
@@ -68,7 +69,7 @@ import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
 import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow, type Screen } from "./chrome.js";
-import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
+import { redirect,refusedInPlace,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { taskLinkOf } from "../task-link.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
@@ -98,6 +99,9 @@ import { workIndexPage } from "../work-index.js";
 import { checkEngineResponse, ENGINE_API_VERSION, type WorkRows } from "../contracts/engine-api.js";
 import { readRunLive } from "./engine-api.js";
 import { waitingForTasks } from "../engine-reads.js";
+import { FOUND_PLACES_MAX,FOUND_REPOS_MAX,foundReposCache } from "./found-repos.js";
+/** The common places in the home folder the picker offers as shortcuts (and GET /engine/projects looks in). */
+const PICKER_PLACES = ["Developer", "Documents", "code", "Projects"] as const;
 /** What Work borrows from the tasks handlers (tasks.ts): its list for an address, and the queue's order page. */
 export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<WorkList | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
 
@@ -645,7 +649,8 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     // The exact-path form says its refusals in its own section (with what was typed); a row's Open says them on top.
     const at: ProblemAt = body.get("via") === "path" ? "path" : "open";
     const back = safeReturn(body.get("return"));
-    const say = (words: string, status: number) => void projectsScreen(response, who, words, status, back, at, at === "path" ? pathTyped : "");
+    // A terminal client's add (the Mac app) hears a refusal's own words in place (http.ts refusedInPlace): shape only.
+    const say = (words: string, status: number) => { if (!refusedInPlace(response, status, words)) void projectsScreen(response, who, words, status, back, at, at === "path" ? pathTyped : ""); };
     // `~` is the home folder of the user this server runs as (never another user's).
     const asked = pathTyped.length === 0 ? "" : expandHomePath(pathTyped, homedir());
     if (asked === null) return say("only ~ for your own home folder works here, like ~/code/your-repo", 400);
@@ -1256,6 +1261,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     "projects.onboard-preview": onboardPreview,
     "projects.onboard-confirm": onboardConfirm,
     "projects.pick": projectsPick,
+    "engine.projects": engineProjects,
   }, {
     "edge.healthz": healthzEdge,
     "edge.instance": instanceEdge,
@@ -1275,7 +1281,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name, enabled.credentialKey);
     const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
     if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
     const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
@@ -1338,6 +1344,16 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     if (seen.target.real !== repo) return { words: `use the folder's own name: ${shortPathOf(seen.target.real)}`, status: 400 };
     return null;
   }
+  /** Where the picker looks and what it keeps there (the picker, and GET /engine/projects' found repositories): the home
+   * folder and any projects folder that lives elsewhere, never wider. Browsing through a folder that holds Toolroll's
+   * state is fine (choosing it is refused); entering that state is not, nor entering a hidden folder (any name below its
+   * root starting with "."), however the address spells it. */
+  function pickerReach(home: string, protectedDirs: readonly string[]): { roots: string[]; kept: (path: string) => boolean } {
+    const inside = (one: string, root: string): boolean => one === root || one.startsWith(`${root}/`);
+    const roots = [home, ...ceiling.roots.filter(root => !inside(root, home) && !inside(home, root))];
+    const hiddenBelow = (path: string): boolean => { const root = roots.find(one => inside(path, one)); return root !== undefined && path.slice(root.length).split("/").some(name => name.startsWith(".")); };
+    return { roots, kept: path => roots.some(root => inside(path, root)) && !protectedDirs.some(dir => inside(path, dir)) && !hiddenBelow(path) };
+  }
   /** The picker's look (folder-look.ts, the browse page's own reads and limits: directory names only, off the console's
    * thread under a deadline, links resolved and kept inside a root, no other drive, no ~/Library, no hidden folders or
    * node_modules), over the home folder and any projects folder that lives elsewhere, never wider. Toolroll's own
@@ -1353,18 +1369,13 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       return sendScreen(response, 200, folderPickerPage(chrome, { ...base, at: null, entries: [], shortcuts: [], chosen: null, lookProblem: seenHome.words }));
     }
     const home = seenHome.home.real;
-    const roots = [home, ...ceiling.roots.filter(root => !inside(root, home) && !inside(home, root))];
+    const { roots, kept } = pickerReach(home, seenHome.protectedReal);
     const hrefOf = (path: string): string => `/projects/pick?at=${encodeURIComponent(path)}`;
     const fallback = ceiling.roots[0] ?? home;
     const expanded = expandHomePath((url.searchParams.get("at") ?? "").trim(), home);
     const spelled = expanded === null || !expanded.startsWith("/") ? fallback : resolve(expanded);
     const start = roots.some(root => inside(spelled, root)) ? spelled : fallback;
     const listOptions = { ...lookOptions(), home, native: true };
-    const protectedDirs = seenHome.protectedReal;
-    // Browsing through a folder that holds Toolroll's state is fine (choosing it is refused); entering that state is not,
-    // nor entering a hidden folder (any name below its root starting with "."), however the address spells it.
-    const hiddenBelow = (path: string): boolean => { const root = roots.find(one => inside(path, one)); return root !== undefined && path.slice(root.length).split("/").some(name => name.startsWith(".")); };
-    const kept = (path: string): boolean => roots.some(root => inside(path, root)) && !protectedDirs.some(dir => inside(path, dir)) && !hiddenBelow(path);
     const looked = await listFolder(start, roots, listOptions);
     const at = looked.ok ? looked.value.at : null;
     if (!looked.ok || at === null || !kept(at)) {
@@ -1385,8 +1396,8 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     const homeNames = new Set(homeLook.ok ? homeLook.value.entries.map(one => one.name) : []);
     const shortcuts = [
       ...(at === home ? [] : [{ label: "Home folder", href: hrefOf(home) }]),
-      ...["Developer", "Documents", "code", "Projects"].filter(name => homeNames.has(name) && `${home}/${name}` !== at).map(name => ({ label: `~/${name}`, href: hrefOf(`${home}/${name}`) })),
-      ...ceiling.roots.filter(one => one !== at && !["Developer", "Documents", "code", "Projects"].some(name => one === `${home}/${name}`)).map(one => ({ label: shortPathOf(one), href: hrefOf(one) })),
+      ...PICKER_PLACES.filter(name => homeNames.has(name) && `${home}/${name}` !== at).map(name => ({ label: `~/${name}`, href: hrefOf(`${home}/${name}`) })),
+      ...ceiling.roots.filter(one => one !== at && !PICKER_PLACES.some(name => one === `${home}/${name}`)).map(one => ({ label: shortPathOf(one), href: hrefOf(one) })),
     ];
     let chosen: Html | null = null;
     if (at !== home) {
@@ -1409,6 +1420,46 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   async function projectsPick(ctx: HandlerContext): Promise<void> {
     if (ctx.who.via !== "cookie") return refuse(ctx.response, ctx.who, 403, "Choosing a repository is a browser session's act.", "/projects");
     return pickerScreen(ctx);
+  }
+
+  /** Git repositories the picker would show that a project could be added from without a password: one level down in
+   * each of the picker's places (the home folder, its common folders, the projects folders) that lies inside a projects
+   * folder (anywhere, with none configured), read by the picker's own look and kept by its own rules. Shared by every
+   * caller for FOUND_REPOS_TTL_MS (found-repos.ts); not yet filtered for projects that already exist. A folder that
+   * didn't answer leaves its repositories out, and the next read looks again. */
+  const foundLooks = foundReposCache(clock);
+  async function foundRepos(): Promise<readonly string[]> {
+    const seenHome = await widenFacts(homedir());
+    if (!seenHome.ok) return [];
+    const home = seenHome.home.real;
+    const { roots, kept } = pickerReach(home, seenHome.protectedReal);
+    const inside = (one: string, root: string): boolean => one === root || one.startsWith(`${root}/`);
+    const addable = (path: string): boolean => unscopedMode || ceiling.roots.some(root => inside(path, root));
+    const places = [...new Set([home, ...PICKER_PLACES.map(name => `${home}/${name}`), ...ceiling.roots])].filter(addable).slice(0, FOUND_PLACES_MAX);
+    return foundLooks(JSON.stringify([roots, places, seenHome.protectedReal]), async () => {
+      const looks = await Promise.all(places.map(place => listFolder(place, roots, { ...lookOptions(), home, native: true })));
+      const repos = looks.flatMap(looked => !looked.ok || looked.value.at === null || !kept(looked.value.at) ? []
+        : looked.value.entries.filter(one => one.git && kept(one.path) && addable(one.path)).map(one => one.path));
+      return { repos: [...new Set(repos)], complete: looks.every(looked => looked.ok || looked.why !== "no-answer") };
+    });
+  }
+  /** GET /engine/projects (the Mac app's project list): the projects this person can see, as the Projects page lists them
+   * (visibleProjects: the added ones they can see, most recently opened first, then the rest of the projects they may
+   * pick, consoleProjects), named as it names them, and, for a caller the picker admits (an approver
+   * signed in through a browser or this computer's session, not limited to listed projects), the repositories they could
+   * add (foundRepos), at most FOUND_REPOS_MAX by name. Adding one is POST /projects/open, which proves it all again. */
+  async function engineProjects(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    if ([...url.searchParams.keys()].length > 0) return respond(response, 400, "application/json", JSON.stringify(checkEngineResponse("refusal", { error: "request" })));
+    response.setHeader("cache-control", "no-store");
+    const { recent, candidates } = visibleProjects();
+    const projects = [...recent.map(one => ({ name: one.name, path: one.path })), ...candidates.map(path => ({ name: projectName(path), path }))];
+    const canAdd = who.via === "cookie" && who.role === "approver" && !restricted();
+    // Not offered again: a project this person sees, one anyone added, and one the console was started with.
+    const existing = new Set([...projects.map(one => one.path), ...store.listProjects().map(one => one.path), ...consoleProjects(), ...liveCeiling().repos]);
+    const found = !canAdd ? [] : (await foundRepos()).filter(path => !existing.has(path))
+      .map(path => ({ name: projectName(path), path })).sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)).slice(0, FOUND_REPOS_MAX);
+    return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("projects", { version: ENGINE_API_VERSION, canAdd, projects, found })));
   }
 
   // The engine API (solo-workbench plan A0), kept after every other handler: Work's view, read once for its page and for
@@ -1451,17 +1502,29 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   /** GET /work/rows: Work's list as data (contracts/engine-api.ts workRows), the same address keys, grouping and
    * Needs-you facts as the page, admitted as Work is; the room to follow is the workspace's. */
   async function workRows(ctx: HandlerContext): Promise<void> {
-    const { response, who, now } = ctx;
+    const { request, response, who, now } = ctx;
     const built = await workViewOf(ctx);
     if (built === null) return;
+    if (who.via === "bearer" && who.principal !== undefined && isRemoteTerminalRequest(request)) {
+      const after = admitRemoteTerminalRequest(request, store, who.principal, clock);
+      if (!after.ok) return sendTerminalConnectionRefusal(request, response, after.status, after.error);
+    }
     const { view } = built, list = view.list;
     // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
+    // The providers' windows: the same audience, or this computer's own local owner. One operator check and one
+    // provider_limit read serve both (the wire budget counts every statement).
+    const operator = who.via === "cookie" && store.isInstanceOperator(who.name);
+    const providerRows = operator || (who.via === "cookie" && who.authority === "local-owner")
+      ? (() => { try { return store.providerLimits(); } catch { return null; } })()
+      : null;
     const spend = (() => {
-      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return null;
+      if (!operator || providerRows === null) return null;
       // Today's items only (one read of the day, never the month's), and the plan windows the providers last reported.
       const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), store.providerLimits(), now); } catch { return null; }
+      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), providerRows, now); } catch { return null; }
     })();
+    const limits = providerRows === null ? null : providerRows.map(one => ({ provider: one.provider, plan: one.plan, window: one.window,
+      usedPercent: one.usedPercent, reached: one.reached, resetsAt: one.resetsAt, observedAt: one.observedAt }));
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
     // Every row's wait, read at once (one statement, never a few per row: the wire budgets hold it).
@@ -1472,7 +1535,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
         chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
         waiting: waiting.get(row.id) ?? null })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
-      next: list.pages.next, room: "workspace", spend,
+      next: list.pages.next, room: "workspace", spend, limits,
     };
     return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", body)));
   }

@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { codingEnvironment } from "./coding-provider.js";
 import { codexLimitsOf, record, type LimitReading } from "./provider-limits.js";
+import { refreshSubscriptions } from "./subscription-usage.js";
 import { billingOf, type Billing } from "./spend.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -103,6 +104,9 @@ export function startCodexLimits(store: Store, signedIn: () => Promise<boolean>,
     busy = true;
     try {
       await codexLimitsPass(store, { signedIn, stopped: () => stopped });
+      if (!stopped) {
+        await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true });
+      }
     } catch {
       // The next pass tries again.
     } finally {

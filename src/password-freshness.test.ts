@@ -400,7 +400,7 @@ describe("where freshness may be honoured", () => {
       // Settings → General: your own Claude sign-in for threads, checked again or removed with the ordinary step-up.
       "src/server/settings.ts": 27,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
-    expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
+    expect(using(/freshFacts\.run\(/)).toEqual(["src/device-pair.ts", "src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
     expect(chatRuns).toEqual(["freshFacts.run(null,"]);
@@ -414,7 +414,7 @@ describe("where freshness may be honoured", () => {
     });
     // The two settings checks are typed-now ceremonies (they also compare the generation); never an empty field.
     for (const line of files.find(one => one.path === "src/server/settings.ts")!.text.split("\n").filter(one => one.includes("authenticateAccount("))) expect(line).toMatch(/body\.get\("(token|password)"\)/);
-    expect(hits["proveAccountNow()"]).toEqual({ "src/scope.ts": 1, "src/server/people-tokens.ts": 1, "src/server/remote.ts": 1 });
+    expect(hits["proveAccountNow()"]).toEqual({ "src/device-pair.ts": 1, "src/scope.ts": 1, "src/server/people-tokens.ts": 1, "src/server/remote.ts": 1 });
     // The two known empty-password branches: starting chat stands on the signed-in session's standing by design (no
     // password stand-in), and a Telegram log redaction. Anything new that branches on one must be reviewed.
     expect(using(/(typed|token|password)\s*===\s*""\s*\?/)).toEqual(["src/server/chat.ts", "src/telegram.ts"]);
@@ -436,6 +436,7 @@ describe("where freshness may be honoured", () => {
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {
+    "src/device-pair.ts#<module>": 3,
     "src/scope.ts#<module>": 2,
     "src/serve.ts#<module>": 2,
     "src/serve.ts#createDecisionServer@1>freshFactsOf@54": 1,
@@ -573,23 +574,23 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
     "src/server/engine-api.ts#<module>": 2,
     "src/server/engine-api.ts#createEngineHandlers@6>threadStart@13": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@24": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@21": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@25": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
-    "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@23": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@26": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@31><anonymous>@1": 2,
     // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
-    "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>kitAct@22><anonymous>@1": 2,
     // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3>personMethod@15": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>changed@3": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1>changed@3": 1,
     // Backup consent proves the password inside the Settings write transaction.
-    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>done:subagentSettings(store,mate,_,who.name,now,_).proveBackup@4": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@25><anonymous>@1>done:subagentSettings(store,mate,_,who.name,now,_).proveBackup@4": 1,
     "src/server/guards.ts#<module>": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 1,
@@ -704,11 +705,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     // Easy-start C4: the local owner's first password, written with password_set 1 in the one enrollment transaction
     // (its preconditions re-read there); the caller hashes it. It authenticates no one itself.
-    "src/store.ts#enrollOwnerPassword@1173": 1,
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
     // `toolroll password reset`: the new hash for an account that already signs in with a password (eight pw).
-    "src/store.ts#resetAccountPassword@1219": 1,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#resetAccountPassword@1220": 1,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 1,
   },
   "credential_hash": {
@@ -724,13 +725,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveRunner@232>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@226>transact(_)@1": 1,
     // Easy-start F and C4: the laptop owner's unusable hash (random bytes thrown away, password_set 0) and enrollment.
-    "src/store.ts#enrollOwnerPassword@1173>store.transact(_)@1": 1,
-    "src/store.ts#initLocalMode@1172>store.transact(_)@1": 1,
+    "src/store.ts#enrollOwnerPassword@1174>store.transact(_)@1": 1,
+    "src/store.ts#initLocalMode@1173>store.transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1,
     // Eight pw: `toolroll password reset` proves the account has a password of its own (not an identity-provider-only
     // placeholder) and writes the new hash guarded by it; the sign-in footer asks only whether any password exists.
-    "src/store.ts#passwordResetRefusal@1218": 2,
-    "src/store.ts#resetAccountPassword@1219>store.transact(_)@1": 1,
+    "src/store.ts#passwordResetRefusal@1219": 2,
+    "src/store.ts#resetAccountPassword@1220>store.transact(_)@1": 1,
     "src/server/login-help.ts#anyPasswordSet@4": 1,
     // Easy-start D: the Linux update reads a runner's stored hash to authenticate its process record (never a password).
     "src/toolroll-update.ts#systemdLaptopService@106>recorded@3": 2,
@@ -770,7 +771,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#sendStep@14": 3,
     // The re-read card (`fresh`), never a password: its tasks are recorded for the step it admits (task-tidy.md).
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 7,
-    "src/flow-triggers.ts#checkTrigger@51": 3,
+    "src/flow-triggers.ts#checkTrigger@53": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
@@ -806,8 +807,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>sendScreen@130": 2,
     "src/serve.ts#createDecisionServer@1>sendScreen@130>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 2,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@20": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@24": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@21": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@25": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
@@ -842,6 +843,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-carry.ts#preflightCarry@21": 3,
   },
   "freshFacts": {
+    "src/device-pair.ts#<module>": 2,
+    "src/device-pair.ts#createDevicePairHandlers@7>confirm@6": 1,
     // B of a sign-in save proved by a one-use re-check: that same request's session still live as this person; A binds the
     // save's capability to that very request's facts.
     "src/flexible-sign-in.ts#<module>": 2,
@@ -913,6 +916,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@41": 1,
   },
   "proveAccountNow": {
+    "src/device-pair.ts#<module>": 2,
+    "src/device-pair.ts#createDevicePairHandlers@7>confirm@6>proved:freshFacts.run(freshFactsOf(request,who),_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/scope.ts#proveAccountNow@38": 1,
     "src/server/people-tokens.ts#<module>": 2,
@@ -1021,7 +1026,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1": 3,
     "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@305": 2,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
-    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@33><anonymous>@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/pages.ts#createPagesHandlers@1": 2,
@@ -1040,7 +1045,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Passwordless review round 1: reviewed new sites.
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@31><anonymous>@1": 3,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectFallback@121": 1,

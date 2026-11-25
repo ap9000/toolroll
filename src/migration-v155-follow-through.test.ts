@@ -9,6 +9,7 @@ import { checkRepairOfRun, checkRepairsOfTask, resumeParkedRepairs, settleCheckR
 import { evidencePairsOf, failingFirstOf } from "./evidence-pair.js";
 import { FINDING_SOURCES, FINDING_SOURCES_BEFORE_LEAD, V155_STEPS, V155_TABLES } from "./fleet-schema.js";
 import { sendFinding } from "./findings.js";
+import { V178_INDEX } from "./check-recovery-index-schema.js";
 import { attachFindings, findingsOfTask, getFinding, settleFindingAnswers, waitingFindings } from "./findings.js";
 import { handoverNoteOf } from "./handover-note.js";
 import { providerCapture, providerCaptures } from "./provider-capture.js";
@@ -39,8 +40,8 @@ describe("v155", () => {
   });
 
   // Codex round 2, finding 3: CREATE TABLE IF NOT EXISTS kept the first v155 builds' CHECK, so 'lead' couldn't be saved.
-  test("a file from the first v155 builds is widened in place: every finding, id, counter, answer and index kept, and 'lead' saves", () => {
-    const store = fresh();
+  test("a historical first-v155 finding table upgrades from v177: every finding, id, counter, answer and index kept, and 'lead' saves", () => {
+    const store = fresh(), identity = store.workspaceIdentity();
     store.createTask({ id: "t-1", title: "the work" }, NOW);
     for (const summary of ["one", "two", "three"]) sendFinding(store, { taskId: "t-1", source: "person", by: "alex", summary }, NOW);
     store.handle.prepare("INSERT INTO finding_answer (finding, round, run, answer, detail, at) VALUES (1, 1, 7, 'rejected', 'because', ?)").run(NOW.toISOString());
@@ -55,11 +56,18 @@ describe("v155", () => {
     db.exec("INSERT INTO finding_old SELECT * FROM finding; DROP TABLE finding; ALTER TABLE finding_old RENAME TO finding");
     db.exec("CREATE INDEX finding_family ON finding (family_root, state); UPDATE sqlite_sequence SET seq = 3 WHERE name = 'finding'; COMMIT");
     expect(() => db.prepare("UPDATE finding SET source = 'lead' WHERE id = 1").run()).toThrow(/CHECK/);
+    // Exercise the supported v177 predecessor, carrying the historical first-v155 finding CHECK.
+    // A current v178 file with this stale shape must refuse; this is not an archival v155 catalog.
+    db.exec(`DROP INDEX ${V178_INDEX}; UPDATE schema_version SET version = 177`);
+    expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(177);
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(V178_INDEX)).toBeUndefined();
     db.close();
     const steps: string[] = [];
     const upgraded = openStore(join(dir!, "s.db"), { migrationStep: one => steps.push(one) });
     open.push(upgraded);
     expect(steps).toContain("finding-sources");
+    expect(upgraded.workspaceIdentity()).toEqual(identity);
+    expect(upgraded.handle.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'index' AND name = ?").get(V178_INDEX)).toEqual({ present: 1 });
     expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(String(upgraded.handle.prepare("SELECT sql FROM sqlite_master WHERE name = 'finding'").get()!["sql"])).toContain(FINDING_SOURCES);
     expect(upgraded.handle.prepare("SELECT id, summary FROM finding ORDER BY id").all()).toEqual([{ id: 1, summary: "one" }, { id: 2, summary: "two" }]);

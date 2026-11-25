@@ -1,3 +1,4 @@
+import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForTaskRef } from "./check-recovery-hold.js";
 import { verifyResultImage } from "./chat-evidence.js";
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 import { agentSaidTail } from "./agent-said.js";
@@ -35,6 +36,10 @@ import { V172_ADDED_COLUMNS, V172_OBJECTS, V172_SCHEMA, V172_STEPS } from "./fle
 import { V173_ADDED_COLUMNS, V173_STEPS } from "./plan-problems-schema.js";
 import { V175_OBJECTS, V175_SCHEMA, V175_STEPS } from "./flexible-interactive-schema.js";
 import { V176_ADDED_COLUMNS, V176_STEPS, V176_SCHEMA, V176_OBJECTS } from "./subagent-backup-schema.js";
+import { V178_STEPS, V178_SCHEMA, V178_INDEX } from "./check-recovery-index-schema.js";
+import { V180_SCHEMA, V180_STEPS } from "./agent-change-schema.js";
+import { V181_REQUIRED_COLUMNS, V181_SCHEMA, V181_STEPS, V181_TABLES, V182_REQUIRED_COLUMNS, V182_SCHEMA, V182_STEPS, V182_TABLES, V183_ADDED_COLUMNS, V183_STEPS, V184_ADDED_COLUMNS, V184_STEPS } from "./direct-chat-schema.js";
+import { V177_STEPS, V177_SCHEMA, V177_OBJECTS, WORKSPACE_ID_PATTERN, RECOVERY_GENERATION_PATTERN, type WorkspaceIdentity } from "./workspace-identity-schema.js";
 import { V174_OBJECTS, V174_SCHEMA, V174_STEPS } from "./flexible-everyday-schema.js";
 import { endThreadAuthorityFor } from "./flexible-authority-end.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
@@ -145,7 +150,7 @@ import { BUILDER_SERVICE_SCHEMA, CHECK_ONLY_SCHEMA, FAST_PREVIEW_SCHEMA, ROUTE_C
 export { V153_ADDED_COLUMNS } from "./plain-schema.js";
 import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
-import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
+import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, recordActionWhole, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
@@ -163,7 +168,7 @@ import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, D
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
-import { configBase, envValue, namedPath } from "./names.js";
+import { configBase, envValue, namedPath, headWithin } from "./names.js";
 import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
@@ -1279,7 +1284,12 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // launch, the sign-in epoch a turn was begun under, a thread's title and end, and a Ship's laptop consent
 // (flexible-everyday-schema.ts).
 // v175 adds saved runtimes and launch-scoped interactive authority. Existing threads retain stream-json.
-export const SCHEMA_VERSION = 176;
+// v179 widens the provider CHECK constraints to include 'antigravity' (Antigravity ACP, `agy acp`); every saved row
+// carries over untouched and indexes are restored in place.
+// v180 adds, and changes no saved row (docs/plans/mac-change-models.md): a task's pending model change, picked by the
+// laptop owner while a run held it (pending_agent_change, a new table; agent-change-schema.ts). V180_SCHEMA.
+export const SCHEMA_VERSION = 184;
+export const V179_STEPS = Object.freeze(["antigravity-provider"] as const);
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1417,7 +1427,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176]);
+// v178 adds only the action/id ledger index; saved rows, IDs, identity and authority are unchanged.
+// v179 widens provider CHECK constraints to include 'antigravity'; saved rows, IDs, identity and authority are unchanged.
+// v180 adds only a new table (pending_agent_change); saved rows, IDs, identity and authority are unchanged.
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1681,7 +1694,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number] | (typeof V171_STEPS)[number] | (typeof V172_STEPS)[number] | (typeof V173_STEPS)[number] | (typeof V174_STEPS)[number] | (typeof V175_STEPS)[number] | (typeof V176_STEPS)[number] | (typeof V177_STEPS)[number] | (typeof V178_STEPS)[number] | (typeof V179_STEPS)[number] | (typeof V180_STEPS)[number] | (typeof V181_STEPS)[number] | (typeof V182_STEPS)[number] | (typeof V183_STEPS)[number] | (typeof V184_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2091,7 +2104,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS, V171_STEPS, V172_STEPS, V173_STEPS, V174_STEPS, V175_STEPS, V176_STEPS, V177_STEPS, V178_STEPS, V180_STEPS, V181_STEPS, V182_STEPS, V183_STEPS, V184_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -2463,7 +2476,7 @@ export const BUILT_IN = "built-in";
 
 export type TaskState = "queued" | "running" | "done" | "failed" | "cancelled";
 
-type CancellationRefusal = "reason-required" | "bad-reason";
+type CancellationRefusal = "reason-required" | "bad-reason" | "recovery-held";
 type CancellationTransition = { changed: boolean; reason?: never } | { changed: false; reason: CancellationRefusal };
 
 export type Task = {
@@ -3871,7 +3884,7 @@ CREATE TABLE IF NOT EXISTS mcp_idempotency (
 CREATE TABLE IF NOT EXISTS phase_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -3887,7 +3900,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -3903,7 +3916,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
 -- substitutes for it.
 CREATE TABLE IF NOT EXISTS provider_readiness (
   runner      TEXT NOT NULL REFERENCES runner(name) ON DELETE CASCADE,
-  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   state       TEXT NOT NULL CHECK (state IN ('ready','unavailable','unknown')),
   reason      TEXT NOT NULL,
   probe       TEXT NOT NULL,
@@ -6010,6 +6023,20 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // wrote one, and this build keeps no steps for it.
   const read = schemaVersionPreflight(db, file);
   if (read !== null && Math.abs(read) < BASELINE_SCHEMA_VERSION) throw new Error(olderThanBaseline(file, read));
+  // An already identity-bearing source (including interrupted -177) must retain
+  // its exact identity BEFORE any epoch or compatibility-replay DDL can run.
+  if (read !== null && Math.abs(read) >= 177) {
+    const identityProblem = workspaceIdentityShapeProblem(db);
+    if (identityProblem !== null) throw new Error(`${file}: refusing to open — ${identityProblem}, though the schema says v${read}`);
+    const indexProblem = checkRecoveryIndexShapeProblem(db, Math.abs(read) >= 178);
+    if (indexProblem !== null) throw new Error(`${file}: refusing to open — ${indexProblem}, though the schema says v${read}`);
+  }
+  // A current file cannot enter an upgrade from its own version: that would
+  // write the deliberately impossible -SCHEMA_VERSION marker. Older sources
+  // retain the reviewed finding compatibility replay, under their real epoch.
+  if (read === SCHEMA_VERSION && findingSourcesStale(db)) {
+    throw new Error(`${file}: refusing to open — the current finding schema is stale; no epoch or DDL was applied`);
+  }
   // A fresh file becomes the v107 baseline first, then takes the same steps an installation from 0.5.0 takes.
   const fresh = read === null;
   const preflight = fresh ? createBaseline(db, file, options.createdBy) : read;
@@ -6076,7 +6103,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db) ?? flexibleSettingShapeProblem(db) ?? flexibleSignInShapeProblem(db) ?? planProblemsShapeProblem(db) ?? flexibleEverydayShapeProblem(db) ?? flexibleInteractiveShapeProblem(db) ?? subagentBackupShapeProblem(db) ?? workspaceIdentityShapeProblem(db) ?? pendingAgentChangeShapeProblem(db) ?? directChatShapeProblem(db) ?? directChatPhase1bShapeProblem(db) ?? directChatHardeningShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6590,6 +6617,55 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const backupDamaged = subagentBackupShapeProblem(db);
   if (backupDamaged !== null) throw new Error(`${file}: refusing to open — ${backupDamaged}`);
   step("subagent-backup-columns");
+  // v177: identity is created only by this admitted migration, never by a request. A resumed row is preserved.
+  db.exec(V177_SCHEMA);
+  const identityBefore = workspaceIdentityShapeProblem(db, false);
+  if (identityBefore !== null) throw new Error(`${file}: refusing to open — ${identityBefore}`);
+  if (db.prepare("SELECT singleton FROM workspace_identity").all().length === 0) {
+    db.prepare("INSERT INTO workspace_identity (singleton, workspace_id, recovery_generation, created_at) VALUES (1, ?, ?, ?)")
+      .run(randomUUID(), randomBytes(16).toString("hex"), new Date().toISOString());
+  }
+  const identityDamaged = workspaceIdentityShapeProblem(db);
+  if (identityDamaged !== null) throw new Error(`${file}: refusing to open — ${identityDamaged}`);
+  step("workspace-identity");
+  // v178 only adds a derived index; every ledger row and authority value remains unchanged.
+  db.exec(V178_SCHEMA);
+  const indexDamaged = checkRecoveryIndexShapeProblem(db);
+  if (indexDamaged !== null) throw new Error(`${file}: refusing to open — ${indexDamaged}`);
+  step("action-ledger-index");
+  // v179: Antigravity ACP as a provider: widen provider CHECKs across routing/readiness/ACP tables, keeping every saved
+  // row and restoring indexes. Idempotent: already-widened tables are untouched.
+  widenForAntigravity(db);
+  db.exec(ACP_ATTESTATION_SCHEMA);
+  db.exec(ACP_BILLING_SCHEMA);
+  db.exec(ACP_CHECK_SCHEMA);
+  step("antigravity-provider");
+  // v180: a task's pending model change (a new table; no saved row changes). Idempotent; a table already here (a resumed
+  // epoch, a later upgrade) must be exactly this shape.
+  db.exec(V180_SCHEMA);
+  const pendingDamaged = pendingAgentChangeShapeProblem(db);
+  if (pendingDamaged !== null) throw new Error(`${file}: refusing to open — ${pendingDamaged}`);
+  step("pending-agent-change");
+  db.exec(V181_SCHEMA);
+  const directChatDamaged = directChatShapeProblem(db);
+  if (directChatDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatDamaged}`);
+  step("direct-chat-tables");
+  db.exec(V182_SCHEMA);
+  const directChatPhase1bDamaged = directChatPhase1bShapeProblem(db);
+  if (directChatPhase1bDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatPhase1bDamaged}`);
+  step("direct-chat-phase1b-tables");
+  for (const [table, columns] of Object.entries(V183_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  const directChatHardeningDamaged = directChatHardeningShapeProblem(db);
+  if (directChatHardeningDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatHardeningDamaged}`);
+  step("direct-chat-hardening-columns");
+  for (const [table, columns] of Object.entries(V184_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  const directChatEffortDamaged = directChatEffortUsageShapeProblem(db);
+  if (directChatEffortDamaged !== null) throw new Error(`${file}: refusing to open — ${directChatEffortDamaged}`);
+  step("direct-chat-effort-usage-columns");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7569,7 +7645,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','routine','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -7585,7 +7661,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
 export const ACP_ATTESTATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_attestation (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner              TEXT NOT NULL,
   conformance_version INTEGER NOT NULL,
   launch_json         TEXT NOT NULL,
@@ -7616,7 +7692,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provi
 export const ACP_CHECK_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_check_request (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner              TEXT NOT NULL,
   model               TEXT NOT NULL,
   conformance_version INTEGER NOT NULL,
@@ -7660,7 +7736,7 @@ export type AcpCheckRequest = {
 export const ACP_BILLING_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_billing (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity')),
   runner    TEXT NOT NULL,
   model     TEXT NOT NULL,
   kind      TEXT NOT NULL CHECK (kind IN ('metered','plan')),
@@ -7688,9 +7764,12 @@ export type AcpAttestation = {
   recordedBy: string;
 };
 
-/** The provider CHECK before ACP agents joined (acp-agents.ts), and after: the same list, five ids longer. */
+/** The provider CHECK before ACP agents joined (acp-agents.ts), after v125, and after v175 ('antigravity'). */
 const PROVIDERS_BEFORE_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
 const PROVIDERS_WITH_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose'))";
+const PROVIDERS_WITH_ANTIGRAVITY = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity'))";
+const ACP_PROVIDERS_BEFORE_ANTIGRAVITY = "CHECK (provider IN ('opencode','cursor','cline','qwen','goose'))";
+const ACP_PROVIDERS_WITH_ANTIGRAVITY = "CHECK (provider IN ('opencode','cursor','cline','qwen','goose','antigravity'))";
 /** The sign-in pause's auth mode before an ACP agent's own sign-in ('agent-login'), and after. */
 const AUTH_MODES_BEFORE_ACP = "CHECK (auth_mode IN ('subscription', 'api-key'))";
 const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login'))";
@@ -7701,19 +7780,11 @@ const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'ag
  * drops are put back by their own schema's IF NOT EXISTS, which the caller runs again after.
  */
 function widenForAcp(db: Database): void {
-  const widen = (table: string, before: string, after: string) => {
-    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-    if (row === undefined) return;
-    const stored = String(row["sql"]);
-    if (stored.includes(after)) return;
-    if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
-    const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
-    rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
-  };
-  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) widen(table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP);
-  widen("provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
-  widen("quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) {
+    widenTableCheck(db, table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP, [PROVIDERS_WITH_ACP, PROVIDERS_WITH_ANTIGRAVITY]);
+  }
+  widenTableCheck(db, "provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
+  widenTableCheck(db, "quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
 }
 
 /** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
@@ -7727,7 +7798,7 @@ function widenPhaseTierSchema(db: Database): void {
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose','antigravity')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -8004,6 +8075,14 @@ export class Store {
     const ref = this.db
       .prepare("SELECT id, coordinator_cid FROM task_ref WHERE backend = ? AND external_id = ?")
       .get(BUILT_IN, taskId);
+    if (replacedBy !== undefined && this.db.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) !== undefined) {
+      const successor = this.lookupRef(replacedBy);
+      // Existing tasks without their binding are damaged trusted state, not an absent prospective successor.
+      if ((ref === undefined && this.getTask(taskId) !== null) || (successor === null && this.getTask(replacedBy) !== null))
+        return { changed: false, reason: "recovery-held" };
+      const refs = [...(ref === undefined ? [] : [Number(ref["id"])]), ...(successor === null ? [] : [successor.id])];
+      if (unresolvedRecoveryCheckFamily(this, refs) !== null) return { changed: false, reason: "recovery-held" };
+    }
     const coordinator = ref?.["coordinator_cid"] != null;
     // Check the authoritative linkage and the reason in the transaction
     // that changes state. No wrapper can substitute a generic dismissal.
@@ -8038,6 +8117,8 @@ export class Store {
     // for a build that can no longer happen is wrong on every road, not
     // just the state verb's.
     if (ref !== undefined) this.supersedeSteerNotes(Number(ref["id"]), now);
+    // A model change waiting for its run to end (v180) has no next run to wait for.
+    if (ref !== undefined) this.db.prepare("DELETE FROM pending_agent_change WHERE task_ref = ?").run(Number(ref["id"]));
     // Its open questions close the same way (v119), typed 'cancelled', with their holds and pages: a question about
     // work that will never run must leave every decision queue. Answered ones stay exactly as they were.
     if (ref !== undefined) this.closeQuestionsLocked(Number(ref["id"]), "cancelled", now);
@@ -10185,7 +10266,9 @@ export class Store {
         now,
       );
     }
-    const repoIntents = `publication IN (
+    const frozenIntents = this.db.prepare("SELECT 1 FROM action_ledger WHERE action=? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined ? []
+      : this.db.prepare("SELECT i.id,i.publication FROM merge_intent i JOIN publication p ON p.id=i.publication JOIN run r ON r.id=p.run JOIN task_ref t ON t.id=r.task_ref WHERE i.state IN ('waiting-human','pending','claimed') AND t.repo=?").all(repo).filter(row => mergeIntentRecoveryHeld(this, Number(row["publication"]))).map(row => Number(row["id"]));
+    const repoIntents = `id NOT IN (SELECT value FROM json_each('${JSON.stringify(frozenIntents)}')) AND publication IN (
                 SELECT publication.id FROM publication
                   JOIN run ON run.id = publication.run
                   JOIN task_ref ON task_ref.id = run.task_ref
@@ -10783,6 +10866,7 @@ export class Store {
   }
 
   recordAction(entry: Omit<LedgerEntry, "id" | "detail"> & { detail?: string | null }): number {
+    if (entry.action === MERGE_FIRING_ADMITTED) throw new Error("Merge firing admission is written only by the firing transaction");
     const detail = entry.detail == null ? null : entry.detail.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 300);
     const row = this.db.prepare("INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (?,?,?,?,?,?,?,?,?)")
       .run(entry.at, entry.actor, entry.repo, entry.taskId, entry.runId, entry.action, entry.outcome, entry.source, detail);
@@ -14075,6 +14159,11 @@ export class Store {
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+      // An ended task says so before anything else: a second confirm (a double click, a cancel from another screen)
+      // hears "already ended", never "changed since it was shown".
+      const cancellable: readonly TaskState[] = ["queued", "failed", "running"];
+      const stateNow = String(this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"]);
+      if (!(cancellable as readonly string[]).includes(stateNow)) return { ok: false as const, reason: "already-terminal" as const };
       if (seen !== undefined) {
         const state = this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"];
         const last = this.db.prepare("SELECT MAX(id) AS id FROM run WHERE task_ref = ?").get(Number(ref["id"]))?.["id"];
@@ -14088,7 +14177,7 @@ export class Store {
         taskId,
         { kind: "operator", text: reason ?? null },
         now,
-        ["queued", "failed", "running"],
+        cancellable,
       );
       if (done.reason !== undefined) return { ok: false as const, reason: done.reason };
       if (!done.changed) return { ok: false as const, reason: "already-terminal" as const };
@@ -15603,16 +15692,17 @@ export class Store {
 
   /**
    * The crash sweep: turns past their deadline become failed('crashed'),
-   * generation-bumped so a late finalize loses. A turn that STARTED may
-   * have billed — it latches unknown spend and blocks its credential; a
-   * queued one never dispatched and settles at zero.
+   * generation-bumped so a late finalize loses. A metered API turn that
+   * STARTED may have billed — it latches unknown spend and blocks its
+   * credential; a queued turn or a subscription turn (zero API billing)
+   * settles at zero without latching.
    */
   sweepStaleChatTurns(now: Date): number {
     const swept = this.db
       .prepare(
         `UPDATE chat_turn SET state = 'failed', failure_reason = 'crashed', generation = generation + 1,
-           unknown_spend = CASE WHEN started_at IS NOT NULL THEN 1 ELSE 0 END,
-           settled_microusd = CASE WHEN started_at IS NOT NULL THEN settled_microusd ELSE 0 END,
+           unknown_spend = CASE WHEN started_at IS NOT NULL AND provider NOT IN ('claude-subscription','codex-subscription') THEN 1 ELSE 0 END,
+           settled_microusd = CASE WHEN started_at IS NOT NULL AND provider NOT IN ('claude-subscription','codex-subscription') THEN settled_microusd ELSE 0 END,
            finished_at = ?
          WHERE state IN ('queued','running') AND deadline_at < ?`,
       )
@@ -19308,7 +19398,10 @@ export class Store {
    * stalled older response can neither overwrite nor authorize.
    */
   reserveObservation(githubRepo: string, prNumber: number): number {
-    return this.transact(() => {
+    const key = `${githubRepo}:${prNumber}`;
+    mergeObservationReservations.get(this)?.delete(key);
+    const eligible = (this.handle as Database & { isTransaction?: unknown }).isTransaction === false;
+    const generation = this.transact(() => {
       const row = this.db
         .prepare("SELECT generation FROM ci_observation WHERE github_repo = ? AND pr_number = ?")
         .get(githubRepo, prNumber);
@@ -19326,6 +19419,15 @@ export class Store {
       }
       return generation;
     });
+    if (eligible && Number.isSafeInteger(generation) && generation > 0) {
+      const dataVersion = this.db.prepare("PRAGMA data_version").get()?.["data_version"];
+      if (typeof dataVersion === "number" && Number.isSafeInteger(dataVersion) && dataVersion >= 0) {
+        let reservations = mergeObservationReservations.get(this);
+        if (reservations === undefined) { reservations = new Map(); mergeObservationReservations.set(this, reservations); }
+        reservations.set(key, { generation, dataVersion, scope: mergeObservationScope(this, githubRepo, prNumber), writeStamp: mergeObservationWriteStamp(this) });
+      }
+    }
+    return generation;
   }
 
   /**
@@ -19384,8 +19486,9 @@ export class Store {
   createMergeIntent(
     intent: { publication: number; repo: string; grantTermsHash: string; headSha: string; method: "squash" | "merge" | "rebase"; deleteBranch: boolean },
     now: Date,
-  ): void {
-    this.transact(() => {
+  ): "recovery-held" | void {
+    return this.transact(() => {
+      if (mergeIntentRecoveryHeld(this, intent.publication)) return "recovery-held" as const;
       // The nightly check of main is a check only (release-once.md, part 3): nothing merges it.
       if (nightlyPublication(this, intent.publication)) throw new Error(NIGHTLY_CHECK_ONLY);
       // A release's result merges only through its coordinator (release-once.md; security review): no intent for it.
@@ -19428,8 +19531,8 @@ export class Store {
    */
   claimMergeIntent(id: number, by: string, leaseMs: number, now: Date): { generation: number } | null {
     return this.transact(() => {
-      const row = this.db.prepare("SELECT state, claimed_until, generation FROM merge_intent WHERE id = ?").get(id);
-      if (row === undefined) return null;
+      const row = this.db.prepare("SELECT state, claimed_until, generation, publication FROM merge_intent WHERE id = ?").get(id);
+      if (row === undefined || mergeIntentRecoveryHeld(this, Number(row["publication"]))) return null;
       const state = String(row["state"]);
       const expired = row["claimed_until"] !== null && String(row["claimed_until"]) <= now.toISOString();
       if (state !== "pending" && !(state === "claimed" && expired)) return null;
@@ -19456,6 +19559,12 @@ export class Store {
     now: Date,
     detail: { error?: string | null; receipt?: string | null; countAttempt?: boolean; from?: "claimed" | "firing" | "nonterminal"; bumpGeneration?: boolean } = {},
   ): boolean {
+    return this.transact(() => {
+    const observed = validMergeIntentObservation(this, id, generation);
+    const current = this.db.prepare("SELECT publication, state, generation FROM merge_intent WHERE id=?").get(id);
+    if (current === undefined) return false;
+    if (mergeIntentRecoveryHeld(this, Number(current["publication"])) &&
+        (state !== "merged" || !observed)) return false;
     const from = detail.from ?? "nonterminal";
     const { changes } = this.db
       .prepare(
@@ -19480,16 +19589,18 @@ export class Store {
         from, from,
       );
     return Number(changes) === 1;
+    });
   }
 
   /** The per-merge password ceremony's write (E1: waiting-human → pending
    * by the EXACT-INTENT ceremony): the caller has authenticated and shown
    * the operator the head they are authorizing. Basis becomes 'human' —
    * this signature covers this one merge and nothing else. */
-  authorizeMergeIntent(id: number, expectedHeadSha: string, by: string, now: Date): { ok: true } | { ok: false; reason: "not-waiting" | "head-moved" } {
+  authorizeMergeIntent(id: number, expectedHeadSha: string, by: string, now: Date): { ok: true } | { ok: false; reason: "not-waiting" | "head-moved" | "recovery-held" } {
     void by;
     void now;
     return this.transact(() => {
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, reason: "recovery-held" as const };
       const row = this.db.prepare("SELECT state, head_sha FROM merge_intent WHERE id = ?").get(id);
       if (row === undefined || String(row["state"]) !== "waiting-human") return { ok: false as const, reason: "not-waiting" as const };
       if (String(row["head_sha"]) !== expectedHeadSha) return { ok: false as const, reason: "head-moved" as const };
@@ -19520,11 +19631,12 @@ export class Store {
     generation: number,
     proof: { repo: string; headSha: string; liveGrantTermsHash: string | null; graceMs: number },
     now: Date,
-  ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human"; why: string } {
-    return this.transact(() => {
+  ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human" | "recovery-held"; why: string } {
+    return this.transact(() => this.savepoint(() => {
       const row = this.db
         .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest, publication FROM merge_intent WHERE id = ?")
         .get(id);
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, outcome: "recovery-held" as const, why: MERGE_RECOVERY_HELD };
       // The shared merge authority (release-once.md, part 3): a nightly check of main never merges, by any road.
       if (row !== undefined && nightlyPublication(this, Number(row["publication"]))) {
         this.settleMergeIntent(id, generation, "refused", now, { error: NIGHTLY_CHECK_ONLY, from: "claimed" });
@@ -19556,8 +19668,14 @@ export class Store {
       if (proof.liveGrantTermsHash === null || proof.liveGrantTermsHash !== String(row["grant_terms_hash"])) {
         return supersede("the grant was revoked or its merge terms changed since this intent was written");
       }
+      const admission = mergeAdmissionScope(this, id, generation, null);
+      if (admission === null || proof.repo !== admission.repo || proof.headSha !== admission.head || proof.liveGrantTermsHash !== admission.grantHash) {
+        return { ok: false as const, outcome: "raced" as const, why: "the actual publication and live merge grant no longer bind this claim" };
+      }
+      const prior = readMergeAdmissionCandidates(this, admission);
+      if (prior === null || prior.some(c => c.g === generation)) return { ok: false as const, outcome: "raced" as const, why: "the firing admission history is inconsistent" };
       const basis = String(row["authority_basis"]);
-      const mode = this.activeMode(proof.repo, now);
+      const mode = this.activeMode(admission.repo, now);
       if (basis === "mode") {
         let publication: unknown;
         try {
@@ -19583,19 +19701,20 @@ export class Store {
             WHERE id = ? AND state = 'claimed' AND generation = ?`,
         )
         .run(now.toISOString(), new Date(now.getTime() + proof.graceMs).toISOString(), id, generation);
-      return Number(changes) === 1
-        ? { ok: true as const }
-        : { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
-    });
+      if (Number(changes) !== 1) return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
+      writeMergeAdmission(this, admission, now);
+      return { ok: true as const };
+    }));
   }
 
   /** F1: an OPEN same-head PR under a STALE firing row is never
    * auto-retried — this authenticated recovery ceremony re-arms it
    * through the full firing CAS, generation bumped so the dead owner's
    * late writes lose. Refuses while the deadline has not passed. */
-  refireMergeIntent(id: number, by: string, now: Date): { ok: true } | { ok: false; reason: "not-firing" | "not-stale" } {
+  refireMergeIntent(id: number, by: string, now: Date): { ok: true } | { ok: false; reason: "not-firing" | "not-stale" | "recovery-held" } {
     void by;
     return this.transact(() => {
+      if (mergeIntentRecoveryHeldById(this, id)) return { ok: false as const, reason: "recovery-held" as const };
       const row = this.db.prepare("SELECT state, firing_deadline FROM merge_intent WHERE id = ?").get(id);
       if (row === undefined || String(row["state"]) !== "firing") return { ok: false as const, reason: "not-firing" as const };
       if (String(row["firing_deadline"]) > now.toISOString()) return { ok: false as const, reason: "not-stale" as const };
@@ -19611,11 +19730,14 @@ export class Store {
   }
 
   /** Refused intents rearm to pending after the operator fixed the cause. */
-  rearmMergeIntent(publication: number): boolean {
+  rearmMergeIntent(publication: number): boolean | "recovery-held" {
+    return this.transact(() => {
+    if (mergeIntentRecoveryHeld(this, publication)) return "recovery-held" as const;
     const { changes } = this.db
       .prepare("UPDATE merge_intent SET state = 'pending', last_error = NULL WHERE publication = ? AND state = 'refused'")
       .run(publication);
     return Number(changes) > 0;
+    });
   }
 
   mergeIntentFor(publication: number): { id: number; state: string; headSha: string; generation: number; attempts: number; lastError: string | null; firingDeadline: string | null } | null {
@@ -19904,11 +20026,12 @@ export class Store {
   }
 
   /** The live session — explicitly ended or still active. Exhaustion is the caller's arithmetic. */
-  activeLeadSession(approver: string): LeadSession | null {
+  activeLeadSession(approver: string, credentialKey?: string): LeadSession | null {
     const row = this.db
       .prepare("SELECT * FROM lead_session WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=lead_session.id) ORDER BY id DESC LIMIT 1")
       .get(approver);
-    return row === undefined ? null : readLeadSession(row);
+    if (row === undefined || (credentialKey !== undefined && row["credential_key"] !== credentialKey)) return null;
+    return readLeadSession(row);
   }
 
   getLeadSession(id: number): LeadSession | null {
@@ -24477,6 +24600,13 @@ export class Store {
     this.spendCache = null;
   }
 
+  /** Read identity only: a damaged current singleton is refused, never regenerated or treated as authority. */
+  workspaceIdentity(): WorkspaceIdentity {
+    const problem = workspaceIdentityShapeProblem(this.db);
+    if (problem !== null) throw new Error(problem);
+    const row = this.db.prepare("SELECT workspace_id, recovery_generation, created_at FROM workspace_identity WHERE singleton = 1").get()!;
+    return { id: String(row["workspace_id"]), recoveryGeneration: String(row["recovery_generation"]), createdAt: String(row["created_at"]) };
+  }
 }
 
 /** A stored count or id that must be a whole, non-negative number — a
@@ -26639,7 +26769,7 @@ export function dropFeedbackImage(store: Store, runId: number, commentId: number
 export type TaskArchive = { taskRef: number; taskId: string; by: string; byKind: "person" | "tidy"; rule: string | null; reason: string; at: string };
 /** Who put a task away, and why: a person by name, or tidy by its rule. */
 export type ArchiveBy = { by: string; byKind: "person" | "tidy"; rule: string | null; reason: string };
-export type ArchiveRefusal = "unknown-task" | "live" | "archived" | "not-archived" | "blocked";
+export type ArchiveRefusal = "unknown-task" | "live" | "archived" | "not-archived" | "blocked" | "recovery-held";
 
 /** The put-away record of this task, or null when it is not put away. */
 export function archiveOf(store: Store, taskId: string): TaskArchive | null {
@@ -26663,6 +26793,8 @@ export function taskFamilyRefs(store: Store, taskId: string): { id: number; task
  * firing, or a person's merge between its last check and GitHub's answer). */
 export function liveFamilyAttempt(store: Store, refs: readonly number[], now: Date): string | null {
   if (refs.length === 0) return null;
+  const recovery = unresolvedRecoveryCheckFamily(store, refs);
+  if (recovery !== null) return recovery;
   const row = store.handle.prepare(`SELECT r.external_id FROM task_ref r JOIN task t ON t.id = r.external_id
     WHERE r.id IN (SELECT value FROM json_each(?)) AND (t.state = 'running'
       OR EXISTS (SELECT 1 FROM claim c WHERE c.task_ref = r.id AND c.released_at IS NULL AND c.expires_at > ?
@@ -26700,6 +26832,9 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
     if (options.expect !== undefined && [...options.expect].sort((a, b) => a - b).join(",") !== refs.join(",")) {
       return { ok: false as const, reason: "blocked" as const, message: `${taskId}'s versions changed since the list was shown.` };
     }
+    const recovery = unresolvedRecoveryCheckFamily(store, refs);
+    if (recovery !== null) return { ok: false as const, reason: "recovery-held" as const,
+      message: "This task can't be put away while earlier check execution is unverified after recovery." };
     // Already put away, every version: nothing to do. A family a person revived with a new revision puts away the rest.
     const remaining = refs.filter(ref => !refArchived(store, ref));
     if (remaining.length === 0) return { ok: false as const, reason: "archived" as const, message: `${taskId} is already put away.` };
@@ -26707,10 +26842,14 @@ export function archiveTaskFamily(store: Store, taskId: string, by: ArchiveBy, n
     if (live !== null) return { ok: false as const, reason: "live" as const, message: `${taskId} still has work going on. Stop it or let it finish, then put it away.` };
     const blocked = options.guard?.(refs) ?? null;
     if (blocked !== null) return { ok: false as const, reason: "blocked" as const, message: blocked };
+    if (unresolvedRecoveryCheckFamily(store, refs) !== null) return { ok: false as const, reason: "recovery-held" as const,
+      message: "This task can't be put away while earlier check execution is unverified after recovery." };
     const reason = by.reason.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300) || "Put away";
     const at = now.toISOString();
     const insert = store.handle.prepare("INSERT INTO task_archive (task_ref, by, by_kind, rule, reason, at) VALUES (?, ?, ?, ?, ?, ?)");
     for (const ref of remaining) insert.run(ref, by.by, by.byKind, by.rule, reason, at);
+    // A model change waiting for its run to end (v180) is not carried over a put-away task.
+    store.handle.prepare("DELETE FROM pending_agent_change WHERE task_ref IN (SELECT value FROM json_each(?))").run(JSON.stringify(refs));
     store.handle.prepare("UPDATE notification SET resolved_at = ? WHERE resolved_at IS NULL AND task_ref IN (SELECT value FROM json_each(?))")
       .run(at, JSON.stringify(refs));
     // The family's flow cards hold while it is put away, so what they queued for people is settled too.
@@ -28001,6 +28140,276 @@ function subagentBackupShapeProblem(db: Database): string | null {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
     const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
     if (row === undefined || want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(want)) return `the subagent backup ${type} ${name} has an unknown shape`;
+  }
+  return null;
+}
+
+/** v177 metadata must have this exact shape and one valid immutable identity. Read-only on every path. */
+function workspaceIdentityShapeProblem(db: Database, requireRow = true): string | null {
+  const statements = V177_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(Boolean);
+  for (const [type, name] of V177_OBJECTS) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    const want = statements.find(one => new RegExp(`^CREATE ${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (row === undefined || want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(want)) return `the workspace identity ${type} ${name} is missing or has an unknown shape`;
+  }
+  const rows = db.prepare("SELECT singleton, workspace_id, recovery_generation, created_at FROM workspace_identity").all();
+  if (rows.length === 0 && !requireRow) return null;
+  if (rows.length !== 1) return "the workspace identity must have exactly one row";
+  const row = rows[0]!, id = row["workspace_id"], recovery = row["recovery_generation"], at = row["created_at"];
+  if (row["singleton"] !== 1 || typeof id !== "string" || !WORKSPACE_ID_PATTERN.test(id)
+    || typeof recovery !== "string" || !RECOVERY_GENERATION_PATTERN.test(recovery)
+    || typeof at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at)
+    || !Number.isFinite(Date.parse(at)) || new Date(at).toISOString() !== at) return "the workspace identity row has invalid metadata";
+  return null;
+}
+
+/** v178 catalog shape, checked before current/replayed DDL. Missing is allowed only on a v177 source. */
+function checkRecoveryIndexShapeProblem(db: Database, required = true): string | null {
+  const row = db.prepare("SELECT type,tbl_name,sql FROM sqlite_master WHERE name = ?").get(V178_INDEX);
+  if (row === undefined && !required) return null;
+  if (row === undefined || row["type"] !== "index" || row["tbl_name"] !== "action_ledger"
+    || canonicalDdl(String(row["sql"]).replace(/;$/, "")) !== canonicalDdl(V178_SCHEMA.replace(/;$/, ""))) {
+    return "the action ledger action index is missing or has an unknown shape";
+  }
+  const index = db.prepare("PRAGMA index_list('action_ledger')").all().find(one => one["name"] === V178_INDEX);
+  const columns = db.prepare("PRAGMA index_xinfo('action_ledger_action')").all().filter(one => one["key"] === 1);
+  if (index?.["partial"] !== 1 || index["unique"] !== 0 || index["origin"] !== "c" || columns.length !== 2
+    || columns.some((one, i) => one["seqno"] !== i || one["name"] !== ["action", "id"][i] || one["desc"] !== 0 || one["coll"] !== "BINARY")) {
+    return "the action ledger action index is missing or has an unknown shape";
+  }
+  return null;
+}
+
+/** Independent unresolved-check custody: a later finish or moved run cannot clear
+ * immutable hold evidence. Never interprets a hold as an active/stopped native process. */
+function unresolvedRecoveryCheckFamily(store: Store, refs: readonly number[]): string | null {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = ? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return null;
+  const covered = new Set<number>();
+  for (const ref of refs) {
+    if (covered.has(ref)) continue;
+    const evidence = readCheckRecoveryHoldsForTaskRef(store, ref);
+    if (evidence.kind !== "no-evidence") return store.externalIdFor(ref) ?? "Unknown task";
+    for (const member of evidence.familyRefs) covered.add(member);
+  }
+  return null;
+}
+
+/** Separate from historical check outcomes; no recovery evidence is permission. */
+export const MERGE_RECOVERY_HELD = "Checks are on hold after recovery. Earlier execution is unverified.";
+export function mergeIntentRecoveryHeld(store: Store, publicationId: number): boolean {
+  try {
+  if (store.handle.prepare("SELECT 1 FROM action_ledger WHERE action=? LIMIT 1").get(CHECK_RECOVERY_HELD) === undefined) return false;
+  const p = store.handle.prepare("SELECT task_ref, run FROM publication WHERE id=?").get(publicationId);
+  const run = p === undefined ? undefined : store.handle.prepare("SELECT task_ref FROM run WHERE id=?").get(p["run"] as number);
+  if (p === undefined || run === undefined || run["task_ref"] !== p["task_ref"]) return true;
+  return readCheckRecoveryHoldsForTaskRef(store, Number(p["task_ref"])).kind !== "no-evidence";
+  } catch { return true; }
+}
+function mergeIntentRecoveryHeldById(store: Store, id: number): boolean {
+  const row = store.handle.prepare("SELECT publication FROM merge_intent WHERE id=?").get(id);
+  return mergeIntentRecoveryHeld(store, Number(row?.["publication"]));
+}
+/** Actual returned fields; these values are checked, never asserted as permission flags. */
+export type MergeObservationFacts = { githubRepo: string; prNumber: number; generation: number; head: string; base: string; url: string; number: number; state: string };
+const mergeObservationReservations = new WeakMap<Store, Map<string, { generation: number; dataVersion: number; scope: string | null; writeStamp: string | null }>>();
+const activeMergeObservations = new WeakMap<Store, { id: number; generation: number; state: string; facts: MergeObservationFacts }>();
+/** Result-only compound operation. No private authority survives its synchronous frame or rollback. */
+export function settleObservedMergeIntent(store: Store, publication: number, facts: MergeObservationFacts, now: Date, rollup?: unknown): { won: boolean; settled: boolean; resolved: number } {
+  const key = `${facts.githubRepo}:${facts.prNumber}`;
+  const eligibility = mergeObservationReservations.get(store)?.get(key);
+  // Consume before any write, even on nested refusal or rollback. A numeric generation is never terminal authority.
+  mergeObservationReservations.get(store)?.delete(key);
+  if (!Number.isSafeInteger(facts.generation) || facts.generation <= 0 || !Number.isSafeInteger(facts.prNumber) || facts.prNumber <= 0 || (facts.state !== "MERGED" && facts.state !== "CLOSED") || (store.handle as Database & { isTransaction?: unknown }).isTransaction !== false || eligibility === undefined || eligibility.generation !== facts.generation
+    || eligibility.dataVersion !== store.handle.prepare("PRAGMA data_version").get()?.["data_version"]) return { won: false, settled: false, resolved: 0 };
+  try {
+    return store.transact(() => {
+      if (eligibility.dataVersion !== store.handle.prepare("PRAGMA data_version").get()?.["data_version"] || eligibility.writeStamp === null || eligibility.writeStamp !== mergeObservationWriteStamp(store) || eligibility.scope === null || eligibility.scope !== mergeObservationScope(store, facts.githubRepo, facts.prNumber)) return { won: false, settled: false, resolved: 0 };
+      const p = store.handle.prepare("SELECT github_repo,pr_number FROM publication WHERE id=?").get(publication);
+      if (p?.["github_repo"] !== facts.githubRepo || p["pr_number"] !== facts.prNumber || facts.number !== facts.prNumber || facts.url !== `https://github.com/${facts.githubRepo}/pull/${facts.prNumber}`) return { won: false, settled: false, resolved: 0 };
+      if (!store.settleObservation({ githubRepo: facts.githubRepo, prNumber: facts.prNumber, generation: facts.generation, headSha: facts.head, state: "none" }, now).won) return { won: false, settled: false, resolved: 0 };
+      if (rollup !== undefined) recordCiChecks(store, facts.githubRepo, facts.prNumber, facts.head, parseCiRollup(rollup), now);
+      // Independent actual remote observation is factual, not proof of this intent's exact merged scope.
+      if (facts.state === "MERGED" || facts.state === "CLOSED") store.recordPublicationRemoteState(publication, facts.state, now);
+      const row = store.handle.prepare("SELECT id,generation,state FROM merge_intent WHERE publication=?").get(publication);
+      let settled = false;
+      if (row !== undefined) {
+        if (facts.state === "MERGED" && exactMergeObservation(store, Number(row["id"]), facts)) activeMergeObservations.set(store, { id: Number(row["id"]), generation: Number(row["generation"]), state: String(row["state"]), facts: { ...facts } });
+        settled = store.settleMergeIntent(Number(row["id"]), Number(row["generation"]), facts.state === "MERGED" ? "merged" : "superseded", now, { receipt: `observed ${facts.state.toLowerCase()} remotely`, bumpGeneration: true });
+      }
+      const canResolve = settled || (row === undefined && !mergeIntentRecoveryHeld(store, publication));
+      let resolved = 0;
+      if (canResolve) { store.liftMergeBlocker(publication, "the-remote", now); store.resolveEpisodes(`merge-attn:${publication}`, now); resolved = store.resolveCiEpisodes(facts.githubRepo, facts.prNumber, null, now); }
+      return { won: true, settled, resolved };
+    });
+  } finally { activeMergeObservations.delete(store); }
+}
+function validMergeIntentObservation(store: Store, id: number, generation: number): boolean {
+  const proof = activeMergeObservations.get(store);
+  // Single use before validation or writes, including wrong/reentrant attempts and rollback.
+  activeMergeObservations.delete(store);
+  return proof !== undefined && proof.id === id && proof.generation === generation
+    && proof.state === store.handle.prepare("SELECT state FROM merge_intent WHERE id=?").get(id)?.["state"] && exactMergeObservation(store, id, proof.facts);
+}
+function exactMergeObservation(store: Store, id: number, facts: MergeObservationFacts): boolean {
+  const row = store.handle.prepare("SELECT i.*,p.github_repo,p.base,p.head,p.head_sha AS publication_head,p.remote,p.pr_number,p.task_ref,p.run FROM merge_intent i JOIN publication p ON p.id=i.publication WHERE i.id=?").get(id);
+  if (row === undefined || !/^[0-9a-f]{40}$/.test(facts.head) || facts.state !== "MERGED" || facts.githubRepo !== row["github_repo"] || facts.prNumber !== row["pr_number"] || facts.number !== row["pr_number"] || facts.head !== row["head_sha"] || facts.head !== row["publication_head"] || facts.base !== row["base"] || facts.url !== `https://github.com/${facts.githubRepo}/pull/${facts.number}`) return false;
+  const ref = store.handle.prepare("SELECT repo FROM task_ref WHERE id=?").get(row["task_ref"] as number);
+  const run = store.handle.prepare("SELECT task_ref FROM run WHERE id=?").get(row["run"] as number);
+  if (ref === undefined || run?.["task_ref"] !== row["task_ref"] || typeof ref["repo"] !== "string") return false;
+  const observed = store.handle.prepare("SELECT generation,head_sha,observed_at FROM ci_observation WHERE github_repo=? AND pr_number=?").get(facts.githubRepo, facts.prNumber);
+  if (observed?.["generation"] !== facts.generation || observed["head_sha"] !== facts.head || observed["observed_at"] === "") return false;
+  if (row["state"] !== "firing") return false;
+  const scope = mergeAdmissionScope(store, id, Number(row["generation"]), null, true);
+  if (scope === null) return false;
+  const capsules = readMergeAdmissionCandidates(store, scope);
+  return capsules !== null && capsules.filter(c => c.g === scope.g).length === 1;
+}
+
+/** Snapshot exact persisted publication + intent scope at committed reservation; no caller narrows it. */
+function mergeObservationScope(store: Store, githubRepo: string, prNumber: number): string | null {
+  const rows = store.handle.prepare("SELECT i.id,i.generation,i.state,i.grant_terms_hash,i.head_sha,p.id AS publication,p.run,p.task_ref,p.github_repo,p.remote,p.base,p.head,p.head_sha AS publication_head,p.pr_number FROM publication p LEFT JOIN merge_intent i ON i.publication=p.id WHERE p.github_repo=? AND p.pr_number=?").all(githubRepo, prNumber);
+  return rows.length === 1 ? JSON.stringify(rows[0]) : null;
+}
+
+/** Conservative same-connection invalidation includes rolled-back writes and schema ABA. */
+function mergeObservationWriteStamp(store: Store): string | null {
+  const changes = store.handle.prepare("SELECT total_changes() AS changes").get()?.["changes"];
+  const schema = store.handle.prepare("PRAGMA schema_version").get()?.["schema_version"];
+  return typeof changes === "number" && Number.isSafeInteger(changes) && changes >= 0 && typeof schema === "number" && Number.isSafeInteger(schema) && schema >= 0 ? JSON.stringify([changes, schema]) : null;
+}
+
+const MERGE_FIRING_ADMITTED = "merge firing admitted";
+type MergeAdmission = { v: 1; i: number; g: number; p: number; r: number; u: number; j: number; s: string };
+type MergeAdmissionScope = MergeAdmission & { repo: string; taskId: string; head: string; grantHash: string };
+/** Actual persisted grant scope; null grant ID means LIVE at firing, or discover explicit capsule at observation. */
+function mergeAdmissionScope(store: Store, id: number, generation: number, grantId: number | null, observing = false, historical = false): MergeAdmissionScope | null {
+  const row = store.handle.prepare("SELECT i.*,p.id AS pid,p.task_ref,p.run,p.github_repo,p.remote,p.base,p.head,p.head_sha AS publication_head,t.repo,t.external_id,t.backend,r.task_ref AS run_ref FROM merge_intent i JOIN publication p ON p.id=i.publication JOIN task_ref t ON t.id=p.task_ref JOIN run r ON r.id=p.run WHERE i.id=?").get(id);
+  const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+  if (row === undefined || !whole(id) || !whole(generation) || (!historical && row["generation"] !== generation) || row["run_ref"] !== row["task_ref"] || row["backend"] !== "built-in"
+    || !(historical ? ["pending","claimed","waiting-human","firing","merged","refused","superseded"] : ["claimed","firing"]).includes(String(row["state"])) || [row["pid"],row["task_ref"],row["run"]].some(v => !whole(v))
+    || [row["repo"],row["external_id"],row["github_repo"],row["remote"],row["base"],row["head"]].some(v => typeof v !== "string" || v.length === 0)
+    || !/^[0-9a-f]{40}$/.test(String(row["head_sha"])) || row["head_sha"] !== row["publication_head"] || !["grant","human","mode"].includes(String(row["authority_basis"]))
+    || (row["mode_digest"] !== null && typeof row["mode_digest"] !== "string") || ![0,1].includes(Number(row["delete_branch"]))) return null;
+  if (observing && grantId === null) {
+    // Locate the original row ID from strict current-epoch candidates, NEVER a terms/time search.
+    const raw = mergeAdmissionRows(store, id, generation, Number(row["run"]), String(row["external_id"]), String(row["repo"]));
+    const candidates = raw.map(r => parseMergeAdmission(r["detail"]));
+    if (candidates.some(c => c === null)) return null;
+    const current = candidates.filter(c => c !== null && c.i === id && c.g === generation);
+    if (current.length !== 1) return null;
+    grantId = current[0]!.j;
+  }
+  const rawGrant = grantId === null ? store.handle.prepare("SELECT * FROM publication_grant WHERE repo=? AND revoked_at IS NULL").get(row["repo"] as string) : store.handle.prepare("SELECT * FROM publication_grant WHERE id=?").get(grantId);
+  if (rawGrant === undefined || !whole(rawGrant["id"])) return null;
+  let grant: PublicationGrant;
+  try { grant = readPublicationGrant(rawGrant); } catch { return null; }
+  const grantHash = createHash("sha256").update("merge-terms/v1 " + grant.githubRepo + " " + grant.base + " " + grant.headPrefix + " " + (grant.mergeMethod ?? "") + " " + (grant.mergeDeleteBranch === true ? 1 : 0)).digest("hex");
+  if (grant.repo !== row["repo"] || grant.merge !== true || grant.githubRepo !== row["github_repo"] || grant.remote !== row["remote"] || grant.base !== row["base"] || !headWithin(String(row["head"]), grant.headPrefix)
+    || grantHash !== row["grant_terms_hash"] || grant.mergeMethod !== row["method"] || (grant.mergeDeleteBranch === true ? 1 : 0) !== row["delete_branch"]) return null;
+  const tuple = [1,id,generation,row["pid"],row["task_ref"],row["run"],row["repo"],row["external_id"],row["github_repo"],row["remote"],row["base"],row["head"],row["head_sha"],row["method"],Number(row["delete_branch"])===1,grant.id,grantHash,row["authority_basis"],row["mode_digest"]];
+  return { v: 1, i: id, g: generation, p: Number(row["pid"]), r: Number(row["task_ref"]), u: Number(row["run"]), j: grant.id, s: createHash("sha256").update(JSON.stringify(tuple)).digest("hex"), repo: grant.repo, taskId: String(row["external_id"]), head: String(row["head_sha"]), grantHash };
+}
+function mergeAdmissionDetail(scope: MergeAdmission): MergeAdmission { return { v:1,i:scope.i,g:scope.g,p:scope.p,r:scope.r,u:scope.u,j:scope.j,s:scope.s }; }
+function parseMergeAdmission(raw: unknown): MergeAdmission | null {
+  if (typeof raw !== "string" || raw.length > 204 || !/^[\x20-\x7e]*$/.test(raw)) return null;
+  try {
+    const c = JSON.parse(raw) as MergeAdmission;
+    if (c === null || Array.isArray(c) || Object.keys(c).join(",") !== "v,i,g,p,r,u,j,s" || c.v !== 1 || [c.i,c.g,c.p,c.r,c.u,c.j].some(v => typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) || typeof c.s !== "string" || !/^[0-9a-f]{64}$/.test(c.s)) return null;
+    return JSON.stringify(mergeAdmissionDetail(c)) === raw ? c : null;
+  } catch { return null; }
+}
+function mergeAdmissionRows(store: Store, id: number, generation: number, run: number, task: string, repo: string): Record<string,unknown>[] {
+  return store.handle.prepare("SELECT * FROM action_ledger WHERE action=? AND (outcome=? OR run_id=? OR (task_id=? AND repo=?) OR (CASE WHEN json_valid(detail) THEN CAST(json_extract(detail,'$.i') AS TEXT) ELSE NULL END)=?) ORDER BY id")
+    .all(MERGE_FIRING_ADMITTED, `${id}:${generation}`, run, task, repo, String(id));
+}
+function readMergeAdmissionCandidates(store: Store, scope: MergeAdmissionScope): MergeAdmission[] | null {
+  const found: MergeAdmission[] = [], seen = new Set<string>();
+  for (const raw of mergeAdmissionRows(store, scope.i, scope.g, scope.u, scope.taskId, scope.repo)) {
+    const c = parseMergeAdmission(raw["detail"]);
+    if (c === null || raw["actor"] !== "toolroll" || raw["source"] !== "work" || raw["outcome"] !== `${c.i}:${c.g}`) return null;
+    const key = `${c.i}:${c.g}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const protectedScope = mergeAdmissionScope(store, c.i, c.g, c.j, false, c.i !== scope.i || c.g !== scope.g);
+    if (protectedScope === null || c.p !== protectedScope.p || c.r !== protectedScope.r || c.u !== protectedScope.u || c.s !== protectedScope.s
+      || raw["repo"] !== protectedScope.repo || raw["task_id"] !== protectedScope.taskId || raw["run_id"] !== protectedScope.u) return null;
+    // A task may have other publications: only fully reconstructed unrelated history can be ignored.
+    if (c.i !== scope.i) continue;
+    if (c.p !== scope.p || c.r !== scope.r || c.u !== scope.u || c.g > scope.g || found.some(other => other.g === c.g)) return null;
+    found.push(c);
+  }
+  return found;
+}
+/** Only called after one-row firing CAS inside its existing IMMEDIATE transaction. */
+function writeMergeAdmission(store: Store, scope: MergeAdmissionScope, now: Date): void {
+  const detail = mergeAdmissionDetail(scope), raw = JSON.stringify(detail);
+  if (parseMergeAdmission(raw) === null || raw.length > 204 || Buffer.byteLength(raw,"ascii") !== raw.length) throw new Error("Merge firing admission detail cannot be represented exactly");
+  recordActionWhole(store.handle, { at: now.toISOString(), actor:"toolroll", repo:scope.repo, taskId:scope.taskId, runId:scope.u, action:MERGE_FIRING_ADMITTED, outcome:`${scope.i}:${scope.g}`, source:"work" }, detail);
+}
+
+function widenTableCheck(db: Database, table: string, before: string, after: string, already: readonly string[] = [after]): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  if (row === undefined) return;
+  const stored = String(row["sql"]);
+  if (already.some(one => stored.includes(one))) return;
+  if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
+  const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
+  rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
+}
+
+/** v179: Antigravity ACP (`agy acp`) joins the provider and ACP provider CHECK constraints. */
+function widenForAntigravity(db: Database): void {
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) {
+    widenTableCheck(db, table, PROVIDERS_WITH_ACP, PROVIDERS_WITH_ANTIGRAVITY);
+  }
+  for (const table of ["acp_attestation", "acp_check_request", "acp_billing"]) {
+    widenTableCheck(db, table, ACP_PROVIDERS_BEFORE_ANTIGRAVITY, ACP_PROVIDERS_WITH_ANTIGRAVITY);
+  }
+}
+
+/** v180's table, as a current or resumed file must hold it (agent-change-schema.ts): there, and exactly this build's DDL. */
+function pendingAgentChangeShapeProblem(db: Database): string | null {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_agent_change'").get();
+  if (row === undefined) return "the pending model change table is missing";
+  if (canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(V180_SCHEMA.trim().replace(/;$/, "")).trim()) return "the pending model change table has an unknown shape";
+  return null;
+}
+
+function directChatShapeProblem(db: Database): string | null {
+  for (const name of V181_TABLES) {
+    if (!tableExists(db, name)) return `the direct chat table ${name} is missing`;
+    for (const col of V181_REQUIRED_COLUMNS[name]) {
+      if (!hasColumn(db, name, col)) return `the direct chat table ${name} has an unknown shape`;
+    }
+  }
+  return null;
+}
+
+function directChatPhase1bShapeProblem(db: Database): string | null {
+  for (const name of V182_TABLES) {
+    if (!tableExists(db, name)) return `the direct chat table ${name} is missing`;
+    for (const col of V182_REQUIRED_COLUMNS[name]) {
+      if (!hasColumn(db, name, col)) return `the direct chat table ${name} has an unknown shape`;
+    }
+  }
+  return null;
+}
+
+function directChatHardeningShapeProblem(db: Database): string | null {
+  for (const [table, columns] of Object.entries(V183_ADDED_COLUMNS)) {
+    for (const column of Object.keys(columns)) {
+      if (!hasColumn(db, table, column)) return `the direct chat table ${table} is missing column ${column}`;
+    }
+  }
+  return null;
+}
+
+function directChatEffortUsageShapeProblem(db: Database): string | null {
+  for (const [table, columns] of Object.entries(V184_ADDED_COLUMNS)) {
+    for (const column of Object.keys(columns)) {
+      if (!hasColumn(db, table, column)) return `the direct chat table ${table} is missing column ${column}`;
+    }
   }
   return null;
 }

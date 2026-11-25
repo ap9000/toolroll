@@ -305,6 +305,8 @@ export type LiveRooms<K, V extends LiveViewer> = {
   /** Every page leaves (the server is closing). */
   close: () => void;
   size: () => number;
+  /** Active rooms mapped to unique sorted viewer names (memory-only presence snapshot). */
+  snapshot: () => Map<K, string[]>;
 };
 
 /** `minIntervalMs`: a busy room says `change` at most this often — the first at once, the latest after. */
@@ -442,5 +444,14 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       for (const [key, room] of [...rooms]) for (const viewer of [...room.viewers.keys()]) leave(key, viewer);
     },
     size: () => [...rooms.values()].reduce((sum, room) => sum + room.viewers.size, 0),
+    snapshot() {
+      const out = new Map<K, string[]>();
+      for (const [key, room] of rooms) {
+        if (room.viewers.size === 0) continue;
+        const names = [...new Set([...room.viewers.keys()].map(one => one.name))].sort((a, b) => a.localeCompare(b));
+        if (names.length > 0) out.set(key, names);
+      }
+      return out;
+    },
   };
 }

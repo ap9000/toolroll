@@ -36,7 +36,7 @@ import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-s
 import { easyStartApplies, easyStartArgs } from "./easy-start-args.js";
 import { underAgent } from "./prompt.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
-import { hasCentralProfile, maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
+import { centralProfile, hasCentralProfile, maybeRunConnectCommand, probeTerminalConnection, saveCentralBinding, type ConnectOptions } from "./connect-cli.js";
 import { removedCommand, removedMessage } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
@@ -229,7 +229,7 @@ export const OPERATE_COMMANDS = new Set([
   "reconcile",
   "run",
   "flows",
-  "config", "chat", "proposals", "mode", "chat-approval", "people", "tokens", "keys", "agents",
+  "config", "chat", "proposals", "request", "mode", "chat-approval", "people", "tokens", "keys", "agents",
   "setup",
   "verify",
   "intake",
@@ -425,6 +425,14 @@ async function dispatch(
   if (central !== null) argv = central.local;
   const connected = await maybeRunConnectCommand(argv, write, mainOptions.connect);
   if (connected !== null) return connected;
+  if (argv[0] === "handoff") {
+    const { maybeRunHandoffCommand } = await import("./handoff-cli.js");
+    const handoffCode = await maybeRunHandoffCommand(argv, write, connectOptions ?? {});
+    if (handoffCode !== null) return handoffCode;
+  }
+  if (argv[0] === "--remote") {
+    return runRemoteTuiCommand(argv.slice(1), write, connectOptions ?? {});
+  }
   if ((argv[0] === "chat" || argv[0] === "brief") && argv.includes("--local")) argv = argv.filter(arg => arg !== "--local");
   const [first, ...rest] = argv;
   if (first === "help") {
@@ -456,7 +464,8 @@ async function dispatch(
   }
   // Easy start (A): bare `toolroll` (or with --web / --project-root) at a person's terminal — no --json, not under a
   // coding agent — starts this computer's Toolroll and opens the terminal UI. Anything else keeps its behaviour below.
-  if (first !== "scan" && first !== "--json" && easyStartArgs(argv) !== null) {
+  const startArgs = easyStartArgs(argv);
+  if (startArgs !== null) {
     const terminal = mainOptions.easyStart?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
     const agent = terminal && (mainOptions.easyStart?.underAgent ?? underAgent(process.env));
     if (easyStartApplies(argv, { stdin: terminal, stdout: terminal, agent })) {
@@ -466,10 +475,16 @@ async function dispatch(
         databaseFile, write, build: (await import("./monitoring.js")).packageVersion(),
         ...(mainOptions.operate === undefined ? {} : { operate: mainOptions.operate }),
         admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
-        ...(easyStartArgs(argv)!.screenReader === true ? { screenReader: true } : {}),
-        ...(easyStartArgs(argv)!.tuiBinary === undefined ? {} : { tuiBinary: easyStartArgs(argv)!.tuiBinary }),
+        ...(startArgs.screenReader === true ? { screenReader: true } : {}),
+        ...(startArgs.tuiBinary === undefined ? {} : { tuiBinary: startArgs.tuiBinary }),
       });
-      return easy.runEasyStart("start", easyStartArgs(argv)!, { ...seams, ...mainOptions.easyStart?.seams });
+      return easy.runEasyStart("start", startArgs, { ...seams, ...mainOptions.easyStart?.seams });
+    }
+    if (startArgs.tuiBinary !== undefined) {
+      write(agent
+        ? "Toolroll detected a coding-agent session. Open the workbench launcher yourself from a fresh terminal session."
+        : "The workbench needs interactive input and output. Run the launcher in a terminal window.");
+      return USAGE_EXIT;
     }
   }
   // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.
@@ -1754,6 +1769,107 @@ function hushExperimentalSqlite(): void {
     if (type === "ExperimentalWarning" && text.includes("SQLite")) return;
     (original as (...args: unknown[]) => void)(warning, ...rest);
   }) as typeof process.emitWarning;
+}
+
+/** `toolroll --remote [--profile <name>] [--tui-binary <path>]`: launch the native TUI directly against a central
+ * server using the saved private API-token profile (never opens the local SQLite database). */
+async function runRemoteTuiCommand(argv: readonly string[], write: Write, connectOptions: ConnectOptions): Promise<number> {
+  let profileName: string | undefined;
+  let devBinary: string | null = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--help" || arg === "-h") {
+      write("toolroll --remote [--profile <name>]\n  Open the terminal workbench connected to your saved central Toolroll server.\n  Connect first with: toolroll connect <https://origin> --browser");
+      return 0;
+    }
+    if (arg === "--profile" || arg === "--tui-binary") {
+      const next = argv[++i];
+      if (!next || next.startsWith("--")) {
+        write(`${arg} needs a value.`);
+        return 2;
+      }
+      if (arg === "--profile") profileName = next;
+      else devBinary = next;
+      continue;
+    }
+    write(`Unknown option for --remote: ${arg}`);
+    return 2;
+  }
+  let profile: ReturnType<typeof centralProfile>;
+  try { profile = centralProfile(connectOptions, profileName); } catch (error) {
+    write(error instanceof Error ? error.message : "Could not read saved remote profile.");
+    return 2;
+  }
+  if (profile === null) {
+    write("No central server connected yet. Run: toolroll connect <https://origin> --browser");
+    return 2;
+  }
+  if (!profile.apiToken) {
+    write("Remote terminal mode requires an API token (so_...). Reconnect with --token-stdin or --token-file.");
+    return 2;
+  }
+  if (!profile.origin.startsWith("https://")) {
+    write("Remote terminal mode requires an HTTPS origin (for example over Tailscale HTTPS).");
+    return 2;
+  }
+  let workspaceId = profile.workspaceId;
+  let recoveryGeneration = profile.recoveryGeneration;
+  if (workspaceId === undefined || recoveryGeneration === undefined) {
+    const probed = await probeTerminalConnection(profile, connectOptions);
+    if (probed === null) {
+      write(`Could not verify ${profile.origin}/engine/connection with your saved API token.`);
+      return 1;
+    }
+    workspaceId = probed.workspace.id;
+    recoveryGeneration = probed.workspace.recoveryGeneration;
+    saveCentralBinding(connectOptions, profile.name, { workspaceId, recoveryGeneration, label: probed.workspace.label });
+  }
+  const { engineContractDigest } = await import("./contracts/engine-api.js");
+  const { chooseTuiBinary, formatCentralBootstrapPayload, runTuiBinary } = await import("./tui-launch.js");
+  const chosen = chooseTuiBinary({
+    env: process.env,
+    screenReader: false,
+    platform: process.platform,
+    arch: process.arch,
+    contract: engineContractDigest(),
+    devBinary,
+  });
+  if (!chosen.ok) {
+    write(`Could not start the terminal workbench: ${chosen.why}.`);
+    return 1;
+  }
+  const payload = formatCentralBootstrapPayload({
+    origin: profile.origin,
+    workspaceId,
+    recoveryGeneration,
+    account: profile.account,
+    token: profile.token,
+  });
+  const origin = profile.origin;
+  const openUrl = async (path: string): Promise<string> => {
+    const target = new URL(path, origin).href;
+    (await import("./operate.js")).openBrowser(target);
+    return `Opened ${target} in your browser.`;
+  };
+  const ended = await runTuiBinary({
+    binary: chosen.binary,
+    identity: chosen.identity,
+    link: payload,
+    project: null,
+    session: {
+      owned: () => false,
+      openBrowser: async (page?: string) => openUrl(page === "projects" ? "/projects" : page === "lead-providers" ? "/settings/lead#lead-config" : "/"),
+      list: async () => [],
+      detail: async () => null,
+      decide: async () => ({ ok: false, words: "Approvals open in your browser." }),
+      addTask: async () => ({ ok: false, words: "Handled by remote CLI." }),
+      steer: async () => ({ ok: false, words: "Handled by remote CLI." }),
+      revise: async () => ({ ok: false, words: "Handled by remote CLI." }),
+      complete: async () => ({ ok: false, words: "Handled by remote CLI." }),
+      stop: async () => ({ ok: false, words: "Handled by remote CLI." }),
+    } as unknown as import("./tui-contract.js").TuiSession,
+  });
+  return ended === "central-unavailable" || ended === "changed" ? 1 : 0;
 }
 
 /** The process entry the bin calls: the SQLite notice hushed, the exit code set. */
