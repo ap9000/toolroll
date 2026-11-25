@@ -526,6 +526,8 @@ get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unsco
 // A run now; a Flexible thread on the same road, refused while interactive agent threads are off.
 get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie", "bearer"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
+// What a thread changed since it started (its committed work, read in a quarantine), its owner's only: a read.
+get("pages", "agents.live.thread.diff", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/diff$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}/diff` });
 // Flexible threads (F3), all refused while interactive agent threads are off: the person's own threads as the work list shows them,
 // one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.
 get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped", callers: ["cookie"], ...free });

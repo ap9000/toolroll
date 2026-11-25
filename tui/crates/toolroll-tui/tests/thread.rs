@@ -737,7 +737,7 @@ fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("Reply:"), "{shown}");
     assert!(
-        shown.contains("This starts a fresh agent: it won't remember earlier turns."),
+        shown.contains("A fresh agent picks this up with the conversation so far."),
         "{shown}"
     );
     for c in "Now add a test".chars() {
@@ -1265,4 +1265,196 @@ fn a_second_ship_refusal_on_the_same_turn_is_news_again() {
         ))
     );
     assert!(app.unread.contains(second));
+}
+
+// ---- a thread as a conversation, with its own changes -------------------------------------------------------------
+
+#[test]
+fn the_persons_own_messages_show_in_the_transcript_marked_as_theirs_and_drawn_inert() {
+    let mut w = window();
+    w["window"]["records"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!({ "k": "you", "at": "2026-11-15T10:02:10.000Z", "t": ["Make the totals include tax\u{1b}]52;c;ZXZpbA==\u{7}", "and keep the tests green"] }));
+    let mut app = thread_app(w);
+    let shown = screen(&mut app, 120, 44);
+    let you = shown
+        .lines()
+        .position(|l| l.contains("You "))
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert!(
+        shown
+            .lines()
+            .nth(you + 1)
+            .is_some_and(|l| l.contains("Make the totals include tax")),
+        "{shown}"
+    );
+    assert!(shown.contains("and keep the tests green"), "{shown}");
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\u{7}'),
+        "{shown}"
+    );
+    // Theirs comes before the agent's words, as it was said.
+    let agent = shown
+        .lines()
+        .position(|l| l.contains("The totals test fails"))
+        .unwrap();
+    assert!(you < agent, "{shown}");
+}
+
+fn thread_diff(problem: Option<&str>) -> Value {
+    let mut d = fake::fixture("result-diff.json");
+    d["task"] = json!(fake::THREAD);
+    d["run"] = json!(3);
+    d["files"][0]["path"] = json!("src/to\u{1b}[31mtal.ts");
+    if let Some(p) = problem {
+        d["files"] = json!([]);
+        d["problem"] = json!(p);
+    }
+    d
+}
+
+#[test]
+fn a_thread_has_a_diff_tab_its_changes_read_only_and_drawn_inert() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    // Its own road, never a task's (which refused it: "Couldn't read the changes (task)").
+    let ask = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchThreadDiff(a) if a.task == fake::THREAD => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{fx:?}"));
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::FetchDiff(_))),
+        "{fx:?}"
+    );
+    let fx = app.update(Msg::Diff(ask, Ok(parse(thread_diff(None)))));
+    let file = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchThreadDiffFile(a) if a.task == fake::THREAD && a.file == 0 => {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{fx:?}"));
+    let mut hunks = fake::fixture("result-diff-file.json");
+    hunks["task"] = json!(fake::THREAD);
+    hunks["run"] = json!(3);
+    hunks["file"]["hunks"][0]["lines"][2]["text"] =
+        json!("  return sum(items) + tax(items); \u{1b}]0;owned\u{7}\u{202e}gnp.exe");
+    app.update(Msg::DiffFile(file, Ok(parse(hunks))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("Changes since the thread started"),
+        "{shown}"
+    );
+    assert!(shown.contains("return sum(items) + tax(items);"), "{shown}");
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\u{7}') && !shown.contains('\u{202e}'),
+        "{shown}"
+    );
+    // Read-only: no notes and no more lines here; what to change goes to the agent as a reply.
+    assert_eq!(app.key(key('c')), vec![]);
+    assert!(
+        app.status
+            .as_ref()
+            .is_some_and(|(t, w)| *t == Tone::Refused && w.contains("read-only")),
+        "{:?}",
+        app.status
+    );
+    assert_eq!(app.key(key('e')), vec![]);
+    // Esc leaves it, as a task's.
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_ne!(app.tab, toolroll_tui::app::Tab::Diff);
+}
+
+#[test]
+fn a_thread_with_nothing_committed_says_so_on_its_diff_tab() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    let Some(Effect::FetchThreadDiff(ask)) = fx
+        .iter()
+        .find(|e| matches!(e, Effect::FetchThreadDiff(_)))
+        .cloned()
+    else {
+        panic!("{fx:?}")
+    };
+    app.update(Msg::Diff(ask, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("No committed changes yet."), "{shown}");
+}
+
+#[test]
+fn a_reply_right_after_the_turn_is_done_goes_even_before_the_list_is_read_again() {
+    // The list still says the turn runs; the thread's own window then says it finished.
+    let mut app = thread_app(window());
+    let mut done = window();
+    done["live"] = json!(false);
+    done["thread"]["version"] = json!("2222222222222222");
+    done["thread"]["turn"]["status"] = json!("finished");
+    done["window"]["records"] = json!([]);
+    app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(done))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("done"), "{shown}");
+    app.key(key('s'));
+    for c in "Now add a test".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(enter());
+    assert!(
+        matches!(fx.as_slice(), [Effect::Act { path, .. }] if path.ends_with("/turn")),
+        "{fx:?} {:?}",
+        app.status
+    );
+}
+
+#[test]
+fn the_key_bar_names_a_threads_own_keys_for_its_state() {
+    let mut app = thread_app(window());
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    let shown = screen(&mut app, 160, 30);
+    let bar = shown
+        .lines()
+        .rev()
+        .find(|l| l.contains("all actions"))
+        .unwrap()
+        .to_string();
+    for words in ["s reply", "a ship", "X end"] {
+        assert!(bar.contains(words), "{bar}");
+    }
+    assert!(!bar.contains("x stop"), "{bar}");
+    // Ended: no reply and no end, and r says where to go instead of "s replies to it".
+    let mut list = threads_with("finished", false);
+    list["threads"][0]["ended"] = json!(true);
+    app.update(Msg::Threads(Ok(parse(list))));
+    app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    let shown = screen(&mut app, 160, 30);
+    let bar = shown
+        .lines()
+        .rev()
+        .find(|l| l.contains("all actions"))
+        .unwrap()
+        .to_string();
+    assert!(!bar.contains("s reply") && !bar.contains("X end"), "{bar}");
+    app.key(key('r'));
+    let said = app
+        .status
+        .as_ref()
+        .map(|(_, w)| w.clone())
+        .unwrap_or_default();
+    assert!(
+        said.contains("T starts a new thread") && !said.contains("s replies"),
+        "{said}"
+    );
 }

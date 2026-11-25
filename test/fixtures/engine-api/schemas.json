@@ -1,5 +1,5 @@
 {
-  "digest": "5059de5364e717a299bd645cc808edf1266bf0fdf395f8d7b49d6dd63a4a4a5d",
+  "digest": "170a43f1a6d53401a9ea5a366a9497485bc6702e0c6d476ad6deb56f3c9af86e",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -159,6 +159,30 @@
                             "type": "integer",
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at",
+                          "t"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "you"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "t": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [

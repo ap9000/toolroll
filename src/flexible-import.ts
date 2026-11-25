@@ -382,6 +382,64 @@ export async function readFlexibleCandidate(store: Store, input: { thread: strin
   }));
 }
 
+// ---- what a thread changed, for its owner to read (never an import) -----------------------------------------------
+
+/** How long one read of a thread's changes may take, and the most of its patch it carries. */
+export const FLEXIBLE_CHANGES_LIMITS = Object.freeze({ readMs: 30_000, patchBytes: 4 * 1024 * 1024 });
+
+/** The thread's branch tip, read from its ref as plain bytes (no git runs in the thread's folder), from Toolroll's own
+ * record of the thread and its folder; null when the thread isn't ready, its folder isn't the one Toolroll made, or the
+ * ref isn't exactly a commit id. What it names is read only for display (a turn's note, the thread's changes): it
+ * decides nothing. */
+export function flexibleThreadTip(store: Store, id: string): string | null {
+  const thread = flexibleThread(store, id);
+  const state = thread === null || thread.state !== "ready" ? null : stateFolderOf(store);
+  if (thread === null || state === null) return null;
+  const paths = flexibleThreadPaths(state, thread.id);
+  if (thread.folder !== paths.folder || !ownFolder(paths.root) || !ownFolder(paths.folder)) return null;
+  try {
+    const tip = threadBranchTip(paths, thread.id);
+    return tip !== null && tip.length === thread.baseSha.length ? tip : null;
+  } catch { return null; }
+}
+
+/**
+ * What a thread changed between two of its commits (`from`, by default its base, and `to`, by default its branch tip
+ * now), read in a quarantine exactly as the Ship's terms read the candidate (nothing of the thread's runs, no ref moves
+ * anywhere): the changed paths and the unified patch, at most FLEXIBLE_CHANGES_LIMITS.patchBytes of it (`truncated`
+ * says when it was cut, at a file's boundary). Its text is the thread's own (attacker input): the caller cleans it
+ * before showing it. Nothing committed yet is `none`.
+ */
+export async function readFlexibleChanges(store: Store, input: { thread: string; from?: string; to?: string; patch: boolean; runner?: Runner; limits?: Partial<FlexibleImportLimits> & { patchBytes?: number; readMs?: number } }):
+  Promise<{ ok: true; base: string; tip: string; paths: string[]; patch: string; truncated: boolean } | { ok: true; none: true; base: string } | FlexibleImportRefusal> {
+  const limits = { ...limitsOf(input.limits), importMs: input.limits?.readMs ?? FLEXIBLE_CHANGES_LIMITS.readMs };
+  const patchBytes = input.limits?.patchBytes ?? FLEXIBLE_CHANGES_LIMITS.patchBytes;
+  const deadline = Date.now() + limits.importMs;
+  const source = sourceOf(store, input.thread, limits, deadline);
+  if ("ok" in source) return source;
+  const base = input.from ?? source.thread.baseSha;
+  const tip = input.to ?? threadBranchTip(source.paths, source.thread.id);
+  if (tip === null || !SHA.test(base) || !SHA.test(tip) || tip.length !== source.thread.baseSha.length || base.length !== tip.length) return refused("candidate-unreadable");
+  if (tip === base) return { ok: true, none: true, base };
+  const read = gitIn(input.runner ?? run, "read", deadline);
+  return guarded(() => withQuarantine(source, async repo => {
+    for (const commit of [base, tip]) {
+      const type = await read(repo, ["cat-file", "-t", commit]);
+      if (type.code !== 0 || type.stdout.trim() !== "commit") return refused("candidate-unreadable", "it isn't a commit Toolroll can read");
+    }
+    const entries = await changedEntries(read, repo, base, tip);
+    if (!Array.isArray(entries)) return entries;
+    const paths = entries.map(one => one.path).sort();
+    if (!input.patch) return { ok: true as const, base, tip, paths, patch: "", truncated: false };
+    const patched = await read(repo, ["diff-tree", "-r", "-p", "--no-commit-id", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", base, tip], { maxBuffer: patchBytes });
+    const cut = patched.code !== 0 && patched.stdout.length >= patchBytes;
+    if (patched.code !== 0 && !cut) return refused("unreadable", "its changes couldn't be read");
+    // A patch cut at the limit keeps only its whole files.
+    const text = cut ? patched.stdout.slice(0, Math.max(0, patched.stdout.lastIndexOf("\ndiff --git ") + 1)) : patched.stdout;
+    return { ok: true as const, base, tip, paths, patch: text, truncated: cut };
+  }));
+}
+
 /** Anything unexpected while working in the quarantine (a folder that can't be made, a read that throws) is a plain
  * refusal, never an exception that leaves a send half-recorded. */
 async function guarded<T>(work: () => Promise<T>): Promise<T | FlexibleImportRefusal> {

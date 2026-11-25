@@ -378,6 +378,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("thread_relay_pending", flexibleThreads, repo);
   del("flexible_relay_grant", flexibleThreads, repo);
   del("thread_turn", flexibleThreads, repo);
+  del("flexible_turn_said", flexibleThreads, repo);
   del("flexible_thread_launch", flexibleThreads, repo);
   del("flexible_thread_level", flexibleThreads, repo);
   del("flexible_thread", "repo = ? AND state IN ('removed', 'failed')", repo);
