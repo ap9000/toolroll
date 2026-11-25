@@ -168,6 +168,7 @@ public enum AgentChatStreamEvent: Equatable, Sendable {
     case textDelta(String)
     case textReplace(String)
     case tool(AgentChatToolEvent)
+    case toolStatus(id: String, status: String)
     case completed
     case failed(String)
 }
@@ -212,11 +213,24 @@ public enum AgentChatStreamParser {
                     let input = block["input"] as? [String: Any]
                     let detail = summarizeToolInput(name: name, input: input)
                     let id = block["id"] as? String ?? UUID().uuidString
-                    events.append(.tool(AgentChatToolEvent(id: id, name: name, detail: detail, status: "done")))
+                    events.append(.tool(AgentChatToolEvent(id: id, name: name, detail: detail, status: "running")))
                 }
             }
             if !textParts.isEmpty {
                 events.append(.textReplace(textParts.joined(separator: "\n")))
+            }
+        } else if type == "user",
+                  let message = json["message"] as? [String: Any],
+                  let content = message["content"] as? [[String: Any]]
+        {
+            for block in content {
+                if (block["type"] as? String) == "tool_result",
+                   let toolId = block["tool_use_id"] as? String,
+                   !toolId.isEmpty
+                {
+                    let isError = (block["is_error"] as? Bool) == true
+                    events.append(.toolStatus(id: toolId, status: isError ? "error" : "done"))
+                }
             }
         } else if type == "result" {
             let isError = (json["is_error"] as? Bool) == true
@@ -601,7 +615,7 @@ public enum AgentChatRunner {
                 "-p", prompt,
                 "--output-format", "stream-json",
                 "--verbose",
-                "--permission-mode", "acceptEdits",
+                "--permission-mode", "auto",
             ]
             if !modelId.isEmpty {
                 args.append(contentsOf: ["--model", modelId])

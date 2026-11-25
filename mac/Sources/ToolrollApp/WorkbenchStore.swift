@@ -1092,6 +1092,12 @@ public final class WorkbenchStore {
                 }
                 chatThreads[tIdx].updatedAt = Date()
                 scheduleChatPersistence()
+            case .toolStatus(let toolId, let status):
+                if let existing = chatThreads[tIdx].messages[mIdx].tools.firstIndex(where: { $0.id == toolId }) {
+                    chatThreads[tIdx].messages[mIdx].tools[existing].status = status
+                    chatThreads[tIdx].updatedAt = Date()
+                    scheduleChatPersistence()
+                }
             case .completed:
                 chatThreads[tIdx].messages[mIdx].isStreaming = false
                 for i in chatThreads[tIdx].messages[mIdx].tools.indices {
