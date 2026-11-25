@@ -11,6 +11,8 @@
  *   GET  /agents/live/run/<id>       a run's LiveSession window (liveSessionWindow)
  *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window with its facts (liveSessionWindow + thread):
  *                                    its owner's only
+ *   GET  /agents/live/thread/<id>/diff  what a Flexible thread changed since it started, or one file's hunks with ?file=
+ *                                    (resultDiff, resultDiffFile: `task` is the thread, `run` its latest turn): its owner's only
  *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them, and whether
  *                                    interactive agent threads are on (liveThreads)
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)

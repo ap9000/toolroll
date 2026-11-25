@@ -361,6 +361,8 @@ Working with a thread, select it in the workbench:
   (your earlier messages, its earlier replies and which files each turn
   changed); your files are as it left them. Your messages show in the
   thread as yours.
+- **Diff** (`Tab`): what the thread changed since it started, file by file
+  (its committed work: what Ship would send).
 - **Ship** (`a`): its terms are shown whole; read them to the end, then
   Enter. On a laptop install where nobody has a password, that ships it.
   Anywhere else Ship needs your password typed now: Enter puts

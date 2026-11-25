@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, foldName, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
+import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, flexibleThreadTip, foldName, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, readFlexibleChanges, removeFlexibleImportRefs } from "./flexible-import.js";
+import { patchFiles, threadDiffFileOf, threadDiffOf } from "./engine-reads.js";
+import { HIDDEN_LINE } from "./live-records.js";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { THREAD_GIT_ENV, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
@@ -367,5 +369,50 @@ describe("the thread's repository is attacker input", () => {
     expect(await importNow(1, null, candidate)).toMatchObject({ ok: false, check: "candidate-unreadable" });
     expect(projectRefs()).toBe(before);
     expect(calls.filter(call => call.cwd === world.project).length).toBe(0);
+  });
+});
+
+describe("what a thread changed, for its owner to read (never an import)", () => {
+  test("nothing committed is none; then its files and patch, read in a quarantine: no git in the thread's folder, no ref moved, nothing left behind", async () => {
+    const before = projectRefs();
+    expect(flexibleThreadTip(world.store, thread.id)).toBe(world.second);
+    expect(await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy })).toEqual({ ok: true, none: true, base: world.second });
+    const first = commit({ "src/one.ts": "export const one = 1;\n" });
+    const second = commit({ "src/two.ts": "export const two = 2;\n" });
+    expect(flexibleThreadTip(world.store, thread.id)).toBe(second);
+    const all = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy });
+    if (!all.ok || "none" in all) throw new Error(JSON.stringify(all));
+    expect(all).toMatchObject({ base: world.second, tip: second, paths: ["src/one.ts", "src/two.ts"], truncated: false });
+    expect(all.patch).toMatch(/^diff --git a\/src\/one\.ts b\/src\/one\.ts$/m);
+    // One turn's own: between two of its commits.
+    expect(await readFlexibleChanges(world.store, { thread: thread.id, from: first, to: second, patch: false, runner: spy })).toMatchObject({ ok: true, paths: ["src/two.ts"] });
+    expect(calls.every(call => call.cwd !== paths.repo && call.cwd !== world.project)).toBe(true);
+    expect(projectRefs()).toBe(before);
+    expect(existsSync(join(paths.root, FLEXIBLE_IMPORTS_DIR)) ? readdirSync(join(paths.root, FLEXIBLE_IMPORTS_DIR)) : []).toEqual([]);
+    // Past its limit the patch keeps whole files only, and says it was cut.
+    const cut = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy, limits: { patchBytes: all.patch.indexOf("diff --git a/src/two.ts") + 20 } });
+    expect(cut).toMatchObject({ ok: true, truncated: true });
+    if (cut.ok && !("none" in cut)) expect(patchFiles(cut.patch).map(one => one.split("\n")[0])).toEqual(["diff --git a/src/one.ts b/src/one.ts"]);
+  });
+
+  test("hostile names and contents are drawn inert: controls, escapes and bidi out, a key-shaped line hidden", async () => {
+    const hostile = `const shown = "\x1b]52;c;ZXZpbA==\x07ok\x1b[2J‮gnp.exe";\n${keyLine()}const after = 1;\n`;
+    commit({ "src/a.ts": hostile, "src/‮evil.ts": "x\n" });
+    const read = await readFlexibleChanges(world.store, { thread: thread.id, patch: true, runner: spy });
+    if (!read.ok || "none" in read) throw new Error(JSON.stringify(read));
+    const changes = { ok: true as const, patch: read.patch, truncated: read.truncated };
+    const listed = threadDiffOf(thread.id, 2, changes);
+    expect(listed).toMatchObject({ task: thread.id, run: 2, problem: null });
+    const unsafe = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+    expect(listed.files.map(one => one.path).some(path => unsafe.test(path))).toBe(false);
+    const at = listed.files.findIndex(one => one.path === "src/a.ts");
+    const file = threadDiffFileOf(thread.id, 2, changes, at)!;
+    const lines = file.file.hunks.flatMap(hunk => hunk.lines.map(line => line.text));
+    expect(lines.some(line => unsafe.test(line))).toBe(false);
+    expect(lines).toContain(HIDDEN_LINE);
+    expect(lines.join("\n")).not.toContain(keyLine().trim().slice(13, 33));
+    expect(lines).toContain("const after = 1;");
+    expect(threadDiffFileOf(thread.id, 2, changes, 99)).toBeNull();
+    expect(threadDiffOf(thread.id, 2, { ok: true, none: true }).problem).toMatch(/^No committed changes yet/);
   });
 });

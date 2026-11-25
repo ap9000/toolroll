@@ -1518,3 +1518,19 @@ async function conversationFor(store: Store, input: { thread: string; turn: stri
   }
 }
 
+/** The thread's branch tip now, for its owner's read of what it changed (flexible-import.ts flexibleThreadTip: plain
+ * bytes from Toolroll's own record of the thread; decides nothing). */
+export function flexibleThreadTipOf(store: Store, thread: string): string | null {
+  return ID.test(thread) ? flexibleThreadTip(store, thread) : null;
+}
+
+/** What the thread changed since it started, for its owner's read (flexible-import.ts readFlexibleChanges, in a
+ * quarantine): its patch and the commit read, nothing committed yet, or why it couldn't be read, in words. */
+export async function flexibleThreadChanges(store: Store, input: { thread: string }):
+  Promise<{ tip: string | null; changes: { ok: true; patch: string; truncated: boolean } | { ok: true; none: true } | { ok: false; message: string } }> {
+  if (!ID.test(input.thread)) return { tip: null, changes: { ok: false, message: WORDS["invalid-request"] } };
+  const read = await readFlexibleChanges(store, { thread: input.thread, patch: true });
+  if (!read.ok) return { tip: null, changes: { ok: false, message: read.message } };
+  if ("none" in read) return { tip: read.base, changes: { ok: true, none: true } };
+  return { tip: read.tip, changes: { ok: true, patch: read.patch, truncated: read.truncated } };
+}

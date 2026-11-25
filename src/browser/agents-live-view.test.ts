@@ -612,3 +612,36 @@ test("Codex filed r1 #5: the open lead dialog keeps listing what it filed after 
   expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Reconnecting");
   history.replaceState(null, "", "/agents?view=live");
 });
+
+// ---- a thread opened from the list: what was said, and what it changed --------------------------------------------------
+
+test("a thread opens read-only: the person's messages marked You before the agent's words, its changes file by file, hostile text inert", async () => {
+  const T = "c".repeat(32);
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    requests.push({ url, method: init?.method ?? "GET" });
+    const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+    if (url === "/agents/live") return json({ tiles: [], leads: [] });
+    if (url === "/agents/live/threads") return json({ threads: [{ id: T, title: "Fix it", project: "shop", live: false, waiting: 0, turn: "finished", ended: false, stopPending: false, ship: null }] });
+    if (url === `/agents/live/thread/${T}?file=main`) return json({ live: false, window: { ok: true, records: [
+      { k: "you", at: iso(60), t: ["<img src=x onerror=alert(1)>please fix it"] }, { k: "say", at: iso(60), t: ["Done <b>now</b>"] }] } });
+    if (url === `/agents/live/thread/${T}/diff`) return json({ files: [{ file: 0, path: "<script>alert(3)</script>.ts", additions: 1, deletions: 0, binary: false }], problem: null, patchTruncated: false });
+    if (url === `/agents/live/thread/${T}/diff?file=0`) return json({ file: { hunks: [{ header: "@@ -0,0 +1 @@", lines: [{ kind: "addition", text: "<img src=x onerror=alert(2)>", oldLine: null, newLine: 1 }] }] } });
+    return json({ sessions: [] });
+  }));
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  await act(async () => { (host.querySelector(`[data-live-thread-open="${T}"]`) as HTMLButtonElement).click(); });
+  await flush();
+  const detail = host.querySelector(`[data-live-thread-detail="${T}"]`)!;
+  const mine = detail.querySelector("[data-conversation-note]")!;
+  expect(mine.textContent).toContain("<img src=x onerror=alert(1)>please fix it");
+  expect(mine.textContent).toContain("You");
+  const said = detail.querySelector("[data-work-say]")!;
+  expect(mine.compareDocumentPosition(said) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await act(async () => { (detail.querySelector("[data-live-thread-diff] button") as HTMLButtonElement).click(); });
+  await flush();
+  expect(detail.querySelector("[data-check-excerpt]")?.textContent).toContain("<img src=x onerror=alert(2)>");
+  expect(detail.textContent).toContain("<script>alert(3)</script>.ts");
+  expect(host.querySelectorAll("img, script, b").length).toBe(0);
+  expect(requests.every(one => one.method === "GET")).toBe(true);
+});

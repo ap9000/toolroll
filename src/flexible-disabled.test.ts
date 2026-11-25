@@ -308,7 +308,8 @@ describe("the switch can't become an override", () => {
         "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision", "flexibleRequestsOf"]);
     decided("src/flexible-session.ts", ["startFlexibleThreadSession", "attachFlexibleAgent", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "continueFlexibleThread", "sendBackFlexibleThread"],
       ["openFlexibleSessions", "closeFlexibleSessions", "flexibleWorkOpen", "flexibleThreadsExist", "settleFlexibleStops", "stopFlexibleThreadsEverywhere", "tickFlexibleSessions", "recoverFlexibleHolders", "stopFlexibleThreadSession", "endFlexibleThreadTurn",
-        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads", "flexibleThreadShipTerms", "shipFlexibleThread", "latestFlexibleShip", "cancelFlexibleThreadShip", "flexibleThreadRecords", "removeFlexibleThreadCopy", "flexibleShipNeedsFor"]);
+        "lowerFlexibleThreadSession", "flexibleThreadLiveOf", "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange", "flexibleThreadTitleOf", "flexibleStopPending", "flexibleThreadEnded", "closeFlexibleThread", "tidyEndedFlexibleThreads", "flexibleThreadShipTerms", "shipFlexibleThread", "latestFlexibleShip", "cancelFlexibleThreadShip", "flexibleThreadRecords", "removeFlexibleThreadCopy", "flexibleShipNeedsFor",
+        "flexibleThreadTipOf", "flexibleThreadChanges"]);
     // Ending a person's threads' authority only ever stops and settles.
     decided("src/flexible-authority-end.ts", [], ["requireFlexibleStop", "settleExitedStops", "openFlexibleStops", "interruptTurnAndStop", "endThreadAuthorityFor"]);
     // Inspecting a candidate and its quarantined import are a person's recovery of past work: never gated. Reading what a
@@ -386,8 +387,8 @@ describe("the switch can't become an override", () => {
     for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
     for (const one of product.filter(engine("flexible-start.ts", "flexible-interactive.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
-    // The thread host reads what a thread changed through the import's read-only doors only (a turn's note of the files
-    // it changed); never the import itself.
+    // The thread host reads what a thread changed through the import's read-only doors only (its owner's diff and a
+    // turn's note of the files it changed); never the import itself.
     expect([...readFileSync("src/flexible-session.ts", "utf8").matchAll(/import \{([^}]*)\} from "\.\/flexible-import\.js"/g)].map(match => match[1]!.trim())).toEqual(["flexibleThreadTip, readFlexibleChanges"]);
     for (const one of product.filter(engine("flexible-ship.ts"))) {
       const named = [...one.text.matchAll(/import \{([^}]*)\} from "\.\.?\/flexible-ship\.js"/g)].flatMap(match => match[1]!.split(",").map(name => name.trim()).filter(Boolean));

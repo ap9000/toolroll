@@ -1301,3 +1301,96 @@ fn the_persons_own_messages_show_in_the_transcript_marked_as_theirs_and_drawn_in
         .unwrap();
     assert!(you < agent, "{shown}");
 }
+
+fn thread_diff(problem: Option<&str>) -> Value {
+    let mut d = fake::fixture("result-diff.json");
+    d["task"] = json!(fake::THREAD);
+    d["run"] = json!(3);
+    d["files"][0]["path"] = json!("src/to\u{1b}[31mtal.ts");
+    if let Some(p) = problem {
+        d["files"] = json!([]);
+        d["problem"] = json!(p);
+    }
+    d
+}
+
+#[test]
+fn a_thread_has_a_diff_tab_its_changes_read_only_and_drawn_inert() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    // Its own road, never a task's (which refused it: "Couldn't read the changes (task)").
+    let ask = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchThreadDiff(a) if a.task == fake::THREAD => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{fx:?}"));
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::FetchDiff(_))),
+        "{fx:?}"
+    );
+    let fx = app.update(Msg::Diff(ask, Ok(parse(thread_diff(None)))));
+    let file = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchThreadDiffFile(a) if a.task == fake::THREAD && a.file == 0 => {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{fx:?}"));
+    let mut hunks = fake::fixture("result-diff-file.json");
+    hunks["task"] = json!(fake::THREAD);
+    hunks["run"] = json!(3);
+    hunks["file"]["hunks"][0]["lines"][2]["text"] =
+        json!("  return sum(items) + tax(items); \u{1b}]0;owned\u{7}\u{202e}gnp.exe");
+    app.update(Msg::DiffFile(file, Ok(parse(hunks))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("Changes since the thread started"),
+        "{shown}"
+    );
+    assert!(shown.contains("return sum(items) + tax(items);"), "{shown}");
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\u{7}') && !shown.contains('\u{202e}'),
+        "{shown}"
+    );
+    // Read-only: no notes and no more lines here; what to change goes to the agent as a reply.
+    assert_eq!(app.key(key('c')), vec![]);
+    assert!(
+        app.status
+            .as_ref()
+            .is_some_and(|(t, w)| *t == Tone::Refused && w.contains("read-only")),
+        "{:?}",
+        app.status
+    );
+    assert_eq!(app.key(key('e')), vec![]);
+    // Esc leaves it, as a task's.
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_ne!(app.tab, toolroll_tui::app::Tab::Diff);
+}
+
+#[test]
+fn a_thread_with_nothing_committed_says_so_on_its_diff_tab() {
+    let mut app = thread_app(window());
+    app.focus = toolroll_tui::app::Focus::Detail;
+    let mut fx = vec![];
+    while app.tab != toolroll_tui::app::Tab::Diff {
+        fx = app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    let Some(Effect::FetchThreadDiff(ask)) = fx
+        .iter()
+        .find(|e| matches!(e, Effect::FetchThreadDiff(_)))
+        .cloned()
+    else {
+        panic!("{fx:?}")
+    };
+    app.update(Msg::Diff(ask, Ok(parse(thread_diff(Some("No committed changes yet. Ask the agent to commit its work: Ship sends committed work only."))))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("No committed changes yet."), "{shown}");
+}

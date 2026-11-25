@@ -1451,6 +1451,22 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             height: area.height.saturating_sub(2),
             ..area
         };
+        // Its Diff tab: what it changed since it started, drawn as a result's changes are (read-only).
+        if app.tab == Tab::Diff {
+            let tw = rest.width as usize;
+            let [head, body] =
+                Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(rest);
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(fit(&it.title, tw), ink())),
+                    Line::from(Span::styled(fit(THREAD_DIFF_WORDS, tw), dim())),
+                ]),
+                head,
+            );
+            app.areas.content = body;
+            draw_diff(f, app, body);
+            return;
+        }
         crate::thread::draw_panel(f, app, it, rest);
         return;
     }
@@ -2970,6 +2986,10 @@ fn owed_words(owed: &str) -> &'static str {
 
 /// The Diff tab: what accepting means, the files, then the file on screen as rows (unified or side by side), each note
 /// under its line, the cursor's row marked, and colours added a few milliseconds a frame.
+/// Under a thread's title on its Diff tab: what the changes are.
+pub const THREAD_DIFF_WORDS: &str =
+    "Changes since the thread started: its committed work, what Ship sends.";
+
 fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(diff) = app.diff.clone() else {
         f.render_widget(Paragraph::new("Reading the changes…"), area);
@@ -3014,6 +3034,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     let w = code_area.width as usize;
     app.set_diff_width(code_area.width);
     let facts = facts_of(app);
+    let thread = app.thread_selected().is_some();
     let mut head: Vec<Line<'static>> = vec![];
     // What accepting means: files and lines, checks, cost, notes kept.
     let mut spans = vec![];
@@ -3022,38 +3043,45 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         spans.push(Span::styled(format!("+{add}"), passed()));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("−{del}"), failed()));
-        spans.push(Span::styled(" · ", dim()));
+        if !thread {
+            spans.push(Span::styled(" · ", dim()));
+        }
     }
-    spans.push(Span::styled(
-        facts.checks.word(),
-        checks_style(facts.checks),
-    ));
-    if let Some(cost) = facts.cost {
-        spans.push(Span::styled(format!(" · ${cost:.2}"), dim()));
-    }
-    let kept = diff
-        .run
-        .map(|run| app.notes_of(&diff.task, run).len())
-        .unwrap_or(0);
-    if kept > 0 {
+    // A thread's changes: its totals only (no checks, cost or notes of a result).
+    if thread {
+        head.push(fit_line(Line::from(spans), w));
+    } else {
         spans.push(Span::styled(
-            format!(
-                " · {kept} {} kept",
-                if kept == 1 { "note" } else { "notes" }
-            ),
-            ink(),
+            facts.checks.word(),
+            checks_style(facts.checks),
         ));
-    }
-    head.push(fit_line(Line::from(spans), w));
-    if let Some(needs) = &facts.needs {
-        head.push(Line::from(Span::styled(fit(needs, w), ink())));
-    } else if let Some(b) = facts.blockers.first() {
-        head.push(Line::from(Span::styled(
-            fit(&format!("Can't complete yet: {b}"), w),
-            failed(),
-        )));
-    } else if let Some(owed) = &facts.owed {
-        head.push(Line::from(Span::styled(fit(owed_words(owed), w), dim())));
+        if let Some(cost) = facts.cost {
+            spans.push(Span::styled(format!(" · ${cost:.2}"), dim()));
+        }
+        let kept = diff
+            .run
+            .map(|run| app.notes_of(&diff.task, run).len())
+            .unwrap_or(0);
+        if kept > 0 {
+            spans.push(Span::styled(
+                format!(
+                    " · {kept} {} kept",
+                    if kept == 1 { "note" } else { "notes" }
+                ),
+                ink(),
+            ));
+        }
+        head.push(fit_line(Line::from(spans), w));
+        if let Some(needs) = &facts.needs {
+            head.push(Line::from(Span::styled(fit(needs, w), ink())));
+        } else if let Some(b) = facts.blockers.first() {
+            head.push(Line::from(Span::styled(
+                fit(&format!("Can't complete yet: {b}"), w),
+                failed(),
+            )));
+        } else if let Some(owed) = &facts.owed {
+            head.push(Line::from(Span::styled(fit(owed_words(owed), w), dim())));
+        }
     }
     let n = diff.files.len();
     if column {
@@ -3668,7 +3696,14 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         }
     } else if focus == Focus::Detail {
         let mut five: Vec<(&[Action], &'static str)> = match app.tab {
-            Tab::Diff if app.thread_selected().is_none() => {
+            Tab::Diff if app.thread_selected().is_some() => {
+                let mut v: Vec<(&[Action], &str)> = vec![
+                    (&[LineDown, LineUp], "line"),
+                    (&[PreviousFile, NextFile], "file"),
+                ];
+                v
+            }
+            Tab::Diff => {
                 let mut v: Vec<(&[Action], &str)> =
                     vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
                 if review {
@@ -3760,7 +3795,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             }
         }
         // A result's Diff: its own keys (n the next note among them) shadow the list's while it shows; Esc leaves it.
-        if app.tab == Tab::Diff && app.thread_selected().is_none() && !app.items.is_empty() {
+        if app.tab == Tab::Diff && !app.items.is_empty() {
             out.push(("Esc".into(), "list"));
         }
     }

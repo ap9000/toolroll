@@ -9,6 +9,8 @@ import { Badge, cn } from "../components/ui/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow } from "../live-task.js";
 import { elapsedWords } from "./agents-view.js";
+import { applyWindow as applyWorkWindow, emptyConversation, KButton, KWorkRecords, type Conversation, type ConversationNote, type WindowAnswer } from "../kit/index.js";
+import { Excerpt } from "./result-view.js";
 
 type Tile = { runId: number; role: string; taskId: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
   state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null;
@@ -444,9 +446,87 @@ export function shipOutcome(ship: string | null): string | null {
   return ship === "merged" ? "Ship: Merged" : ship === "sent-back" ? "Ship: sent back" : null;
 }
 
-/** The viewer's own interactive agent threads, read-only (the owner's D6): where each stands, and where to go on with it. */
+type ThreadRecord = { k: string; at?: string; t?: string[]; id?: string; kind?: string; target?: string; once?: true; ok?: boolean | null; out?: string[]; s?: number };
+type ThreadDiffFile = { file: number; path: string; additions: number; deletions: number; binary: boolean };
+type ThreadDiffLine = { kind: "context" | "addition" | "deletion" | "meta"; text: string; oldLine: number | null; newLine: number | null };
+
+/** A thread's records as one conversation: the agent's words and steps as a build's, what the person said as their own
+ * notes (marked You), each in the order it happened. Text only: nothing read becomes markup. */
+export function threadConversation(records: readonly ThreadRecord[], live: boolean): Conversation {
+  const wire = records.filter(one => one.s === undefined && one.k !== "you") as NonNullable<WindowAnswer["records"]>;
+  const conversation = applyWorkWindow(emptyConversation("thread"), { records: wire, final: !live });
+  // A message sorts just before what answered it (the same moment reads as earlier).
+  const notes: ConversationNote[] = records.flatMap((one, at) => one.k !== "you" || !Array.isArray(one.t) ? [] : [{
+    id: at + 1, author: "You", mine: true, text: one.t.join("\n"), standing: "Sent", readAt: null,
+    at: Number.isFinite(Date.parse(one.at ?? "")) ? new Date(Date.parse(one.at!) - 1).toISOString() : "" }]);
+  return { ...conversation, notes };
+}
+
+/** One file of a thread's changes, read when it is opened: its hunks as a result's changed lines are shown. */
+function ThreadDiffFileView({ thread, file }: { thread: string; file: ThreadDiffFile }) {
+  const [lines, setLines] = useState<ThreadDiffLine[] | null | "error">(null);
+  useEffect(() => {
+    let current = true;
+    fetch(`/agents/live/thread/${thread}/diff?file=${file.file}`, { credentials: "same-origin" }).then(response => response.ok ? response.json() : null)
+      .then((answer: { file?: { hunks?: { lines?: ThreadDiffLine[] }[] } } | null) => {
+        if (current) setLines(Array.isArray(answer?.file?.hunks) ? answer.file.hunks.flatMap(hunk => Array.isArray(hunk.lines) ? hunk.lines : []) : "error");
+      }).catch(() => { if (current) setLines("error"); });
+    return () => { current = false; };
+  }, [thread, file.file]);
+  if (lines === null) return <p className="text-caption text-muted-foreground">Reading…</p>;
+  if (lines === "error") return <p className="text-caption text-muted-foreground">This file's changes couldn't be read.</p>;
+  return <Excerpt excerpt={{ path: file.path, cited: true, more: 0,
+    lines: lines.map(line => ({ kind: line.kind === "meta" ? "context" : line.kind, line: line.newLine ?? line.oldLine, text: line.text })) }} changesHref={null} />;
+}
+
+/** A thread opened from the list: what was said (yours marked You), and what it changed since it started (its committed
+ * work, file by file). Read-only: replies, Ship and End are the terminal's. */
+function ThreadDetail({ id }: { id: string }) {
+  const [records, setRecords] = useState<ThreadRecord[] | null>(null);
+  const [live, setLive] = useState(false);
+  const [diff, setDiff] = useState<{ files: ThreadDiffFile[]; problem: string | null; patchTruncated: boolean } | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  useEffect(() => {
+    let current = true;
+    fetch(`/agents/live/thread/${id}?file=main`, { credentials: "same-origin" }).then(response => response.ok ? response.json() : null)
+      .then((answer: { live?: boolean; window?: { ok?: boolean; records?: ThreadRecord[] } } | null) => {
+        if (!current) return;
+        setLive(answer?.live === true);
+        setRecords(answer?.window?.ok === true && Array.isArray(answer.window.records) ? answer.window.records : []);
+      }).catch(() => { if (current) setRecords([]); });
+    fetch(`/agents/live/thread/${id}/diff`, { credentials: "same-origin" }).then(response => response.ok ? response.json() : null)
+      .then((answer: { files?: ThreadDiffFile[]; problem?: string | null; patchTruncated?: boolean } | null) => {
+        if (current) setDiff({ files: Array.isArray(answer?.files) ? answer.files : [], problem: answer === null ? "The changes couldn't be read." : answer.problem ?? null, patchTruncated: answer?.patchTruncated === true });
+      }).catch(() => { if (current) setDiff({ files: [], problem: "The changes couldn't be read.", patchTruncated: false }); });
+    return () => { current = false; };
+  }, [id]);
+  return <div className="flex flex-col gap-3 pb-2 pl-1" data-live-thread-detail={id}>
+    {records === null ? <p className="text-caption text-muted-foreground">Reading…</p>
+      : records.length === 0 ? <p className="text-caption text-muted-foreground">Nothing to show here yet.</p>
+      : <KWorkRecords conversation={threadConversation(records, live)} live={live} />}
+    <section aria-label="Changes" className="flex flex-col gap-2" data-live-thread-diff>
+      <h3 className="text-label font-semibold text-foreground">Changes since the thread started</h3>
+      {diff === null ? <p className="text-caption text-muted-foreground">Reading…</p>
+        : diff.problem !== null ? <p className="text-caption text-muted-foreground">{diff.problem}</p>
+        : <ul className="flex flex-col gap-1">{diff.files.map(file => <li key={file.file} className="flex flex-col gap-1">
+            <span className="flex min-w-0 items-center gap-2 text-body">
+              <span className="min-w-0 truncate font-mono text-foreground">{file.path}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">{file.binary ? "binary" : `+${file.additions} −${file.deletions}`}</span>
+              <span className="ml-auto shrink-0"><KButton variant="ghost" sm label={open === file.file ? "Hide" : "Show"} aria-expanded={open === file.file}
+                onClick={() => setOpen(open === file.file ? null : file.file)} /></span>
+            </span>
+            {open === file.file && <ThreadDiffFileView thread={id} file={file} />}
+          </li>)}</ul>}
+      {diff?.patchTruncated === true && <p className="text-caption text-muted-foreground">Some files are left out: the change is too large to show here.</p>}
+    </section>
+  </div>;
+}
+
+/** The viewer's own interactive agent threads (the owner's D6): where each stands, what was said and what it changed;
+ * where to go on with it. */
 function Threads({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<ThreadRow[]>([]);
+  const [opened, setOpened] = useState<string | null>(null);
   useEffect(() => {
     let current = true;
     fetch("/agents/live/threads", { credentials: "same-origin" }).then(response => response.ok ? response.json() : null)
@@ -457,14 +537,19 @@ function Threads({ refreshKey }: { refreshKey: number }) {
   return <section aria-label="Your threads" className="flex flex-col gap-2 border-t border-border pt-3" data-live-threads>
     <h2 className="text-label font-semibold text-foreground">Your threads</h2>
     <ul className="flex flex-col gap-1">
-      {rows.map(row => { const { word, tone } = threadWord(row); return <li key={row.id} className="flex min-w-0 items-center gap-2 text-body" data-live-thread>
-        <span className="min-w-0 truncate text-foreground">{row.title}</span>
-        {row.project !== null && <span className="shrink-0 text-muted-foreground">{row.project}</span>}
-        {shipOutcome(row.ship) !== null && <span className="shrink-0 text-muted-foreground">{shipOutcome(row.ship)}</span>}
-        <span className="ml-auto shrink-0"><Chip tone={tone}>{word}</Chip></span>
+      {rows.map(row => { const { word, tone } = threadWord(row); return <li key={row.id} className="flex min-w-0 flex-col gap-1" data-live-thread>
+        <span className="flex min-w-0 items-center gap-2 text-body">
+          <span className="min-w-0 truncate text-foreground">{row.title}</span>
+          {row.project !== null && <span className="shrink-0 text-muted-foreground">{row.project}</span>}
+          {shipOutcome(row.ship) !== null && <span className="shrink-0 text-muted-foreground">{shipOutcome(row.ship)}</span>}
+          <span className="ml-auto shrink-0"><Chip tone={tone}>{word}</Chip></span>
+          <KButton variant="ghost" sm label={opened === row.id ? "Close" : "Open"} aria-expanded={opened === row.id} data-live-thread-open={row.id}
+            onClick={() => setOpened(opened === row.id ? null : row.id)} />
+        </span>
+        {opened === row.id && <ThreadDetail id={row.id} />}
       </li>; })}
     </ul>
-    <p className="text-caption text-muted-foreground">Continue in the terminal: run <code>toolroll</code>, then pick the thread.</p>
+    <p className="text-caption text-muted-foreground">Reply, ship or end a thread in the terminal: run <code>toolroll</code>, then pick it.</p>
   </section>;
 }
 

@@ -341,6 +341,22 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
+            Effect::FetchThreadDiff(ask) => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let r = client.thread_diff(&ask.task).await;
+                        let _ = tx.send(Msg::Diff(ask, r));
+                    }));
+                }
+            }
+            Effect::FetchThreadDiffFile(ask) => {
+                if remote.is_none() {
+                    drop(tokio::spawn(async move {
+                        let r = client.thread_diff_file(&ask.task, ask.file).await;
+                        let _ = tx.send(Msg::DiffFile(ask, r));
+                    }));
+                }
+            }
             Effect::FetchThreads => {
                 if remote.is_none() {
                     drop(tokio::spawn(async move {

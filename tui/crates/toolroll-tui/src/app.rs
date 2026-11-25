@@ -827,6 +827,10 @@ pub const TERMINAL_PANE_KEYS: &[Action] = &[
     Action::JumpBack,
 ];
 
+/// Said for a note or more lines on a thread's changes: they are read-only here.
+pub const THREAD_DIFF_READ_ONLY: &str =
+    "A thread's changes are read-only here. To change something, reply to the thread (s).";
+
 /// How many places jump-back (') remembers.
 pub const JUMPS_KEPT: usize = 20;
 
@@ -865,6 +869,9 @@ pub enum Effect {
     },
     FetchDiff(DiffAsk),
     FetchDiffFile(FileAsk),
+    /// A Flexible thread's changes since it started (GET /agents/live/thread/<id>/diff): answered as a task's are.
+    FetchThreadDiff(DiffAsk),
+    FetchThreadDiffFile(FileAsk),
     /// The person's Flexible threads (GET /agents/live/threads).
     FetchThreads,
     /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`; `wait`: held
@@ -3326,9 +3333,12 @@ impl App {
             self.mode = Mode::Normal;
         }
         self.threads.view = None;
-        if self.thread_selected().is_some() {
+        if let Some(id) = self.thread_selected() {
             let mut fx = self.poll_thread();
             fx.push(Effect::Watch(vec![]));
+            if self.tab == Tab::Diff {
+                fx.push(self.ask_diff(id));
+            }
             return fx;
         }
         let Some(id) = self
@@ -4560,10 +4570,7 @@ impl App {
             }
         }
         // The Diff tab's keys apply only when the Detail panel is focused (never stealing j/k or n from the task list).
-        if self.effective_focus() == Focus::Detail
-            && !self.chat_focused()
-            && self.tab == Tab::Diff
-            && self.thread_selected().is_none()
+        if self.effective_focus() == Focus::Detail && !self.chat_focused() && self.tab == Tab::Diff
         {
             if let Some(action) = self.prefs.settings.keymap.lookup(Scope::Diff, &key) {
                 return self.run_action(action);
@@ -4575,7 +4582,7 @@ impl App {
         match key.code {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
             // A result's Diff tab: Esc leaves it (stranger test round 11: also returns focus to the list).
-            KeyCode::Esc if self.tab == Tab::Diff && self.thread_selected().is_none() => {
+            KeyCode::Esc if self.tab == Tab::Diff => {
                 self.leave_diff();
                 if self.effective_focus() == Focus::Detail {
                     self.focus = Focus::List;
@@ -4733,7 +4740,7 @@ impl App {
         let item = self.selected_item().cloned();
         let focus = self.effective_focus();
         let chat_here = self.chat_focused();
-        let diff_here = !chat_here && self.tab == Tab::Diff && self.thread_selected().is_none();
+        let diff_here = !chat_here && self.tab == Tab::Diff;
         // (An agent's sign-in pane is never the Terminal tab's, and never copied.)
         let terminal_here = !chat_here
             && self.tab == Tab::Terminal
@@ -5447,6 +5454,11 @@ impl App {
             Action::PreviousFile => self.diff_step(-1),
             Action::NextNote => self.note_step(true),
             Action::PreviousNote => self.note_step(false),
+            // A thread's changes are read-only here: what to change goes to its agent as a reply.
+            Action::Note | Action::RemoveNote if self.thread_selected().is_some() => {
+                self.say(Tone::Refused, THREAD_DIFF_READ_ONLY);
+                vec![]
+            }
             Action::Note => self.start_note(),
             Action::RemoveNote => self.remove_note(),
             Action::MoreAbove => self.expand(true),
@@ -6131,9 +6143,19 @@ impl App {
 
     // ---- the changes: asked, matched, and agreed with the result waiting -------------------------------------------
 
-    /// Read the task's changes: the build waiting for review when the steps name one, else the newest.
+    /// Read the task's changes: the build waiting for review when the steps name one, else the newest. A thread's are
+    /// what it changed since it started.
     fn ask_diff(&mut self, task: String) -> Effect {
         self.diff_gen += 1;
+        if self.thread_selected().as_deref() == Some(task.as_str()) {
+            let ask = DiffAsk {
+                task,
+                run: None,
+                gen: self.diff_gen,
+            };
+            self.diff_wanted = Some(ask.clone());
+            return Effect::FetchThreadDiff(ask);
+        }
         let run = self
             .steps
             .as_ref()
@@ -6151,6 +6173,7 @@ impl App {
 
     fn ask_file(&mut self, task: String, run: i64, file: i64) -> Effect {
         self.diff_gen += 1;
+        let thread = self.thread_selected().as_deref() == Some(task.as_str());
         let ask = FileAsk {
             task,
             run,
@@ -6158,6 +6181,9 @@ impl App {
             gen: self.diff_gen,
         };
         self.file_wanted = Some(ask.clone());
+        if thread {
+            return Effect::FetchThreadDiffFile(ask);
+        }
         Effect::FetchDiffFile(ask)
     }
 
@@ -7703,6 +7729,10 @@ impl App {
     /// `e` / `E`: reveal up to EXPAND_STEP hidden lines next to the hunk under the cursor (above it with `e`, below it
     /// with `E`); on a hidden-lines marker, its lines nearest the hunk below (`e`) or above (`E`).
     fn expand(&mut self, above: bool) -> Vec<Effect> {
+        if self.thread_selected().is_some() {
+            self.say(Tone::Refused, THREAD_DIFF_READ_ONLY);
+            return vec![];
+        }
         let (Some((task, run, file, _)), Some(code)) = (self.file_shown(), self.code.as_ref())
         else {
             return vec![];
