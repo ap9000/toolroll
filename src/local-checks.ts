@@ -40,8 +40,15 @@ export function localChecksRefusal(store: Store, by: string, taskId: string): st
   return eligible.ok ? null : WORDS[eligible.reason];
 }
 
-/** At launch: the ceiling a local owner's request runs under, while the install still allows it. */
-export function localChecksStanding(store: Store): { ok: true; access: CheckAccess } | { ok: false; problem: string } {
+/** At launch, and again right before every command the worker starts (round 1, finding 1): the ceiling a local owner's
+ * request runs under, while the install still allows it: solo, local mode on, and the work still one the owner could
+ * approve again now (a project's stored level read before any local-mode clamp: saved as unsandboxed, it runs nothing). */
+export function localChecksStanding(store: Store, input: { by: string; taskId: string }): { ok: true; access: CheckAccess } | { ok: false; problem: string } {
   if (!soloNow(store) || !localModeOn(store)) return { ok: false, problem: "Asked for without a password, and the install is no longer solo with local mode on, so they didn't run." };
+  const refused = localChecksRefusal(store, input.by, input.taskId);
+  if (refused !== null) return { ok: false, problem: `Asked for without a password, and now: ${refused}` };
   return { ok: true, access: LOCAL_CHECKS_CEILING };
 }
+
+/** Thrown at a command launch whose local owner standing lapsed: the check stops there, not run. */
+export class LocalChecksLapsed extends Error {}

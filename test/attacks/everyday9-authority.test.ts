@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { resultFixtures } from "../local-owner-results.js";
 import { hashPassword } from "../../src/scope.js";
-import { enrollOwnerPassword } from "../../src/store.js";
+import { enrollOwnerPassword, setLocalModeOff } from "../../src/store.js";
 import { register } from "../../src/runner.js";
 import { savePublishing } from "../../src/pull-request-flow.js";
 import { soloNow } from "../../src/install-mode.js";
@@ -172,4 +172,49 @@ describe("Run checks from the local owner's session", () => {
     expect(ran).toBe(0);
     expect(check).toMatchObject({ state: "not-run" });
   });
+
+  // Round 1, finding 1: the standing is read again right before every command the worker starts, not once.
+  const ok = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+  async function asked(): Promise<{ request: number; runId: number }> {
+    const session = await world.localSession();
+    const result = fixtures.ready("ordinary");
+    expect((await ask(session, result.runId)).status).toBe(303);
+    return { request: Number(world.store.handle.prepare("SELECT id FROM action_ledger WHERE action = 'checks requested' AND run_id = ?").get(result.runId)!["id"]), runId: result.runId };
+  }
+  const commandsRun = (calls: string[][]) => calls.filter(args => args.join(" ").includes("npm test"));
+
+  test.each([
+    ["local mode turned off", () => { expect(setLocalModeOff(world.store, { name: "alex", authority: "full" }, LOCAL_T0)).toMatchObject({ ok: true }); }],
+    ["a second person (team)", () => { secondPerson(); }],
+    ["the project saved as unsandboxed (read before any local-mode clamp)", () => {
+      world.store.handle.prepare("INSERT OR REPLACE INTO project_check_access (repo, level, updated_by, updated_at) VALUES (?, 'unsandboxed', 'alex', ?)").run(world.repo, LOCAL_T0.toISOString()); }],
+  ])("changed during checkout (%s): nothing more runs", async (_name, change) => {
+    const { request } = await asked();
+    const calls: string[][] = [];
+    let flipped = false;
+    const check = await runFollowUpCheck(world.store, evidence(), request, {
+      runner: async (_file, args) => { calls.push([...args]); return ok; },
+      git: async (_file, args) => { if (!flipped && args.includes("add")) { flipped = true; change(); } return ok; }, now: () => LOCAL_T0 });
+    expect(flipped).toBe(true);
+    expect(calls).toEqual([]);
+    expect(check).toMatchObject({ state: "not-run" });
+  });
+
+  test("changed during the project's setup (a second person): the check command never starts", async () => {
+    world.store.setWorktreeSetup({ repo: world.repo, command: "echo prepared", timeoutMs: 60_000, approvedBy: "alex" }, LOCAL_T0);
+    const { request } = await asked();
+    const calls: string[][] = [];
+    let setupRan = false;
+    const check = await runFollowUpCheck(world.store, evidence(), request, {
+      runner: async (_file, args) => {
+        calls.push([...args]);
+        if (!setupRan && args.join(" ").includes("echo prepared")) { setupRan = true; secondPerson(); }
+        return ok;
+      },
+      git: async () => ok, now: () => LOCAL_T0 });
+    expect(setupRan).toBe(true);
+    expect(commandsRun(calls)).toEqual([]);
+    expect(check).toMatchObject({ state: "not-run" });
+  });
 });
+

@@ -13,7 +13,7 @@ import { keepCheckScreenshots } from "./check-screenshots.js";
 import { CHECK_RECOVERY_HELD, readCheckRecoveryHoldsForRun, type ReadCheckRecoveryHolds } from "./check-recovery-hold.js";
 import type { CheckAccess } from "./check-access.js";
 import { widerThan } from "./check-access.js";
-import { localChecksStanding } from "./local-checks.js";
+import { localChecksStanding, LocalChecksLapsed } from "./local-checks.js";
 import { recheckStanding } from "./check-only-standing.js";
 import { actualCheckAccess, checkoutLaunchOf, checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -244,10 +244,14 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   // An automatic recheck runs only on its check-only authorization, read again now (check-only.ts): no record, no run.
   // A local owner's Run checks (local-checks.ts) runs under its own ceiling the same way, read again now.
   const authorized = wanted.why === "recheck" ? recheckStanding(store, { request, runId, head: target.head, digest: wanted.digest })
-    : wanted.why === "local-owner" ? localChecksStanding(store) : null;
+    : wanted.why === "local-owner" ? localChecksStanding(store, { by: wanted.actor, taskId: target.taskId }) : null;
   if ((wanted.why === "recheck" || wanted.why === "local-owner") && !authorized?.ok) { const held = finish("not-run", authorized?.problem ?? "Its authorization couldn't be read."); return held ?? followUpChecksOf(store, runId, now(), root).find(one => one.request === request) ?? null; }
   /** Every command of an automatic recheck, refused at the moment it would run wider than the build's own access. */
-  const proveLaunch = (): void => { const held = heldNow(); if (held !== null) throw new CheckRecoveryBlocked(held); };
+  const proveLaunch = (): void => {
+    const held = heldNow(); if (held !== null) throw new CheckRecoveryBlocked(held);
+    // A local owner's request: its standing read again at every launch (solo, local mode, the stored access level).
+    if (wanted.why === "local-owner") { const standing = localChecksStanding(store, { by: wanted.actor, taskId: target.taskId }); if (!standing.ok) throw new LocalChecksLapsed(standing.problem); }
+  };
   const guardedRunner: Runner = (file, args, options) => { proveLaunch(); return runner(file, args, options); };
   // Hardened Git may issue more than one inner command; reprove at each actual launch too.
   const git = deps.git ?? hardenedGit((file, args, options) => { proveLaunch(); return execRun(file, args, options); });
@@ -307,8 +311,11 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       } else result ??= { ran: false, failure: "The project's setup failed, so the check didn't run." };
     }
   } catch (error) {
-    if (!(error instanceof CheckRecoveryBlocked)) throw error;
-    heldControl = error.control;
+    if (error instanceof LocalChecksLapsed) result = { ran: false, failure: error.message };
+    else {
+      if (!(error instanceof CheckRecoveryBlocked)) throw error;
+      heldControl = error.control;
+    }
   } finally {
     // Exact already-owned scratch cleanup is allowed; never launch remove if add never succeeded.
     if (checkoutCreated) await cleanupGit("git", ["-C", target.repo, "worktree", "remove", "--force", checkout], { timeoutMs: 120_000 }).catch(() => null);
