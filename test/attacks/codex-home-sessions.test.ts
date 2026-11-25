@@ -11,7 +11,8 @@ import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, 
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { agentFence, codexSessionsFolder, homeWriteDenies, type FenceGrants } from "../../src/agent-fence.js";
-import { isolatedCodexHome, type CodexHome } from "../../src/provider-home.js";
+import { isolatedCodexHome, pruneCodexSessions, withCodexSessionsLock, type CodexHome } from "../../src/provider-home.js";
+import { createRequire } from "node:module";
 import { keptCodexSessions } from "../../src/invoke.js";
 import type * as StoreModule from "../../src/store.js";
 import { lines, needs, osFence, underSandbox, useScratch } from "./harness.js";
@@ -188,5 +189,29 @@ describe("attack: a task inheriting another task's kept Codex sessions", () => {
       expect(existsSync(otherFolder)).toBe(false);
       expect(existsSync(restored)).toBe(false);
     } finally { second.close(); }
+  });
+});
+
+describe("attack: a prune racing a launch's copy of its kept sessions", () => {
+  const scratch = useScratch("codexlock");
+
+  test("prune, copy-in and keep share one lock: while a launch holds it, a prune refuses rather than delete under it", () => {
+    const root = join(scratch(), "codex-sessions");
+    const live = join(root, "a".repeat(32));
+    mkdirSync(live, { recursive: true });
+    writeFileSync(join(live, "rollout-live.jsonl"), "being kept\n");
+    // Another holder (a launch keeping its sessions, in another connection or process).
+    withCodexSessionsLock(root, () => undefined);
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };
+    const holder = new DatabaseSync(join(root, ".lock"));
+    holder.exec("BEGIN EXCLUSIVE");
+    try {
+      expect(() => withCodexSessionsLock(root, () => pruneCodexSessions(root, new Set()), 50)).toThrow(/locked|busy/i);
+      expect(existsSync(join(live, "rollout-live.jsonl"))).toBe(true);
+    } finally { holder.exec("ROLLBACK"); holder.close(); }
+    // Released: the prune runs, and never takes the lock file itself.
+    withCodexSessionsLock(root, () => pruneCodexSessions(root, new Set()), 50);
+    expect(existsSync(live)).toBe(false);
+    expect(existsSync(join(root, ".lock"))).toBe(true);
   });
 });

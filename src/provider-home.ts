@@ -22,7 +22,9 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { validModelId } from "./provider.js";
 
 /** The operator's own choices a no-model build keeps. */
@@ -110,7 +112,7 @@ export function isolatedCodexHome(source: string, root: string = tmpdir(), optio
   return {
     dir,
     // Best effort: a task whose sessions couldn't be kept resumes in a fresh session's place (its next launch finds none).
-    keep: () => { if (options.sessions != null) { try { keepSessions(sessions, home, options.sessions); } catch { /* not kept */ } } },
+    keep: () => { if (options.sessions != null) { const kept = options.sessions; try { withCodexSessionsLock(dirname(kept), () => keepSessions(sessions, home, kept)); } catch { /* not kept */ } } },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -234,8 +236,32 @@ export function pruneCodexSessions(root: string, keep: ReadonlySet<string>): voi
   let names: string[];
   try { names = readdirSync(root); } catch { return; }
   for (const name of names) {
+    if (name.startsWith(CODEX_SESSIONS_LOCK)) continue;
     const task = /^([0-9a-f]{32})(?:\.(?:new|old)-[0-9a-f]{16})?$/.exec(name)?.[1];
     if (task !== undefined && keep.has(task)) continue;
     try { rmSync(join(root, name), { recursive: true, force: true }); } catch { /* the next launch tries again */ }
   }
+}
+
+/** The kept-sessions folder's lock file (with SQLite's own journal beside it). */
+const CODEX_SESSIONS_LOCK = ".lock";
+
+/**
+ * Runs `work` holding the kept-sessions folder's lock: an exclusive SQLite lock on `<root>/.lock`, the operating
+ * system's own, held across processes (a runner beside the console). Pruning with the snapshot it prunes against,
+ * a launch's copy-in and a launch's copy-out each run under it, so a folder a launch is filling or keeping is never
+ * pruned from under it. `work` is synchronous: the lock is never held across an await, so one process never waits on
+ * itself. A lock that can't be had within the wait refuses (throws).
+ */
+export function withCodexSessionsLock<T>(root: string, work: () => T, waitMs = 30_000): T {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const file = join(root, CODEX_SESSIONS_LOCK);
+  try { if (lstatSync(file).isSymbolicLink()) throw new Error("the Codex sessions lock is a link"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const { DatabaseSync: Sqlite } = createRequire(import.meta.url)("node:sqlite") as { DatabaseSync: new (path: string) => DatabaseSync };
+  const db = new Sqlite(file);
+  try {
+    chmodSync(file, 0o600);
+    db.exec(`PRAGMA busy_timeout=${Math.max(0, Math.trunc(waitMs))}; BEGIN EXCLUSIVE`);
+    try { return work(); } finally { db.exec("ROLLBACK"); }
+  } finally { db.close(); }
 }

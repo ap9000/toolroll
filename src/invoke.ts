@@ -55,7 +55,7 @@ import { deliveredFile } from "./code-map-admission.js";
 import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, codexSessionsName, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
-import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, pruneCodexSessions, type CodexHome, type ProviderDefaults } from "./provider-home.js";
+import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, pruneCodexSessions, withCodexSessionsLock, type CodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
@@ -491,9 +491,12 @@ export async function invokeAgent(
   let codexHome: CodexHome | null = null;
   if (codexHarness && invocation.phase !== "review") {
     try {
-      // Kept sessions of tasks that closed (or of an earlier database here) go first; this task's are kept.
+      // Kept sessions of tasks that closed (or of an earlier database or generation here) go first, and this task's are
+      // copied in, under the kept folder's one lock (a concurrent launch's prune never takes a folder being filled).
+      const source = codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir());
       const sessions = keptCodexSessions(store, run.taskRef);
-      codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex", sessions });
+      codexHome = sessions === null ? isolatedCodexHome(source, undefined, { signIn: spec.provider === "codex", sessions: null })
+        : withCodexSessionsLock(dirname(sessions), () => isolatedCodexHome(source, undefined, { signIn: spec.provider === "codex", sessions }));
     }
     catch {
       tools?.cleanup();
@@ -1554,9 +1557,12 @@ export function keptCodexSessions(store: Store, taskRef: number): string | null 
   if (folder === null) return null;
   // Kept: open tasks of this database in its current recovery generation, and only those (the launching task among
   // them: its run is going). Everything else goes, an earlier generation's folders included.
-  const open = store.handle.prepare(`SELECT r.id AS ref FROM task_ref r LEFT JOIN task t ON r.backend = 'built-in' AND t.id = r.external_id
-    WHERE NOT (r.backend = 'built-in' AND (t.id IS NULL OR t.state IN ('done', 'cancelled', 'expired'))
-      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.task_ref = r.id AND live.finished_at IS NULL))`).all();
-  pruneCodexSessions(dirname(folder), new Set(open.map(row => codexSessionsName(identity.id, identity.recoveryGeneration, Number(row["ref"])))));
+  // The snapshot of open tasks and the removal under the kept folder's lock, which every copy in and out also holds.
+  withCodexSessionsLock(dirname(folder), () => {
+    const open = store.handle.prepare(`SELECT r.id AS ref FROM task_ref r LEFT JOIN task t ON r.backend = 'built-in' AND t.id = r.external_id
+      WHERE NOT (r.backend = 'built-in' AND (t.id IS NULL OR t.state IN ('done', 'cancelled', 'expired'))
+        AND NOT EXISTS (SELECT 1 FROM run live WHERE live.task_ref = r.id AND live.finished_at IS NULL))`).all();
+    pruneCodexSessions(dirname(folder), new Set(open.map(row => codexSessionsName(identity.id, identity.recoveryGeneration, Number(row["ref"])))));
+  });
   return folder;
 }
