@@ -75,8 +75,10 @@ export function codexDefaults(codexHome: string): ProviderDefaults {
   };
 }
 
-/** A Codex launch's own CODEX_HOME. `keep` saves its sessions for its task (after the run, before `cleanup`). */
-export type CodexHome = { dir: string; keep: () => void; cleanup: () => void };
+/** A Codex launch's own CODEX_HOME. `keep` saves its sessions for its task (after the run, before `cleanup`), and only
+ * when the caller proved every process of the run gone (`provenGone`): then nothing can change the home while it is
+ * copied out. */
+export type CodexHome = { dir: string; keep: (provenGone: boolean) => void; cleanup: () => void };
 
 /** How much of a task's sessions is kept between its launches: bounded, so a run can't fill the disk through it. */
 const SESSIONS_MAX_BYTES = 512 * 1024 * 1024;
@@ -96,6 +98,12 @@ export function isolatedCodexHome(source: string, root: string = tmpdir(), optio
   // The home's real path as Toolroll made it: what its sessions are proven against when they are kept.
   const home = realpathSync(dir);
   const sessions = join(dir, "sessions");
+  // The home folder itself, held open from its creation (never through a link): the copy-out proves the folder at its
+  // name is still this very one. (Node has no openat, so the walk below it goes by name, re-proving each folder and
+  // file; with the run's processes proven gone and other launches denied every run folder, nothing writes it then.)
+  let homeFd: number;
+  try { homeFd = openSync(home, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW); }
+  catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
   try {
     chmodSync(dir, 0o700);
     // Only a Codex build signs in with it: an OpenRouter build carries its own key and never gets the ChatGPT sign-in.
@@ -106,14 +114,27 @@ export function isolatedCodexHome(source: string, root: string = tmpdir(), optio
     mkdirSync(sessions, { mode: 0o700 });
     if (options.sessions != null) copySessions(options.sessions, sessions);
   } catch (error) {
+    closeSync(homeFd);
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
+  const sameHome = (): boolean => {
+    try {
+      const held = fstatSync(homeFd), there = lstatSync(home);
+      return there.isDirectory() && !there.isSymbolicLink() && there.ino === held.ino && there.dev === held.dev;
+    } catch { return false; }
+  };
+  let closed = false;
   return {
     dir,
-    // Best effort: a task whose sessions couldn't be kept resumes in a fresh session's place (its next launch finds none).
-    keep: () => { if (options.sessions != null) { const kept = options.sessions; try { withCodexSessionsLock(dirname(kept), () => keepSessions(sessions, home, kept)); } catch { /* not kept */ } } },
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    // Best effort, fail closed: a run whose processes aren't all proven gone, or whose home isn't the one made, keeps
+    // nothing (its task's next launch starts without this launch's session; the earlier kept ones stay).
+    keep: provenGone => {
+      if (options.sessions == null || !provenGone || closed) return;
+      const kept = options.sessions;
+      try { withCodexSessionsLock(dirname(kept), () => { if (!sameHome()) throw new Error("the launch's home changed"); keepSessions(sessions, home, kept); }); } catch { /* not kept */ }
+    },
+    cleanup: () => { if (!closed) { closed = true; closeSync(homeFd); } rmSync(dir, { recursive: true, force: true }); },
   };
 }
 

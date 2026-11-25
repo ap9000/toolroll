@@ -65,7 +65,7 @@ describe("what a build keeps of the provider's own home", () => {
     writeFileSync(join(home.dir, "auth.json"), '{"refreshed":"by the run"}');
     mkdirSync(join(home.dir, "sessions", "2026", "11"), { recursive: true });
     writeFileSync(join(home.dir, "sessions", "2026", "11", "rollout-1.jsonl"), "{}");
-    home.keep();
+    home.keep(true);
     home.cleanup();
     expect(existsSync(home.dir)).toBe(false);
     expect(readFileSync(join(source, "auth.json"), "utf8")).toBe('{"synthetic":"sign-in"}');

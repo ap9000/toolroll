@@ -7,7 +7,7 @@
  * in a folder of Toolroll's own that every launch is denied (agent-fence.ts codexSessionsFolder), copied out after the
  * run only as plain files proven to be inside the launch's own folder.
  */
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, renameSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { agentFence, codexSessionsFolder, homeWriteDenies, type FenceGrants } from "../../src/agent-fence.js";
@@ -90,7 +90,7 @@ describe("attack: a Codex build reaching other sessions or the operator's sign-i
     symlinkSync(join(codex, "auth.json"), join(sessions, "rollout-auth.jsonl"));
     symlinkSync(join(otherTask, "2026"), join(sessions, "2027"));
     symlinkSync(join(codex, "sessions"), join(sessions, "operator"));
-    run.keep();
+    run.keep(true);
     const kept = (dir: string): string[] => readdirSync(dir).flatMap(name => {
       const path = join(dir, name);
       return lstatSync(path).isDirectory() ? kept(path).map(one => `${name}/${one}`) : [name];
@@ -114,7 +114,7 @@ describe("attack: the run steering what Toolroll copies out of its sessions", ()
     const { codex, ownTask, run } = world(scratch());
     rmSync(join(run.dir, "sessions"), { recursive: true, force: true });
     symlinkSync(join(codex, "sessions"), join(run.dir, "sessions"));
-    run.keep();
+    run.keep(true);
     expect(keptFiles(ownTask)).toEqual(["2026/rollout-own.jsonl"]);
   });
 
@@ -123,8 +123,29 @@ describe("attack: the run steering what Toolroll copies out of its sessions", ()
     mkdirSync(join(run.dir, "sessions", "2026", "11"), { recursive: true });
     writeFileSync(join(run.dir, "sessions", "2026", "11", "rollout-mine.jsonl"), "mine\n");
     symlinkSync(join(codex, "sessions", "2026", "11"), join(run.dir, "sessions", "2026", "12"));
-    run.keep();
+    run.keep(true);
     expect(keptFiles(ownTask)).toEqual(["2026/11/rollout-mine.jsonl", "2026/rollout-own.jsonl"]);
+  });
+
+  test("nothing is kept while the run's processes aren't proven gone", () => {
+    const { ownTask, run } = world(scratch());
+    writeFileSync(join(run.dir, "sessions", "rollout-late.jsonl"), "late\n");
+    run.keep(false);
+    expect(keptFiles(ownTask)).toEqual(["2026/rollout-own.jsonl"]);
+  });
+
+  test("a home folder swapped for a link (or another folder) at its name keeps nothing", () => {
+    const dir = scratch();
+    const { codex, ownTask, run } = world(dir);
+    renameSync(run.dir, `${run.dir}-moved`);
+    mkdirSync(join(dir, "decoy", "sessions"), { recursive: true });
+    symlinkSync(join(codex, "sessions", "2026"), join(dir, "decoy", "sessions", "2026"));
+    writeFileSync(join(dir, "decoy", "sessions", "rollout-decoy.jsonl"), "decoy\n");
+    symlinkSync(join(dir, "decoy"), run.dir);
+    run.keep(true);
+    expect(keptFiles(ownTask)).toEqual(["2026/rollout-own.jsonl"]);
+    rmSync(run.dir);
+    renameSync(`${run.dir}-moved`, run.dir);
   });
 
   test("a hard link to a file outside the run's folder is never copied; its own files still are", () => {
@@ -134,7 +155,7 @@ describe("attack: the run steering what Toolroll copies out of its sessions", ()
     writeFileSync(outside, "outside secret\n");
     linkSync(outside, join(run.dir, "sessions", "rollout-hard.jsonl"));
     writeFileSync(join(run.dir, "sessions", "rollout-ordinary.jsonl"), "ordinary\n");
-    run.keep();
+    run.keep(true);
     expect(keptFiles(ownTask)).toEqual(["2026/rollout-own.jsonl", "rollout-ordinary.jsonl"]);
     expect(readFileSync(join(ownTask, "rollout-ordinary.jsonl"), "utf8")).toBe("ordinary\n");
   });

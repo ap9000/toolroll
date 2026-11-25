@@ -853,7 +853,9 @@ export async function invokeAgent(
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
     // The task keeps this launch's sessions (a repair resumes them), copied out by Toolroll before the home goes.
-    codexHome?.keep();
+    // Only once every process of the run is proven gone (the run's process witnesses, process-custody.ts): nothing of
+    // it can then rewrite the home while Toolroll copies its sessions out.
+    if (codexHome !== null) codexHome.keep(store.openRunProcessCount(runId, clock()) === 0);
     codexHome?.cleanup();
     // What the run's proxy saw (shown on its result): connections it made and refused. A connection the OS refused
     // outright never reached it, and isn't counted.
