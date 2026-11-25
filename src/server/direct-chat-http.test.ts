@@ -263,6 +263,17 @@ describe("Direct Chat HTTP + SSE routes", () => {
     const replied = await world.post(`/direct-chats/${started.threadId}/reply`, { prompt: "Now list the modules", request: "a".repeat(32) });
     expect(replied.status).toBe(303);
     expect(world.store.handle.prepare("SELECT count(*) AS n FROM direct_chat_turn WHERE thread_id = ?").get(started.threadId)?.["n"]).toBe(2);
+    // Imported history (round 1, finding 6): read only, no reply box, and a posted reply is still refused.
+    const legacy = "b".repeat(32);
+    world.store.handle.prepare(`INSERT INTO direct_chat_thread (id, owner, local_generation, account_generation, create_request_id, title, repo, clone_path, git_dir, config_sha256,
+      diff_cache_json, is_legacy, branch, base_sha, provider, model_id, provider_session_id, main_dirty_files, archived_at, created_at, updated_at)
+      SELECT ?, owner, NULL, account_generation, NULL, 'Old chat', repo, '', NULL, NULL, NULL, 1, 'imported/bbbbbbbb', '', provider, model_id, NULL, NULL, NULL, created_at, updated_at
+      FROM direct_chat_thread WHERE id = ?`).run(legacy, started.threadId);
+    const old = await world.send(`/direct-chats/${legacy}`, "GET", { cookie: world.cookie });
+    expect(old.status).toBe(200);
+    expect(old.body).toContain("data-direct-chat-read-only");
+    expect(old.body).not.toContain(`action="/direct-chats/${legacy}/reply"`);
+    expect((await world.post(`/direct-chats/${legacy}/reply`, { prompt: "Go on", request: "c".repeat(32) })).status).toBe(409);
     expect(addApprover(world.store, "jordan", T0, { name: "alex", token: world.token }).ok).toBe(true);
     expect((await world.send("/direct-chats", "GET", { cookie: world.cookie })).status).toBe(403);
   });

@@ -653,7 +653,9 @@ export function createDirectChatHandlers(runtime: ServerRuntime, deps: DirectCha
     const shipAct = running || diff.changedFiles.length === 0 ? "" : postForm(`/direct-chats/${thread.id}/ship-review`, btn("Review Ship", { variant: "primary", type: "submit" }));
     // Reply (everyday 9 B4): the next message, through the same send the app uses (one request key per page drawn, so a
     // double submit is one turn). While it works, the box waits.
-    const reply = running ? html`<p class="k-note">It's working on your last message. Reply when it finishes.</p>`
+    // Imported history from the older app takes no reply (the send refuses it): say so instead of offering a box.
+    const reply = thread.isLegacy ? html`<p class="k-note" data-direct-chat-read-only>Imported from an earlier version: read only. Start a new Direct Chat to go on.</p>`
+      : running ? html`<p class="k-note">It's working on your last message. Reply when it finishes.</p>`
       : postForm(`/direct-chats/${thread.id}/reply`, html`${field({ id: "direct-chat-reply", label: "Reply", control: textarea({ id: "direct-chat-reply", name: "prompt", rows: 3, attrs: { required: true, maxlength: "20000" } }) })}${btn("Send", { variant: "primary", type: "submit" })}`,
         { hidden: { request: randomBytes(16).toString("hex") } });
     const body = html`<h1>${thread.title || "Direct Chat"}</h1><p class="k-note">${thread.project} · ${thread.provider}${thread.modelId ? ` · ${thread.modelId}` : ""}${running ? " · Working" : ""}</p>${turnHtml}${reply}<h2>Changes</h2>${changes}<h2>Ship</h2>${shipped}${shipAct === "" && ships.length === 0 ? html`<p class="k-note">${running ? "Ship opens when it finishes." : "Nothing to ship yet."}</p>` : shipAct}<p><a class="k-link" href="/direct-chats">All Direct Chats</a></p>`;
