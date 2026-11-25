@@ -268,7 +268,12 @@ export async function runHardenedMainGitAsync(args: readonly string[], repoCwd: 
  * `--git-dir`, `--work-tree`, and `GIT_COMMON_DIR` explicitly so git never
  * follows an attacker-planted `.git` or `commondir` redirect.
  */
-export function runTrustedCloneGit(binding: TrustedCloneBinding, args: readonly string[], input?: string): string {
+export function runTrustedCloneGit(
+  binding: TrustedCloneBinding,
+  args: readonly string[],
+  input?: string,
+  extraEnv?: Record<string, string>,
+): string {
   const verified = assertTrustedCloneGit(binding);
   if (!verified.ok) {
     throw new Error(verified.error);
@@ -284,7 +289,7 @@ export function runTrustedCloneGit(binding: TrustedCloneBinding, args: readonly 
     {
       cwd: verified.realClone,
       encoding: "utf8",
-      env: cleanGitEnv({ GIT_COMMON_DIR: verified.realGitDir }),
+      env: cleanGitEnv({ GIT_COMMON_DIR: verified.realGitDir, ...(extraEnv ?? {}) }),
       input,
       maxBuffer: 16 * 1024 * 1024,
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],

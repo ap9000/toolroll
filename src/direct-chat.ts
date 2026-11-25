@@ -1,8 +1,8 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { resolveExecutable } from "./attest.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
@@ -784,6 +784,54 @@ function defaultReadDiff(input: { binding: TrustedCloneBinding; baseSha: string 
   }
 }
 
+function snapshotCloneTree(binding: TrustedCloneBinding): string | null {
+  if (!existsSync(binding.clonePath)) return null;
+  const verified = assertTrustedCloneGit(binding);
+  if (!verified.ok) return null;
+  const scratch = mkdtempSync(join(tmpdir(), "toolroll-dc-idx-"));
+  const indexPath = join(scratch, "index");
+  try {
+    const extraEnv = { GIT_INDEX_FILE: indexPath };
+    try {
+      runTrustedCloneGit(binding, ["read-tree", "HEAD"], undefined, extraEnv);
+    } catch {
+      // Unborn HEAD: fall through to staging the working tree directly.
+    }
+    runTrustedCloneGit(binding, ["add", "-A"], undefined, extraEnv);
+    const tree = runTrustedCloneGit(binding, ["write-tree"], undefined, extraEnv).trim();
+    return /^[0-9a-f]{40}$/i.test(tree) ? tree : null;
+  } catch {
+    return null;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+function readTreeRangeDiff(binding: TrustedCloneBinding, fromTreeSha: string, toTreeSha: string): DirectChatDiffSummary {
+  if (fromTreeSha === toTreeSha) return { ...EMPTY_DIFF };
+  if (!existsSync(binding.clonePath)) return { ...EMPTY_DIFF };
+  const verified = assertTrustedCloneGit(binding);
+  if (!verified.ok) return { ...EMPTY_DIFF };
+  try {
+    const files = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", fromTreeSha, toTreeSha])
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean);
+    if (files.length === 0) return { ...EMPTY_DIFF };
+    let diffText = runTrustedCloneGit(binding, ["diff", "--no-ext-diff", "--no-textconv", "--no-color", fromTreeSha, toTreeSha]);
+    if (diffText.length > MAX_DIFF_BYTES) {
+      diffText = `${diffText.slice(0, MAX_DIFF_BYTES)}\n… (diff truncated)`;
+    }
+    return {
+      changedFiles: files.map(sanitizeLine),
+      diffText: sanitizeDisplay(diffText),
+      dirty: true,
+    };
+  } catch {
+    return { ...EMPTY_DIFF };
+  }
+}
+
 function defaultSpawnTurn(
   custody: CustodyIO,
   input: { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; logPath: string; stderrPath: string }
@@ -834,6 +882,7 @@ export class DirectChatHost {
   private readonly leadNotifiedTurnIds = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
+  private readonly preTurnTreeSha = new Map<string, string>();
   private readonly inFlightCreates = new Map<string, Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }>>();
   private readonly pendingCleanups = new Set<Promise<void>>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1009,6 +1058,72 @@ export class DirectChatHost {
       text = `Direct Chat ${finalStatus} — "${title}" (${providerLabel}, ${proj}): ${reason}`;
     }
     this.store.appendLeadMessage({ thread: leadThreadId, turn: null, role: "assistant", text, activity: null }, now);
+  }
+
+  private turnDiffPath(threadId: string, turnId: string): string {
+    return join(this.stateRoot, "direct-chat", "turns", threadId, `${turnId}.diff.json`);
+  }
+
+  private captureTurnDiff(thread: DirectChatThreadRow, turnId: string): DirectChatDiffSummary | null {
+    const beforeTree = this.preTurnTreeSha.get(turnId);
+    if (!beforeTree) return null;
+    const binding = this.bindingOf(thread);
+    if (binding === null) return null;
+    const afterTree = snapshotCloneTree(binding);
+    if (afterTree === null) return null;
+    const diff = readTreeRangeDiff(binding, beforeTree, afterTree);
+    try {
+      const path = this.turnDiffPath(thread.id, turnId);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, JSON.stringify(diff), { mode: 0o600 });
+    } catch {
+      // Best-effort turn diff cache write.
+    }
+    return diff;
+  }
+
+  readTurnDiff(owner: string, threadId: string, turnId?: string | null): DirectChatDiffSummary | null {
+    const thread = this.getThreadRecord(owner, threadId);
+    if (!thread) return null;
+    const turns = this.loadTurns(thread.id);
+    if (turns.length === 0) return { ...EMPTY_DIFF };
+
+    let target: DirectChatTurnRow | undefined;
+    if (turnId && HEX32.test(turnId)) {
+      target = turns.find(one => one.id === turnId);
+    } else {
+      target = turns.at(-1);
+    }
+    if (!target) return null;
+
+    if (target.status === "running") {
+      const beforeTree = this.preTurnTreeSha.get(target.id);
+      const binding = this.bindingOf(thread);
+      if (beforeTree && binding) {
+        const currentTree = snapshotCloneTree(binding);
+        if (currentTree) return readTreeRangeDiff(binding, beforeTree, currentTree);
+      }
+      return { ...EMPTY_DIFF };
+    }
+
+    const savedPath = this.turnDiffPath(thread.id, target.id);
+    if (existsSync(savedPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(savedPath, "utf8")) as Partial<DirectChatDiffSummary>;
+        return {
+          changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.filter((x): x is string => typeof x === "string") : [],
+          diffText: typeof parsed.diffText === "string" ? parsed.diffText : "",
+          dirty: parsed.dirty === true,
+        };
+      } catch {
+        // Fall through to fallback below.
+      }
+    }
+
+    if (turns.length === 1) {
+      return this.refreshDiffCache(thread);
+    }
+    return { ...EMPTY_DIFF };
   }
 
   getThreadRecord(owner: string, threadId: string): DirectChatThreadRow | null {
@@ -1338,6 +1453,8 @@ export class DirectChatHost {
     });
     const stamp = this.now().toISOString();
     const beforeImages = snapshotWorkspaceImages(thread.clonePath);
+    const bindingForTree = this.bindingOf(thread);
+    const beforeTree = bindingForTree ? snapshotCloneTree(bindingForTree) : null;
     const switchedFrom = this.pendingSwitchFrom.get(thread.id) ?? null;
 
     // Insert the turn row BEFORE spawning the child process so a DB failure can never leak an untracked process.
@@ -1380,6 +1497,9 @@ export class DirectChatHost {
 
     this.pendingSwitchFrom.delete(thread.id);
     this.preTurnImages.set(turnId, beforeImages);
+    if (beforeTree !== null) {
+      this.preTurnTreeSha.set(turnId, beforeTree);
+    }
 
     this.store.handle.prepare(`
       UPDATE direct_chat_turn SET pid = ?, start_identity = ?, pgid = ? WHERE id = ?
@@ -1556,6 +1676,7 @@ export class DirectChatHost {
           ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
           now: this.now(),
         });
+        this.captureTurnDiff(thread, turn.id);
         const freshDiff = this.refreshDiffCache(thread);
         this.notifyOwnerLeadThread(thread, turn.id, latest.status, latest.assistantText, latest.errorText, freshDiff, this.now());
         this.cleanupTurnState(turn.id);
@@ -1671,6 +1792,7 @@ export class DirectChatHost {
         `).run(stamp, turn.id);
         this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
       }
+      this.captureTurnDiff(thread, turn.id);
       const freshDiff = this.refreshDiffCache(thread);
       const settledLatest = this.reloadTurn(turn.id) ?? latestAfterDrain;
       if (settledLatest.status !== "running") {
@@ -1694,6 +1816,7 @@ export class DirectChatHost {
       ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
       now: this.now(),
     });
+    this.captureTurnDiff(thread, turn.id);
     const refreshedDiff = this.refreshDiffCache(thread);
 
     if (latest.status !== "running") {
@@ -1957,6 +2080,7 @@ export class DirectChatHost {
     this.sawTerminalByTurn.delete(turnId);
     this.resetOnNextTextDelta.delete(turnId);
     this.preTurnImages.delete(turnId);
+    this.preTurnTreeSha.delete(turnId);
   }
 
   private reloadTurn(turnId: string): DirectChatTurnRow | null {
