@@ -49,9 +49,10 @@ public final class PreviewServerManager {
 
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
-    /// What the person clicked Start for in this run of the app: this folder and exactly this command and script. Never
-    /// saved, so the next launch asks again; a changed script asks again.
-    private var startConsent: Set<StartConsent> = []
+    /// What the person just clicked Start for: this folder and exactly this command and script, for ONE start. Taken by
+    /// the next attempt whatever comes of it, and dropped when the server stops; never saved. A later restart (after an
+    /// idle sleep, a stop or a project switch) needs the click again.
+    private var startConsent: StartConsent?
     /// The command the Start button currently names, so the click consents to exactly what was shown.
     public private(set) var pendingStart: (projectRoot: String, command: DetectedDevCommand)?
 
@@ -120,6 +121,9 @@ public final class PreviewServerManager {
     }
 
     public func ensureRunning(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
+        // A click's consent is for the very next attempt only, whatever comes of it.
+        let consent = startConsent
+        startConsent = nil
         if activeProjectRoot == projectRoot, let url = activeURL {
             touchActivity()
             return url
@@ -167,7 +171,7 @@ public final class PreviewServerManager {
         }
 
         // Never on its own: only after the person clicked Start for exactly this command in this folder, this run.
-        guard startConsent.contains(StartConsent(projectRoot: projectRoot, command: detected)) else {
+        guard consent == StartConsent(projectRoot: projectRoot, command: detected) else {
             pendingStart = (projectRoot, detected)
             status = .needsStart(command: detected.startWords, folder: projectRoot)
             return nil
@@ -213,12 +217,12 @@ public final class PreviewServerManager {
         }
     }
 
-    /// The person clicked Start for the command the button named: allow exactly that command in that folder for the
-    /// rest of this run. Returns false when nothing is waiting to start.
+    /// The person clicked Start for the command the button named: allow exactly that command in that folder, once.
+    /// Returns false when nothing is waiting to start.
     @discardableResult
     public func consentToPendingStart() -> Bool {
         guard let pending = pendingStart else { return false }
-        startConsent.insert(StartConsent(projectRoot: pending.projectRoot, command: pending.command))
+        startConsent = StartConsent(projectRoot: pending.projectRoot, command: pending.command)
         return true
     }
 
@@ -297,6 +301,8 @@ public final class PreviewServerManager {
     }
 
     public func stopManagedServer() {
+        // A stopped server needs the click again: no consent outlives a stop or a project switch.
+        startConsent = nil
         idleSleepTask?.cancel()
         idleSleepTask = nil
         if let proc = process {

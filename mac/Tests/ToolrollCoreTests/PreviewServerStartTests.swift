@@ -7,7 +7,7 @@ import Testing
 struct PreviewServerStartTests {
     /// A project whose dev script names a port nothing listens on, with node_modules present: the only thing left
     /// between it and a started process is the person's click.
-    private func project(script: String) throws -> String {
+    func project(script: String) throws -> String {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("tr-preview-\(UUID().uuidString)").path
         try FileManager.default.createDirectory(atPath: "\(root)/node_modules", withIntermediateDirectories: true)
         try write(script: script, root: root)
@@ -68,5 +68,27 @@ struct PreviewServerStartTests {
         #expect(env["LANG"] == "en_GB.UTF-8")
         #expect(env["PATH"]?.hasSuffix(":/usr/bin:/bin") == true)
         #expect(env["BROWSER"] == "none")
+    }
+}
+
+extension PreviewServerStartTests {
+    @Test("A click covers one attempt: after a stop, or a switch away and back, the same command asks again")
+    func consentCoversOneStart() async throws {
+        let root = try project(script: "vite --port 59323")
+        let other = try project(script: "vite --port 59324")
+        defer { try? FileManager.default.removeItem(atPath: root); try? FileManager.default.removeItem(atPath: other) }
+        let manager = PreviewServerManager()
+        _ = await manager.ensureRunning(projectRoot: root)
+        #expect(manager.consentToPendingStart())
+        manager.stopManagedServer()
+        _ = await manager.ensureRunning(projectRoot: root)
+        #expect(!manager.managedByToolroll)
+        guard case .needsStart = manager.status else { Issue.record("expected needsStart, got \(manager.status)"); return }
+
+        #expect(manager.consentToPendingStart())
+        _ = await manager.ensureRunning(projectRoot: other)
+        _ = await manager.ensureRunning(projectRoot: root)
+        #expect(!manager.managedByToolroll)
+        guard case .needsStart = manager.status else { Issue.record("expected needsStart, got \(manager.status)"); return }
     }
 }
