@@ -69,6 +69,8 @@ describe("agent-requests", () => {
     expect(net.code).toBe(0);
     expect(net.body["ok"]).toBe(true);
     expect((net.body["request"] as Record<string, unknown>)["kind"]).toBe("network");
+    // The explicit change an approval applies to the setting then (never the full state beside it).
+    expect(((net.body["request"] as Record<string, unknown>)["params"] as Record<string, unknown>)["change"]).toEqual({ add: [], remove: [], local: "any" });
 
     const setup = await run("setup", ["set", "--repo", repo, "--command", "npm ci", "--request", "Need node_modules in fresh worktrees"]);
     expect(setup.code).toBe(0);

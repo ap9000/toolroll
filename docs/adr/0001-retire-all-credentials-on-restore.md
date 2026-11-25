@@ -1,6 +1,6 @@
 # Retire All Credentials Unconditionally on Backup Restore
 
-Restoring a Workspace from a backup keeps its permanent Workspace identity intact, advances its Recovery Generation, and unconditionally retires every restored credential — including browser sessions, remote TUI/CLI API tokens, OAuth grants, lead/coordinator credentials, and publication/intake grants — with zero exemptions.
+Restoring a Workspace from a backup keeps its permanent Workspace identity intact, advances its Recovery Generation, and unconditionally retires every restored credential — including browser sessions, remote TUI/CLI API tokens, OAuth grants, lead/coordinator credentials, publication/intake grants, and chat pairings with their pairing codes, rooms and buttons — with zero exemptions.
 
 ## Considered Options
 

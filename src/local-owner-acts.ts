@@ -11,7 +11,7 @@
 import type { Store } from "./store.js";
 import { PLAN_AGAIN_ACTIONS, planAgain, refArchived, requeueEligibility } from "./store.js";
 import { asLocalOwner, LOCAL_OWNER_LAPSED, localActNow, type LocalPrincipal } from "./local-owner.js";
-import { approve, approverStanding, localWorkEligible, personApprovalOf, type ApproveResult } from "./scope.js";
+import { agentChangeToolsUnchanged, approve, approverStanding, localWorkEligible, personApprovalOf, type ApproveResult } from "./scope.js";
 import { agentOnlyChange } from "./agent-change-check.js";
 import { agentChoicesFor, routeOfTask } from "./agentconfig.js";
 import { legOf, routeFromJson } from "./phase-routing.js";
@@ -285,6 +285,7 @@ export const TASK_RUNNING_NOW = "This task is running right now.";
 export const AGENTS_PICK_AGAIN = "The plan changed since you picked — pick again.";
 /** What an approved task's pick says when more than the picked agent changed since the approval: it waits for a yes. */
 export const AGENTS_DRIFTED = "Your model setup changed since you approved — approve again.";
+export const AGENTS_TOOLS_CHANGED = "The project's tools changed since you approved — approve again to use them.";
 /** The ledger act an applied change is kept under: the person, the role, the old and new agent, the digest sealed (or
  * null), what became of the approval, and how it came (now, or a pending pick applied when its run ended). */
 export const LOCAL_AGENT_CHANGE_ACTION = "task agents (local owner)";
@@ -389,7 +390,7 @@ function applyPickInside(store: Store, local: LocalPrincipal, taskId: string, pi
       : edited.reason === "unauthenticated" || edited.reason === "no-task" ? UNAVAILABLE
       : { ok: false, status: 400, message: edited.detail };
   }
-  let outcome: AgentChangeOutcome = "changed", sealed: string | null = null;
+  let outcome: AgentChangeOutcome = "changed", sealed: string | null = null, toolsMoved = false;
   if (edited.replanned) outcome = "replanned";
   else if (edited.staled) {
     const refiled = store.getScope(taskId);
@@ -400,6 +401,8 @@ function applyPickInside(store: Store, local: LocalPrincipal, taskId: string, pi
       provider => store.agentsFor([provider])[0]?.billing ?? null);
     if (!ownYes) outcome = "approve-again";
     else if (refiled === null || only === null || !only.ok || only.phase !== pick.phase) outcome = "drifted";
+    // The project's tools changed since that yes (or what it saw can't be read): carrying it over would approve them too.
+    else if (before.approvedDigest === null || !agentChangeToolsUnchanged(store, taskId, before.approvedDigest)) { outcome = "drifted"; toolsMoved = true; }
     else {
       const carried = approve(store, taskId, local.account, now, refiled.digest, "");
       if (!carried.ok) throw new Unpicked({ ok: false, status: 409, message: carryRefusalWords(carried) });
@@ -417,7 +420,7 @@ function applyPickInside(store: Store, local: LocalPrincipal, taskId: string, pi
   const words = outcome === "resealed" ? `${changed} Still approved.`
     : outcome === "replanned" ? `${changed} A new plan is coming; approve it when it's ready.`
     : outcome === "approve-again" ? `${changed} Approve it again to build with it.`
-    : outcome === "drifted" ? `${changed} ${AGENTS_DRIFTED}`
+    : outcome === "drifted" ? `${changed} ${toolsMoved ? AGENTS_TOOLS_CHANGED : AGENTS_DRIFTED}`
     : changed;
   return { ok: true, outcome, words, sealed };
 }
