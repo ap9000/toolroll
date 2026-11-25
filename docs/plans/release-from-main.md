@@ -147,3 +147,7 @@ Once 0.9.119 is deployed here, every later release is `toolroll release prepare 
 - The upgrade sample's cost on the owner's Mac isn't measured.
 - The legacy `toolroll release <branch>` still works unchanged; pointing it to the new way (plan slice 7) is left for
   when the branch journals are settled.
+- **Known limit of the build's cleanup:** the fenced build runs in its own process group and anything left in that
+  group fails the build, but a process that leaves the group itself (setsid/setpgid) isn't followed. The fence
+  denies it signals to other processes, network and writes outside the checkout, so such a process can only idle;
+  following descendants by session or parent is future work.
