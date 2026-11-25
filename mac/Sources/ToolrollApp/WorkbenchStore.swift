@@ -200,12 +200,25 @@ public final class WorkbenchStore {
     public private(set) var isRefreshingUsage: Bool = false
     public private(set) var lastUsageRefreshAt: Date? = nil
     private var didAutoRefreshUsage: Bool = false
-    public private(set) var chatThreads: [AgentChatThread] = AgentChatPersistence.load()
+    public private(set) var chatThreads: [AgentChatThread] = []
     public var selectedChatThreadId: String? = nil
     public private(set) var runningChatThreadIds: Set<String> = []
     public private(set) var chatThreadDiffs: [String: AgentChatGitDiff] = [:]
+    public private(set) var chatArtifactImages: [String: Data] = [:]
+    public private(set) var chatGitBindingErrors: [String: String] = [:]
+    public private(set) var directChatAvailable: Bool = true
+    public private(set) var directChatProblem: String? = nil
+    public private(set) var directChatBackgroundOn: Bool = false
     public var isChatDiffDrawerOpen: Bool = false
     public var isChatThreadsExpanded: Bool = true
+    public var chatDeleteConfirmationThread: AgentChatThread? = nil
+    public var isChatShipSheetOpen: Bool = false
+    public private(set) var chatShipThreadId: String? = nil
+    public private(set) var chatShipPreview: DirectChatShipPreview? = nil
+    public private(set) var isLoadingChatShipPreview: Bool = false
+    public private(set) var isExecutingChatShip: Bool = false
+    public var chatShipError: String? = nil
+    public var isFirstChatBackgroundPromptOpen: Bool = false
     public var composerFocusTick: Int = 0
     public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "lead" {
         didSet { UserDefaults.standard.set(preferredOrchestrationMode, forKey: "toolroll.orchestrationMode") }
@@ -217,8 +230,8 @@ public final class WorkbenchStore {
         didSet { UserDefaults.standard.set(defaultChatModelId, forKey: "toolroll.chatModelId") }
     }
     public var useLeadForNextChat: Bool = false
-    private var chatProcessHandles: [String: AgentChatProcessHandle] = [:]
-    private var chatSaveTask: Task<Void, Never>?
+    private var managedLocalEngineProcess: Process? = nil
+    private var directChatPollTask: Task<Void, Never>? = nil
     private var knownAgentRequestIds: Set<String> = []
     private var agentRequestPollTask: Task<Void, Never>?
     private static let passwordNudgeKey = "toolroll.passwordNudgeSnoozedUntil"
@@ -312,6 +325,7 @@ public final class WorkbenchStore {
             proc.standardOutput = FileHandle.nullDevice
             proc.standardError = FileHandle.nullDevice
             try proc.run()
+            managedLocalEngineProcess = proc
             for _ in 0..<12 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if await connectToLocalConsoleIfAvailable(silent: true) {
@@ -997,6 +1011,8 @@ public final class WorkbenchStore {
         if let thread = chatThreads.first(where: { $0.id == id }) {
             activeProject = thread.projectName
         }
+        restartSSE()
+        Task { await refreshDirectChatDetail(threadId: id) }
     }
 
     public func setDefaultChatModel(provider: AgentChatProvider, modelId: String) {
@@ -1005,191 +1021,584 @@ public final class WorkbenchStore {
         defaultChatModelId = modelId
     }
 
+    public func refreshDirectChats() async {
+        if activeProfile.isDemo {
+            directChatAvailable = true
+            directChatProblem = nil
+            directChatBackgroundOn = true
+            if chatThreads.isEmpty {
+                chatThreads = DemoFixtures.directChatThreads
+                chatThreadDiffs = DemoFixtures.directChatDiffs
+            }
+            runningChatThreadIds = Set(chatThreads.filter(\.running).map(\.id))
+            return
+        }
+        guard let client, isLocalSession else {
+            directChatAvailable = false
+            directChatProblem = "Direct chat is only available when connected to your local Toolroll install."
+            return
+        }
+        do {
+            let list = try await client.fetchDirectChats()
+            directChatAvailable = list.available
+            directChatProblem = list.problem
+            directChatBackgroundOn = list.backgroundOn
+            let existingById = Dictionary(uniqueKeysWithValues: chatThreads.map { ($0.id, $0) })
+            chatThreads = list.threads.map { AgentChatThread(summary: $0, preserving: existingById[$0.id]) }
+            runningChatThreadIds = Set(chatThreads.filter(\.running).map(\.id))
+            if let sel = selectedChatThreadId {
+                await refreshDirectChatDetail(threadId: sel)
+            }
+            ensureDirectChatPolling()
+        } catch {
+            // Keep existing cached list on transient network blip.
+        }
+    }
+
+    public func refreshDirectChatDetail(threadId: String) async {
+        if activeProfile.isDemo {
+            if let demoDiff = DemoFixtures.directChatDiffs[threadId], chatThreadDiffs[threadId] == nil {
+                chatThreadDiffs[threadId] = demoDiff
+            }
+            return
+        }
+        guard let client, isLocalSession else { return }
+        do {
+            let detail = try await client.fetchDirectChatDetail(threadId: threadId)
+            let updated = AgentChatThread(detail: detail)
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                chatThreads[idx] = updated
+            } else {
+                chatThreads.insert(updated, at: 0)
+            }
+            chatThreadDiffs[threadId] = AgentChatGitDiff(dto: detail.diff)
+            if updated.running {
+                runningChatThreadIds.insert(threadId)
+            } else {
+                runningChatThreadIds.remove(threadId)
+            }
+            ensureDirectChatPolling()
+        } catch {
+            // Non-fatal during SSE bursts.
+        }
+    }
+
+    private func ensureDirectChatPolling() {
+        let shouldPoll = !activeProfile.isDemo && isLocalSession && !runningChatThreadIds.isEmpty
+        if !shouldPoll {
+            directChatPollTask?.cancel()
+            directChatPollTask = nil
+            return
+        }
+        guard directChatPollTask == nil else { return }
+        directChatPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(700))
+                guard let self, !Task.isCancelled else { break }
+                if self.runningChatThreadIds.isEmpty { break }
+                if let sel = self.selectedChatThreadId, self.runningChatThreadIds.contains(sel) {
+                    await self.refreshDirectChatDetail(threadId: sel)
+                } else {
+                    await self.refreshDirectChats()
+                }
+            }
+            if let self {
+                self.directChatPollTask = nil
+            }
+        }
+    }
+
+    private func maybePromptBackgroundOnFirstChat() {
+        guard !activeProfile.isDemo, isLocalSession, !directChatBackgroundOn else { return }
+        let key = "toolroll.askedBackgroundOnFirstChatV1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        isFirstChatBackgroundPromptOpen = true
+    }
+
     public func startChatThread(
         prompt: String,
         project: String?,
         provider: AgentChatProvider? = nil,
-        modelId: String? = nil
+        modelId: String? = nil,
+        attachments: [ComposerAttachment] = []
     ) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         let chosenProvider = provider ?? defaultChatProvider
         let chosenModel = modelId ?? (provider == nil ? defaultChatModelId : chosenProvider.defaultModelId)
         let projName = project ?? activeProject ?? selectedProject ?? allProjects.first ?? "Workspace"
-        let projPath = localFolderPath(for: projName)
-            ?? terminalsResponse?.projects?.first(where: { $0.name.caseInsensitiveCompare(projName) == .orderedSame })?.path
-            ?? FileManager.default.homeDirectoryForCurrentUser.path
-        let firstLine = trimmed.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
-        let title = String(firstLine.prefix(64))
 
-        let thread = AgentChatThread(
-            title: title,
-            projectName: projName,
-            projectPath: projPath,
-            provider: chosenProvider,
-            modelId: chosenModel
-        )
-        chatThreads.insert(thread, at: 0)
-        AgentChatPersistence.save(chatThreads)
-        selectChatThread(thread.id)
-        await sendChatMessage(threadId: thread.id, text: trimmed)
+        if activeProfile.isDemo {
+            let newId = DirectChatDateParser.makeHex32RequestId()
+            let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
+            let thread = AgentChatThread(
+                id: newId,
+                title: String(composed.title.prefix(64)),
+                projectName: projName,
+                branch: "toolroll/chat-\(newId.prefix(8))",
+                provider: chosenProvider,
+                modelId: chosenModel,
+                messages: [
+                    AgentChatMessage(role: .user, text: composed.combinedMessage),
+                    AgentChatMessage(
+                        role: .assistant,
+                        text: "Demo mode: in a live local Toolroll install, this starts an isolated local git clone (`toolroll/chat-\(newId.prefix(8))`) and streams \(chosenProvider.displayName) over SSE.",
+                        tools: [AgentChatToolEvent(name: "Clone", detail: "isolated local repo", status: "done")]
+                    ),
+                ]
+            )
+            chatThreads.insert(thread, at: 0)
+            selectChatThread(thread.id)
+            return
+        }
+
+        guard let client, isLocalSession else {
+            notice = WorkbenchNotice(kind: .refusal, message: directChatProblem ?? "Connect to your local Toolroll engine to start a chat.")
+            return
+        }
+
+        let resolvedProject = localFolderPath(for: projName)
+            ?? projectsRead?.projects.first(where: { $0.name.caseInsensitiveCompare(projName) == .orderedSame })?.path
+            ?? terminalsResponse?.projects?.first(where: { $0.name.caseInsensitiveCompare(projName) == .orderedSame })?.path
+            ?? projName
+
+        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
+        let initialPrompt = composed.combinedMessage.isEmpty ? trimmed : composed.combinedMessage
+
+        busyLabel = "Preparing isolated workspace…"
+        defer { busyLabel = nil }
+
+        do {
+            let started = try await client.startDirectChat(
+                project: resolvedProject,
+                prompt: initialPrompt,
+                provider: chosenProvider,
+                modelId: chosenModel
+            )
+            guard started.ok, let threadId = started.threadId else {
+                notice = WorkbenchNotice(kind: .refusal, message: started.error ?? "Could not start chat.")
+                return
+            }
+            await uploadImageAttachments(attachments, to: threadId, client: client)
+            await refreshDirectChats()
+            selectChatThread(threadId)
+            maybePromptBackgroundOnFirstChat()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
     }
 
-    public func sendChatMessage(threadId: String, text: String) async {
+    public func sendChatMessage(threadId: String, text: String, attachments: [ComposerAttachment] = []) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let idx = chatThreads.firstIndex(where: { $0.id == threadId }),
+        guard !trimmed.isEmpty || !attachments.isEmpty,
               !runningChatThreadIds.contains(threadId)
         else { return }
 
-        let userMsg = AgentChatMessage(role: .user, text: trimmed)
-        let assistantMsg = AgentChatMessage(role: .assistant, text: "", isStreaming: true)
-        chatThreads[idx].messages.append(userMsg)
-        chatThreads[idx].messages.append(assistantMsg)
-        chatThreads[idx].updatedAt = Date()
-        let assistantId = assistantMsg.id
-        let provider = chatThreads[idx].provider
-        let modelId = chatThreads[idx].modelId
-        let projectPath = chatThreads[idx].projectPath
-        let sessionId = chatThreads[idx].sessionId
-        AgentChatPersistence.save(chatThreads)
-
-        runningChatThreadIds.insert(threadId)
-        let handle = AgentChatProcessHandle()
-        chatProcessHandles[threadId] = handle
-
-        let stream = AgentChatRunner.streamTurn(
-            provider: provider,
-            modelId: modelId,
-            projectPath: projectPath,
-            prompt: trimmed,
-            sessionId: sessionId,
-            handle: handle
-        )
-
-        for await event in stream {
-            guard let tIdx = chatThreads.firstIndex(where: { $0.id == threadId }),
-                  let mIdx = chatThreads[tIdx].messages.firstIndex(where: { $0.id == assistantId })
-            else { break }
-
-            switch event {
-            case .sessionId(let sid):
-                chatThreads[tIdx].sessionId = sid
-                scheduleChatPersistence(immediate: true)
-            case .textDelta(let delta):
-                chatThreads[tIdx].messages[mIdx].text += delta
-                chatThreads[tIdx].updatedAt = Date()
-                scheduleChatPersistence()
-            case .textReplace(let full):
-                chatThreads[tIdx].messages[mIdx].text = full
-                chatThreads[tIdx].updatedAt = Date()
-                scheduleChatPersistence()
-            case .tool(let toolEvent):
-                if let existing = chatThreads[tIdx].messages[mIdx].tools.firstIndex(where: { $0.id == toolEvent.id }) {
-                    chatThreads[tIdx].messages[mIdx].tools[existing] = toolEvent
-                } else {
-                    chatThreads[tIdx].messages[mIdx].tools.append(toolEvent)
-                }
-                chatThreads[tIdx].updatedAt = Date()
-                scheduleChatPersistence()
-            case .toolStatus(let toolId, let status):
-                if let existing = chatThreads[tIdx].messages[mIdx].tools.firstIndex(where: { $0.id == toolId }) {
-                    chatThreads[tIdx].messages[mIdx].tools[existing].status = status
-                    chatThreads[tIdx].updatedAt = Date()
-                    scheduleChatPersistence()
-                }
-            case .completed:
-                chatThreads[tIdx].messages[mIdx].isStreaming = false
-                for i in chatThreads[tIdx].messages[mIdx].tools.indices {
-                    if chatThreads[tIdx].messages[mIdx].tools[i].status == "running" {
-                        chatThreads[tIdx].messages[mIdx].tools[i].status = "done"
-                    }
-                }
-                chatThreads[tIdx].updatedAt = Date()
-                scheduleChatPersistence(immediate: true)
-            case .failed(let message):
-                chatThreads[tIdx].messages[mIdx].isStreaming = false
-                chatThreads[tIdx].messages[mIdx].isError = true
-                if chatThreads[tIdx].messages[mIdx].text.isEmpty {
-                    chatThreads[tIdx].messages[mIdx].text = message
-                } else {
-                    chatThreads[tIdx].messages[mIdx].text += "\n\n\(message)"
-                }
-                chatThreads[tIdx].updatedAt = Date()
-                scheduleChatPersistence(immediate: true)
-            }
-        }
-
-        if let tIdx = chatThreads.firstIndex(where: { $0.id == threadId }),
-           let mIdx = chatThreads[tIdx].messages.firstIndex(where: { $0.id == assistantId })
-        {
-            chatThreads[tIdx].messages[mIdx].isStreaming = false
-        }
-        runningChatThreadIds.remove(threadId)
-        chatProcessHandles.removeValue(forKey: threadId)
-        chatThreads.sort { $0.updatedAt > $1.updatedAt }
-        scheduleChatPersistence(immediate: true)
-        await refreshChatDiff(threadId: threadId)
-    }
-
-    private func scheduleChatPersistence(immediate: Bool = false) {
-        if immediate {
-            chatSaveTask?.cancel()
-            chatSaveTask = nil
-            AgentChatPersistence.save(chatThreads)
+        if activeProfile.isDemo {
+            guard let idx = chatThreads.firstIndex(where: { $0.id == threadId }) else { return }
+            let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
+            chatThreads[idx].messages.append(AgentChatMessage(role: .user, text: composed.combinedMessage))
+            chatThreads[idx].messages.append(AgentChatMessage(
+                role: .assistant,
+                text: "Demo reply recorded in isolated clone `\(chatThreads[idx].branch)`."
+            ))
+            chatThreads[idx].updatedAt = Date()
             return
         }
-        guard chatSaveTask == nil else { return }
-        chatSaveTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(400))
-            guard let self, !Task.isCancelled else { return }
-            self.chatSaveTask = nil
-            AgentChatPersistence.save(self.chatThreads)
+
+        guard let client, isLocalSession else {
+            notice = WorkbenchNotice(kind: .refusal, message: "Connect to your local Toolroll engine to send a message.")
+            return
+        }
+
+        // Upload image attachments directly into the isolated clone (`.toolroll-attachments/`)
+        // so sandboxed Codex & Gemini can inspect them inside their working tree.
+        let uploadedPaths = await uploadImageAttachments(attachments, to: threadId, client: client)
+        let nonImageAttachments = attachments.filter { $0.kind != .image }
+        var promptParts: [String] = []
+        if !trimmed.isEmpty { promptParts.append(trimmed) }
+        if !uploadedPaths.isEmpty {
+            promptParts.append("Attached images in this workspace:\n" + uploadedPaths.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        if !nonImageAttachments.isEmpty {
+            promptParts.append(ComposerAttachmentStore.formatContextBlock(for: nonImageAttachments))
+        }
+        let finalPrompt = promptParts.joined(separator: "\n\n")
+        guard !finalPrompt.isEmpty else { return }
+
+        do {
+            let reply = try await client.sendDirectChatMessage(threadId: threadId, prompt: finalPrompt)
+            if !reply.ok {
+                let err = reply.error ?? "Could not send message."
+                recordChatGitErrorIfRelevant(threadId: threadId, error: err)
+                notice = WorkbenchNotice(kind: .refusal, message: err)
+                return
+            }
+            runningChatThreadIds.insert(threadId)
+            await refreshDirectChatDetail(threadId: threadId)
+            ensureDirectChatPolling()
+        } catch {
+            recordChatGitErrorIfRelevant(threadId: threadId, error: error.localizedDescription)
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    private func uploadImageAttachments(
+        _ attachments: [ComposerAttachment],
+        to threadId: String,
+        client: ToolrollClient
+    ) async -> [String] {
+        var clonePaths: [String] = []
+        for item in attachments where item.kind == .image {
+            guard let bytes = try? Data(contentsOf: URL(fileURLWithPath: item.path)), !bytes.isEmpty else { continue }
+            let ext = URL(fileURLWithPath: item.path).pathExtension.lowercased()
+            let mime: String? = switch ext {
+            case "png": "image/png"
+            case "jpg", "jpeg": "image/jpeg"
+            case "webp": "image/webp"
+            case "gif": "image/gif"
+            default: nil
+            }
+            let filename = URL(fileURLWithPath: item.path).lastPathComponent
+            if let res = try? await client.attachDirectChatFile(
+                threadId: threadId,
+                filename: filename,
+                mimeType: mime,
+                data: bytes
+            ), res.ok {
+                if let rel = res.cloneRelativePath, !rel.isEmpty {
+                    clonePaths.append(rel)
+                }
+            }
+        }
+        return clonePaths
+    }
+
+    private func recordChatGitErrorIfRelevant(threadId: String, error: String) {
+        let lower = error.lowercased()
+        if lower.contains("repair") || lower.contains("config changed") || lower.contains("commondir") || lower.contains(".git pointer") {
+            chatGitBindingErrors[threadId] = error
         }
     }
 
     public func stopChatThread(threadId: String) {
-        chatProcessHandles[threadId]?.stop()
+        if activeProfile.isDemo {
+            runningChatThreadIds.remove(threadId)
+            return
+        }
+        guard let client, isLocalSession else { return }
+        Task {
+            do {
+                let res = try await client.stopDirectChat(threadId: threadId)
+                if !res.ok, let err = res.error {
+                    notice = WorkbenchNotice(kind: .refusal, message: err)
+                } else if let said = res.said {
+                    notice = WorkbenchNotice(kind: .info, message: said)
+                }
+                await refreshDirectChatDetail(threadId: threadId)
+            } catch {
+                notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            }
+        }
+    }
+
+    public func stopAllRunningChatsAndWait() async {
+        guard let client, isLocalSession else { return }
+        let ids = Array(runningChatThreadIds)
+        for id in ids {
+            _ = try? await client.stopDirectChat(threadId: id)
+        }
+        for _ in 0..<10 {
+            await refreshDirectChats()
+            if runningChatThreadIds.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
     }
 
     public func updateChatThreadModel(threadId: String, provider: AgentChatProvider, modelId: String) {
-        guard let idx = chatThreads.firstIndex(where: { $0.id == threadId }) else { return }
-        if chatThreads[idx].provider != provider {
-            chatThreads[idx].sessionId = nil
-        }
-        chatThreads[idx].provider = provider
-        chatThreads[idx].modelId = modelId
         setDefaultChatModel(provider: provider, modelId: modelId)
-        AgentChatPersistence.save(chatThreads)
+        if activeProfile.isDemo {
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                chatThreads[idx].provider = provider
+                chatThreads[idx].modelId = modelId
+                chatThreads[idx].posture = DirectChatPosture.defaultFor(provider)
+            }
+            return
+        }
+        guard let client, isLocalSession else { return }
+        Task {
+            do {
+                let res = try await client.updateDirectChatModel(threadId: threadId, provider: provider, modelId: modelId)
+                if !res.ok {
+                    notice = WorkbenchNotice(kind: .refusal, message: res.error ?? "Could not switch model.")
+                    return
+                }
+                await refreshDirectChatDetail(threadId: threadId)
+            } catch {
+                notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            }
+        }
     }
 
-    public func deleteChatThread(id: String) {
-        stopChatThread(threadId: id)
-        chatThreads.removeAll { $0.id == id }
-        chatThreadDiffs.removeValue(forKey: id)
-        if selectedChatThreadId == id {
-            selectedChatThreadId = nil
+    public func deleteChatThread(id: String, discardChanges: Bool = false, keepBranch: Bool = false) {
+        if activeProfile.isDemo {
+            chatThreads.removeAll { $0.id == id }
+            chatThreadDiffs.removeValue(forKey: id)
+            chatDeleteConfirmationThread = nil
+            if selectedChatThreadId == id { selectedChatThreadId = nil }
+            return
         }
-        AgentChatPersistence.save(chatThreads)
+        guard let client, isLocalSession else { return }
+        Task {
+            do {
+                let res = try await client.deleteDirectChat(threadId: id, discard: discardChanges, keepBranch: keepBranch)
+                if !res.ok {
+                    if res.code == "unmerged_changes", let thread = chatThreads.first(where: { $0.id == id }) {
+                        chatDeleteConfirmationThread = thread
+                        return
+                    }
+                    notice = WorkbenchNotice(kind: .refusal, message: res.error ?? "Could not delete chat.")
+                    return
+                }
+                chatDeleteConfirmationThread = nil
+                chatThreads.removeAll { $0.id == id }
+                chatThreadDiffs.removeValue(forKey: id)
+                chatGitBindingErrors.removeValue(forKey: id)
+                runningChatThreadIds.remove(id)
+                if selectedChatThreadId == id {
+                    selectedChatThreadId = nil
+                    restartSSE()
+                }
+            } catch {
+                notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+            }
+        }
     }
 
     public func refreshChatDiff(threadId: String) async {
-        guard let thread = chatThreads.first(where: { $0.id == threadId }) else { return }
-        let diff = await AgentChatRunner.fetchGitDiff(projectPath: thread.projectPath)
-        chatThreadDiffs[threadId] = diff
+        await refreshDirectChatDetail(threadId: threadId)
+    }
+
+    public func applyMainEditsToChat(threadId: String) async {
+        if activeProfile.isDemo {
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                chatThreads[idx].mainDirtyFiles = []
+            }
+            notice = WorkbenchNotice(kind: .info, message: "Brought uncommitted changes into this chat's clone (demo).")
+            return
+        }
+        guard let client, isLocalSession else { return }
+        do {
+            let res = try await client.applyMainEditsToDirectChat(threadId: threadId)
+            if !res.ok {
+                let err = res.error ?? "Could not bring in uncommitted edits."
+                recordChatGitErrorIfRelevant(threadId: threadId, error: err)
+                notice = WorkbenchNotice(kind: .refusal, message: err)
+                return
+            }
+            chatGitBindingErrors.removeValue(forKey: threadId)
+            notice = WorkbenchNotice(kind: .info, message: res.said ?? "Brought uncommitted changes into this chat.")
+            await refreshDirectChatDetail(threadId: threadId)
+        } catch {
+            recordChatGitErrorIfRelevant(threadId: threadId, error: error.localizedDescription)
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func dismissMainDirtyNotice(threadId: String) {
+        if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+            chatThreads[idx].mainDirtyFiles = []
+        }
+    }
+
+    public func repairChatGitBinding(threadId: String) async {
+        guard let client, isLocalSession else { return }
+        do {
+            let res = try await client.repairDirectChatGit(threadId: threadId)
+            if !res.ok {
+                notice = WorkbenchNotice(kind: .refusal, message: res.error ?? "Could not repair workspace git binding.")
+                return
+            }
+            chatGitBindingErrors.removeValue(forKey: threadId)
+            notice = WorkbenchNotice(kind: .info, message: res.said ?? "Workspace git binding repaired.")
+            await refreshDirectChatDetail(threadId: threadId)
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func openChatShipSheet(threadId: String) async {
+        chatShipThreadId = threadId
+        chatShipError = nil
+        chatShipPreview = nil
+        isChatShipSheetOpen = true
+        await reloadChatShipPreview(mode: nil, title: nil, goal: nil)
+    }
+
+    public func reloadChatShipPreview(mode: String?, title: String?, goal: String?) async {
+        guard let threadId = chatShipThreadId else { return }
+        isLoadingChatShipPreview = true
+        chatShipError = nil
+        defer { isLoadingChatShipPreview = false }
+
+        if activeProfile.isDemo {
+            let thread = chatThreads.first(where: { $0.id == threadId })
+            let files = chatThreadDiffs[threadId]?.changedFiles ?? ["AgentChatView.swift"]
+            let chosenMode = mode ?? "ship"
+            chatShipPreview = DirectChatShipPreview(
+                threadId: threadId,
+                mode: chosenMode,
+                canAutoMerge: true,
+                autoMergeReason: nil,
+                termsDigest: DirectChatDateParser.makeHex32RequestId(),
+                title: title ?? thread?.title ?? "Changes from Direct Chat",
+                goal: goal ?? "Ship verified changes from Direct Chat.",
+                baseSha: "19c35fa4",
+                branch: chosenMode == "keep-branch" ? "\(thread?.branch ?? "toolroll/chat-demo")-1" : (thread?.branch ?? "toolroll/chat-demo"),
+                changedFiles: files,
+                checkCommand: "npm test",
+                githubRepo: "acme/toolroll",
+                githubBase: "main",
+                mergeSummary: chosenMode == "ship"
+                    ? "Freezes a snapshot commit, runs npm test, opens a PR into acme/toolroll (main), and merges automatically once checks pass on this exact commit."
+                    : "Freezes a snapshot commit and saves local branch without pushing."
+            )
+            return
+        }
+
+        guard let client, isLocalSession else {
+            chatShipError = "Connect to your local Toolroll engine to ship."
+            return
+        }
+        do {
+            let preview = try await client.previewDirectChatShip(
+                threadId: threadId,
+                mode: mode,
+                title: title,
+                goal: goal
+            )
+            chatShipPreview = preview
+            chatGitBindingErrors.removeValue(forKey: threadId)
+        } catch {
+            recordChatGitErrorIfRelevant(threadId: threadId, error: error.localizedDescription)
+            chatShipError = error.localizedDescription
+        }
+    }
+
+    public func executeChatShip(mode: String, title: String, goal: String, password: String) async -> Bool {
+        guard let threadId = chatShipThreadId, let preview = chatShipPreview else { return false }
+        isExecutingChatShip = true
+        chatShipError = nil
+        defer { isExecutingChatShip = false }
+
+        if activeProfile.isDemo {
+            let ship = DirectChatShipSummary(
+                id: preview.termsDigest,
+                seq: 1,
+                mode: mode,
+                branch: preview.branch,
+                candidateSha: "f4a8c912deadbeef",
+                state: mode == "ship" ? "armed" : "kept",
+                taskId: mode == "ship" ? "dc-\(preview.termsDigest.prefix(8))" : nil,
+                prUrl: nil,
+                detail: nil,
+                createdAt: ISO8601DateFormatter().string(from: Date()),
+                stateAt: ISO8601DateFormatter().string(from: Date())
+            )
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }) {
+                chatThreads[idx].ships.insert(ship, at: 0)
+            }
+            isChatShipSheetOpen = false
+            notice = WorkbenchNotice(kind: .info, message: mode == "ship" ? "Shipped snapshot — verifying checks (demo)." : "Saved branch \(preview.branch) (demo).")
+            return true
+        }
+
+        guard let client, isLocalSession else {
+            chatShipError = "Connect to your local Toolroll engine to ship."
+            return false
+        }
+        let pw = effectivePassword(password)
+        do {
+            let res = try await client.executeDirectChatShip(
+                threadId: threadId,
+                mode: mode,
+                termsDigest: preview.termsDigest,
+                title: title,
+                goal: goal,
+                password: pw.isEmpty ? nil : pw
+            )
+            if !res.ok {
+                if res.code == "terms_changed" {
+                    await reloadChatShipPreview(mode: mode, title: title, goal: goal)
+                    chatShipError = res.error ?? "Changes occurred since this preview. Review the updated terms and press Ship again."
+                    return false
+                }
+                let err = res.error ?? "Could not ship chat."
+                recordChatGitErrorIfRelevant(threadId: threadId, error: err)
+                chatShipError = err
+                return false
+            }
+            isChatShipSheetOpen = false
+            notice = WorkbenchNotice(kind: .info, message: res.said ?? "Shipped.")
+            await refreshDirectChatDetail(threadId: threadId)
+            if let rows = try? await client.fetchWorkRows() {
+                workRowsResponse = rows
+            }
+            return true
+        } catch {
+            recordChatGitErrorIfRelevant(threadId: threadId, error: error.localizedDescription)
+            chatShipError = error.localizedDescription
+            return false
+        }
+    }
+
+    public func cancelChatShip(threadId: String, shipId: String) async {
+        if activeProfile.isDemo {
+            if let idx = chatThreads.firstIndex(where: { $0.id == threadId }),
+               let sIdx = chatThreads[idx].ships.firstIndex(where: { $0.id == shipId }) {
+                let s = chatThreads[idx].ships[sIdx]
+                chatThreads[idx].ships[sIdx] = DirectChatShipSummary(
+                    id: s.id, seq: s.seq, mode: s.mode, branch: s.branch, candidateSha: s.candidateSha,
+                    state: "cancelled", taskId: s.taskId, prUrl: s.prUrl, detail: "Cancelled by owner.",
+                    createdAt: s.createdAt, stateAt: ISO8601DateFormatter().string(from: Date())
+                )
+            }
+            return
+        }
+        guard let client, isLocalSession else { return }
+        do {
+            let res = try await client.cancelDirectChatShip(threadId: threadId, shipId: shipId)
+            if !res.ok {
+                notice = WorkbenchNotice(kind: .refusal, message: res.error ?? "Could not cancel Ship.")
+                return
+            }
+            notice = WorkbenchNotice(kind: .info, message: res.said ?? "Auto-merge cancelled.")
+            await refreshDirectChatDetail(threadId: threadId)
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func loadDirectChatArtifactData(for artifact: DirectChatArtifact) async -> Data? {
+        if let cached = chatArtifactImages[artifact.url] {
+            return cached
+        }
+        if activeProfile.isDemo {
+            chatArtifactImages[artifact.url] = DemoFixtures.demoArtifactPngData
+            return DemoFixtures.demoArtifactPngData
+        }
+        guard let client, isLocalSession else { return nil }
+        if let bytes = try? await client.fetchDirectChatArtifactData(urlPath: artifact.url), !bytes.isEmpty {
+            chatArtifactImages[artifact.url] = bytes
+            return bytes
+        }
+        return nil
     }
 
     public func promoteChatToTask(threadId: String) async {
-        guard let thread = chatThreads.first(where: { $0.id == threadId }) else { return }
-        let summaryLines = thread.messages.suffix(6).map { msg in
-            "\(msg.role == .user ? "User" : thread.provider.displayName): \(String(msg.text.prefix(400)))"
-        }.joined(separator: "\n\n")
-        await createTask(
-            title: thread.title,
-            project: thread.projectName,
-            body: "Ship and verify work started in Chat (\(thread.provider.displayName) · \(thread.modelId)):\n\n\(summaryLines)",
-            planFirst: true
-        )
+        await openChatShipSheet(threadId: threadId)
     }
 
     public func refreshLocalDiscovery() {
@@ -1866,6 +2275,7 @@ public final class WorkbenchStore {
             )
             presence = DemoFixtures.presence
             if leadChat.messages.isEmpty { leadChat = DemoFixtures.leadChat }
+            await refreshDirectChats()
             sseConnected = true
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
@@ -1893,6 +2303,7 @@ public final class WorkbenchStore {
             automations = try? await client.fetchAutomations()
             projectsRead = try? await client.fetchProjects()
             if let archived = try? await archivedReq { archivedRows = archived.rows }
+            await refreshDirectChats()
 
             if let id = selectedTaskId {
                 await loadSelectedTaskDetails(taskId: id)
@@ -3015,9 +3426,30 @@ public final class WorkbenchStore {
     public func setBackgroundServiceEnabled(_ enabled: Bool) async -> (ok: Bool, message: String) {
         isUpdatingBackgroundService = true
         defer { isUpdatingBackgroundService = false }
+        // Safe launchd handoff: if this app spawned its own foreground `up --laptop` child,
+        // stop it and wait for exit BEFORE calling `toolroll background on --json` so launchd
+        // never hits `running-elsewhere`. Detached Direct Chat turns survive the swap seamlessly.
+        if enabled, let child = managedLocalEngineProcess, child.isRunning {
+            child.terminate()
+            for _ in 0..<20 {
+                if !child.isRunning { break }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            managedLocalEngineProcess = nil
+        }
         let res = await BackgroundServiceBridge.setEnabled(enabled, databasePath: resolvedLocalDatabasePath)
         await refreshBackgroundServiceStatus()
         if res.ok {
+            directChatBackgroundOn = enabled
+            if enabled {
+                for _ in 0..<10 {
+                    if await connectToLocalConsoleIfAvailable(silent: true) {
+                        await refreshDirectChats()
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(400))
+                }
+            }
             notice = WorkbenchNotice(kind: .info, message: res.message)
         }
         return res
@@ -3112,6 +3544,9 @@ public final class WorkbenchStore {
         if let taskId = selectedTaskId {
             rooms.append("task:\(taskId)")
         }
+        if let chatId = selectedChatThreadId {
+            rooms.append("direct-chat:\(chatId)")
+        }
         if activeProfile.isDemo {
             sseTask?.cancel()
             sseTask = nil
@@ -3159,6 +3594,9 @@ public final class WorkbenchStore {
                     leadBusyPollTask?.cancel()
                 }
             }
+        } else if room.hasPrefix("direct-chat:") {
+            let chatId = String(room.dropFirst("direct-chat:".count))
+            await refreshDirectChatDetail(threadId: chatId)
         } else if room.hasPrefix("task:") {
             let taskId = String(room.dropFirst(5))
             if taskId == selectedTaskId {

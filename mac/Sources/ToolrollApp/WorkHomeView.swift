@@ -924,8 +924,9 @@ struct WorkHomeView: View {
 
     private func submitQuickPrompt() {
         let raw = store.workDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty || !store.workDraftAttachments.isEmpty else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: raw, attachments: store.workDraftAttachments)
+        let attachments = store.workDraftAttachments
+        guard !raw.isEmpty || !attachments.isEmpty else { return }
+        let composed = ComposerAttachmentStore.composeSubmission(text: raw, attachments: attachments)
         store.workDraftText = ""
         store.workDraftAttachments = []
         let targetProject = activeProject
@@ -945,7 +946,7 @@ struct WorkHomeView: View {
             }
         case .chat:
             Task {
-                await store.startChatThread(prompt: composed.combinedMessage, project: targetProject)
+                await store.startChatThread(prompt: raw, project: targetProject, attachments: attachments)
             }
         }
     }

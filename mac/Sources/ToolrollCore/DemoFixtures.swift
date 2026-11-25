@@ -337,4 +337,86 @@ public enum DemoFixtures {
             ),
         ]
     )
+
+    // Tiny valid 1x1 emerald PNG used for Demo Mode artifact gallery preview.
+    public static let demoArtifactPngData: Data = Data(
+        base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAGklEQVR42mP8z8DwnwEPYMQqzsDAwDBqIwAAA2kC/U32MuoAAAAASUVORK5CYII="
+    ) ?? Data()
+
+    public static let demoDirectChatId = "a1b2c3d4e5f64789abcd0123456789ab"
+
+    public static let directChatThreads: [AgentChatThread] = [
+        AgentChatThread(
+            id: demoDirectChatId,
+            title: "Polish dark-mode diff header spacing",
+            projectName: "toolroll",
+            branch: "toolroll/chat-a1b2c3d4",
+            provider: .claude,
+            modelId: "opus",
+            posture: DirectChatPosture.defaultFor(.claude),
+            running: false,
+            lastStatus: "completed",
+            changedFilesCount: 2,
+            mainDirtyFiles: ["README.md"],
+            messages: [
+                AgentChatMessage(
+                    id: "demo-turn-1-user",
+                    role: .user,
+                    text: "Tighten the diff header padding and capture a screenshot of the updated view.",
+                    timestamp: Date().addingTimeInterval(-420)
+                ),
+                AgentChatMessage(
+                    id: "demo-turn-1-assistant",
+                    role: .assistant,
+                    text: "Tightened the diff header padding from `14pt` to `10pt` in `AgentChatView.swift` and aligned the file badge baseline with the branch pill. All changes are ready in your isolated clone `toolroll/chat-a1b2c3d4` — click **Ship** whenever you want Toolroll to verify checks and merge.",
+                    tools: [
+                        AgentChatToolEvent(id: "dt-1", ordinal: 1, name: "Read", detail: "ToolrollApp/AgentChatView.swift", status: "done"),
+                        AgentChatToolEvent(id: "dt-2", ordinal: 2, name: "Edit", detail: "ToolrollApp/AgentChatView.swift", status: "done"),
+                        AgentChatToolEvent(id: "dt-3", ordinal: 3, name: "Run", detail: "swift test --filter ToolrollCoreTests", status: "done"),
+                    ],
+                    artifacts: [
+                        DirectChatArtifact(
+                            id: "b2c3d4e5f64789abcd0123456789abcd",
+                            kind: "output",
+                            filename: "diff-header-preview.png",
+                            mimeType: "image/png",
+                            byteSize: 89,
+                            url: "/engine/direct-chats/\(demoDirectChatId)/artifacts/b2c3d4e5f64789abcd0123456789abcd",
+                            sourcePath: "screenshots/diff-header-preview.png",
+                            createdAt: "2026-11-24T20:00:00.000Z"
+                        ),
+                    ],
+                    timestamp: Date().addingTimeInterval(-360)
+                ),
+            ],
+            attachments: [],
+            ships: [],
+            createdAt: Date().addingTimeInterval(-420),
+            updatedAt: Date().addingTimeInterval(-360)
+        ),
+    ]
+
+    public static let directChatDiffs: [String: AgentChatGitDiff] = [
+        demoDirectChatId: AgentChatGitDiff(
+            changedFiles: [
+                "mac/Sources/ToolrollApp/AgentChatView.swift",
+                "mac/Sources/ToolrollApp/Theme.swift",
+            ],
+            diffText: """
+            diff --git a/mac/Sources/ToolrollApp/AgentChatView.swift b/mac/Sources/ToolrollApp/AgentChatView.swift
+            index 291a4bc..7f1d90a 100644
+            --- a/mac/Sources/ToolrollApp/AgentChatView.swift
+            +++ b/mac/Sources/ToolrollApp/AgentChatView.swift
+            @@ -96,7 +96,7 @@ public struct AgentChatView: View {
+                 private var diffPreviewDrawer: some View {
+                     VStack(alignment: .leading, spacing: 8) {
+                         HStack(spacing: 8) {
+            -                Text("Working tree changes (\\(gitDiff.changedFiles.count))")
+            +                Text("Isolated clone changes (\\(gitDiff.changedFiles.count))")
+                                 .font(.system(size: 11.5, weight: .semibold))
+                                 .foregroundStyle(ToolrollPalette.ink)
+            """,
+            dirty: true
+        ),
+    ]
 }

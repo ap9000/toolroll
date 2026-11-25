@@ -678,8 +678,8 @@ public struct InboxSidebarView: View {
 
     private func chatThreadRow(_ thread: AgentChatThread) -> some View {
         let isSelected = store.selectedChatThreadId == thread.id
-        let isRunning = store.runningChatThreadIds.contains(thread.id)
-        let changedCount = store.chatThreadDiffs[thread.id]?.changedFiles.count ?? 0
+        let isRunning = store.runningChatThreadIds.contains(thread.id) || thread.running
+        let changedCount = max(thread.changedFilesCount, store.chatThreadDiffs[thread.id]?.changedFiles.count ?? 0)
 
         return Button {
             store.selectChatThread(thread.id)
@@ -731,8 +731,8 @@ public struct InboxSidebarView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .contextMenu {
-            Button("Ship as Toolroll Task") {
-                Task { await store.promoteChatToTask(threadId: thread.id) }
+            Button("Ship Snapshot…") {
+                Task { await store.openChatShipSheet(threadId: thread.id) }
             }
             Divider()
             Button("Delete Chat", role: .destructive) {

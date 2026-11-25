@@ -376,6 +376,281 @@ public actor ToolrollClient {
         return try await send(try makeRequest(path: path), as: LeadChatResponse.self)
     }
 
+    // MARK: - Server-Backed Direct Chat (/engine/direct-chats)
+
+    private func sendDirectChatForm<T: Decodable>(
+        path: String,
+        fields: [(String, String)],
+        as type: T.Type,
+        timeoutInterval: TimeInterval = 30
+    ) async throws -> T {
+        try await renewingStaleSession {
+            guard case .localSession(let s) = transport else {
+                throw ToolrollClientError.refused("Direct chat is only available on your local Toolroll install.")
+            }
+            let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
+            var req = try makeRequest(
+                path: path,
+                method: "POST",
+                body: Data(formBody.utf8),
+                contentType: "application/x-www-form-urlencoded",
+                accept: "application/json",
+                includeMutationKey: true
+            )
+            req.timeoutInterval = timeoutInterval
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 {
+                throw ToolrollClientError.unauthenticated
+            }
+            // Many Direct Chat endpoints return structured `{ ok: false, error, code }` even on 400/403/404/409.
+            if let decoded = try? decoder.decode(T.self, from: data) {
+                return decoded
+            }
+            if !(200...299).contains(http.statusCode) {
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let msg = (obj?["error"] as? String)
+                    ?? (obj?["words"] as? String)
+                    ?? (obj?["message"] as? String)
+                    ?? ""
+                if http.statusCode == 403 || http.statusCode == 409 {
+                    throw Self.refusal(msg.isEmpty ? "Action refused (\(http.statusCode))." : msg)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, msg)
+            }
+            do {
+                return try decoder.decode(T.self, from: data)
+            } catch {
+                let preview = String(data: data.prefix(240), encoding: .utf8) ?? "<binary>"
+                throw ToolrollClientError.decoding("\(String(describing: error)) | body: \(preview)")
+            }
+        }
+    }
+
+    public func fetchDirectChats(project: String? = nil) async throws -> DirectChatsListResponse {
+        try await renewingStaleSession {
+            let path: String
+            if let project, !project.isEmpty,
+               let enc = project.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                path = "/engine/direct-chats?project=\(enc)"
+            } else {
+                path = "/engine/direct-chats"
+            }
+            let req = try makeRequest(path: path)
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            if let decoded = try? decoder.decode(DirectChatsListResponse.self, from: data) {
+                return decoded
+            }
+            throw ToolrollClientError.httpStatus(http.statusCode, "Could not load direct chats.")
+        }
+    }
+
+    public func fetchDirectChatDetail(threadId: String) async throws -> DirectChatDetailResponse {
+        try await renewingStaleSession {
+            let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+            return try await send(try makeRequest(path: "/engine/direct-chats/\(enc)"), as: DirectChatDetailResponse.self)
+        }
+    }
+
+    public func startDirectChat(
+        project: String,
+        prompt: String,
+        provider: AgentChatProvider,
+        modelId: String,
+        requestId: String = DirectChatDateParser.makeHex32RequestId()
+    ) async throws -> DirectChatStartedResponse {
+        try await sendDirectChatForm(
+            path: "/engine/direct-chats",
+            fields: [
+                ("project", project),
+                ("prompt", prompt),
+                ("provider", provider.rawValue),
+                ("model", modelId),
+                ("request", requestId),
+            ],
+            as: DirectChatStartedResponse.self,
+            timeoutInterval: 60
+        )
+    }
+
+    public func sendDirectChatMessage(
+        threadId: String,
+        prompt: String,
+        requestId: String = DirectChatDateParser.makeHex32RequestId()
+    ) async throws -> DirectChatStartedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/messages",
+            fields: [("prompt", prompt), ("request", requestId)],
+            as: DirectChatStartedResponse.self
+        )
+    }
+
+    public func stopDirectChat(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/stop",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func updateDirectChatModel(
+        threadId: String,
+        provider: AgentChatProvider,
+        modelId: String
+    ) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/model",
+            fields: [("provider", provider.rawValue), ("model", modelId)],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func deleteDirectChat(
+        threadId: String,
+        discard: Bool = false,
+        keepBranch: Bool = false
+    ) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = []
+        if discard { fields.append(("discard", "1")) }
+        if keepBranch { fields.append(("keepBranch", "1")) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/delete",
+            fields: fields,
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func attachDirectChatFile(
+        threadId: String,
+        filename: String,
+        mimeType: String?,
+        data: Data
+    ) async throws -> DirectChatAttachedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [
+            ("filename", filename),
+            ("dataBase64", data.base64EncodedString()),
+        ]
+        if let mimeType, !mimeType.isEmpty {
+            fields.append(("mimeType", mimeType))
+        }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/attachments",
+            fields: fields,
+            as: DirectChatAttachedResponse.self,
+            timeoutInterval: 45
+        )
+    }
+
+    public func applyMainEditsToDirectChat(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/apply-main-edits",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func repairDirectChatGit(threadId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/repair",
+            fields: [],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func previewDirectChatShip(
+        threadId: String,
+        mode: String? = nil,
+        title: String? = nil,
+        goal: String? = nil
+    ) async throws -> DirectChatShipPreview {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = []
+        if let mode, !mode.isEmpty { fields.append(("mode", mode)) }
+        if let title, !title.isEmpty { fields.append(("title", title)) }
+        if let goal, !goal.isEmpty { fields.append(("goal", goal)) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship-preview",
+            fields: fields,
+            as: DirectChatShipPreview.self
+        )
+    }
+
+    public func executeDirectChatShip(
+        threadId: String,
+        mode: String,
+        termsDigest: String,
+        title: String? = nil,
+        goal: String? = nil,
+        password: String? = nil
+    ) async throws -> DirectChatShippedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        var fields: [(String, String)] = [
+            ("mode", mode),
+            ("termsDigest", termsDigest),
+        ]
+        if let title, !title.isEmpty { fields.append(("title", title)) }
+        if let goal, !goal.isEmpty { fields.append(("goal", goal)) }
+        if let password, !password.isEmpty { fields.append(("password", password)) }
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship",
+            fields: fields,
+            as: DirectChatShippedResponse.self,
+            timeoutInterval: 45
+        )
+    }
+
+    public func cancelDirectChatShip(threadId: String, shipId: String) async throws -> DirectChatMutatedResponse {
+        let enc = threadId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? threadId
+        return try await sendDirectChatForm(
+            path: "/engine/direct-chats/\(enc)/ship-cancel",
+            fields: [("shipId", shipId)],
+            as: DirectChatMutatedResponse.self
+        )
+    }
+
+    public func fetchDirectChatArtifactData(urlPath: String) async throws -> Data {
+        try await renewingStaleSession {
+            let req = try makeRequest(path: urlPath, accept: "*/*")
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            guard (200...299).contains(http.statusCode) else {
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not load artifact.")
+            }
+            return data
+        }
+    }
+
     public func fetchAgents() async throws -> AgentsReadResponse {
         try await send(try makeRequest(path: "/engine/agents"), as: AgentsReadResponse.self)
     }

@@ -165,4 +165,57 @@ struct ClientRequestTests {
         }
         #expect(server.requests.count == 1)
     }
+
+    @Test("Direct Chat client routes send CSRF + x-toolroll-key form payloads and decode structured 409 codes")
+    func directChatClientRequests() async throws {
+        let tid = String(repeating: "a", count: 32)
+        let reqId = String(repeating: "b", count: 32)
+        let digest = String(repeating: "c", count: 32)
+        let server = StubServer { request, _ in
+            switch request.path {
+            case "/engine/direct-chats":
+                if request.method == "GET" {
+                    return .json(200, #"{"version":1,"available":true,"problem":null,"backgroundOn":true,"threads":[]}"#)
+                }
+                return .json(200, #"{"ok":true,"threadId":"\#(tid)","turnId":"\#(reqId)","room":"direct-chat:\#(tid)"}"#)
+            case "/engine/direct-chats/\(tid)/delete":
+                return .json(409, #"{"ok":false,"error":"This chat has unmerged changes.","code":"unmerged_changes"}"#)
+            case "/engine/direct-chats/\(tid)/repair":
+                return .json(200, #"{"ok":true,"said":"Workspace git binding repaired."}"#)
+            case "/engine/direct-chats/\(tid)/ship-preview":
+                return .json(200, """
+                {"version":1,"threadId":"\(tid)","mode":"ship","canAutoMerge":true,"autoMergeReason":null,
+                 "termsDigest":"\(digest)","title":"Fix","goal":"Goal","baseSha":"12345678","branch":"toolroll/chat-aaaaaaaa",
+                 "changedFiles":["README.md"],"checkCommand":"npm test","githubRepo":"acme/app","githubBase":"main","mergeSummary":"Auto merges."}
+                """)
+            default:
+                return .json(200, #"{"ok":true,"said":"Done."}"#)
+            }
+        }
+        let (client, _) = client(server)
+
+        let list = try await client.fetchDirectChats()
+        #expect(list.available == true)
+        #expect(list.backgroundOn == true)
+
+        let started = try await client.startDirectChat(project: "/repo", prompt: "Hi", provider: .claude, modelId: "opus", requestId: reqId)
+        #expect(started.ok == true)
+        #expect(started.threadId == tid)
+        expectFormAct(server.requests[1], path: "/engine/direct-chats", fields: [
+            ("project", "/repo"), ("prompt", "Hi"), ("provider", "claude"), ("model", "opus"), ("request", reqId),
+        ])
+
+        let del = try await client.deleteDirectChat(threadId: tid)
+        #expect(del.ok == false)
+        #expect(del.code == "unmerged_changes")
+
+        let repaired = try await client.repairDirectChatGit(threadId: tid)
+        #expect(repaired.ok == true)
+        expectFormAct(server.requests[3], path: "/engine/direct-chats/\(tid)/repair", fields: [])
+
+        let preview = try await client.previewDirectChatShip(threadId: tid, mode: "ship")
+        #expect(preview.termsDigest == digest)
+        #expect(preview.canAutoMerge == true)
+        expectFormAct(server.requests[4], path: "/engine/direct-chats/\(tid)/ship-preview", fields: [("mode", "ship")])
+    }
 }

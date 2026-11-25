@@ -59,19 +59,402 @@ public enum AgentChatProvider: String, Codable, CaseIterable, Identifiable, Send
     }
 }
 
+public struct DirectChatPosture: Codable, Equatable, Sendable {
+    public let summary: String
+    public let detail: String
+    public let sandboxed: Bool
+
+    public init(summary: String, detail: String, sandboxed: Bool) {
+        self.summary = summary
+        self.detail = detail
+        self.sandboxed = sandboxed
+    }
+
+    public static func defaultFor(_ provider: AgentChatProvider) -> DirectChatPosture {
+        switch provider {
+        case .claude:
+            return DirectChatPosture(
+                summary: "Runs commands without asking",
+                detail: "Uses Claude auto mode inside this chat's isolated clone (no OS sandbox).",
+                sandboxed: false
+            )
+        case .codex:
+            return DirectChatPosture(
+                summary: "Runs commands without asking",
+                detail: "Uses Codex workspace-write sandbox inside this chat's isolated clone.",
+                sandboxed: true
+            )
+        case .gemini:
+            return DirectChatPosture(
+                summary: "Runs commands without asking",
+                detail: "Uses Antigravity auto mode with sandbox inside this chat's isolated clone.",
+                sandboxed: true
+            )
+        }
+    }
+}
+
 public struct AgentChatToolEvent: Codable, Equatable, Identifiable, Sendable {
     public let id: String
+    public let ordinal: Int?
     public let name: String
     public let detail: String
     public var status: String
+    public let updatedAt: String?
 
-    public init(id: String = UUID().uuidString, name: String, detail: String, status: String = "done") {
+    public init(
+        id: String = UUID().uuidString,
+        ordinal: Int? = nil,
+        name: String,
+        detail: String,
+        status: String = "done",
+        updatedAt: String? = nil
+    ) {
         self.id = id
+        self.ordinal = ordinal
         self.name = name
         self.detail = detail
         self.status = status
+        self.updatedAt = updatedAt
     }
 }
+
+public struct DirectChatArtifact: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let kind: String
+    public let filename: String
+    public let mimeType: String
+    public let byteSize: Int
+    public let url: String
+    public let sourcePath: String?
+    public let createdAt: String
+
+    public init(
+        id: String,
+        kind: String,
+        filename: String,
+        mimeType: String,
+        byteSize: Int,
+        url: String,
+        sourcePath: String? = nil,
+        createdAt: String
+    ) {
+        self.id = id
+        self.kind = kind
+        self.filename = filename
+        self.mimeType = mimeType
+        self.byteSize = byteSize
+        self.url = url
+        self.sourcePath = sourcePath
+        self.createdAt = createdAt
+    }
+
+    public var isImage: Bool {
+        mimeType.lowercased().hasPrefix("image/")
+    }
+}
+
+public struct DirectChatShipSummary: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let seq: Int
+    public let mode: String
+    public let branch: String
+    public let candidateSha: String
+    public let state: String
+    public let taskId: String?
+    public let prUrl: String?
+    public let detail: String?
+    public let createdAt: String
+    public let stateAt: String
+
+    public init(
+        id: String,
+        seq: Int,
+        mode: String,
+        branch: String,
+        candidateSha: String,
+        state: String,
+        taskId: String? = nil,
+        prUrl: String? = nil,
+        detail: String? = nil,
+        createdAt: String,
+        stateAt: String
+    ) {
+        self.id = id
+        self.seq = seq
+        self.mode = mode
+        self.branch = branch
+        self.candidateSha = candidateSha
+        self.state = state
+        self.taskId = taskId
+        self.prUrl = prUrl
+        self.detail = detail
+        self.createdAt = createdAt
+        self.stateAt = stateAt
+    }
+
+    public var canCancel: Bool {
+        state == "armed" || state == "completed"
+    }
+
+    public var shortSha: String {
+        String(candidateSha.prefix(8))
+    }
+
+    public var statusLabel: String {
+        switch state {
+        case "kept": return "Saved branch"
+        case "imported": return "Imported"
+        case "armed": return "Verifying checks"
+        case "completed": return "Checks passed — opening PR"
+        case "merging": return "Merging PR"
+        case "merged": return "Merged"
+        case "cancelled": return "Cancelled"
+        case "failed": return "Failed"
+        default: return state.capitalized
+        }
+    }
+}
+
+public struct DirectChatTurnDTO: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let seq: Int
+    public let userPrompt: String
+    public let switchedFromProvider: AgentChatProvider?
+    public let status: String
+    public let assistantText: String
+    public let errorText: String?
+    public let createdAt: String
+    public let finishedAt: String?
+    public let tools: [AgentChatToolEvent]
+    public let artifacts: [DirectChatArtifact]
+
+    public init(
+        id: String,
+        seq: Int,
+        userPrompt: String,
+        switchedFromProvider: AgentChatProvider? = nil,
+        status: String,
+        assistantText: String,
+        errorText: String? = nil,
+        createdAt: String,
+        finishedAt: String? = nil,
+        tools: [AgentChatToolEvent] = [],
+        artifacts: [DirectChatArtifact] = []
+    ) {
+        self.id = id
+        self.seq = seq
+        self.userPrompt = userPrompt
+        self.switchedFromProvider = switchedFromProvider
+        self.status = status
+        self.assistantText = assistantText
+        self.errorText = errorText
+        self.createdAt = createdAt
+        self.finishedAt = finishedAt
+        self.tools = tools
+        self.artifacts = artifacts
+    }
+}
+
+public struct DirectChatSummaryDTO: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    public let project: String
+    public let branch: String
+    public let provider: AgentChatProvider
+    public let modelId: String
+    public let posture: DirectChatPosture
+    public let running: Bool
+    public let lastStatus: String?
+    public let changedFilesCount: Int
+    public let mainDirtyFiles: [String]
+    public let createdAt: String
+    public let updatedAt: String
+
+    public init(
+        id: String,
+        title: String,
+        project: String,
+        branch: String,
+        provider: AgentChatProvider,
+        modelId: String,
+        posture: DirectChatPosture,
+        running: Bool,
+        lastStatus: String? = nil,
+        changedFilesCount: Int = 0,
+        mainDirtyFiles: [String] = [],
+        createdAt: String,
+        updatedAt: String
+    ) {
+        self.id = id
+        self.title = title
+        self.project = project
+        self.branch = branch
+        self.provider = provider
+        self.modelId = modelId
+        self.posture = posture
+        self.running = running
+        self.lastStatus = lastStatus
+        self.changedFilesCount = changedFilesCount
+        self.mainDirtyFiles = mainDirtyFiles
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct DirectChatDiffDTO: Codable, Equatable, Sendable {
+    public let changedFiles: [String]
+    public let diffText: String
+    public let dirty: Bool
+
+    public init(changedFiles: [String] = [], diffText: String = "", dirty: Bool = false) {
+        self.changedFiles = changedFiles
+        self.diffText = diffText
+        self.dirty = dirty
+    }
+}
+
+public struct DirectChatsListResponse: Codable, Equatable, Sendable {
+    public let version: Int
+    public let available: Bool
+    public let problem: String?
+    public let backgroundOn: Bool
+    public let threads: [DirectChatSummaryDTO]
+
+    public init(
+        version: Int = 1,
+        available: Bool = true,
+        problem: String? = nil,
+        backgroundOn: Bool = false,
+        threads: [DirectChatSummaryDTO] = []
+    ) {
+        self.version = version
+        self.available = available
+        self.problem = problem
+        self.backgroundOn = backgroundOn
+        self.threads = threads
+    }
+}
+
+public struct DirectChatDetailResponse: Codable, Equatable, Sendable {
+    public let version: Int
+    public let room: String
+    public let thread: DirectChatSummaryDTO
+    public let turns: [DirectChatTurnDTO]
+    public let attachments: [DirectChatArtifact]
+    public let ships: [DirectChatShipSummary]
+    public let diff: DirectChatDiffDTO
+
+    public init(
+        version: Int = 1,
+        room: String,
+        thread: DirectChatSummaryDTO,
+        turns: [DirectChatTurnDTO] = [],
+        attachments: [DirectChatArtifact] = [],
+        ships: [DirectChatShipSummary] = [],
+        diff: DirectChatDiffDTO = DirectChatDiffDTO()
+    ) {
+        self.version = version
+        self.room = room
+        self.thread = thread
+        self.turns = turns
+        self.attachments = attachments
+        self.ships = ships
+        self.diff = diff
+    }
+}
+
+public struct DirectChatStartedResponse: Codable, Equatable, Sendable {
+    public let ok: Bool
+    public let threadId: String?
+    public let turnId: String?
+    public let room: String?
+    public let error: String?
+    public let code: String?
+}
+
+public struct DirectChatMutatedResponse: Codable, Equatable, Sendable {
+    public let ok: Bool
+    public let said: String?
+    public let error: String?
+    public let code: String?
+
+    public init(ok: Bool, said: String? = nil, error: String? = nil, code: String? = nil) {
+        self.ok = ok
+        self.said = said
+        self.error = error
+        self.code = code
+    }
+}
+
+public struct DirectChatShipPreview: Codable, Equatable, Sendable {
+    public let version: Int
+    public let threadId: String
+    public let mode: String
+    public let canAutoMerge: Bool
+    public let autoMergeReason: String?
+    public let termsDigest: String
+    public let title: String
+    public let goal: String
+    public let baseSha: String
+    public let branch: String
+    public let changedFiles: [String]
+    public let checkCommand: String?
+    public let githubRepo: String?
+    public let githubBase: String?
+    public let mergeSummary: String
+
+    public init(
+        version: Int = 1,
+        threadId: String,
+        mode: String,
+        canAutoMerge: Bool,
+        autoMergeReason: String? = nil,
+        termsDigest: String,
+        title: String,
+        goal: String,
+        baseSha: String,
+        branch: String,
+        changedFiles: [String],
+        checkCommand: String? = nil,
+        githubRepo: String? = nil,
+        githubBase: String? = nil,
+        mergeSummary: String
+    ) {
+        self.version = version
+        self.threadId = threadId
+        self.mode = mode
+        self.canAutoMerge = canAutoMerge
+        self.autoMergeReason = autoMergeReason
+        self.termsDigest = termsDigest
+        self.title = title
+        self.goal = goal
+        self.baseSha = baseSha
+        self.branch = branch
+        self.changedFiles = changedFiles
+        self.checkCommand = checkCommand
+        self.githubRepo = githubRepo
+        self.githubBase = githubBase
+        self.mergeSummary = mergeSummary
+    }
+}
+
+public struct DirectChatShippedResponse: Codable, Equatable, Sendable {
+    public let ok: Bool
+    public let ship: DirectChatShipSummary?
+    public let said: String?
+    public let error: String?
+    public let code: String?
+}
+
+public struct DirectChatAttachedResponse: Codable, Equatable, Sendable {
+    public let ok: Bool
+    public let artifact: DirectChatArtifact?
+    public let cloneRelativePath: String?
+    public let error: String?
+}
+
+// MARK: - View Models (Derived from Server DTOs)
 
 public enum AgentChatRole: String, Codable, Sendable {
     case user
@@ -83,64 +466,151 @@ public struct AgentChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let role: AgentChatRole
     public var text: String
     public var tools: [AgentChatToolEvent]
+    public var artifacts: [DirectChatArtifact]
+    public var switchedFromProvider: AgentChatProvider?
     public let timestamp: Date
     public var isStreaming: Bool
     public var isError: Bool
+    public var status: String
 
     public init(
         id: String = UUID().uuidString,
         role: AgentChatRole,
         text: String,
         tools: [AgentChatToolEvent] = [],
+        artifacts: [DirectChatArtifact] = [],
+        switchedFromProvider: AgentChatProvider? = nil,
         timestamp: Date = Date(),
         isStreaming: Bool = false,
-        isError: Bool = false
+        isError: Bool = false,
+        status: String = "completed"
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.tools = tools
+        self.artifacts = artifacts
+        self.switchedFromProvider = switchedFromProvider
         self.timestamp = timestamp
         self.isStreaming = isStreaming
         self.isError = isError
+        self.status = status
     }
 }
 
-public struct AgentChatThread: Codable, Equatable, Identifiable, Sendable {
+public struct AgentChatGitDiff: Equatable, Sendable {
+    public let changedFiles: [String]
+    public let diffText: String
+    public let dirty: Bool
+
+    public init(changedFiles: [String] = [], diffText: String = "", dirty: Bool = false) {
+        self.changedFiles = changedFiles
+        self.diffText = diffText
+        self.dirty = dirty
+    }
+
+    public init(dto: DirectChatDiffDTO) {
+        self.changedFiles = dto.changedFiles
+        self.diffText = dto.diffText
+        self.dirty = dto.dirty
+    }
+
+    public var isEmpty: Bool { changedFiles.isEmpty && diffText.isEmpty && !dirty }
+}
+
+public struct AgentChatThread: Equatable, Identifiable, Sendable {
     public let id: String
     public var title: String
     public let projectName: String
-    public let projectPath: String
+    public let branch: String
     public var provider: AgentChatProvider
     public var modelId: String
-    public var sessionId: String?
+    public var posture: DirectChatPosture
+    public var running: Bool
+    public var lastStatus: String?
+    public var changedFilesCount: Int
+    public var mainDirtyFiles: [String]
     public var messages: [AgentChatMessage]
+    public var attachments: [DirectChatArtifact]
+    public var ships: [DirectChatShipSummary]
     public let createdAt: Date
     public var updatedAt: Date
 
     public init(
-        id: String = UUID().uuidString,
+        id: String,
         title: String,
         projectName: String,
-        projectPath: String,
+        branch: String = "",
         provider: AgentChatProvider,
         modelId: String? = nil,
-        sessionId: String? = nil,
+        posture: DirectChatPosture? = nil,
+        running: Bool = false,
+        lastStatus: String? = nil,
+        changedFilesCount: Int = 0,
+        mainDirtyFiles: [String] = [],
         messages: [AgentChatMessage] = [],
+        attachments: [DirectChatArtifact] = [],
+        ships: [DirectChatShipSummary] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.title = title
         self.projectName = projectName
-        self.projectPath = projectPath
+        self.branch = branch
         self.provider = provider
         self.modelId = modelId ?? provider.defaultModelId
-        self.sessionId = sessionId
+        self.posture = posture ?? DirectChatPosture.defaultFor(provider)
+        self.running = running
+        self.lastStatus = lastStatus
+        self.changedFilesCount = changedFilesCount
+        self.mainDirtyFiles = mainDirtyFiles
         self.messages = messages
+        self.attachments = attachments
+        self.ships = ships
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    public init(summary: DirectChatSummaryDTO, preserving existing: AgentChatThread? = nil) {
+        self.id = summary.id
+        self.title = summary.title
+        self.projectName = summary.project
+        self.branch = summary.branch
+        self.provider = summary.provider
+        self.modelId = summary.modelId
+        self.posture = summary.posture
+        self.running = summary.running
+        self.lastStatus = summary.lastStatus
+        self.changedFilesCount = summary.changedFilesCount
+        self.mainDirtyFiles = summary.mainDirtyFiles
+        self.messages = existing?.messages ?? []
+        self.attachments = existing?.attachments ?? []
+        self.ships = existing?.ships ?? []
+        self.createdAt = DirectChatDateParser.parse(summary.createdAt) ?? existing?.createdAt ?? Date()
+        self.updatedAt = DirectChatDateParser.parse(summary.updatedAt) ?? existing?.updatedAt ?? Date()
+    }
+
+    public init(detail: DirectChatDetailResponse) {
+        self.id = detail.thread.id
+        self.title = detail.thread.title
+        self.projectName = detail.thread.project
+        self.branch = detail.thread.branch
+        self.provider = detail.thread.provider
+        self.modelId = detail.thread.modelId
+        self.posture = detail.thread.posture
+        self.running = detail.thread.running
+        self.lastStatus = detail.thread.lastStatus
+        self.changedFilesCount = max(detail.thread.changedFilesCount, detail.diff.changedFiles.count)
+        self.mainDirtyFiles = detail.thread.mainDirtyFiles
+        self.messages = Self.messagesFromTurns(detail.turns)
+        self.attachments = detail.attachments
+        self.ships = detail.ships
+        self.createdAt = DirectChatDateParser.parse(detail.thread.createdAt) ?? Date()
+        self.updatedAt = DirectChatDateParser.parse(detail.thread.updatedAt) ?? Date()
+    }
+
+    public var room: String { "direct-chat:\(id)" }
 
     public var relativeAge: String {
         let secs = max(0, Int(Date().timeIntervalSince(updatedAt)))
@@ -149,789 +619,65 @@ public struct AgentChatThread: Codable, Equatable, Identifiable, Sendable {
         if secs < 86_400 { return "\(secs / 3600)h" }
         return "\(secs / 86_400)d"
     }
-}
 
-public struct AgentChatGitDiff: Equatable, Sendable {
-    public let changedFiles: [String]
-    public let diffText: String
-
-    public init(changedFiles: [String] = [], diffText: String = "") {
-        self.changedFiles = changedFiles
-        self.diffText = diffText
-    }
-
-    public var isEmpty: Bool { changedFiles.isEmpty }
-}
-
-public enum AgentChatStreamEvent: Equatable, Sendable {
-    case sessionId(String)
-    case textDelta(String)
-    case textReplace(String)
-    case tool(AgentChatToolEvent)
-    case toolStatus(id: String, status: String)
-    case completed
-    case failed(String)
-}
-
-public enum AgentChatStreamParser {
-    public static func parse(line: String, provider: AgentChatProvider) -> [AgentChatStreamEvent] {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let data = trimmed.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return []
-        }
-
-        switch provider {
-        case .claude:
-            return parseClaude(json)
-        case .codex:
-            return parseCodex(json)
-        case .gemini:
-            return parseGemini(json)
-        }
-    }
-
-    private static func parseClaude(_ json: [String: Any]) -> [AgentChatStreamEvent] {
-        var events: [AgentChatStreamEvent] = []
-        if let sid = json["session_id"] as? String, !sid.isEmpty {
-            events.append(.sessionId(sid))
-        }
-        let type = json["type"] as? String ?? ""
-        if type == "assistant",
-           let message = json["message"] as? [String: Any],
-           let content = message["content"] as? [[String: Any]]
-        {
-            var textParts: [String] = []
-            for block in content {
-                let bType = block["type"] as? String ?? ""
-                if bType == "text", let text = block["text"] as? String, !text.isEmpty {
-                    textParts.append(text)
-                } else if bType == "tool_use" {
-                    let name = block["name"] as? String ?? "Tool"
-                    let input = block["input"] as? [String: Any]
-                    let detail = summarizeToolInput(name: name, input: input)
-                    let id = block["id"] as? String ?? UUID().uuidString
-                    events.append(.tool(AgentChatToolEvent(id: id, name: name, detail: detail, status: "running")))
-                }
-            }
-            if !textParts.isEmpty {
-                events.append(.textReplace(textParts.joined(separator: "\n")))
-            }
-        } else if type == "user",
-                  let message = json["message"] as? [String: Any],
-                  let content = message["content"] as? [[String: Any]]
-        {
-            for block in content {
-                if (block["type"] as? String) == "tool_result",
-                   let toolId = block["tool_use_id"] as? String,
-                   !toolId.isEmpty
-                {
-                    let isError = (block["is_error"] as? Bool) == true
-                    events.append(.toolStatus(id: toolId, status: isError ? "error" : "done"))
-                }
-            }
-        } else if type == "result" {
-            let isError = (json["is_error"] as? Bool) == true
-            if let resultText = json["result"] as? String, !resultText.isEmpty {
-                if isError {
-                    events.append(.failed(resultText))
+    public static func messagesFromTurns(_ turns: [DirectChatTurnDTO]) -> [AgentChatMessage] {
+        var out: [AgentChatMessage] = []
+        out.reserveCapacity(turns.count * 2)
+        for turn in turns {
+            let created = DirectChatDateParser.parse(turn.createdAt) ?? Date()
+            let finished = turn.finishedAt.flatMap(DirectChatDateParser.parse) ?? created
+            out.append(AgentChatMessage(
+                id: "\(turn.id)-user",
+                role: .user,
+                text: turn.userPrompt,
+                switchedFromProvider: turn.switchedFromProvider,
+                timestamp: created,
+                isStreaming: false,
+                isError: false,
+                status: turn.status
+            ))
+            let isRunning = turn.status == "running"
+            let isError = turn.status == "failed" || (turn.status == "interrupted" && turn.assistantText.isEmpty && (turn.errorText?.isEmpty == false))
+            let displayText: String
+            if !turn.assistantText.isEmpty {
+                if let err = turn.errorText, !err.isEmpty, turn.status == "failed" {
+                    displayText = "\(turn.assistantText)\n\n\(err)"
                 } else {
-                    events.append(.textReplace(resultText))
-                    events.append(.completed)
+                    displayText = turn.assistantText
                 }
-            } else if isError {
-                events.append(.failed("Claude returned an error."))
+            } else if let err = turn.errorText, !err.isEmpty {
+                displayText = err
             } else {
-                events.append(.completed)
+                displayText = ""
             }
+            out.append(AgentChatMessage(
+                id: "\(turn.id)-assistant",
+                role: .assistant,
+                text: displayText,
+                tools: turn.tools,
+                artifacts: turn.artifacts,
+                switchedFromProvider: turn.switchedFromProvider,
+                timestamp: finished,
+                isStreaming: isRunning,
+                isError: isError,
+                status: turn.status
+            ))
         }
-        return events
-    }
-
-    private static func parseCodex(_ json: [String: Any]) -> [AgentChatStreamEvent] {
-        var events: [AgentChatStreamEvent] = []
-        let type = json["type"] as? String ?? ""
-        if type == "thread.started", let tid = json["thread_id"] as? String, !tid.isEmpty {
-            events.append(.sessionId(tid))
-        } else if type == "item.completed" || type == "item.started",
-                  let item = json["item"] as? [String: Any]
-        {
-            let itemType = item["type"] as? String ?? ""
-            let itemId = item["id"] as? String ?? UUID().uuidString
-            if itemType == "agent_message", let text = item["text"] as? String, !text.isEmpty {
-                events.append(.textReplace(text))
-            } else if itemType == "command_execution" {
-                let cmd = item["command"] as? String ?? "shell"
-                let status = (type == "item.completed") ? "done" : "running"
-                events.append(.tool(AgentChatToolEvent(id: itemId, name: "Shell", detail: cmd, status: status)))
-            } else if itemType == "file_change" {
-                let changes = (item["changes"] as? [[String: Any]]) ?? []
-                let paths = changes.compactMap { $0["path"] as? String }.prefix(3).joined(separator: ", ")
-                events.append(.tool(AgentChatToolEvent(id: itemId, name: "Edit", detail: paths.isEmpty ? "Updated files" : paths, status: "done")))
-            } else if itemType == "mcp_tool_call" {
-                let tool = item["tool"] as? String ?? "Tool"
-                events.append(.tool(AgentChatToolEvent(id: itemId, name: tool, detail: item["server"] as? String ?? "", status: type == "item.completed" ? "done" : "running")))
-            }
-        } else if type == "turn.completed" {
-            events.append(.completed)
-        } else if type == "turn.failed" || type == "error" {
-            let errObj = json["error"] as? [String: Any]
-            let msg = (errObj?["message"] as? String) ?? (json["message"] as? String) ?? "Codex turn failed."
-            events.append(.failed(msg))
-        }
-        return events
-    }
-
-    private static func parseGemini(_ json: [String: Any]) -> [AgentChatStreamEvent] {
-        var events: [AgentChatStreamEvent] = []
-        if let cid = json["conversation_id"] as? String, !cid.isEmpty {
-            events.append(.sessionId(cid))
-        }
-        let event = json["event"] as? String ?? ""
-        if event == "step_update", let step = json["step_update"] as? [String: Any] {
-            let stepType = step["step_type"] as? String ?? ""
-            let state = (step["state"] as? String ?? "").uppercased()
-            if stepType == "agent_response", let delta = step["text_delta"] as? String, !delta.isEmpty {
-                events.append(.textDelta(delta))
-            } else if stepType == "tool" {
-                let idx = step["step_index"] as? Int ?? 0
-                let toolInfo = step["tool_info"] as? [String: Any]
-                let rawName = (step["tool_name"] as? String)
-                    ?? (toolInfo?["name"] as? String)
-                    ?? "Tool"
-                let params = toolInfo?["parameters"] as? [String: Any]
-                let status: String
-                if state == "DONE" {
-                    status = "done"
-                } else if state == "ERROR" {
-                    status = "error"
-                } else {
-                    status = "running"
-                }
-                let friendly = friendlyToolName(rawName)
-                let detail = summarizeToolInput(name: rawName, input: params)
-                events.append(.tool(AgentChatToolEvent(id: "agy-\(idx)", name: friendly, detail: detail, status: status)))
-            }
-        } else if event == "result", let result = json["result"] as? [String: Any] {
-            if let cid = result["conversation_id"] as? String, !cid.isEmpty {
-                events.append(.sessionId(cid))
-            }
-            let status = (result["status"] as? String ?? "").uppercased()
-            let text = (result["response"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if status == "SUCCESS" || status.isEmpty {
-                if !text.isEmpty {
-                    events.append(.textReplace(result["response"] as? String ?? text))
-                    events.append(.completed)
-                } else if let denied = result["denied_actions"] as? [[String: Any]], !denied.isEmpty {
-                    let names = denied.compactMap { ($0["display_name"] as? String) ?? ($0["action"] as? String) }.joined(separator: ", ")
-                    events.append(.failed("Blocked by permission policy (\(names.isEmpty ? "tool" : names))."))
-                } else {
-                    events.append(.completed)
-                }
-            } else {
-                let msg = (result["error"] as? String) ?? (result["response"] as? String) ?? "Gemini run failed."
-                events.append(.failed(msg))
-            }
-        }
-        return events
-    }
-
-    private static func friendlyToolName(_ raw: String) -> String {
-        switch raw.lowercased() {
-        case "view_file", "read", "read_file": return "Read"
-        case "list_dir", "find_by_name": return "Browse"
-        case "grep_search", "search_web": return "Search"
-        case "replace_file_content", "multi_replace_file_content", "sed_file", "edit": return "Edit"
-        case "write_to_file", "write": return "Write"
-        case "run_command", "bash": return "Run"
-        default:
-            return raw.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
-    static func summarizeToolInput(name: String, input: [String: Any]?) -> String {
-        guard let input else { return "" }
-        let keys = [
-            "CommandLine", "command",
-            "TargetFile", "AbsolutePath", "DirectoryPath", "SearchDirectory", "SearchPath", "Path",
-            "file_path", "path",
-            "Query", "Pattern", "pattern", "query",
-            "Url", "url",
-            "description",
-        ]
-        for key in keys {
-            if let val = input[key] as? String, !val.isEmpty {
-                let cleaned = val.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
-                if cleaned.hasPrefix("~/") || cleaned.hasPrefix("/") {
-                    let parts = cleaned.split(separator: "/")
-                    if parts.count > 3 {
-                        return parts.suffix(2).joined(separator: "/")
-                    }
-                }
-                return String(cleaned.prefix(100))
-            }
-        }
-        return ""
+        return out
     }
 }
 
-public enum AgentChatPersistence {
-    public static var defaultStorageURL: URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".config/toolroll/chat-threads.json")
+public enum DirectChatDateParser {
+    public static func parse(_ iso: String) -> Date? {
+        let withFrac = ISO8601DateFormatter()
+        withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withFrac.date(from: iso) { return d }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: iso)
     }
 
-    public static func load(from url: URL = defaultStorageURL) -> [AgentChatThread] {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url)
-        else {
-            return []
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard var decoded = try? decoder.decode([AgentChatThread].self, from: data) else {
-            return []
-        }
-        for i in decoded.indices {
-            var needsClaudeRecovery = false
-            for j in decoded[i].messages.indices {
-                if decoded[i].messages[j].isStreaming {
-                    decoded[i].messages[j].isStreaming = false
-                    if decoded[i].messages[j].role == .assistant && decoded[i].messages[j].text.isEmpty {
-                        needsClaudeRecovery = true
-                    }
-                }
-                for k in decoded[i].messages[j].tools.indices {
-                    if decoded[i].messages[j].tools[k].status == "running" {
-                        decoded[i].messages[j].tools[k].status = "done"
-                    }
-                }
-            }
-            if !needsClaudeRecovery,
-               let last = decoded[i].messages.last,
-               last.role == .assistant,
-               last.text.isEmpty,
-               !last.isError
-            {
-                needsClaudeRecovery = true
-            }
-            if needsClaudeRecovery && decoded[i].provider == .claude {
-                if recoverInterruptedClaudeTurn(&decoded[i]) {
-                    save(decoded, to: url)
-                }
-            }
-        }
-        return decoded.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    public static func claudeProjectDirectory(
-        for projectPath: String,
-        claudeProjectsRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
-    ) -> URL {
-        let encoded = projectPath.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
-        return claudeProjectsRoot.appendingPathComponent(encoded)
-    }
-
-    @discardableResult
-    public static func recoverInterruptedClaudeTurn(
-        _ thread: inout AgentChatThread,
-        claudeProjectsRoot: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
-    ) -> Bool {
-        guard thread.provider == .claude,
-              let lastAssistantIdx = thread.messages.lastIndex(where: { $0.role == .assistant }),
-              thread.messages[lastAssistantIdx].text.isEmpty
-        else {
-            return false
-        }
-        let dir = claudeProjectDirectory(for: thread.projectPath, claudeProjectsRoot: claudeProjectsRoot)
-        guard FileManager.default.fileExists(atPath: dir.path) else { return false }
-
-        let targetPrompt = thread.messages[..<lastAssistantIdx].last(where: { $0.role == .user })?.text
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        let candidateFiles: [URL]
-        if let sid = thread.sessionId, !sid.isEmpty {
-            let direct = dir.appendingPathComponent("\(sid).jsonl")
-            candidateFiles = FileManager.default.fileExists(atPath: direct.path) ? [direct] : []
-        } else {
-            let entries = (try? FileManager.default.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: [.contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
-            candidateFiles = entries
-                .filter { $0.pathExtension == "jsonl" }
-                .sorted { a, b in
-                    let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                    let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                    return da > db
-                }
-                .prefix(8)
-                .map { $0 }
-        }
-
-        for file in candidateFiles {
-            guard let recovered = parseClaudeTranscript(at: file, matchingPrompt: thread.sessionId == nil ? targetPrompt : nil) else {
-                continue
-            }
-            if !recovered.text.isEmpty || !recovered.tools.isEmpty {
-                let sid = file.deletingPathExtension().lastPathComponent
-                if thread.sessionId == nil || thread.sessionId?.isEmpty == true {
-                    thread.sessionId = sid
-                }
-                if !recovered.tools.isEmpty {
-                    thread.messages[lastAssistantIdx].tools = recovered.tools
-                }
-                if !recovered.text.isEmpty {
-                    thread.messages[lastAssistantIdx].text = recovered.text
-                }
-                thread.messages[lastAssistantIdx].isStreaming = false
-                thread.updatedAt = Date()
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func parseClaudeTranscript(
-        at url: URL,
-        matchingPrompt: String?
-    ) -> (text: String, tools: [AgentChatToolEvent])? {
-        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        var sawPromptMatch = (matchingPrompt == nil || matchingPrompt?.isEmpty == true)
-        var tools: [AgentChatToolEvent] = []
-        var lastAssistantText = ""
-
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String
-            else { continue }
-
-            if type == "user", let target = matchingPrompt, !target.isEmpty {
-                if let msg = obj["message"] as? [String: Any],
-                   let content = msg["content"] as? String,
-                   content.trimmingCharacters(in: .whitespacesAndNewlines) == target
-                {
-                    sawPromptMatch = true
-                    tools.removeAll()
-                    lastAssistantText = ""
-                }
-            } else if type == "assistant", sawPromptMatch,
-                      let msg = obj["message"] as? [String: Any],
-                      let blocks = msg["content"] as? [[String: Any]]
-            {
-                var texts: [String] = []
-                for block in blocks {
-                    let bType = block["type"] as? String ?? ""
-                    if bType == "text", let text = block["text"] as? String, !text.isEmpty {
-                        texts.append(text)
-                    } else if bType == "tool_use" {
-                        let name = block["name"] as? String ?? "Tool"
-                        let input = block["input"] as? [String: Any]
-                        let detail = AgentChatStreamParser.summarizeToolInput(name: name, input: input)
-                        let id = block["id"] as? String ?? UUID().uuidString
-                        if !tools.contains(where: { $0.id == id }) {
-                            tools.append(AgentChatToolEvent(id: id, name: name, detail: detail, status: "done"))
-                        }
-                    }
-                }
-                if !texts.isEmpty {
-                    lastAssistantText = texts.joined(separator: "\n")
-                }
-            }
-        }
-
-        guard sawPromptMatch else { return nil }
-        return (lastAssistantText, tools)
-    }
-
-    public static func save(_ threads: [AgentChatThread], to url: URL = defaultStorageURL) {
-        let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(
-            at: dir,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let trimmed = Array(threads.prefix(80))
-        guard var data = try? encoder.encode(trimmed) else { return }
-        data.append(0x0A)
-        let tmp = url.appendingPathExtension("tmp.\(UUID().uuidString.prefix(8))")
-        FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600])
-        _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp)
-    }
-}
-
-public final class AgentChatProcessHandle: @unchecked Sendable {
-    private let lock = NSLock()
-    private var process: Process?
-
-    public init() {}
-
-    func attach(_ proc: Process) {
-        lock.lock()
-        process = proc
-        lock.unlock()
-    }
-
-    public func stop() {
-        lock.lock()
-        let proc = process
-        lock.unlock()
-        guard let proc, proc.isRunning else { return }
-        proc.terminate()
-    }
-}
-
-public enum AgentChatRunner {
-    public static func locateBinary(for provider: AgentChatProvider) -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates: [String]
-        switch provider {
-        case .claude:
-            candidates = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
-        case .codex:
-            candidates = ["\(home)/.local/bin/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex"]
-        case .gemini:
-            candidates = ["\(home)/.local/bin/agy", "\(home)/.gemini/bin/agy", "/opt/homebrew/bin/agy", "/usr/local/bin/agy"]
-        }
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    public static func buildCommand(
-        provider: AgentChatProvider,
-        modelId: String,
-        prompt: String,
-        sessionId: String?
-    ) -> [String] {
-        switch provider {
-        case .claude:
-            var args = [
-                "-p", prompt,
-                "--output-format", "stream-json",
-                "--verbose",
-                "--permission-mode", "auto",
-            ]
-            if !modelId.isEmpty {
-                args.append(contentsOf: ["--model", modelId])
-            }
-            if let sessionId, !sessionId.isEmpty {
-                args.append(contentsOf: ["--resume", sessionId])
-            }
-            return args
-
-        case .codex:
-            if let sessionId, !sessionId.isEmpty {
-                var args = ["exec", "resume", "--json", "--skip-git-repo-check"]
-                if !modelId.isEmpty {
-                    args.append(contentsOf: ["-m", modelId])
-                }
-                args.append(contentsOf: [sessionId, prompt])
-                return args
-            } else {
-                var args = ["exec", "--json", "--approve-for-me", "--skip-git-repo-check"]
-                if !modelId.isEmpty {
-                    args.append(contentsOf: ["-m", modelId])
-                }
-                args.append(prompt)
-                return args
-            }
-
-        case .gemini:
-            var args = [
-                "-p", prompt,
-                "--output-format", "stream-json",
-                "--mode", "auto",
-                "--sandbox",
-            ]
-            if !modelId.isEmpty {
-                args.append(contentsOf: ["--model", modelId])
-            }
-            if let sessionId, !sessionId.isEmpty {
-                args.append(contentsOf: ["--conversation", sessionId])
-            }
-            return args
-        }
-    }
-
-    public static func streamTurn(
-        provider: AgentChatProvider,
-        modelId: String,
-        projectPath: String,
-        prompt: String,
-        sessionId: String?,
-        handle: AgentChatProcessHandle
-    ) -> AsyncStream<AgentChatStreamEvent> {
-        AsyncStream { continuation in
-            guard let binary = locateBinary(for: provider) else {
-                continuation.yield(.failed("\(provider.displayName) CLI not found on this Mac."))
-                continuation.finish()
-                return
-            }
-
-            let args = buildCommand(provider: provider, modelId: modelId, prompt: prompt, sessionId: sessionId)
-
-            DispatchQueue.global(qos: .userInitiated).async {
-                let maxAttempts = (provider == .gemini) ? 2 : 1
-                for attempt in 1...maxAttempts {
-                    let outcome = runSingleTurn(
-                        binary: binary,
-                        args: args,
-                        provider: provider,
-                        projectPath: projectPath,
-                        handle: handle,
-                        continuation: continuation,
-                        deferRetryableFailure: attempt < maxAttempts
-                    )
-                    if !outcome.shouldRetry {
-                        break
-                    }
-                    Thread.sleep(forTimeInterval: 0.6)
-                }
-                continuation.finish()
-            }
-        }
-    }
-
-    private struct SingleTurnOutcome {
-        let shouldRetry: Bool
-    }
-
-    private static func runSingleTurn(
-        binary: String,
-        args: [String],
-        provider: AgentChatProvider,
-        projectPath: String,
-        handle: AgentChatProcessHandle,
-        continuation: AsyncStream<AgentChatStreamEvent>.Continuation,
-        deferRetryableFailure: Bool
-    ) -> SingleTurnOutcome {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: binary)
-        proc.arguments = args
-        if FileManager.default.fileExists(atPath: projectPath) {
-            proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
-        }
-
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var env = ProcessInfo.processInfo.environment
-        let extraPath = "\(home)/.local/bin:\(home)/.gemini/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        env["PATH"] = [extraPath, env["PATH"]].compactMap { $0 }.joined(separator: ":")
-        proc.environment = env
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-        proc.standardInput = FileHandle.nullDevice
-
-        handle.attach(proc)
-
-        let bufferBox = StreamBufferBox()
-
-        outPipe.fileHandleForReading.readabilityHandler = { fh in
-            let chunk = fh.availableData
-            if chunk.isEmpty { return }
-            let lines = bufferBox.appendStdout(chunk)
-            for line in lines {
-                let events = AgentChatStreamParser.parse(line: line, provider: provider)
-                for ev in events {
-                    if case .textDelta = ev { bufferBox.markOutput() }
-                    if case .textReplace = ev { bufferBox.markOutput() }
-                    if case .completed = ev { bufferBox.markTerminal() }
-                    if case .failed(let msg) = ev {
-                        bufferBox.markTerminal()
-                        if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
-                            bufferBox.markRetryableAuthFailure()
-                            continue
-                        }
-                    }
-                    continuation.yield(ev)
-                }
-            }
-        }
-
-        errPipe.fileHandleForReading.readabilityHandler = { fh in
-            let chunk = fh.availableData
-            if chunk.isEmpty { return }
-            bufferBox.appendStderr(chunk)
-        }
-
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-        } catch {
-            continuation.yield(.failed(error.localizedDescription))
-            return SingleTurnOutcome(shouldRetry: false)
-        }
-
-        outPipe.fileHandleForReading.readabilityHandler = nil
-        errPipe.fileHandleForReading.readabilityHandler = nil
-
-        let tailOut = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let tailErr = errPipe.fileHandleForReading.readDataToEndOfFile()
-        let drained = bufferBox.drain(tailOut: tailOut, tailErr: tailErr)
-        for line in drained.lines {
-            let events = AgentChatStreamParser.parse(line: line, provider: provider)
-            for ev in events {
-                if case .textDelta = ev { bufferBox.markOutput() }
-                if case .textReplace = ev { bufferBox.markOutput() }
-                if case .completed = ev { bufferBox.markTerminal() }
-                if case .failed(let msg) = ev {
-                    bufferBox.markTerminal()
-                    if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
-                        bufferBox.markRetryableAuthFailure()
-                        continue
-                    }
-                }
-                continuation.yield(ev)
-            }
-        }
-
-        if bufferBox.shouldRetryAuth() {
-            return SingleTurnOutcome(shouldRetry: true)
-        }
-
-        let stderrText = drained.stderr
-        let finishedNormally = bufferBox.sawTerminal()
-
-        if !finishedNormally {
-            if proc.terminationStatus == 0 {
-                continuation.yield(.completed)
-            } else if proc.terminationReason == .uncaughtSignal {
-                continuation.yield(.failed("Stopped."))
-            } else {
-                let lastErr = stderrText.components(separatedBy: .newlines).last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                let msg = lastErr ?? "\(provider.displayName) exited with code \(proc.terminationStatus)."
-                if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
-                    return SingleTurnOutcome(shouldRetry: true)
-                }
-                continuation.yield(.failed(msg))
-            }
-        }
-        return SingleTurnOutcome(shouldRetry: false)
-    }
-
-    private final class StreamBufferBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var outBuffer = Data()
-        private var errBuffer = Data()
-        private var terminal = false
-        private var emittedOutput = false
-        private var retryableAuthFailure = false
-
-        func appendStdout(_ chunk: Data) -> [String] {
-            lock.lock()
-            defer { lock.unlock() }
-            outBuffer.append(chunk)
-            var lines: [String] = []
-            while let nl = outBuffer.firstIndex(of: 0x0A) {
-                let lineData = outBuffer.subdata(in: outBuffer.startIndex..<nl)
-                outBuffer.removeSubrange(outBuffer.startIndex...nl)
-                if let line = String(data: lineData, encoding: .utf8) {
-                    lines.append(line)
-                }
-            }
-            return lines
-        }
-
-        func appendStderr(_ chunk: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            errBuffer.append(chunk)
-            if errBuffer.count > 16_384 {
-                errBuffer = errBuffer.suffix(16_384)
-            }
-        }
-
-        func markOutput() {
-            lock.lock()
-            emittedOutput = true
-            lock.unlock()
-        }
-
-        func sawOutput() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return emittedOutput
-        }
-
-        func markRetryableAuthFailure() {
-            lock.lock()
-            retryableAuthFailure = true
-            lock.unlock()
-        }
-
-        func shouldRetryAuth() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return retryableAuthFailure
-        }
-
-        func markTerminal() {
-            lock.lock()
-            terminal = true
-            lock.unlock()
-        }
-
-        func sawTerminal() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return terminal
-        }
-
-        func drain(tailOut: Data, tailErr: Data) -> (lines: [String], stderr: String) {
-            lock.lock()
-            defer { lock.unlock() }
-            outBuffer.append(tailOut)
-            errBuffer.append(tailErr)
-            var lines: [String] = []
-            if !outBuffer.isEmpty, let rest = String(data: outBuffer, encoding: .utf8) {
-                lines = rest.components(separatedBy: .newlines)
-                outBuffer.removeAll()
-            }
-            let stderr = (String(data: errBuffer, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return (lines, stderr)
-        }
-    }
-
-    public static func fetchGitDiff(projectPath: String) async -> AgentChatGitDiff {
-        guard FileManager.default.fileExists(atPath: projectPath) else {
-            return AgentChatGitDiff()
-        }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let status = runGit(["status", "--short"], cwd: projectPath)
-                let files = status
-                    .components(separatedBy: .newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let diff = files.isEmpty ? "" : runGit(["diff", "--no-color"], cwd: projectPath)
-                let truncated = diff.count > 40_000 ? String(diff.prefix(40_000)) + "\n… (diff truncated)" : diff
-                continuation.resume(returning: AgentChatGitDiff(changedFiles: files, diffText: truncated))
-            }
-        }
-    }
-
-    private static func runGit(_ args: [String], cwd: String) -> String {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        } catch {
-            return ""
-        }
+    public static func makeHex32RequestId() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 }

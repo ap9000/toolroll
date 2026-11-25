@@ -884,60 +884,96 @@ struct ToolrollCoreTests {
         #expect(AgentRequestStore.load(databasePath: dbPath).count == 1)
     }
 
-    @Test("AgentChatStreamParser parses Claude, Codex, and Gemini streams and builds resume commands")
-    func agentChatParserAndPersistence() throws {
-        let claudeEvents = AgentChatStreamParser.parse(
-            line: #"{"type":"result","session_id":"cl-123","is_error":false,"result":"Done"}"#,
-            provider: .claude
-        )
-        #expect(claudeEvents.contains(.sessionId("cl-123")))
-        #expect(claudeEvents.contains(.textReplace("Done")))
-        #expect(claudeEvents.contains(.completed))
-
-        let codexStart = AgentChatStreamParser.parse(
-            line: #"{"type":"thread.started","thread_id":"cx-999"}"#,
-            provider: .codex
-        )
-        #expect(codexStart == [.sessionId("cx-999")])
-        let codexMsg = AgentChatStreamParser.parse(
-            line: #"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Shipped"}}"#,
-            provider: .codex
-        )
-        #expect(codexMsg == [.textReplace("Shipped")])
-
-        let geminiDelta = AgentChatStreamParser.parse(
-            line: #"{"event":"step_update","conversation_id":"gm-42","step_update":{"step_type":"agent_response","text_delta":"Hi"}}"#,
-            provider: .gemini
-        )
-        #expect(geminiDelta.contains(.sessionId("gm-42")))
-        #expect(geminiDelta.contains(.textDelta("Hi")))
-
-        let codexResume = AgentChatRunner.buildCommand(provider: .codex, modelId: "gpt-6-astra", prompt: "Next", sessionId: "cx-999")
-        #expect(codexResume.prefix(3) == ["exec", "resume", "--json"])
-        #expect(codexResume.contains("cx-999"))
-
-        let geminiResume = AgentChatRunner.buildCommand(provider: .gemini, modelId: "gemini-4-neon-high", prompt: "Next", sessionId: "gm-42")
-        #expect(geminiResume.contains("--conversation"))
-        #expect(geminiResume.contains("gm-42"))
-
-        let tmpUrl = FileManager.default.temporaryDirectory
-            .appendingPathComponent("toolroll-chat-test-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tmpUrl) }
-
-        let thread = AgentChatThread(
-            title: "Build chat mode",
-            projectName: "toolroll",
-            projectPath: "/tmp/toolroll",
-            provider: .gemini,
-            modelId: "gemini-4-neon-high",
-            sessionId: "gm-42",
-            messages: [AgentChatMessage(role: .user, text: "Hi")]
-        )
-        AgentChatPersistence.save([thread], to: tmpUrl)
-        let loaded = AgentChatPersistence.load(from: tmpUrl)
-        #expect(loaded.count == 1)
-        #expect(loaded[0].sessionId == "gm-42")
-        #expect(loaded[0].provider == .gemini)
+    @Test("Direct Chat server DTOs decode cleanly into AgentChatThread view models")
+    func directChatDtoDecodingAndProjection() throws {
+        let json = """
+        {
+          "version": 1,
+          "room": "direct-chat:a1b2c3d4e5f64789abcd0123456789ab",
+          "thread": {
+            "id": "a1b2c3d4e5f64789abcd0123456789ab",
+            "title": "Tighten header padding",
+            "project": "toolroll",
+            "branch": "toolroll/chat-a1b2c3d4",
+            "provider": "claude",
+            "modelId": "opus",
+            "posture": {
+              "summary": "Runs commands without asking",
+              "detail": "Uses Claude auto mode inside this chat's isolated clone.",
+              "sandboxed": false
+            },
+            "running": false,
+            "lastStatus": "completed",
+            "changedFilesCount": 1,
+            "mainDirtyFiles": ["README.md"],
+            "createdAt": "2026-11-24T20:00:00.000Z",
+            "updatedAt": "2026-11-24T20:01:00.000Z"
+          },
+          "turns": [
+            {
+              "id": "11111111111111111111111111111111",
+              "seq": 1,
+              "userPrompt": "Tighten header padding",
+              "switchedFromProvider": "codex",
+              "status": "completed",
+              "assistantText": "Updated AgentChatView.",
+              "errorText": null,
+              "createdAt": "2026-11-24T20:00:00.000Z",
+              "finishedAt": "2026-11-24T20:01:00.000Z",
+              "tools": [
+                { "id": "t1", "ordinal": 1, "name": "Edit", "detail": "AgentChatView.swift", "status": "done", "updatedAt": "2026-11-24T20:00:30.000Z" }
+              ],
+              "artifacts": [
+                {
+                  "id": "22222222222222222222222222222222",
+                  "kind": "output",
+                  "filename": "after.png",
+                  "mimeType": "image/png",
+                  "byteSize": 68,
+                  "url": "/engine/direct-chats/a1b2c3d4e5f64789abcd0123456789ab/artifacts/22222222222222222222222222222222",
+                  "sourcePath": "after.png",
+                  "createdAt": "2026-11-24T20:00:45.000Z"
+                }
+              ]
+            }
+          ],
+          "attachments": [],
+          "ships": [
+            {
+              "id": "33333333333333333333333333333333",
+              "seq": 1,
+              "mode": "ship",
+              "branch": "tr/dc-3333",
+              "candidateSha": "deadbeef12345678",
+              "state": "armed",
+              "taskId": "dc-33333333333333333333333333333333",
+              "prUrl": null,
+              "detail": null,
+              "createdAt": "2026-11-24T20:02:00.000Z",
+              "stateAt": "2026-11-24T20:02:00.000Z"
+            }
+          ],
+          "diff": {
+            "changedFiles": ["AgentChatView.swift"],
+            "diffText": "+new line",
+            "dirty": true
+          }
+        }
+        """
+        let detail = try JSONDecoder().decode(DirectChatDetailResponse.self, from: Data(json.utf8))
+        let thread = AgentChatThread(detail: detail)
+        #expect(thread.id == "a1b2c3d4e5f64789abcd0123456789ab")
+        #expect(thread.branch == "toolroll/chat-a1b2c3d4")
+        #expect(thread.posture.summary == "Runs commands without asking")
+        #expect(thread.mainDirtyFiles == ["README.md"])
+        #expect(thread.messages.count == 2)
+        #expect(thread.messages[0].switchedFromProvider == .codex)
+        #expect(thread.messages[1].tools.count == 1)
+        #expect(thread.messages[1].artifacts.count == 1)
+        #expect(thread.messages[1].artifacts[0].isImage == true)
+        #expect(thread.ships.count == 1)
+        #expect(thread.ships[0].canCancel == true)
+        #expect(thread.room == "direct-chat:a1b2c3d4e5f64789abcd0123456789ab")
     }
 
     @Test("A cancel names the newest run, not the live one: a queued task with a finished run has no live run")
@@ -1110,43 +1146,12 @@ struct ToolrollCoreTests {
         #expect(read.messages[0].ask?.options == ["Keep subtle shadow", "Remove shadow"])
     }
 
-    @Test("Interrupted Claude chat turn recovers sessionId, tool steps, and final reply from Claude project transcript")
-    func claudeInterruptedTurnRecovery() throws {
-        let tmpRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("toolroll-claude-recover-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: tmpRoot) }
-
-        let projPath = "/Users/alex/Documents/site.com"
-        let projDir = AgentChatPersistence.claudeProjectDirectory(for: projPath, claudeProjectsRoot: tmpRoot)
-        try FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
-
-        let sessionId = "597a2366-ceb7-419e-ab4e-7c645bd4bff5"
-        let transcript = """
-        {"type":"user","message":{"role":"user","content":"Fix the corner peel"}}
-        {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/Users/alex/Documents/site.com/src/styles.css"}}]}}
-        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Simplified the corner and replaced the orange accent with muted cobalt."}]}}
-        """
-        try Data(transcript.utf8).write(to: projDir.appendingPathComponent("\(sessionId).jsonl"))
-
-        var thread = AgentChatThread(
-            title: "Fix the corner peel",
-            projectName: "site.com",
-            projectPath: projPath,
-            provider: .claude,
-            modelId: "opus",
-            sessionId: nil,
-            messages: [
-                AgentChatMessage(role: .user, text: "Fix the corner peel"),
-                AgentChatMessage(role: .assistant, text: "", isStreaming: true),
-            ]
-        )
-
-        let recovered = AgentChatPersistence.recoverInterruptedClaudeTurn(&thread, claudeProjectsRoot: tmpRoot)
-        #expect(recovered == true)
-        #expect(thread.sessionId == sessionId)
-        #expect(thread.messages[1].isStreaming == false)
-        #expect(thread.messages[1].tools.count == 1)
-        #expect(thread.messages[1].tools[0].name == "Read")
-        #expect(thread.messages[1].text.contains("muted cobalt"))
+    @Test("Direct Chat demo fixtures include isolated branch, diff, and valid PNG artifact")
+    func directChatDemoFixturesReady() throws {
+        #expect(DemoFixtures.directChatThreads.count == 1)
+        let thread = try #require(DemoFixtures.directChatThreads.first)
+        #expect(thread.branch.hasPrefix("toolroll/chat-"))
+        #expect(DemoFixtures.directChatDiffs[thread.id]?.changedFiles.count == 2)
+        #expect(DemoFixtures.demoArtifactPngData.starts(with: [0x89, 0x50, 0x4E, 0x47]))
     }
 }

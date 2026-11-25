@@ -33,6 +33,8 @@ final class ToolrollWindowCoordinator {
 }
 
 final class ToolrollAppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static weak var activeStore: WorkbenchStore?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             NSApp.setActivationPolicy(.regular)
@@ -49,6 +51,45 @@ final class ToolrollAppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let store = Self.activeStore,
+                  !store.activeProfile.isDemo,
+                  !store.runningChatThreadIds.isEmpty,
+                  !store.directChatBackgroundOn
+            else {
+                return .terminateNow
+            }
+
+            let count = store.runningChatThreadIds.count
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = count == 1 ? "A Direct Chat is still running" : "\(count) Direct Chats are still running"
+            alert.informativeText = "Turn on Toolroll's background service to let running chats finish after you quit, or stop them now."
+            alert.addButton(withTitle: "Keep Running & Quit")
+            alert.addButton(withTitle: "Stop Chats & Quit")
+            alert.addButton(withTitle: "Cancel")
+
+            let choice = alert.runModal()
+            switch choice {
+            case .alertFirstButtonReturn:
+                Task { @MainActor in
+                    _ = await store.setBackgroundServiceEnabled(true)
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+                return .terminateLater
+            case .alertSecondButtonReturn:
+                Task { @MainActor in
+                    await store.stopAllRunningChatsAndWait()
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+                return .terminateLater
+            default:
+                return .terminateCancel
+            }
+        }
     }
 }
 
@@ -85,6 +126,9 @@ struct ToolrollMacApp: App {
             MainWorkbenchView(store: store)
                 .frame(minWidth: 740, minHeight: 580)
                 .modifier(WindowOpenerRegistrar())
+                .onAppear {
+                    ToolrollAppDelegate.activeStore = store
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.previewServer.stopManagedServer()
                 }

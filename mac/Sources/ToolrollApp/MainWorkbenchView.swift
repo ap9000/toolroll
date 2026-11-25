@@ -118,6 +118,42 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: $store.isSetPasswordOpen) {
             SetPasswordSheet(store: store)
         }
+        .sheet(isPresented: $store.isChatShipSheetOpen) {
+            DirectChatShipSheet(store: store)
+        }
+        .confirmationDialog(
+            "Unmerged changes in \(store.chatDeleteConfirmationThread?.title ?? "this chat")",
+            isPresented: Binding(
+                get: { store.chatDeleteConfirmationThread != nil },
+                set: { if !$0 { store.chatDeleteConfirmationThread = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let target = store.chatDeleteConfirmationThread {
+                Button("Keep Clone & Archive") {
+                    store.deleteChatThread(id: target.id, discardChanges: false, keepBranch: true)
+                }
+                Button("Discard Changes & Delete", role: .destructive) {
+                    store.deleteChatThread(id: target.id, discardChanges: true, keepBranch: false)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                store.chatDeleteConfirmationThread = nil
+            }
+        } message: {
+            Text("This chat's isolated clone has unmerged edits. Archive while keeping the clone on disk, or discard the clone permanently.")
+        }
+        .alert(
+            "Keep chats running when Toolroll is closed?",
+            isPresented: $store.isFirstChatBackgroundPromptOpen
+        ) {
+            Button("Keep Running in Background") {
+                Task { _ = await store.setBackgroundServiceEnabled(true) }
+            }
+            Button("Only While App Is Open", role: .cancel) {}
+        } message: {
+            Text("Enabling Toolroll's background service lets Direct Chats finish cleanly if you close the app or switch windows.")
+        }
         .modifier(CancelConfirmation(store: store))
         .modifier(ModelPickConfirmation(store: store))
         .sheet(isPresented: Binding(get: { store.modelPickerTaskId != nil }, set: { if !$0 { store.modelPickerTaskId = nil } })) {
@@ -332,13 +368,13 @@ public struct MainWorkbenchView: View {
             }
 
             Button {
-                Task { await store.promoteChatToTask(threadId: thread.id) }
+                Task { await store.openChatShipSheet(threadId: thread.id) }
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 10.5))
-                    Text("Ship as Task")
-                        .font(.system(size: 11.5, weight: .medium))
+                    Text("Ship")
+                        .font(.system(size: 11.5, weight: .semibold))
                 }
                 .foregroundStyle(ToolrollPalette.ink)
                 .padding(.horizontal, 10)
@@ -347,7 +383,8 @@ public struct MainWorkbenchView: View {
             }
             .buttonStyle(.plain)
             .toolrollGlassCapsule(interactive: true)
-            .help("Promote this chat to a sandboxed Toolroll task with checks & merge")
+            .disabled(store.runningChatThreadIds.contains(thread.id) || thread.running)
+            .help("Freeze a snapshot commit from this chat, run checks, and merge or save a branch")
 
             Menu {
                 Button("Open Shell in \(thread.projectName)") {
@@ -359,6 +396,9 @@ public struct MainWorkbenchView: View {
                 }
                 Button("Refresh Diff") {
                     Task { await store.refreshChatDiff(threadId: thread.id) }
+                }
+                Button("Repair Workspace Git Binding") {
+                    Task { await store.repairChatGitBinding(threadId: thread.id) }
                 }
                 Divider()
                 Button("Delete Chat", role: .destructive) {

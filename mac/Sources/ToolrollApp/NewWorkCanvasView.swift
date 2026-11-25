@@ -651,13 +651,14 @@ public struct NewWorkCanvasView: View {
     private func submit() {
         let trimmed = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: attachments)
+        let draftAttachments = attachments
+        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: draftAttachments)
         promptText = ""
         attachments = []
         let cleanProj = resolvedProject
 
         if mode == .chat {
-            Task { await store.startChatThread(prompt: composed.combinedMessage, project: cleanProj) }
+            Task { await store.startChatThread(prompt: trimmed, project: cleanProj, attachments: draftAttachments) }
             return
         }
 

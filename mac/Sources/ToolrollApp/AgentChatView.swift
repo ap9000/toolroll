@@ -8,6 +8,9 @@ public struct AgentChatView: View {
 
     @State private var isComposerDropTargeted: Bool = false
     @State private var expandedToolMessageIds: Set<String> = []
+    @State private var selectedDiffFileFilter: String? = nil
+    @State private var isPosturePopoverOpen: Bool = false
+    @State private var lightboxArtifact: DirectChatArtifact? = nil
     @FocusState private var replyFocused: Bool
 
     public init(store: WorkbenchStore, thread: AgentChatThread) {
@@ -43,7 +46,7 @@ public struct AgentChatView: View {
     }
 
     private var isRunning: Bool {
-        store.runningChatThreadIds.contains(thread.id)
+        store.runningChatThreadIds.contains(thread.id) || thread.running
     }
 
     private var gitDiff: AgentChatGitDiff {
@@ -52,6 +55,23 @@ public struct AgentChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            workspaceStatusStrip
+
+            if let gitError = store.chatGitBindingErrors[thread.id] {
+                gitRepairBanner(gitError)
+                HairlineDivider()
+            }
+
+            if !thread.mainDirtyFiles.isEmpty {
+                mainDirtyBanner
+                HairlineDivider()
+            }
+
+            if let latestShip = thread.ships.first {
+                shipStatusBanner(latestShip)
+                HairlineDivider()
+            }
+
             if store.isChatDiffDrawerOpen && !gitDiff.isEmpty {
                 diffPreviewDrawer
                 HairlineDivider()
@@ -60,6 +80,9 @@ public struct AgentChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
+                        if !thread.attachments.isEmpty {
+                            threadAttachmentsStrip
+                        }
                         ForEach(thread.messages) { msg in
                             messageRow(msg)
                                 .id(msg.id)
@@ -69,7 +92,7 @@ public struct AgentChatView: View {
                             .id("chat-bottom-anchor")
                     }
                     .padding(.horizontal, 24)
-                    .padding(.top, 20)
+                    .padding(.top, 18)
                     .padding(.bottom, 20)
                     .frame(maxWidth: 820, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -89,19 +112,217 @@ public struct AgentChatView: View {
         .background(ToolrollPalette.ground)
         .onAppear {
             replyFocused = true
-            Task { await store.refreshChatDiff(threadId: thread.id) }
+            Task { await store.refreshDirectChatDetail(threadId: thread.id) }
         }
+        .sheet(item: $lightboxArtifact) { artifact in
+            DirectChatArtifactLightbox(store: store, artifact: artifact)
+        }
+    }
+
+    // MARK: - Workspace Posture, Dirty Main, Git Repair & Ship Banners
+
+    private var workspaceStatusStrip: some View {
+        HStack(spacing: 8) {
+            if !thread.branch.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 9.5))
+                    Text(thread.branch)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(ToolrollPalette.muted)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(ToolrollPalette.raised, in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .help("Isolated local clone — cannot modify your main repo refs, hooks, or config")
+            }
+
+            Button {
+                isPosturePopoverOpen.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: thread.posture.sandboxed ? "checkmark.shield" : "bolt.shield")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(thread.posture.sandboxed ? ToolrollPalette.success : ToolrollPalette.warning)
+                    Text(thread.posture.summary)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(ToolrollPalette.raised, in: Capsule())
+                .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $isPosturePopoverOpen, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: thread.posture.sandboxed ? "checkmark.shield.fill" : "bolt.shield.fill")
+                            .foregroundStyle(thread.posture.sandboxed ? ToolrollPalette.success : ToolrollPalette.warning)
+                        Text(thread.posture.summary)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    Text(thread.posture.detail)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Changes stay in an isolated local clone with no remote until you press Ship.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .frame(width: 280)
+            }
+
+            Spacer()
+
+            if store.directChatBackgroundOn {
+                HStack(spacing: 4) {
+                    Circle().fill(ToolrollPalette.success).frame(width: 5.5, height: 5.5)
+                    Text("Background on")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(ToolrollPalette.muted)
+                }
+                .help("Chats keep running even if you close Toolroll")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(ToolrollPalette.ground)
+        .overlay(alignment: .bottom) { HairlineDivider() }
+    }
+
+    private func gitRepairBanner(_ errorText: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wrench.and.screwdriver.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(ToolrollPalette.warning)
+            Text(errorText)
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(2)
+            Spacer()
+            Button("Repair Git Binding") {
+                Task { await store.repairChatGitBinding(threadId: thread.id) }
+            }
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
+            .disabled(isRunning)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(ToolrollPalette.warning.opacity(0.10))
+    }
+
+    private var mainDirtyBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.live)
+            Text("Main checkout had \(thread.mainDirtyFiles.count) uncommitted \(thread.mainDirtyFiles.count == 1 ? "file" : "files") when this chat started.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
+                .lineLimit(1)
+            Spacer()
+            Button("Bring in my uncommitted changes") {
+                Task { await store.applyMainEditsToChat(threadId: thread.id) }
+            }
+            .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            .disabled(isRunning)
+            Button {
+                store.dismissMainDirtyNotice(threadId: thread.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(ToolrollPalette.raised)
+    }
+
+    private func shipStatusBanner(_ ship: DirectChatShipSummary) -> some View {
+        let tone: Color = switch ship.state {
+        case "merged", "kept": ToolrollPalette.success
+        case "cancelled", "failed": ToolrollPalette.danger
+        default: ToolrollPalette.live
+        }
+        return HStack(spacing: 8) {
+            Circle().fill(tone).frame(width: 7, height: 7)
+            Text("Ship #\(ship.seq) · \(ship.statusLabel)")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.ink)
+            Text("\(ship.branch) (\(ship.shortSha))")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.muted)
+                .lineLimit(1)
+            if let detail = ship.detail, !detail.isEmpty {
+                Text("· \(detail)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            if let prUrl = ship.prUrl, !prUrl.isEmpty {
+                Button("Open PR") {
+                    store.openExternalURL(prUrl)
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+            if let taskId = ship.taskId, !taskId.isEmpty {
+                Button("View Task") {
+                    Task { await store.selectTask(taskId) }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+            if ship.canCancel {
+                Button("Cancel Auto-Merge") {
+                    Task { await store.cancelChatShip(threadId: thread.id, shipId: ship.id) }
+                }
+                .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(tone.opacity(0.08))
+    }
+
+    // MARK: - Rich Syntax-Colored Diff Drawer
+
+    private var filteredDiffLines: [String] {
+        let rawLines = gitDiff.diffText.components(separatedBy: "\n")
+        guard let targetFile = selectedDiffFileFilter else { return rawLines }
+        var out: [String] = []
+        var inSection = false
+        for line in rawLines {
+            if line.hasPrefix("diff --git ") {
+                inSection = line.contains("b/\(targetFile)") || line.contains(targetFile)
+            }
+            if inSection { out.append(line) }
+        }
+        return out.isEmpty ? rawLines : out
     }
 
     private var diffPreviewDrawer: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Working tree changes (\(gitDiff.changedFiles.count))")
+                Text("Isolated clone changes (\(gitDiff.changedFiles.count))")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
                 Spacer()
+                Button("Ship…") {
+                    Task { await store.openChatShipSheet(threadId: thread.id) }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                .disabled(isRunning)
                 Button("Refresh") {
-                    Task { await store.refreshChatDiff(threadId: thread.id) }
+                    Task { await store.refreshDirectChatDetail(threadId: thread.id) }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
@@ -112,48 +333,131 @@ public struct AgentChatView: View {
                     .foregroundStyle(ToolrollPalette.muted)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(gitDiff.changedFiles.prefix(20), id: \.self) { file in
-                        Text(file)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.muted)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    diffFilterChip(label: "All (\(gitDiff.changedFiles.count))", isSelected: selectedDiffFileFilter == nil) {
+                        selectedDiffFileFilter = nil
                     }
-                    if !gitDiff.diffText.isEmpty {
-                        Text(gitDiff.diffText)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    ForEach(gitDiff.changedFiles.prefix(24), id: \.self) { file in
+                        diffFilterChip(
+                            label: (file as NSString).lastPathComponent,
+                            isSelected: selectedDiffFileFilter == file
+                        ) {
+                            selectedDiffFileFilter = (selectedDiffFileFilter == file) ? nil : file
+                        }
+                        .help(file)
                     }
                 }
             }
-            .frame(maxHeight: 200)
+
+            if !gitDiff.diffText.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(filteredDiffLines.enumerated()), id: \.offset) { _, line in
+                            Text(line.isEmpty ? " " : line)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(diffLineForeground(line))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 0.5)
+                                .background(diffLineBackground(line))
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .padding(.vertical, 6)
+                }
+                .frame(maxHeight: 240)
+                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(ToolrollPalette.raised)
     }
 
+    private func diffFilterChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular, design: .monospaced))
+                .foregroundStyle(isSelected ? ToolrollPalette.ink : ToolrollPalette.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(isSelected ? Color.white.opacity(0.11) : ToolrollPalette.ground, in: Capsule())
+                .overlay(Capsule().strokeBorder(isSelected ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func diffLineForeground(_ line: String) -> Color {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") { return ToolrollPalette.success }
+        if line.hasPrefix("-") && !line.hasPrefix("---") { return ToolrollPalette.danger }
+        if line.hasPrefix("@@") { return ToolrollPalette.live }
+        if line.hasPrefix("diff --git") || line.hasPrefix("---") || line.hasPrefix("+++") { return ToolrollPalette.muted }
+        return ToolrollPalette.ink.opacity(0.88)
+    }
+
+    private func diffLineBackground(_ line: String) -> Color {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") { return ToolrollPalette.success.opacity(0.10) }
+        if line.hasPrefix("-") && !line.hasPrefix("---") { return ToolrollPalette.danger.opacity(0.10) }
+        if line.hasPrefix("@@") { return ToolrollPalette.live.opacity(0.08) }
+        return .clear
+    }
+
+    // MARK: - Inline Image Galleries
+
+    private var threadAttachmentsStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Attached to this chat")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.muted)
+            artifactGallery(thread.attachments)
+        }
+    }
+
+    private func artifactGallery(_ artifacts: [DirectChatArtifact]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(artifacts) { artifact in
+                    DirectChatArtifactCard(store: store, artifact: artifact) {
+                        lightboxArtifact = artifact
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Messages
+
     @ViewBuilder
     private func messageRow(_ msg: AgentChatMessage) -> some View {
         if msg.role == .user {
-            HStack(alignment: .top, spacing: 10) {
-                UserMonogramBadge(account: store.activeProfile.account, size: 22)
-                Text(msg.text)
-                    .font(.system(size: 13.5))
-                    .lineSpacing(3)
-                    .foregroundStyle(ToolrollPalette.ink)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                if let prev = msg.switchedFromProvider {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 9.5))
+                        Text("Handed off from \(prev.displayName) to \(thread.provider.displayName)")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.leading, 4)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    UserMonogramBadge(account: store.activeProfile.account, size: 22)
+                    Text(msg.text)
+                        .font(.system(size: 13.5))
+                        .lineSpacing(3)
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-            .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         } else {
             HStack(alignment: .top, spacing: 10) {
                 ProviderBrandGlyph(provider: thread.provider.rawValue, size: 22, tinted: true, inTile: true)
@@ -182,9 +486,16 @@ public struct AgentChatView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else if !msg.isStreaming && !msg.isError {
-                        Text(msg.tools.isEmpty ? "Response was interrupted before finishing." : "Completed steps with no final text reply.")
+                        Text(msg.status == "stopped"
+                             ? "Stopped."
+                             : (msg.tools.isEmpty ? "Response was interrupted before finishing." : "Completed steps with no final text reply."))
                             .font(.system(size: 12.5))
                             .foregroundStyle(ToolrollPalette.muted)
+                    }
+
+                    if !msg.artifacts.isEmpty {
+                        artifactGallery(msg.artifacts)
+                            .padding(.top, 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -315,6 +626,8 @@ public struct AgentChatView: View {
         }
     }
 
+    // MARK: - Composer Footer
+
     private var composerFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !currentAttachments.isEmpty {
@@ -394,12 +707,117 @@ public struct AgentChatView: View {
 
     private func sendReply() {
         let trimmed = currentReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !currentAttachments.isEmpty else { return }
-        let composed = ComposerAttachmentStore.composeSubmission(text: trimmed, attachments: currentAttachments)
+        let attachments = currentAttachments
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         store.chatReplyDrafts[thread.id] = ""
         store.chatReplyAttachments[thread.id] = []
         Task {
-            await store.sendChatMessage(threadId: thread.id, text: composed.combinedMessage)
+            await store.sendChatMessage(threadId: thread.id, text: trimmed, attachments: attachments)
+        }
+    }
+}
+
+// MARK: - Authenticated Image Artifact Thumbnail & Lightbox
+
+private struct DirectChatArtifactCard: View {
+    @Bindable var store: WorkbenchStore
+    let artifact: DirectChatArtifact
+    let onOpen: () -> Void
+
+    @State private var loadedImage: NSImage? = nil
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 5) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(ToolrollPalette.codeBg)
+                    if let img = loadedImage {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 156, height: 102)
+                            .clipped()
+                    } else if artifact.isImage {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 22))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                }
+                .frame(width: 156, height: 102)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
+                Text(artifact.filename)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: 156, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+        .task(id: artifact.url) {
+            guard artifact.isImage else { return }
+            if let data = await store.loadDirectChatArtifactData(for: artifact),
+               let img = NSImage(data: data) {
+                loadedImage = img
+            }
+        }
+    }
+}
+
+private struct DirectChatArtifactLightbox: View {
+    @Bindable var store: WorkbenchStore
+    let artifact: DirectChatArtifact
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var loadedImage: NSImage? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(artifact.filename)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    if let src = artifact.sourcePath, !src.isEmpty {
+                        Text(src)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+                    .buttonStyle(KitButtonStyle(.ghost, compact: true))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(ToolrollPalette.raised)
+
+            HairlineDivider()
+
+            ZStack {
+                ToolrollPalette.ground
+                if let img = loadedImage {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(20)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 760, height: 540)
+        .task(id: artifact.url) {
+            if let data = await store.loadDirectChatArtifactData(for: artifact),
+               let img = NSImage(data: data) {
+                loadedImage = img
+            }
         }
     }
 }
