@@ -123,18 +123,23 @@ describe("land on main: the legitimate path", () => {
   test("an unoccupied main moves; no folder's files are touched; the destination is recorded; the same yes again writes nothing", async () => {
     const { head } = built("t1", { "a.txt": "two\n", "b.txt": "new\n" });
     writeFileSync(join(repo, "notes.txt"), "my own work\n");
+    const before = at();
     const read = await readLanding(store, "t1", access(), NOW, options());
-    expect(read.ok && "plan" in read && read.plan).toMatchObject({ mode: "ref", checks: "passed", ref: "refs/heads/main", recorded: false, candidate: head });
+    expect(read.ok && "plan" in read && read.plan).toMatchObject({ mode: "ref", checks: "passed", ref: "refs/heads/main", recorded: false, candidate: head,
+      squash: { policy: "squash", message: "t1 (Toolroll task t1)", fileCount: 2, added: 2, removed: 1 } });
     const { landed } = await landNow("t1");
-    expect(landed).toMatchObject({ ok: true, replayed: false, commit: head, mode: "ref" });
-    expect(at()).toBe(head);
+    expect(landed).toMatchObject({ ok: true, replayed: false, mode: "ref" });
+    // One new commit: the candidate's exact tree on main's commit.
+    expect(at()).toBe(landed?.ok && landed.commit);
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
+    expect(git(repo, "rev-list", "--parents", "-n", "1", "main")).toBe(`${at()} ${before}`);
     // The person's folder (on its own branch, with its own change) is exactly as it was.
     expect(plain(join(repo, "a.txt"))).toBe("one\n");
     expect(plain(join(repo, "notes.txt"))).toBe("my own work\n");
-    expect(landingOf(store, "t1")?.intent.commit).toBe(head);
+    expect(landingOf(store, "t1")?.intent).toMatchObject({ commit: at(), candidate: head });
     if (!read.ok || !("plan" in read)) throw new Error("plan");
     expect(await land(store, "t1", { key: read.plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true });
-    expect(await readLanding(store, "t1", access(), NOW, options())).toMatchObject({ ok: true, landed: { commit: head } });
+    expect(await readLanding(store, "t1", access(), NOW, options())).toMatchObject({ ok: true, landed: { commit: at() } });
   });
 
   test("a project with no check command lands, saying no check ran; one whose checks changed since doesn't", async () => {
@@ -156,10 +161,10 @@ describe("land on main: the legitimate path", () => {
 
 describe("attack: a destination that isn't a free, real branch", () => {
   const refusals: Record<string, { setup: () => void; reason: string; says?: (head: string) => string }> = {
-    "main checked out in the person's own folder": { setup: () => git(repo, "checkout", "-q", "main"), reason: "occupied", says: head => `merge --ff-only ${head}` },
+    "main checked out in the person's own folder": { setup: () => git(repo, "checkout", "-q", "main"), reason: "occupied", says: head => `merge --squash ${head}` },
     "main checked out in another folder": { setup: () => git(repo, "worktree", "add", "-q", join(scratch(), "other"), "main"), reason: "occupied" },
     "main is a symbolic ref to another branch": { setup: () => { git(repo, "branch", "other", "main"); git(repo, "symbolic-ref", "refs/heads/main", "refs/heads/other"); }, reason: "destination" },
-    "main moved on since the work started": { setup: () => { git(repo, "checkout", "-q", "main"); write(join(repo, "c.txt"), "later\n"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "later"); git(repo, "checkout", "-q", "work"); }, reason: "moved", says: head => `merge ${head}` },
+    "main moved on since the work started": { setup: () => { git(repo, "checkout", "-q", "main"); write(join(repo, "c.txt"), "later\n"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "later"); git(repo, "checkout", "-q", "work"); }, reason: "moved", says: () => "bring this task up to date first" },
     "a .git that is a link": { setup: () => { renameSync(join(repo, ".git"), join(scratch(), "real-git")); symlinkSync(join(scratch(), "real-git"), join(repo, ".git")); }, reason: "destination" },
   };
   for (const [name, row] of Object.entries(refusals)) {
@@ -200,12 +205,13 @@ describe("attack: the repository's own config, hooks and attributes", () => {
   };
   test("hooks never run: a reference-transaction hook stays silent while main moves", async () => {
     const { head } = built("t", { "a.txt": "two\n" });
-    for (const hook of ["reference-transaction", "post-checkout", "post-merge"]) {
+    for (const hook of ["reference-transaction", "post-checkout", "post-merge", "post-commit", "pre-commit", "commit-msg"]) {
       writeFileSync(join(repo, ".git", "hooks", hook), `#!/bin/sh\necho ran > '${join(markers, hook)}'\n`);
       chmodSync(join(repo, ".git", "hooks", hook), 0o755);
     }
-    expect((await landNow("t")).landed).toMatchObject({ ok: true, commit: head });
-    for (const hook of ["reference-transaction", "post-checkout", "post-merge"]) expect(existsSync(join(markers, hook)), hook).toBe(false);
+    expect((await landNow("t")).landed).toMatchObject({ ok: true });
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
+    for (const hook of ["reference-transaction", "post-checkout", "post-merge", "post-commit", "pre-commit", "commit-msg"]) expect(existsSync(join(markers, hook)), hook).toBe(false);
   });
 
   const configs: Record<string, (path: string) => void> = {
@@ -339,7 +345,8 @@ describe("attack: races, replays, access and crashes", () => {
   test("a crash before the write: settled as abandoned, and the next landing goes ahead", async () => {
     const { head, base } = built("t", { "a.txt": "two\n" });
     pending(base, head);
-    expect((await landNow("t")).landed).toMatchObject({ ok: true, commit: head });
+    expect((await landNow("t")).landed).toMatchObject({ ok: true });
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
   });
 });
 
@@ -400,6 +407,100 @@ describe("attack: land around a project's pull requests", () => {
   });
 });
 
+describe("squash: exactly the reviewed change lands, as one commit (everyday-9 A1)", () => {
+  /** A candidate carrying two rejected attempts' commits before its last one. */
+  function stacked(id: string): { head: string; rejected: string[] } {
+    const start = at();
+    git(repo, "checkout", "-q", "-b", `rejected-${id}`, "main");
+    const rejected: string[] = [];
+    for (const [n, text] of [["1", "first try\n"], ["2", "second try\n"]] as const) {
+      write(join(repo, "a.txt"), text);
+      git(repo, "commit", "-qam", `rejected attempt ${n}`);
+      rejected.push(at("HEAD"));
+    }
+    // The accepted build starts on the rejected head (a revision), its own commit on top.
+    git(repo, "update-ref", "refs/heads/main", rejected[1]!);
+    const { head } = built(id, { "a.txt": "accepted\n", "b.txt": "new\n" });
+    git(repo, "update-ref", "refs/heads/main", start);
+    return { head, rejected };
+  }
+
+  test("rejected attempts' commits never reach main; the intent binds candidate, base, tree, policy and checks", async () => {
+    const { head, rejected } = stacked("t");
+    const before = at();
+    const { landed } = await landNow("t");
+    expect(landed).toMatchObject({ ok: true });
+    expect(git(repo, "rev-list", "--count", `${before}..main`)).toBe("1");
+    for (const one of rejected) expect(() => git(repo, "merge-base", "--is-ancestor", one, "main"), one).toThrow();
+    expect(git(repo, "show", "main:a.txt")).toBe("accepted");
+    expect(git(repo, "log", "-1", "--format=%s", "main")).toBe("t (Toolroll task t)");
+    const intent = store.handle.prepare("SELECT detail FROM action_ledger WHERE action = ?").get(LAND_INTENT)!;
+    expect(JSON.parse(String(intent["detail"]))).toMatchObject({ policy: "squash", candidate: head, old: before, commit: at(), tree: git(repo, "rev-parse", `${head}^{tree}`), checks: "passed" });
+  });
+
+  test("undo reverts that one commit: main's files are as before the landing", async () => {
+    stacked("t");
+    const before = at();
+    const { landed } = await landNow("t");
+    const squash = landed?.ok === true ? landed.commit : "";
+    const undone = await landNow("t", { undo: true });
+    expect(undone.landed).toMatchObject({ ok: true, kind: "undo" });
+    expect(git(repo, "rev-parse", "main^")).toBe(squash);
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${before}^{tree}`));
+  });
+
+  /** What a landing that died after making its commit leaves: that commit, and an unsettled intent naming it. */
+  const diedAfterCommit = (head: string): string => {
+    const before = at();
+    const squash = git(repo, "commit-tree", `${head}^{tree}`, "-p", before, "-m", "t (Toolroll task t)");
+    const runId = store.runsFor(store.lookupRef("t")!.id)[0]!.id;
+    recordActionWhole(store.handle, { at: NOW.toISOString(), actor: "operator:alex", repo, taskId: "t", runId, action: LAND_INTENT, outcome: "pending", source: "request" },
+      { v: 1, kind: "land", key: "0".repeat(16), ref: "refs/heads/main", old: before, commit: squash, mode: "ref", policy: "squash", candidate: head, tree: git(repo, "rev-parse", `${head}^{tree}`), checks: "passed" });
+    return squash;
+  };
+
+  test("a crash between making the commit and moving main: the next landing settles it as abandoned and lands once", async () => {
+    const { head } = stacked("t");
+    const before = at();
+    diedAfterCommit(head);
+    expect((await landNow("t")).landed).toMatchObject({ ok: true });
+    expect(git(repo, "rev-list", "--count", `${before}..main`)).toBe("1");
+    const outcomes = store.handle.prepare("SELECT outcome FROM action_ledger WHERE action = ? ORDER BY id").all(LAND_SETTLED).map(row => String(row["outcome"]).replace(/^\d+:/, ""));
+    expect(outcomes).toEqual(["abandoned", "landed"]);
+  });
+
+  test("a crash right after main moved: recovery records it landed, and the same task offers nothing more to land", async () => {
+    const { head } = stacked("t");
+    const squash = diedAfterCommit(head);
+    git(repo, "update-ref", "refs/heads/main", squash, at());
+    await land(store, "t", { key: "f".repeat(16), into: "main" }, person, access(), NOW, options());
+    expect(landingOf(store, "t")?.intent).toMatchObject({ commit: squash, candidate: head });
+    expect(await readLanding(store, "t", access(), NOW, options())).toMatchObject({ ok: true, landed: { commit: squash } });
+    expect(at()).toBe(squash);
+  });
+
+  test("a stale yes: main moved after the look (even forward), so the yes refuses and nothing lands", async () => {
+    stacked("t");
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    const other = git(repo, "commit-tree", `${at()}^{tree}`, "-p", at(), "-m", "someone else");
+    git(repo, "update-ref", "refs/heads/main", other);
+    expect(await land(store, "t", { key: read.plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: false });
+    expect(at()).toBe(other);
+  });
+
+  test("the first yes replayed after an undo writes nothing", async () => {
+    stacked("t");
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    expect(await land(store, "t", { key: read.plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: false });
+    await landNow("t", { undo: true });
+    const undone = at();
+    expect(await land(store, "t", { key: read.plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true });
+    expect(at()).toBe(undone);
+  });
+});
+
 describe("the command", () => {
   test("bare shows what lands and its key; --yes --key lands it with a password; a missing key refuses", async () => {
     const { head } = built("t", { "a.txt": "two\n" });
@@ -408,10 +509,10 @@ describe("the command", () => {
     store.close();
     expect(await cli(["land", "t", "--into", "main"]), lines.join("\n")).toBe(EXIT.ok);
     const key = /--key ([0-9a-f]{16})/.exec(lines.join("\n"))?.[1];
-    expect(lines.join("\n")).toContain(`Land ${head.slice(0, 7)} on main`);
+    expect(lines.join("\n")).toContain("Lands 1 commit on main: a.txt (+1 −1).");
     expect(await cli(["land", "t", "--into", "main", "--yes", "--as", "alex", "--token", password])).toBe(EXIT.usage);
     expect(await cli(["land", "t", "--into", "main", "--yes", "--key", key!, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.ok);
-    expect(git(repo, "rev-parse", "main")).toBe(head);
+    expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
     store = openStore(join(scratch(), "orders.db"));
   });
 });

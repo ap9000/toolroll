@@ -7,9 +7,13 @@
  * The rules, each enforced here and tried by local-landing.attack.test.ts:
  * - Only a completed task whose completion is today's exact receipt; checks passed on exactly the candidate commit,
  *   or the project has no check command at all (the screen then says "No check ran").
- * - The candidate is the result's recorded head commit, never anything a checkout says. It lands only as a
- *   fast-forward of the destination's current commit; when the branch moved past the work's start, nothing lands (a
- *   merged commit would need a check of its own) and the exact git commands are said instead.
+ * - The candidate is the result's recorded head commit, never anything a checkout says. It lands as ONE new commit
+ *   (everyday-9 A1, "squash"): the candidate's exact tree on top of the destination's current commit, made with
+ *   `commit-tree`, so rejected attempts' commits never reach the branch. Only when the destination's commit is an
+ *   ancestor of the candidate (the fast-forward condition), so nothing on the branch is ever dropped; when the branch
+ *   moved past the work's start, nothing lands and the person is told to bring the task up to date first. The
+ *   candidate, the family's start, the destination's commit, the tree, the check policy and "squash" are all in what
+ *   the person says yes to and in the recovery record; the commit made is recorded before the branch moves.
  * - Every git call goes through the hardened helper (teardown-git.ts: no hooks, no config includes or commands, no
  *   global or system config), bound to the project's recorded main checkout. A repository whose config names a
  *   command, or whose files need Git filters (Git LFS, encodings) or hold submodules, is refused, never altered.
@@ -22,7 +26,7 @@
  *   command, setup and check access) are still the ones the person read. Every landing writes its intent first and its
  *   outcome after (the recovery record); an intent left unsettled by a crash is settled only from what the
  *   (non-symbolic) branch shows, never by touching files, and only for someone who may land in that project.
- * - Undo makes a new commit that reverts exactly the landed commits, on the branch as it is now, and lands it the same
+ * - Undo makes a new commit that reverts exactly the landed commit, on the branch as it is now, and lands it the same
  *   way: history is never rewritten.
  *
  * A Toolroll lock (one unsettled intent per project) keeps Toolroll's own writers apart; it can't keep an editor or
@@ -42,6 +46,7 @@ import { recordActionWhole } from "./action-ledger.js";
 import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { localActNow, LOCAL_OWNER_LAPSED } from "./local-owner.js";
 import { publishingOf } from "./pull-request-flow.js";
+import { wholeChangeBaseOf } from "./task-base.js";
 
 export const LAND_DESTINATION = "land destination";
 export const LAND_INTENT = "land intent";
@@ -57,8 +62,11 @@ export type LandingPlan = {
   repo: string; ref: string; branch: string;
   /** The branch's commit now (the expected old value of the swap). */
   old: string;
-  /** land: the result's commit. undo: null until the revert commit is made at the act. */
+  /** land: the result's commit, whose exact tree lands. undo: null until the revert commit is made at the act. */
   candidate: string | null;
+  /** land: the one commit it makes (everyday-9 A1): the candidate's tree on `old`, its message, the family's start the
+   * reviewed change ran from, and what it changes. Null for undo. */
+  squash: Squash | null;
   /** Always ref in this slice: only an unoccupied branch moves, never a checkout's files. */
   mode: "ref";
   /** passed: checks passed on exactly the candidate; none: the project has no check command. Undo: none. */
@@ -72,6 +80,7 @@ export type LandingPlan = {
   /** A short pin of everything above: the yes names it, and a stale one refuses. */
   key: string;
 };
+export type Squash = { policy: "squash"; base: string | null; tree: string; message: string; files: string[]; fileCount: number; added: number; removed: number };
 export type CheckBindings = { full: string | null; quick: string | null; setup: string | null; access: string };
 /** The project's check command, quick command, setup and check access as they stand now. */
 function checkBindingsOf(store: Store, repo: string): CheckBindings {
@@ -132,12 +141,16 @@ export function recordedDestination(store: Store, repo: string): { ref: string; 
   const ref = row?.detail["ref"], common = row?.detail["common"];
   return typeof ref === "string" && typeof common === "string" ? { ref, common } : null;
 }
-type Intent = { id: number; at: string; repo: string; task: string; run: number; kind: "land" | "undo"; ref: string; old: string; commit: string; mode: "files" | "ref"; key: string; reverts: number | null };
+/** A landing's recovery record. `commit` is what the branch moves to (a squash landing's one commit, an undo's revert
+ * commit, or an earlier version's fast-forwarded candidate); `candidate` the result's commit it carries (the commit itself
+ * for an intent recorded before squash landing). */
+type Intent = { id: number; at: string; repo: string; task: string; run: number; kind: "land" | "undo"; ref: string; old: string; commit: string; candidate: string; mode: "files" | "ref"; key: string; reverts: number | null };
 function intentOf(row: LedgerRow & { repo: string; task: string; run: number }): Intent | null {
   const d = row.detail;
   if (d["v"] !== 1 || typeof d["ref"] !== "string" || typeof d["old"] !== "string" || typeof d["commit"] !== "string" || !OID.test(d["old"]) || !OID.test(d["commit"])
     || (d["mode"] !== "files" && d["mode"] !== "ref") || typeof d["key"] !== "string" || (d["kind"] !== "land" && d["kind"] !== "undo")) return null;
-  return { id: row.id, at: row.at, repo: row.repo, task: row.task, run: row.run, kind: d["kind"], ref: d["ref"], old: d["old"], commit: d["commit"], mode: d["mode"], key: d["key"],
+  const candidate = typeof d["candidate"] === "string" && OID.test(d["candidate"]) ? d["candidate"] : d["commit"];
+  return { id: row.id, at: row.at, repo: row.repo, task: row.task, run: row.run, kind: d["kind"], ref: d["ref"], old: d["old"], commit: d["commit"], candidate, mode: d["mode"], key: d["key"],
     reverts: typeof d["reverts"] === "number" ? d["reverts"] : null };
 }
 function intents(store: Store, where: string, args: (string | number)[]): Intent[] {
@@ -253,15 +266,18 @@ export async function readLanding(store: Store, taskId: string, access: { repos:
   const candidate = receipt.head;
   if (candidate === null || !OID.test(candidate) || receipt.completionKind === "research-report") return refuse("nothing", "This result has no commit to land.");
   const landed = landingOf(store, assignment.rootId);
-  if (landed !== null && !landed.undone && landed.intent.commit === candidate) return { ok: true, landed: { at: landed.at, ref: landed.intent.ref, commit: landed.intent.commit, mode: landed.intent.mode } };
+  if (landed !== null && !landed.undone && landed.intent.candidate === candidate) return { ok: true, landed: { at: landed.at, ref: landed.intent.ref, commit: landed.intent.commit, mode: landed.intent.mode } };
   // Exactly checked: the sealed receipt's check passed on this commit (verification-evidence.ts binds it to the head), or
   // the project has no check command at all.
   const checks = receipt.checks.status === "passed" ? "passed" as const : !projectCheckSet(store, project.repo) && receipt.checks.status === "not-run" ? "none" as const : null;
   if (checks === null) return refuse("checks", receipt.checks.status === "failed" ? "Its checks failed. Only work whose checks passed on its exact commit lands." : "Its checks haven't passed on its exact commit. Run checks, then land it.");
   const destination = await destinationOf(store, project, git, options.into);
   if (!destination.ok) return destination;
+  // The family's start the reviewed change ran from (task-base.ts), from Toolroll's run record: bound, for the record.
+  const run = store.getRun(receipt.runId);
+  const base = run === null || run.branch === null ? null : wholeChangeBaseOf(store, run.taskRef, run.branch) ?? run.baseRevision;
   return planFor(git, project, destination, { kind: "land", taskId: receipt.taskId, rootId: assignment.rootId, runId: receipt.runId, receipt: receipt.digest, candidate, checks,
-    bindings: checkBindingsOf(store, project.repo) });
+    bindings: checkBindingsOf(store, project.repo) }, { base, message: squashMessage(store.getTask(receipt.taskId)?.title ?? null, receipt.taskId) });
 }
 
 async function destinationOf(store: Store, project: { repo: string; common: string }, git: Git, into: string | undefined): Promise<{ ok: true; ref: string; recorded: boolean } | { ok: false; reason: LandRefusal; message: string }> {
@@ -282,13 +298,37 @@ async function destinationOf(store: Store, project: { repo: string; common: stri
   return { ok: true, ref, recorded: false };
 }
 
+/** The one landed commit's message: "<task title> (Toolroll task <id>)", one plain line. */
+function squashMessage(title: string | null, taskId: string): string {
+  const line = (title ?? "").replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+  return line === "" ? `Toolroll task ${taskId}` : `${line} (Toolroll task ${taskId})`;
+}
+
 /** The git command the person can run themselves in their own checkout, for a refusal. */
 function ownCommand(repo: string, fixed: Pick<LandingPlan, "candidate" | "reverts">): string {
-  return fixed.candidate !== null ? `git -C ${repo} merge --ff-only ${fixed.candidate}` : `git -C ${repo} revert --no-edit ${fixed.reverts!.old}..${fixed.reverts!.landed}`;
+  if (fixed.candidate === null) return `git -C ${repo} revert --no-edit ${fixed.reverts!.old}..${fixed.reverts!.landed}`;
+  return `git -C ${repo} merge --squash ${fixed.candidate} && git -C ${repo} commit`;
+}
+
+/** What landing `candidate` on `old` changes, file by file: names, count and lines added and removed. */
+async function changesOf(git: Git, old: string, candidate: string): Promise<Pick<Squash, "files" | "fileCount" | "added" | "removed"> | null> {
+  const stat = await git(["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", old, candidate]);
+  if (stat.code !== 0) return null;
+  const files: string[] = [];
+  let added = 0, removed = 0;
+  for (const entry of stat.stdout.split("\0")) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(entry);
+    if (match === null) continue;
+    added += match[1] === "-" ? 0 : Number(match[1]);
+    removed += match[2] === "-" ? 0 : Number(match[2]);
+    files.push(match[3]!);
+  }
+  return { files: files.slice(0, 20), fileCount: files.length, added, removed };
 }
 
 async function planFor(git: Git, project: { repo: string; common: string }, destination: { ref: string; recorded: boolean },
-  fixed: Pick<LandingPlan, "kind" | "taskId" | "rootId" | "runId" | "receipt" | "candidate" | "checks" | "reverts" | "bindings">): Promise<LandingRead> {
+  fixed: Pick<LandingPlan, "kind" | "taskId" | "rootId" | "runId" | "receipt" | "candidate" | "checks" | "reverts" | "bindings">,
+  squashing: { base: string | null; message: string } | null = null): Promise<LandingRead> {
   const { ref } = destination;
   const branch = ref.slice("refs/heads/".length);
   const read = await git(["rev-parse", "--verify", "-q", `${ref}^{commit}`]);
@@ -300,16 +340,23 @@ async function planFor(git: Git, project: { repo: string; common: string }, dest
     if (type.code !== 0 || type.stdout.trim() !== "commit") return refuse("git", `This result's commit ${short(fixed.candidate)} is no longer in the project.`);
     const ancestor = await git(["merge-base", "--is-ancestor", old, fixed.candidate]);
     if (ancestor.code === 1) {
-      return refuse("moved", `${branch} moved on since this work started (it's at ${short(old)} now), so it can't land as a fast-forward. `
-        + `A merged commit would need its own check. To merge it yourself: git -C ${project.repo} merge ${fixed.candidate}`);
+      return refuse("moved", `${branch} moved on since this work started (it's at ${short(old)} now): bring this task up to date first. `
+        + `Send it back to build on the current ${branch}; landing it as it is would drop or mix in changes nobody checked together.`);
     }
     if (ancestor.code !== 0) return refuse("git", "Toolroll couldn't compare the commits.");
     const problem = await treeProblem(git, fixed.candidate) ?? await treeProblem(git, old);
     if (problem !== null) return refuse("unsupported", `This project can't be landed by Toolroll: ${problem}. Land it with git yourself.`);
   }
+  let squash: Squash | null = null;
+  if (fixed.candidate !== null) {
+    const tree = await git(["rev-parse", "--verify", "-q", `${fixed.candidate}^{tree}`]);
+    const changes = await changesOf(git, old, fixed.candidate);
+    if (tree.code !== 0 || !OID.test(tree.stdout.trim()) || changes === null) return refuse("git", `Toolroll couldn't read what ${short(fixed.candidate)} changes.`);
+    squash = { policy: "squash", base: squashing?.base ?? null, tree: tree.stdout.trim(), message: squashing?.message ?? `Toolroll task ${fixed.taskId}`, ...changes };
+  }
   const blocked = await refProblem(git, project.repo, ref, null, ownCommand(project.repo, fixed));
   if (blocked !== null) return refuse(blocked.reason, blocked.message);
-  const plan: Omit<LandingPlan, "key"> = { ...fixed, repo: project.repo, ref, branch, old, mode: "ref", recorded: destination.recorded };
+  const plan: Omit<LandingPlan, "key"> = { ...fixed, squash, repo: project.repo, ref, branch, old, mode: "ref", recorded: destination.recorded };
   return { ok: true, plan: { ...plan, key: keyOf({ v: 1, ...plan, common: project.common }) } };
 }
 
@@ -326,11 +373,14 @@ async function readUndo(store: Store, rootId: string, project: { repo: string; c
 export function landingWords(plan: LandingPlan): string[] {
   const where = `${plan.branch} in ${plan.repo} (no folder has it checked out; only the branch moves)`;
   if (plan.kind === "undo") {
-    return [`Undo the landing of ${short(plan.reverts!.old)}..${short(plan.reverts!.landed)} on ${where}.`,
-      "A new commit reverts exactly those changes; nothing is rewritten. No check runs on the undo."];
+    return [`Undo the landing of ${short(plan.reverts!.landed)} on ${where}.`,
+      "A new commit reverts exactly what it changed; nothing is rewritten. No check runs on the undo."];
   }
-  return [`Land ${short(plan.candidate!)} on ${where}, as a fast-forward from ${short(plan.old)}.`,
-    plan.checks === "passed" ? `Checks passed on ${short(plan.candidate!)}.` : "No check ran: this project has no check command.",
+  const squash = plan.squash!;
+  const names = squash.files.slice(0, 3).join(", ") + (squash.fileCount > 3 ? ` and ${squash.fileCount - 3} more` : "");
+  return [`Lands 1 commit on ${plan.branch}: ${squash.fileCount === 0 ? "no file changes" : names} (+${squash.added} −${squash.removed}).`,
+    `"${squash.message}", on top of ${short(plan.old)} in ${plan.repo} (no folder has ${plan.branch} checked out; only the branch moves).`,
+    plan.checks === "passed" ? `Checks passed on ${short(plan.candidate!)}, whose files it lands exactly.` : "No check ran: this project has no check command.",
     ...(plan.recorded ? [] : [`Toolroll remembers ${plan.branch} as where this project's work lands.`])];
 }
 
@@ -438,16 +488,14 @@ export async function land(store: Store, taskId: string, input: { key: string; i
       if (JSON.stringify(checkBindingsOf(store, plan.repo)) !== JSON.stringify(plan.bindings)) return refuse("stale", "The project's checks changed since you looked. Look again, then land it.");
       return who;
     };
-    // The undo's commit is made now, in a temporary checkout of its own, from the branch as read: only for someone who
-    // may land here (proved again with the intent below).
-    let commit = plan.candidate;
-    if (plan.kind === "undo") {
-      const pre = standing(store, authority, plan.repo);
-      if (!pre.ok) return pre;
-      const made = await revertCommit(git, plan, options.scratch);
-      if (!made.ok) return made;
-      commit = made.commit;
-    }
+    // The commit the branch moves to is made now, from what the person read, only for someone who may land here
+    // (proved again with the intent below): a landing's one commit (the candidate's tree on the branch's commit, no
+    // checkout involved), or the undo's revert, in a temporary checkout of its own.
+    const pre = standing(store, authority, plan.repo);
+    if (!pre.ok) return pre;
+    const made = plan.kind === "undo" ? await revertCommit(git, plan, options.scratch) : await squashCommit(git, plan);
+    if (!made.ok) return made;
+    const commit = made.commit;
     // The intent, with everything re-read in one transaction (the durable lock: one unsettled intent per project).
     let intentId: number;
     try {
@@ -458,7 +506,8 @@ export async function land(store: Store, taskId: string, input: { key: string; i
         if (!plan.recorded) recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: null, runId: null, action: LAND_DESTINATION, outcome: plan.ref, source: "request" },
           { v: 1, ref: plan.ref, common: project.common });
         return recordActionWhole(store.handle, { at: now.toISOString(), actor: who.actor, repo: plan.repo, taskId: plan.rootId, runId: plan.runId, action: LAND_INTENT, outcome: "pending", source: "request" },
-          { v: 1, kind: plan.kind, key: plan.key, ref: plan.ref, old: plan.old, commit, mode: "ref", ...(plan.reverts === undefined ? {} : { reverts: plan.reverts.intent }) });
+          { v: 1, kind: plan.kind, key: plan.key, ref: plan.ref, old: plan.old, commit, mode: "ref", ...(plan.reverts === undefined ? {} : { reverts: plan.reverts.intent }),
+            ...(plan.squash === null ? {} : { policy: "squash", candidate: plan.candidate, base: plan.squash.base, tree: plan.squash.tree, checks: plan.checks }) });
       });
     } catch (error) {
       if (error instanceof Refused) return error.result;
@@ -472,19 +521,34 @@ export async function land(store: Store, taskId: string, input: { key: string; i
     if (blocked !== null) { settle("refused", blocked.message); return refuse(blocked.reason, blocked.message); }
     const last = store.transact(stillStands);
     if (!last.ok) { settle("refused", last.message); return last; }
-    const swapped = await git(["update-ref", "--no-deref", "-m", `toolroll: land ${plan.taskId}`, plan.ref, commit!, plan.old]);
+    const swapped = await git(["update-ref", "--no-deref", "-m", `toolroll: land ${plan.taskId}`, plan.ref, commit, plan.old]);
     if (swapped.code !== 0) {
       const words = `${plan.branch} moved while landing, so nothing changed. Look again, then land it.`;
       settle("refused", words);
       return refuse("moved", words);
     }
     settle("landed", plan.kind === "undo" ? "Undone." : "Landed.");
-    return { ok: true, replayed: false, kind: plan.kind, ref: plan.ref, branch: plan.branch, commit: commit!, old: plan.old, mode: "ref", warning: null };
+    return { ok: true, replayed: false, kind: plan.kind, ref: plan.ref, branch: plan.branch, commit, old: plan.old, mode: "ref", warning: null };
   });
 }
 
 class Refused extends Error {
   constructor(readonly result: { ok: false; reason: LandRefusal; message: string }) { super(result.message); }
+}
+
+/** The landing's one commit: exactly the candidate's tree, its only parent the branch's commit as read, the message the
+ * person read. Written as an object only (`commit-tree`: no checkout, index or ref is touched); checked back before use. */
+async function squashCommit(git: Git, plan: LandingPlan): Promise<{ ok: true; commit: string } | { ok: false; reason: LandRefusal; message: string }> {
+  const squash = plan.squash!;
+  const identity = ["-c", "user.name=Toolroll", "-c", "user.email=land@toolroll.invalid", "-c", "commit.gpgsign=false"];
+  const made = await git([...identity, "commit-tree", squash.tree, "-p", plan.old, "-m", squash.message]);
+  const commit = made.stdout.trim();
+  if (made.code !== 0 || !OID.test(commit)) return refuse("git", "Toolroll couldn't make the landing commit.");
+  const shown = await git(["cat-file", "commit", commit]);
+  const header = shown.stdout.split("\n\n")[0] ?? "";
+  const parents = header.split("\n").filter(line => line.startsWith("parent ")).map(line => line.slice("parent ".length));
+  if (shown.code !== 0 || !header.startsWith(`tree ${squash.tree}\n`) || parents.length !== 1 || parents[0] !== plan.old) return refuse("git", "Toolroll couldn't make the landing commit.");
+  return { ok: true, commit };
 }
 
 /** A commit on the branch's current commit that reverts exactly the landed range, made in a temporary detached checkout
