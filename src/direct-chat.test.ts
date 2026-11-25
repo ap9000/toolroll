@@ -995,7 +995,8 @@ describe("DirectChatHost & helpers", () => {
       expect(leadMsgs[0]!.role).toBe("assistant");
       expect(leadMsgs[0]!.turn).toBeNull();
       expect(leadMsgs[0]!.text).toContain("Direct Chat finished");
-      expect(leadMsgs[0]!.text).toContain("2 files changed — ready to review or ship.");
+      // The notice links the chat's own page (everyday-8 #6).
+      expect(leadMsgs[0]!.text).toContain(`2 files changed. [Review it](/direct-chats/${started.thread.id})`);
       expect(leadMsgs[0]!.text).toContain("Refactored header spacing");
     } finally {
       host.close();

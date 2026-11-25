@@ -320,6 +320,9 @@ export const CONSOLE_FORMS = {
   directChatShipPreview: formContract("POST /engine/direct-chats/<id>/ship-preview", ["mode", "title", "goal"]),
   directChatShip: formContract("POST /engine/direct-chats/<id>/ship", ["mode", "title", "goal", "termsDigest", "password"]),
   directChatShipCancel: formContract("POST /engine/direct-chats/<id>/ship-cancel", ["shipId"]),
+  // The Direct Chat pages' Ship (everyday-8 #6): its review, then the yes with the terms digest the review showed.
+  directChatPageShipReview: formContract("POST /direct-chats/<id>/ship-review", []),
+  directChatPageShip: formContract("POST /direct-chats/<id>/ship", ["mode", "termsDigest", "title", "goal", "password"]),
 } as const;
 
 export type ConsoleFormName = keyof typeof CONSOLE_FORMS;

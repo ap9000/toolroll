@@ -221,6 +221,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "direct-chat.repair": "direct-chat-manage",
   "direct-chat.ship-preview": "read",
   "direct-chat.ship": "direct-chat-ship",
+  "direct-chat.page-ship-review": "read",
+  "direct-chat.page-ship": "direct-chat-ship",
   "direct-chat.ship-cancel": "direct-chat-manage",
   // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
   // the installation's models on a solo install (each writer re-checks its exact act).
@@ -449,6 +451,9 @@ get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sampl
 const DIRECT_CHAT = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Direct chat is for local solo operators.", "/") } as const;
 get("tasks", "direct-chat.list", "/engine/direct-chats", DIRECT_CHAT);
 get("tasks", "direct-chat.detail", `^\\/engine\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}` });
+// The pages (everyday-8 #6): the same chats, as a browser with no app reads them.
+get("tasks", "direct-chat.page-list", "/direct-chats", DIRECT_CHAT);
+get("tasks", "direct-chat.page", `^\\/direct-chats\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}` });
 get("tasks", "direct-chat.artifact", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/artifacts\\/${TERMINAL}$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/artifacts/${"b".repeat(32)}` });
 get("pages", "projects.browse", "/projects/browse", free);
 // The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
@@ -676,6 +681,9 @@ post("tasks", "direct-chat.repair", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/r
 // Reading a chat clone's git diff for Ship preview runs git in an agent-writable workspace, so it is a POST (never a GET).
 post("tasks", "direct-chat.ship-preview", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-preview$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-preview` });
 post("tasks", "direct-chat.ship", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/engine/direct-chats/${"a".repeat(32)}/ship` });
+// Ship from the page: its terms read in the chat's clone (a POST, never a GET), then the yes, as the API's ship is.
+post("tasks", "direct-chat.page-ship-review", `^\\/direct-chats\\/${TERMINAL}\\/ship-review$`, { ...DIRECT_CHAT, sample: `/direct-chats/${"a".repeat(32)}/ship-review` });
+post("tasks", "direct-chat.page-ship", `^\\/direct-chats\\/${TERMINAL}\\/ship$`, { ...DIRECT_CHAT, scope: "step-up", sample: `/direct-chats/${"a".repeat(32)}/ship` });
 post("tasks", "direct-chat.ship-cancel", `^\\/engine\\/direct-chats\\/${TERMINAL}\\/ship-cancel$`, { ...DIRECT_CHAT, sample: `/engine/direct-chats/${"a".repeat(32)}/ship-cancel` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page

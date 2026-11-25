@@ -45,7 +45,7 @@ test("every route row is marked for the local owner; an allow names one of its a
     "decision.answer=answer-question",
     // Direct Chat (server-backed local-clone agent chats, loopback + solo only; src/server/direct-chat.ts re-checks each act).
     "direct-chat.apply-main=direct-chat-manage", "direct-chat.attach=direct-chat-send", "direct-chat.delete=direct-chat-manage",
-    "direct-chat.model=direct-chat-manage", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
+    "direct-chat.model=direct-chat-manage", "direct-chat.page-ship-review=read", "direct-chat.page-ship=direct-chat-ship", "direct-chat.repair=direct-chat-manage", "direct-chat.send=direct-chat-send", "direct-chat.ship-cancel=direct-chat-manage",
     "direct-chat.ship-preview=read", "direct-chat.ship=direct-chat-ship", "direct-chat.start=direct-chat-start", "direct-chat.stop=direct-chat-stop",
     // The Agents screen (terminal workbench): looking for agents again, an agent's own sign-in or install in a pane, and
     // the installation's models on a solo install (model-choices.ts re-checks `change-models` and solo).
