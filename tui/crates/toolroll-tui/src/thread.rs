@@ -250,6 +250,38 @@ pub fn ship_outcome(ship: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// A thread's list row brought up to the facts its window just read: its latest turn (number and state), its end and
+/// its latest Ship. True when anything moved (its place in the list may have).
+pub fn follow_facts(row: &mut ThreadRow, facts: &ThreadFacts) -> bool {
+    let before = (
+        row.turn.clone(),
+        row.turn_seq,
+        row.ended,
+        row.ship.clone(),
+        row.ship_seq,
+    );
+    if let Some(turn) = &facts.turn {
+        row.turn = Some(turn.status.clone());
+        row.turn_seq = Some(turn.seq);
+    }
+    if let Some(ended) = &facts.ended {
+        row.ended = true;
+        row.stop_pending = ended.stop_pending;
+    }
+    if let Some(ship) = &facts.ship {
+        row.ship = Some(ship.state.clone());
+        row.ship_seq = Some(ship.seq);
+    }
+    before
+        != (
+            row.turn.clone(),
+            row.turn_seq,
+            row.ended,
+            row.ship.clone(),
+            row.ship_seq,
+        )
+}
+
 /// Said when a thread act is asked for with no thread selected.
 pub const NO_THREAD_SELECTED: &str = "Select a thread first.";
 /// Said in the reply box when the thread's agent isn't running: the reply starts a fresh one (no `--resume`: D7), which
@@ -261,8 +293,9 @@ pub const REPLY_STARTS_FRESH: &str =
 pub const REPLY_WAITS_FOR_TURN: &str =
     "The agent is still working on your last message. Your reply stays here: press Enter once it finishes, or stop it with x.";
 
-/// Whether the thread's latest turn is still working (admitted or running), as the console last listed it.
-fn turn_working(app: &App, thread: &str) -> bool {
+/// Whether the thread's latest turn is still working (admitted or running), as the console last read it (the list,
+/// kept up with the thread's own window: app.rs got_thread).
+pub fn turn_working(app: &App, thread: &str) -> bool {
     app.threads
         .rows
         .iter()

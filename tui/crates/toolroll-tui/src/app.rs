@@ -2909,8 +2909,20 @@ impl App {
         };
         let mut changed = view.transcript.live != window.live;
         view.transcript.live = window.live;
+        // The list's row for this thread follows what was just read (its turn ended, it was ended, its Ship moved), so
+        // a reply right after "turn N done" is judged by the same facts the screen shows, not an older list.
+        let mut row_moved = false;
+        if let Some(row) = self.threads.rows.iter_mut().find(|t| t.id == id) {
+            if row.live != window.live {
+                row.live = window.live;
+                row_moved = true;
+            }
+        }
         if let Some(facts) = window.thread {
             if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
+                if let Some(row) = self.threads.rows.iter_mut().find(|t| t.id == id) {
+                    row_moved |= crate::thread::follow_facts(row, &facts);
+                }
                 view.facts = Some(facts);
                 changed = true;
             }
@@ -2937,6 +2949,17 @@ impl App {
         view.quiet = if changed { 0 } else { (view.quiet + 1).min(3) };
         view.due = (1u32 << view.quiet) - 1;
         crate::thread::check_pin(self);
+        if row_moved {
+            // Its place and word in the list, from the row as it stands now.
+            self.all_items.retain(|i| !i.thread);
+            self.all_items.extend(self.threads.items());
+            sort_sections(&mut self.all_items);
+            self.recount_needs();
+            self.items = self.filtered();
+            if let Some(at) = self.items.iter().position(|i| i.thread && i.id == id) {
+                self.selected = at;
+            }
+        }
         match more {
             Some(cursor) => {
                 let view = self.threads.view.as_mut().unwrap();
@@ -4972,9 +4995,16 @@ impl App {
                 if crate::thread::shipping(self) {
                     crate::thread::open_send_back(self)
                 } else {
+                    let ended = self
+                        .thread_selected()
+                        .is_some_and(|id| self.threads.rows.iter().any(|t| t.id == id && t.ended));
                     self.say(
                         Tone::Refused,
-                        "Nothing of this thread is shipping to send back. s replies to it.",
+                        if ended {
+                            "Nothing of this thread is shipping to send back, and it has ended. T starts a new thread."
+                        } else {
+                            "Nothing of this thread is shipping to send back. s replies to it."
+                        },
                     );
                     vec![]
                 }

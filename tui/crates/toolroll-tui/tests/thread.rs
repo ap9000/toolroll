@@ -1394,3 +1394,67 @@ fn a_thread_with_nothing_committed_says_so_on_its_diff_tab() {
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("No committed changes yet."), "{shown}");
 }
+
+#[test]
+fn a_reply_right_after_the_turn_is_done_goes_even_before_the_list_is_read_again() {
+    // The list still says the turn runs; the thread's own window then says it finished.
+    let mut app = thread_app(window());
+    let mut done = window();
+    done["live"] = json!(false);
+    done["thread"]["version"] = json!("2222222222222222");
+    done["thread"]["turn"]["status"] = json!("finished");
+    done["window"]["records"] = json!([]);
+    app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(done))));
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("done"), "{shown}");
+    app.key(key('s'));
+    for c in "Now add a test".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(enter());
+    assert!(
+        matches!(fx.as_slice(), [Effect::Act { path, .. }] if path.ends_with("/turn")),
+        "{fx:?} {:?}",
+        app.status
+    );
+}
+
+#[test]
+fn the_key_bar_names_a_threads_own_keys_for_its_state() {
+    let mut app = thread_app(window());
+    app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
+    let shown = screen(&mut app, 160, 30);
+    let bar = shown
+        .lines()
+        .rev()
+        .find(|l| l.contains("all actions"))
+        .unwrap()
+        .to_string();
+    for words in ["s reply", "a ship", "X end"] {
+        assert!(bar.contains(words), "{bar}");
+    }
+    assert!(!bar.contains("x stop"), "{bar}");
+    // Ended: no reply and no end, and r says where to go instead of "s replies to it".
+    let mut list = threads_with("finished", false);
+    list["threads"][0]["ended"] = json!(true);
+    app.update(Msg::Threads(Ok(parse(list))));
+    app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    let shown = screen(&mut app, 160, 30);
+    let bar = shown
+        .lines()
+        .rev()
+        .find(|l| l.contains("all actions"))
+        .unwrap()
+        .to_string();
+    assert!(!bar.contains("s reply") && !bar.contains("X end"), "{bar}");
+    app.key(key('r'));
+    let said = app
+        .status
+        .as_ref()
+        .map(|(_, w)| w.clone())
+        .unwrap_or_default();
+    assert!(
+        said.contains("T starts a new thread") && !said.contains("s replies"),
+        "{said}"
+    );
+}

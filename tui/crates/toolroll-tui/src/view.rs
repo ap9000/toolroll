@@ -3655,6 +3655,30 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[Pause], "plan"));
         }
     };
+    // A thread's own acts, only the ones its state allows: reply once its turn is done, stop while it works, ship,
+    // end; while its Ship is on its way, stop that Ship or send it back.
+    let thread_acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
+        let Some(id) = app.thread_selected() else {
+            return;
+        };
+        let ended = app.threads.rows.iter().any(|t| t.id == id && t.ended);
+        if crate::thread::shipping(app) {
+            v.push((&[Stop], "stop ship"));
+            v.push((&[SendBack], "send back"));
+            return;
+        }
+        if crate::thread::turn_working(app, &id) {
+            v.push((&[Stop], "stop"));
+        } else {
+            if !ended {
+                v.push((&[Steer], "reply"));
+            }
+            v.push((&[Accept], "ship"));
+        }
+        if !ended {
+            v.push((&[CancelTask], "end"));
+        }
+    };
     let mut out: Vec<(String, &'static str)> = vec![];
     if matches!(app.mode, Mode::ChatCompose(_)) {
         out.push(("Enter".into(), "send"));
@@ -3701,6 +3725,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                     (&[LineDown, LineUp], "line"),
                     (&[PreviousFile, NextFile], "file"),
                 ];
+                thread_acts(&mut v);
                 v
             }
             Tab::Diff => {
@@ -3764,6 +3789,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                 let mut v: Vec<(&[Action], &str)> =
                     vec![(&[MoveDown, MoveUp], "scroll"), (&[Search], "search")];
                 acts(&mut v);
+                thread_acts(&mut v);
                 if app.panes.layout.count() > 1 {
                     v.push((&[NextPane], "next panel"));
                 }
@@ -3787,6 +3813,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             five.push((&[NextPane], "next panel"));
         }
         acts(&mut five);
+        thread_acts(&mut five);
         five.push((&[NewTask], "new"));
         for (a, what) in five {
             let k = keys_name(app, a);
