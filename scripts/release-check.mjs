@@ -182,9 +182,13 @@ export function parseHandshake(text) {
   try { value = JSON.parse(text); } catch { return null; }
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   if (typeof value.nonce !== "string" || !/^[0-9a-f]{64}$/.test(value.nonce)) return null;
-  if (value.mode !== "full" && value.mode !== "targeted") return null;
+  // `deploy`: a release from main's deploy check (docs/plans/release-from-main.md, part C), with the plane's own copy of
+  // its database (an absolute path) and no plan.
+  if (value.mode !== "full" && value.mode !== "targeted" && value.mode !== "deploy") return null;
   const plan = value.plan ?? null;
   if (value.mode === "targeted" ? plan === null || typeof plan !== "object" || Array.isArray(plan) : plan !== null) return null;
+  const copy = value.mode === "deploy" ? value.copy : undefined;
+  if (value.mode === "deploy" && (typeof copy !== "string" || !copy.startsWith("/") || copy.includes("\0"))) return null;
   const watch = Array.isArray(value.watch) ? value.watch.filter(one => typeof one === "string") : [];
   if (plan !== null) {
     const lists = ["units", "sanity", "versions", "parts", "required"];
@@ -196,7 +200,7 @@ export function parseHandshake(text) {
   // A full check's obligations, decided by the plane before it ran: the check runs at least these, and CI stands in for
   // the unit suite only when the plane says it may. A part it doesn't know is no handshake.
   const owed = value.owed ?? [];
-  if (!Array.isArray(owed) || owed.some(one => !CHECK_PART_NAMES.includes(one))) return null;
+  if (!Array.isArray(owed) || owed.some(one => !(value.mode === "deploy" ? DEPLOY_PART_NAMES : CHECK_PART_NAMES).includes(one))) return null;
   const ciSubstitute = value.ciSubstitute === undefined ? true : value.ciSubstitute;
   if (typeof ciSubstitute !== "boolean") return null;
   // The largest report the plane reads back once sealed. A plane that doesn't say (0.9.77 and older) seals up to 256 KiB
@@ -206,7 +210,8 @@ export function parseHandshake(text) {
   // Advisory learning (docs/plans/learning-loops.md): exact cases only, at most 200. Never a reason to refuse the
   // handshake, and never joined to `watch`: a plane that doesn't send it, or sends something else, gets no learning line.
   const learn = Array.isArray(value.learn) ? [...new Set(value.learn.filter(isExactCase))].slice(0, LEARN_MAX_IDENTITIES) : [];
-  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, reportBytes, learn, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, reportBytes, learn, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex"),
+    ...(copy === undefined ? {} : { copy }) };
 }
 
 /** The advisory learning line's prefix, size cap and identity cap (src/contracts/release-check.ts LEARN_*). */
@@ -249,6 +254,30 @@ export const OLDER_PLANE_REPORT_BYTES = 64 * 1024;
 
 /** Every part a check can have (src/contracts/release-check.ts CHECK_PARTS). */
 const CHECK_PART_NAMES = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"];
+/** A deploy check's parts (src/contracts/release-check.ts DEPLOY_PART): the build, the rehearsal, the upgrade path. */
+export const DEPLOY_PART_NAMES = ["build", "rehearsal", "upgrade"];
+
+/**
+ * A release from main's deploy check (docs/plans/release-from-main.md, part C), run by the plane after a person's
+ * approval: the build, then the rehearsal (scripts/deploy-check.mjs: the candidate upgrades the plane's copy of its
+ * database and starts against it, isolated), and the upgrade path when the plane owes it. Its report is the last line,
+ * in deploy mode, with every deploy part and nothing else. `run` is a partRunner's.
+ */
+export async function deployCheck(handshake, { run, failure, upgradeLines = [] }) {
+  const owed = new Set(["build", "rehearsal", ...handshake.owed]);
+  const build = await run("build", "npm", ["run", "build"]);
+  const rehearsal = build.code === 0 ? await run("rehearsal", process.execPath, [join("scripts", "deploy-check.mjs"), "--copy", handshake.copy]) : null;
+  const upgrade = owed.has("upgrade") && build.code === 0 && existsSync(join("scripts", "upgrade-path.mjs"))
+    ? await run("upgrade", process.execPath, ["scripts/upgrade-path.mjs"], { TOOLROLL_CHECK_KEEP_GOING: "1" }, line => upgradeLines.push(line)) : null;
+  const ran = { build, rehearsal, upgrade };
+  const exitCode = failure() !== null || Object.values(ran).some(one => one !== null && one.code !== 0) || [...owed].some(part => ran[part] === null) ? 1 : 0;
+  const parts = DEPLOY_PART_NAMES.map(part => {
+    const one = ran[part];
+    return { part, selected: owed.has(part), ran: one !== null && !one.cancelled, code: one === null || one.cancelled ? null : Math.min(255, Math.max(0, one.code)), timedOut: one?.timedOut === true,
+      startedAt: one?.startedAt ?? null, signal: one?.signal ?? null, stopped: one?.stopped === true, spawnFailed: one?.spawnFailed === true };
+  });
+  return { exitCode, report: buildReport({ handshake, exitCode, parts, unitLines: null, reusedFromCI: false, journeyRuns: [], upgradeLines: upgrade === null ? null : upgradeLines }), ran };
+}
 
 /**
  * The selection a full check runs: its own plan (from the diff since the last release tag), widened to every part the
@@ -572,6 +601,25 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // prints its report last. A targeted one runs exactly its plan. A person's own run reads none and behaves as before.
   const handshake = await readHandshake();
   const releaseRun = handshake !== null;
+  // A release from main's deploy check runs its own few parts and reports them; nothing else of a full check runs.
+  if (handshake?.mode === "deploy") {
+    const dir = makeTempRoot("release-check-");
+    const parts = partRunner(dir, { failFast: false });
+    const deadline = checkDeadline(started, handshake.limitMs);
+    const limiter = setTimeout(() => parts.stop(`the check reached its own limit, ${took(deadline - started)} after it started, before the plane's`), Math.max(0, deadline - Date.now()));
+    limiter.unref?.();
+    console.log(`Deploy check of a release from main: the build, then the candidate upgrades a copy of this computer's database and starts against it${handshake.owed.includes("upgrade") ? ", then the upgrade path" : ""}.`);
+    const { exitCode, report, ran } = await deployCheck(handshake, { run: parts.run, failure: parts.failure });
+    clearTimeout(limiter);
+    console.log("== summary");
+    for (const one of Object.values(ran).filter(each => each !== null)) console.log(`${one.label}: exit ${one.code} (${took(one.ms)})`);
+    if (ran.rehearsal === null) console.log("rehearsal not run: the build failed");
+    console.log(`whole deploy check ${took(Date.now() - started)}`);
+    process.exitCode = exitCode;
+    const line = reportLine(report, handshake.reportBytes);
+    if (line === null) console.log("The deploy check's report is too large for this plane to read back, so none is given.");
+    else process.stdout.write(`${line}\n`);
+  } else {
   // The residue check's unreadable places, accepted only inside the plane's macOS fence (insidePlaneFence); a value the
   // caller brought in is never kept.
   delete process.env.TOOLROLL_RESIDUE_UNREADABLE;
@@ -748,5 +796,6 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const line = reportLine(report, handshake.reportBytes);
     if (line === null) console.log(`The check's report is over ${Math.round(Math.min(256 * 1024, handshake.reportBytes) / 1024)} KiB, more than this plane reads back, so none is given.`);
     else process.stdout.write(`${line}\n`);
+  }
   }
 }
