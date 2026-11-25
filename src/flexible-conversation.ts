@@ -40,8 +40,9 @@ export const CONVERSATION_END = "--- END CONVERSATION SO FAR ---";
  * admission finds it there already). */
 export function recordFlexibleSaid(store: Store, input: { turn: string; thread: string; seq: number; said: string; at: string }): void {
   if (!ID.test(input.turn) || !ID.test(input.thread) || !Number.isSafeInteger(input.seq) || input.seq < 1 || input.said.trim() === "" || input.said.length > 100_000) return;
+  // Kept with its keys hidden (that turn's own agent was handed it as sent; later ones read it from here).
   store.handle.prepare("INSERT INTO flexible_turn_said (turn, thread, seq, said, said_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (turn) DO NOTHING")
-    .run(input.turn, input.thread, input.seq, input.said, input.at);
+    .run(input.turn, input.thread, input.seq, hideKeys(input.said).slice(0, 100_000), input.at);
 }
 
 /** The thread's commit when the turn's agent was handed its message (once). */
@@ -56,13 +57,33 @@ export function keyShaped(text: string): boolean {
   return liveSecretHit(text) || liveSecretHit(cleanLiveText(text));
 }
 
-/** A line of the agent's or the person's words as it is kept or shown: a line that looks like a key is hidden. */
-const hiddenIfKey = (line: string): string => keyShaped(line) ? HIDDEN_LINE : line;
 
-/** The agent's final reply for its turn (once): lines that look like a key hidden, cut at FLEXIBLE_REPLY_KEPT. */
+/** What a line may start with before its words: indent, a Markdown quote or list marker, a table bar, a comment mark. */
+const LINE_PREFIX = /^(?:[\s>|*+#-]|\d+[.)]\s|\/\/)+/;
+const KEY_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+const KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+
+/**
+ * Text with every key in it hidden, line by line, before it is kept or shown: a line that looks like a key (as written,
+ * as shown, or without its quote, list or indent prefix), and every line of a private key block from its BEGIN line to
+ * its END line (to the end of the text when it has none), whatever each line starts with: a quoted or indented PEM
+ * block's body lines look like nothing on their own.
+ */
+export function hideKeys(text: string): string {
+  let inKey = false;
+  return text.replace(/\r\n?/g, "\n").split("\n").map(line => {
+    const seen = cleanLiveText(line);
+    if (KEY_BEGIN.test(line) || KEY_BEGIN.test(seen)) inKey = true;
+    const hide = inKey || keyShaped(line) || keyShaped(seen.replace(LINE_PREFIX, ""));
+    if (KEY_END.test(line) || KEY_END.test(seen)) inKey = false;
+    return hide ? HIDDEN_LINE : line;
+  }).join("\n");
+}
+
+/** The agent's final reply for its turn (once): its keys hidden (hideKeys), cut at FLEXIBLE_REPLY_KEPT. */
 export function recordFlexibleReply(store: Store, input: { turn: string; reply: string }): void {
   if (!ID.test(input.turn) || typeof input.reply !== "string" || input.reply.trim() === "") return;
-  let kept = input.reply.split("\n").map(hiddenIfKey).join("\n");
+  let kept = hideKeys(input.reply);
   if (kept.length > FLEXIBLE_REPLY_KEPT) kept = `${kept.slice(0, FLEXIBLE_REPLY_KEPT - 1)}…`;
   store.handle.prepare("UPDATE flexible_turn_said SET reply = ? WHERE turn = ? AND reply IS NULL").run(kept, input.turn);
 }
@@ -97,7 +118,7 @@ export function flexibleConversationOf(store: Store, thread: string): FlexibleSa
 /** The person's message as they are shown it: each line cleaned (controls, escapes, bidi out), a line that looks like a
  * key hidden, at most `lines` lines (the rest counted). */
 export function saidLines(said: string, lines = 200): string[] {
-  const all = said.replace(/\r\n?/g, "\n").split("\n").map(one => cleanLiveText(hiddenIfKey(one)).slice(0, LINE_CHARS));
+  const all = hideKeys(said).split("\n").map(one => cleanLiveText(one).slice(0, LINE_CHARS));
   while (all.length > 0 && all.at(-1)!.trim() === "") all.pop();
   return all.length <= lines ? all : [...all.slice(0, lines), `(${all.length - lines} more lines)`];
 }
@@ -113,8 +134,8 @@ const quoted = (text: string): string[] => text.replace(/\r\n?/g, "\n").split("\
  * turn is longer than the whole allowance. */
 function turnLines(turn: FlexibleSaidTurn, room: number | null): string[] {
   const cut = (text: string): string => room === null || text.length <= room ? text : `${text.slice(0, Math.max(0, room - 40))}…\n(the rest of this is left out)`;
-  const lines = [fence(`Turn ${turn.seq}, the person said:`), ...quoted(cut(turn.said))];
-  if (turn.reply !== null) lines.push(fence(`Turn ${turn.seq}, the agent's final reply:`), ...quoted(cut(turn.reply)));
+  const lines = [fence(`Turn ${turn.seq}, the person said:`), ...quoted(cut(hideKeys(turn.said)))];
+  if (turn.reply !== null) lines.push(fence(`Turn ${turn.seq}, the agent's final reply:`), ...quoted(cut(hideKeys(turn.reply))));
   else if (turn.status === "interrupted") lines.push(fence(`Turn ${turn.seq} was stopped before the agent replied.`));
   else if (turn.status === "unknown") lines.push(fence(`Turn ${turn.seq} ended without a reply Toolroll could read.`));
   else if (turn.status === "finished") lines.push(fence(`Turn ${turn.seq} finished without a written reply.`));

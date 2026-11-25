@@ -158,6 +158,26 @@ describe("what was said, recorded per turn", () => {
     expect(saidLines(kept.said)).toEqual([HIDDEN_LINE]);
   });
 
+  /** A private key's lines, built at run time so this file holds none. */
+  const pem = (prefix: string) => [`${prefix}-----BEGIN ${"RSA PRIVATE"} KEY-----`, ...Array.from({ length: 4 }, (_, at) => `${prefix}MIIE${"vQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ".slice(at)}${at}xyz`),
+    `${prefix}-----END ${"RSA PRIVATE"} KEY-----`].join("\n");
+  test.each([["a Markdown quote", "> "], ["an indent", "    "], ["a list marker", "- "], ["a numbered list", "1. "], ["a nested quote and indent", ">   "], ["nothing", ""]])(
+    "a private key block behind %s is hidden whole before the message and the reply are kept, and never reaches a later turn's agent", (_name, prefix) => {
+      const turn = finished(`Here it is:\n${pem(prefix)}\nthanks`, `Got it:\n${pem(prefix)}\nDone.`);
+      const kept = flexibleConversationOf(world.store, T1).find(one => one.turn === turn)!;
+      const hidden = ["Here it is:", ...Array(6).fill(HIDDEN_LINE), "thanks"].join("\n");
+      expect(kept.said).toBe(hidden);
+      expect(kept.reply).toBe(["Got it:", ...Array(6).fill(HIDDEN_LINE), "Done."].join("\n"));
+      const handed = flexibleTurnMessage(flexibleConversationOf(world.store, T1), "next", 9);
+      expect(handed).not.toMatch(/MIIE|BEGIN RSA/);
+      expect(saidLines(`${pem(prefix)}`)).toEqual(Array(6).fill(HIDDEN_LINE));
+    });
+
+  test("a quoted key body with no BEGIN line is still hidden; ordinary quoted text is kept", () => {
+    const turn = finished("ok", `> ${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC"}\n> keep this line`);
+    expect(flexibleConversationOf(world.store, T1).find(one => one.turn === turn)!.reply).toBe(`${HIDDEN_LINE}\n> keep this line`);
+  });
+
   test("with no session here, the thread's window is the conversation so far: the person's messages marked as theirs, then each final reply", () => {
     finished("Fix the parser\x1b[2J", "Fixed it.");
     finished("Now add a test", null);
