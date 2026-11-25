@@ -5,7 +5,7 @@
  * a change anywhere refuses the Ship, and the snapshot stages exactly the previewed paths.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -93,6 +93,19 @@ test("a file changed inside a new folder after the preview: the Ship is refused 
   writeFileSync(join(chat.clone, "lib", "deep", "c.ts"), "export const c = 1;\n");
   expect(executeDirectChatShip(chat.store, { stateRoot: chat.stateRoot, owner: "alex", threadId: chat.threadId, mode: "keep-branch", termsDigest: again.preview.termsDigest }))
     .toMatchObject({ ok: false, code: "terms_changed" });
+  expect(headOf(chat.clone)).toBe(before);
+});
+
+test("a new file made executable after the preview: the Ship is refused as changed and nothing is committed", async () => {
+  const chat = await chatWith();
+  mkdirSync(join(chat.clone, "scripts"), { recursive: true });
+  writeFileSync(join(chat.clone, "scripts", "run.sh"), "echo hi\n", { mode: 0o644 });
+  const preview = previewDirectChatShip(chat.store, { stateRoot: chat.stateRoot, owner: "alex", threadId: chat.threadId });
+  if (!preview.ok) throw Error(preview.error);
+  const before = headOf(chat.clone);
+  chmodSync(join(chat.clone, "scripts", "run.sh"), 0o755);
+  expect(executeDirectChatShip(chat.store, { stateRoot: chat.stateRoot, owner: "alex", threadId: chat.threadId, mode: "keep-branch", termsDigest: preview.preview.termsDigest }))
+    .toMatchObject({ ok: false, status: 409, code: "terms_changed" });
   expect(headOf(chat.clone)).toBe(before);
 });
 

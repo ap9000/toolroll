@@ -164,7 +164,8 @@ function contentOf(binding: TrustedCloneBinding, realClone: string, rel: string)
   // The id `git add` would store for it (the same line-ending rules; the clone's pinned config allows no filter programs).
   try { blob = runTrustedCloneGit(binding, ["hash-object", "--", rel]).trim(); } catch { throw new ShipUnreadable(SHIP_UNREADABLE); }
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(blob)) throw new ShipUnreadable(SHIP_UNREADABLE);
-  return `blob:${blob}`;
+  // Its mode as git records it (only the owner's execute bit counts): a later chmod +x is a change too.
+  return `blob:${(info.mode & 0o100) !== 0 ? "100755" : "100644"}:${blob}`;
 }
 
 type CloneInspection = {
@@ -232,7 +233,7 @@ function freezeSnapshotCommit(binding: TrustedCloneBinding, title: string, baseS
         if (match === null || rel === undefined) throw new ShipUnreadable(SHIP_CHANGED);
         staged.set(rel, match[4] === "D" ? "deleted"
           : match[2] === "120000" ? `link:${createHash("sha256").update(runTrustedCloneGit(binding, ["cat-file", "blob", match[3]!])).digest("hex")}`
-          : `blob:${match[3]}`);
+          : `blob:${match[2]}:${match[3]}`);
       }
       if (staged.size !== previewed.working.size) throw new ShipUnreadable(SHIP_CHANGED);
       for (const [rel, content] of previewed.working) {
