@@ -9,10 +9,10 @@
  * The proxy lives as long as the turn: the host closes it when the turn settles, and when it closes. A console that
  * restarts mid-turn takes the proxy with it, so that turn loses its network (it fails; it never gains a wider one).
  */
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fenceFor, FENCE_POLICY_CURRENT, linuxFenceAvailable, macosFenceAvailable, runFolders, taskBoundary, type LaunchFence } from "./agent-fence.js";
+import { fenceFor, FENCE_POLICY_CURRENT, linuxFenceAvailable, macosFenceAvailable, runFolders, taskBoundary, writeAllowlist, type LaunchFence } from "./agent-fence.js";
 import { proxyEnv, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy } from "./egress.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { prepareProtectedStorage, storageRefusalOf } from "./protected-storage.js";
@@ -25,12 +25,7 @@ export type DirectChatTurnFence = { launch: LaunchFence; temp: string; env: Reco
 export type DirectChatFenceInput = { stateRoot: string; repo: string; clone: string; gitDir: string };
 export type DirectChatFenceFn = (input: DirectChatFenceInput) => Promise<DirectChatTurnFence | { problem: string } | { unfenced: true }>;
 
-/** Every entry of `folder` but `own`, as real paths (another chat's clone or Git folder). */
-function others(folder: string, own: string): string[] {
-  let names: string[] = [];
-  try { names = readdirSync(folder); } catch { return []; }
-  return names.map(name => join(folder, name)).flatMap(path => { try { const real = realpathSync(path); return real === own ? [] : [real]; } catch { return []; } });
-}
+const real = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
 
 export function directChatFence(store: Store): DirectChatFenceFn {
   return async input => {
@@ -47,34 +42,44 @@ export function directChatFence(store: Store): DirectChatFenceFn {
     let storage: Awaited<ReturnType<typeof prepareProtectedStorage>>;
     try { storage = await prepareProtectedStorage(); }
     catch (error) { return { problem: storageRefusalOf(error)?.message ?? "Toolroll couldn't finish checking other apps' data, so nothing was started." }; }
-    const chats = join(input.stateRoot, "direct-chat");
-    let chatEntries: string[] = [];
-    try { chatEntries = readdirSync(chats); } catch { chatEntries = []; }
-    // Everything of Direct Chat's but this chat's clone and Git folder: other chats', their turn logs, the trash.
-    const chatDenies = [
-      ...others(join(chats, "clones"), clone), ...others(join(chats, "gitdirs"), gitDir),
-      ...chatEntries.filter(name => name !== "clones" && name !== "gitdirs").map(name => join(chats, name)),
-    ];
+    // The whole Direct Chat folder unread (every chat's clone and Git folder, now or made later, their turn logs, the
+    // trash), this chat's own clone and Git folder read back inside it; nothing written but the write allowlist below.
+    const chats = real(join(input.stateRoot, "direct-chat"));
     const policy = resolveNetwork("claude", store.projectNetwork(input.repo), repositoryEcosystems(input.repo));
     let proxy: EgressProxy;
     try { proxy = await startEgressProxy(policy.mode === "open" ? { hosts: [], open: true } : { hosts: policy.hosts }); }
     catch { return { problem: "The chat's network proxy couldn't be started, so nothing was started." }; }
-    const temp = realpathSync(mkdtempSync(join(tmpdir(), "so-net-")));
+    let temp: string | null = null;
     let closed: Promise<void> | null = null;
-    const close = (): Promise<void> => closed ??= (async () => { rmSync(temp, { recursive: true, force: true }); await proxy.close(); })();
+    // The proxy first (the agent loses its network at once), then the temp folder; each tried, and any failure said.
+    const close = (): Promise<void> => closed ??= (async () => {
+      const failures: string[] = [];
+      try { await proxy.close(); } catch (error) { failures.push(`its network proxy didn't close (${error instanceof Error ? error.message : String(error)})`); }
+      if (temp !== null) { try { rmSync(temp, { recursive: true, force: true }); } catch (error) { failures.push(`its temp folder wasn't removed (${error instanceof Error ? error.message : String(error)})`); } }
+      if (failures.length > 0) throw new Error(failures.join("; "));
+    })();
     try {
+      temp = realpathSync(mkdtempSync(join(tmpdir(), "so-net-")));
+      const home = homedir();
       const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
       const boundary = taskBoundary({ worktree: clone, provider: "claude", binding: null, policy: FENCE_POLICY_CURRENT, storage });
-      const launch = fenceFor("build", {
+      // Writes exactly as a workspace build's (writeAllowlist): the clone, the turn's own temp folder and the state
+      // Claude's CLI must write; beside them the chat's own Git folder, but never its config, hooks or info.
+      const allowed = writeAllowlist({ provider: "claude", home, worktree: clone, binding: null, launchFolder: temp, cache: null });
+      const gitReadOnly = ["config", "hooks", "info"].map(name => join(gitDir, name));
+      const made = fenceFor("build", {
         databaseFile, worktree: clone, boundary, binding: null, runFolders: runFolders(temp), poolRoots, storage, policy: FENCE_POLICY_CURRENT, provider: "claude",
         // The project's own checkout (the chat works on its clone), and the project's read denies, read live.
-        extra: [repo, ...chatDenies],
-        readDeny: store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, homedir())),
+        extra: [repo, ...allowed.deny],
+        readDeny: store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, home)),
+        writes: { writes: { subpaths: [...allowed.writes.subpaths, gitDir], prefixes: allowed.writes.prefixes }, readOnly: [...allowed.readOnly, ...gitReadOnly] },
         network: { mode: "allowlist", proxyPort: proxy.port, brokerPorts: [], loopback: policy.loopback, socketRoots: [clone, temp], token: proxy.secret },
       });
-      return { launch, temp, env: { ...proxyEnv(proxy, policy.loopback), TMPDIR: temp, TMP: temp, TEMP: temp, CLAUDE_CODE_TMPDIR: temp }, close };
+      const grants = { ...made.fenceGrants, readDenyOnly: [...made.fenceGrants.readDenyOnly ?? [], chats],
+        readable: [...made.fenceGrants.readable, clone, gitDir], exactFiles: [...made.fenceGrants.exactFiles ?? [], clone, gitDir] };
+      return { launch: { ...made, fenceGrants: grants }, temp, env: { ...proxyEnv(proxy, policy.loopback), TMPDIR: temp, TMP: temp, TEMP: temp, CLAUDE_CODE_TMPDIR: temp }, close };
     } catch (error) {
-      await close();
+      try { await close(); } catch { /* said below: nothing was started either way */ }
       return { problem: `The chat's fence couldn't be made, so nothing was started: ${error instanceof Error ? error.message : String(error)}` };
     }
   };

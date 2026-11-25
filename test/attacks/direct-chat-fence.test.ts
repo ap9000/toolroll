@@ -59,6 +59,20 @@ async function world(): Promise<{ root: string; store: Store; repo: string; host
 }
 
 describe("attack: a Direct Chat Claude turn reaching outside its chat", () => {
+  test("a turn's sandbox that doesn't close cleanly is said on the turn, never swallowed", async () => {
+    const { store, host, seen } = await world();
+    try {
+      const turn = store.handle.prepare("SELECT id FROM direct_chat_turn ORDER BY created_at LIMIT 1").get() as { id: string };
+      const fence = seen[0]!.fence!;
+      // The real close runs, then reports a failure, as a proxy that wouldn't close would.
+      (host as unknown as { turnFences: Map<string, () => Promise<void>> }).turnFences.set(turn.id, async () => { await fence.close(); throw new Error("the proxy kept listening"); });
+      host.close();
+      await host.drainPendingCleanups();
+      const row = store.handle.prepare("SELECT error_text FROM direct_chat_turn WHERE id = ?").get(turn.id) as { error_text: string | null };
+      expect(row.error_text).toContain("couldn't finish closing this turn's sandbox: the proxy kept listening");
+    } finally { store.close(); }
+  });
+
   test("a Claude turn starts inside its own fence and proxy; they end with the host", async () => {
     const { store, host, seen } = await world();
     try {
@@ -83,17 +97,29 @@ describe("attack: a Direct Chat Claude turn reaching outside its chat", () => {
       writeFileSync(join(other.clonePath, "other-secret.txt"), "other chat secret\n");
       const made = await directChatFence(store)({ stateRoot: join(root, "state"), repo, clone: mine.clonePath, gitDir: mine.gitDir! });
       if (!("launch" in made)) throw new Error(JSON.stringify(made));
+      // A chat opened after this turn's fence was made: denied too (the whole Direct Chat folder is, but this chat's own).
+      const later = await host.createThread({ owner: "alex", localGeneration: 1, accountGeneration: 1, requestId: "9".repeat(32), repo, provider: "codex", modelId: "", prompt: "Later" });
+      if (!later.ok) throw new Error(later.error);
+      writeFileSync(join(later.thread.clonePath, "later-secret.txt"), "later chat secret\n");
+      const outside = join(root, "outside.txt");
       try {
         const result = underSandbox([
           `cat README.md`,
           `touch made-by-chat.txt && echo clone-written`,
+          `touch "${made.temp}/scratch" && echo temp-written`,
           `cat "${join(root, "state", "orders.db")}" >/dev/null 2>&1 || echo database-refused`,
           `cat "${join(other.clonePath, "other-secret.txt")}" 2>/dev/null || echo other-chat-refused`,
+          `cat "${join(later.thread.clonePath, "later-secret.txt")}" 2>/dev/null || echo later-chat-refused`,
           `cat "${join(repo, "README.md")}" 2>/dev/null || echo project-refused`,
+          `touch "${outside}" 2>/dev/null || echo outside-write-refused`,
+          `printf x >> "${join(mine.gitDir!, "config")}" 2>/dev/null || echo git-config-write-refused`,
           `curl -s -m 5 --noproxy '*' https://1.1.1.1/ >/dev/null 2>&1 || echo direct-network-refused`,
         ].join("\n"), made.launch.fence, made.launch.fenceGrants, { cwd: mine.clonePath, env: { ...process.env, ...made.env, NODE_OPTIONS: undefined } as NodeJS.ProcessEnv });
-        expect(lines(result), result.stderr).toEqual(["# Project", "clone-written", "database-refused", "other-chat-refused", "project-refused", "direct-network-refused"]);
+        expect(lines(result), result.stderr).toEqual(["# Project", "clone-written", "temp-written", "database-refused", "other-chat-refused", "later-chat-refused", "project-refused",
+          "outside-write-refused", "git-config-write-refused", "direct-network-refused"]);
+        expect(existsSync(outside)).toBe(false);
       } finally { await made.close(); }
+      expect(existsSync(made.temp)).toBe(false);
     } finally { host.close(); store.close(); }
   });
 });

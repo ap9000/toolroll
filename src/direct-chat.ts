@@ -897,7 +897,15 @@ export class DirectChatHost {
     const close = this.turnFences.get(turnId);
     if (close === undefined) return;
     this.turnFences.delete(turnId);
-    this.trackCleanup(close());
+    // A fence that didn't close cleanly is said, in the server's log and on the turn itself, never swallowed.
+    this.trackCleanup(close().catch((error: unknown) => {
+      const said = `Toolroll couldn't finish closing this turn's sandbox: ${error instanceof Error ? error.message : String(error)}.`;
+      console.warn(`direct chat turn ${turnId}: ${said}`);
+      try {
+        this.store.handle.prepare(`UPDATE direct_chat_turn SET error_text = CASE WHEN error_text IS NULL OR error_text = '' THEN ? ELSE error_text || char(10) || ? END WHERE id = ?`)
+          .run(said, said, turnId);
+      } catch { /* the log above still says it */ }
+    }));
   }
 
   /** Await any background trash deletions scheduled by deleteThread(). */
