@@ -14,6 +14,7 @@
  *   release's stop, and the coordinator's CI snapshots (`recordReleaseCi`).
  * Nothing here proves a person, widens a proof or seals anything itself.
  */
+import { mainJournalFile } from "./release-main.js";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -276,7 +277,7 @@ const TASK_ID = /^[A-Za-z0-9._-]{1,200}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
 
 /** A journal's own fields, strictly; null when any is missing or not its exact shape. */
-export function readWaitingJournal(file: string, raw: unknown, expectedFile: (branch: string) => string): WaitingJournal | null {
+export function readWaitingJournal(file: string, raw: unknown, expectedFile: (branch: string) => string, expectedMainFile?: (version: string) => string): WaitingJournal | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const j = raw as Record<string, unknown>;
   const task = j["task"] as Record<string, unknown> | null | undefined;
@@ -288,7 +289,8 @@ export function readWaitingJournal(file: string, raw: unknown, expectedFile: (br
   if (task === null || typeof task !== "object" || typeof task["id"] !== "string" || !TASK_ID.test(task["id"]) || typeof task["scopeDigest"] !== "string" || !SCOPE_DIGEST.test(task["scopeDigest"])) return null;
   if (candidate === null || typeof candidate !== "object" || typeof candidate["sha"] !== "string" || !SHA.test(candidate["sha"])) return null;
   // The file must be the one its own branch maps to: two branches that map to one file name never stand in for each other.
-  if (expectedFile(j["branch"]) !== file) return null;
+  // A release from main's journal is the one its version maps to (release-main.ts mainJournalFile).
+  if (j["mode"] === "main" ? expectedMainFile === undefined || expectedMainFile(j["packageVersion"]) !== file : expectedFile(j["branch"]) !== file) return null;
   return { file, branch: j["branch"], checkout: j["checkout"], taskId: task["id"], scopeDigest: task["scopeDigest"], candidate: candidate["sha"], version: j["packageVersion"], pr: j["pr"] };
 }
 
@@ -316,16 +318,18 @@ export function journalMatchesPlane(store: Store, journal: WaitingJournal, repo:
 /** Every release journal in the state folder, read strictly; unreadable ones are counted, never guessed at. */
 export function waitingJournals(stateDir: string, expectedFile: (branch: string) => string): { journals: WaitingJournal[]; unreadable: string[] } {
   const folder = join(stateDir, "releases");
-  let names: string[] = [];
-  try { names = readdirSync(folder).filter(name => name.endsWith(".json")); } catch { return { journals: [], unreadable: [] }; }
+  const list = (dir: string, prefix: string) => { try { return readdirSync(dir).filter(name => name.endsWith(".json")).sort().map(name => `${prefix}${name}`); } catch { return []; } };
+  // Branch journals, then releases from main (release-from-main.md), each read against the file its own identity names.
+  const names = [...list(folder, ""), ...list(join(folder, "from-main"), "from-main/")];
+  if (names.length === 0) return { journals: [], unreadable: [] };
   const journals: WaitingJournal[] = [], unreadable: string[] = [];
-  for (const name of names.sort()) {
+  for (const name of names) {
     const file = join(folder, name);
     let raw: unknown;
     try { if (!lstatSync(file).isFile()) { unreadable.push(name); continue; } raw = JSON.parse(readFileSync(file, "utf8")); } catch { unreadable.push(name); continue; }
     const step = (raw as { step?: unknown } | null)?.step;
     if (step !== "approval" && step !== "gate") continue;
-    const read = readWaitingJournal(file, raw, expectedFile);
+    const read = readWaitingJournal(file, raw, expectedFile, version => mainJournalFile(stateDir, version));
     if (read === null) unreadable.push(name); else journals.push(read);
   }
   return { journals, unreadable };

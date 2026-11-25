@@ -17,8 +17,10 @@ import { sleep } from "./sleep.js";
 import { callLabel, readOnlyCall, retryCall, retryingExec, writeWithRecheck, type ExecResult, type RetryOptions } from "./release-net.js";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
-import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS } from "./release.js";
+import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainAdapter, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
+import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
+import { bumpVersion, changelogHas, changelogWith, firstParentAfter, releaseBranchFor, type MainPull } from "./release-main.js";
+import { recordMainReleaseProof } from "./release-main-proof.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, deployActionOf, stoppedWhereNothingChanged } from "./deploy-phase.js";
 import { gateOwner } from "./release-gate.js";
@@ -157,6 +159,7 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
     result: resultRun === null || textOr(result["digest"]) === null ? null : {
       run: resultRun, head: textOr(result["head"]), receipt: String(result["digest"]), worktree: textOr(worktree),
       level: textOr(checks["level"]),
+      coverage: textOr(checks["coverage"]),
       check: textOr(checks["running"]) !== null ? "running"
         : checks["status"] === "passed" && checks["level"] !== "full" ? "not-full" : String(checks["status"] ?? "not-run"),
     },
@@ -473,7 +476,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const added = await toolroll("task", "add", input.title, "--id", input.taskId, "--repo", input.checkout, "--checks", "full");
         if (added["ok"] !== true) throw new Error(`task add: ${refused(added)}`);
         const scoped = await toolroll("task", "scope", input.taskId, "--candidate", input.candidate, "--goal", input.goal, "--acceptance", input.acceptance,
-          ...(input.release === undefined ? [] : ["--release", `${input.release.version}:${input.release.pr}:${input.release.branch}`, ...(input.release.noCarry ? ["--no-carry"] : [])]));
+          ...(input.release === undefined ? [] : ["--release", `${input.release.version}:${input.release.pr}:${input.release.branch}`, ...(input.release.noCarry ? ["--no-carry"] : []),
+            ...(input.release.main === undefined ? [] : ["--from-main", ...(input.release.main.full ? ["--full-check"] : [])])]));
         if (scoped["ok"] !== true) throw new Error(`task scope: ${refused(scoped)}`);
         const digest = gateStateOf(await toolroll("task", "show", input.taskId)).scopeDigest;
         if (digest === null) throw new Error(`task ${input.taskId} has no scope after filing it`);
@@ -618,6 +622,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         });
       },
       async release(repo, tag) { return (await gh("release", "view", tag, "--repo", repo, "--json", "tagName")).code === 0; },
+      main: mainReads(reads, ciGh),
     },
     registry: {
       async published(name, version) {
@@ -878,6 +883,8 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
       async stopped(input) { withStore(store => { noteReleaseStopped(store, { ...input, now: now() }); }); },
       async verified(input) { withStore(store => { recordVerifiedRelease(store, { ...input, now: now() }); }); },
     },
+    // A release from main's proof, kept by the plane for its deploy gates (release-main-proof.ts).
+    async proved(input) { withStore(store => { recordMainReleaseProof(store, { ...input, now: now() }); }); },
     // After a failed release check, and before a pass is taken: the plane's own classification (check-failure.ts).
     ...(auto === undefined ? {} : {
       async recheck(taskId: string) {
@@ -1356,4 +1363,146 @@ async function macosCasesOf(run: typeof exec, gh: string, slug: string, sha: str
     const reports = [...shards.values()].map(one => JSON.parse(readFileSync(join(folder, one.name, "shard-report.json"), "utf8")) as Parameters<typeof macosCases>[0][number]);
     return macosCases(reports, `/Users/runner/work/${slug.split("/")[1]}/${slug.split("/")[1]}`);
   } catch { return null; } finally { rmSync(folder, { recursive: true, force: true }); }
+}
+
+/** One GitHub API read through the plane's gh, as JSON: only `repos/<owner>/<name>/…` paths, never a URL a response named. */
+export function githubJson(run: Exec, gh: string): (path: string) => Promise<unknown> {
+  return async path => {
+    if (!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./?&=%:+-]+$/.test(path) || path.includes("..")) throw new Error(`not a GitHub read this makes: ${path.slice(0, 120)}`);
+    const out = await run(gh, ["api", "--hostname", "github.com", "--method", "GET", path], { cwd: "/", env: ciEnv() });
+    if (out.code !== 0) throw new Error(`GitHub answered ${(out.stderr || out.stdout).trim().split("\n").slice(-1)[0]?.slice(0, 200) || `gh exited ${out.code}`} for ${path.replace(/\?.*/, "")}`);
+    try { return JSON.parse(out.stdout) as unknown; } catch { throw new Error(`GitHub's answer for ${path.replace(/\?.*/, "")} couldn't be read`); }
+  };
+}
+
+/** The proof publish.yml runs (scripts/release-proof.mjs, shipped beside dist/ in the package), loaded from this
+ * runtime's own copy: never a checkout's. */
+type ProofModule = { proveRelease(input: { repo: string; sha: string; required: Record<string, string> }, api: (path: string) => Promise<unknown>):
+  Promise<{ ok: true; pr: number; head: string; branch: string; tree: string } | { ok: false; why: string }> };
+const proofModule = (): Promise<ProofModule> => import(new URL("../scripts/release-proof.mjs", import.meta.url).href) as Promise<ProofModule>;
+
+/** How far back main's first-parent history is read for a release commit (500 commits). */
+export const FIRST_PARENT_PAGES = 5;
+
+/** GitHub as a release from main reads it (release-from-main.md), through the plane's own gh. */
+export function mainReads(run: Exec, gh: string, proof: () => Promise<ProofModule> = proofModule): MainAdapter {
+  const api = githubJson(run, gh);
+  const repoOk = (repo: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+  return {
+    async pull(repo, version): Promise<MainPull> {
+      if (!repoOk(repo) || !/^\d+\.\d+\.\d+$/.test(version)) return { kind: "none" };
+      const branch = releaseBranchFor(version), owner = repo.split("/")[0]!;
+      const rows = await api(`repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`);
+      if (!Array.isArray(rows)) throw new Error("GitHub's pull requests couldn't be read");
+      // Only this repository's own branch into main; a fork's pull request of the same name never counts.
+      const own = rows.map(object).filter(pr => object(pr["base"])["ref"] === "main" && object(object(pr["base"])["repo"])["full_name"] === repo
+        && object(pr["head"])["ref"] === branch && object(object(pr["head"])["repo"])["full_name"] === repo && Number.isSafeInteger(pr["number"]));
+      const merged = own.filter(pr => typeof pr["merged_at"] === "string" && typeof pr["merge_commit_sha"] === "string" && /^[0-9a-f]{40}$/.test(pr["merge_commit_sha"] as string))
+        .sort((a, b) => Date.parse(String(b["merged_at"])) - Date.parse(String(a["merged_at"])));
+      if (merged[0] !== undefined) return { kind: "merged", pr: Number(merged[0]["number"]), sha: String(merged[0]["merge_commit_sha"]) };
+      const open = own.find(pr => pr["state"] === "open");
+      return open === undefined ? { kind: "none" } : { kind: "open", pr: Number(open["number"]), head: String(object(open["head"])["sha"]) };
+    },
+    async prove(repo, sha) {
+      const proven = await (await proof()).proveRelease({ repo, sha, required: { ...REQUIRED_PR_CHECKS_WORKFLOW } }, api);
+      return proven.ok ? { ok: true, sha, tree: proven.tree, pr: proven.pr, head: proven.head, branch: proven.branch } : proven;
+    },
+    async firstParent(repo, sha) {
+      if (!repoOk(repo) || !/^[0-9a-f]{40}$/.test(sha)) return { ok: false, why: "not a commit GitHub can be asked about" };
+      const head = await readMainHead(run, gh, repo);
+      const parents = new Map<string, string[]>();
+      for (let page = 1; page <= FIRST_PARENT_PAGES; page++) {
+        const rows = await api(`repos/${repo}/commits?sha=${head}&per_page=100&page=${page}`);
+        if (!Array.isArray(rows)) throw new Error("GitHub's commit list couldn't be read");
+        for (const row of rows.map(object)) {
+          const id = row["sha"], listed = Array.isArray(row["parents"]) ? row["parents"].map(one => object(one)["sha"]) : null;
+          if (typeof id !== "string" || listed === null || listed.some(one => typeof one !== "string")) throw new Error("GitHub's commit list couldn't be read");
+          parents.set(id, listed as string[]);
+        }
+        const after = firstParentAfter(head, sha, parents);
+        if (after !== null) return { ok: true, after };
+        if (rows.length < 100) break;
+      }
+      return { ok: false, why: `${sha.slice(0, 7)} isn't on main's first-parent history from ${head.slice(0, 7)}` };
+    },
+    async changedSince(repo, tag, sha) {
+      if (!repoOk(repo) || !/^v\d+\.\d+\.\d+$/.test(tag) || !/^[0-9a-f]{40}$/.test(sha)) return null;
+      try {
+        const compared = object(await api(`repos/${repo}/compare/${tag}...${sha}?per_page=100`));
+        const files = Array.isArray(compared["files"]) ? compared["files"].map(one => object(one)["filename"]) : null;
+        // GitHub lists at most 300 files: a longer change can't be read whole, so it is unknown, never "nothing changed".
+        if (files === null || files.some(one => typeof one !== "string") || files.length >= 300) return null;
+        return files as string[];
+      } catch { return null; }
+    },
+  };
+}
+
+/**
+ * `toolroll release prepare <version>` (release-from-main.md): the version pull request, made with GitHub's own Git
+ * data API from main's head as GitHub has it (no checkout is written): package.json and package-lock.json with only the
+ * version changed (release-main.ts bumpVersion) and CHANGELOG.md with the entry, one commit on a new `release-<version>`
+ * branch, and its pull request into main. A branch that already exists is never moved: it is named instead.
+ */
+export async function prepareRelease(run: Exec, gh: string, input: { repo: string; version: string; notes: string | null; date: string }):
+  Promise<{ ok: true; pr: number; branch: string; commit: string } | { ok: false; why: string }> {
+  const { repo, version } = input;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^\d+\.\d+\.\d+$/.test(version)) return { ok: false, why: "not a repository and version this prepares" };
+  const api = githubJson(run, gh);
+  const branch = releaseBranchFor(version);
+  const exists = await run(gh, ["api", "--hostname", "github.com", "--method", "GET", `repos/${repo}/git/ref/heads/${branch}`], { cwd: "/", env: ciEnv() });
+  if (exists.code === 0) return { ok: false, why: `${branch} already exists on GitHub; open its pull request or delete the branch first` };
+  const head = await readMainHead(run, gh, repo);
+  const commit = object(await api(`repos/${repo}/git/commits/${head}`));
+  const baseTree = object(commit["tree"])["sha"];
+  if (typeof baseTree !== "string" || !/^[0-9a-f]{40}$/.test(baseTree)) return { ok: false, why: "GitHub didn't describe main's head" };
+  // Each file's bytes at main's head, through its blob (the contents API leaves files over 1 MB empty).
+  const fileAt = async (path: string): Promise<string | null> => {
+    const listed = await run(gh, ["api", "--hostname", "github.com", "--method", "GET", `repos/${repo}/contents/${path}?ref=${head}`, "--jq", ".sha"], { cwd: "/", env: ciEnv() });
+    if (listed.code !== 0) return null;
+    const blob = object(await api(`repos/${repo}/git/blobs/${listed.stdout.trim()}`));
+    return blob["encoding"] === "base64" && typeof blob["content"] === "string" ? Buffer.from(blob["content"].replace(/\s/g, ""), "base64").toString("utf8") : null;
+  };
+  const manifest = await fileAt("package.json"), lock = await fileAt("package-lock.json"), changelog = await fileAt("CHANGELOG.md") ?? "# Changelog\n";
+  if (manifest === null || lock === null) return { ok: false, why: "main's package.json or package-lock.json can't be read" };
+  let from: string;
+  try { from = String(object(JSON.parse(manifest))["version"]); } catch { return { ok: false, why: "main's package.json can't be read" }; }
+  if (versionAfter(from, version) || from === version) return { ok: false, why: `main is already at ${from}; ${version} must be later` };
+  const nextManifest = bumpVersion("package.json", manifest, from, version), nextLock = bumpVersion("package-lock.json", lock, from, version);
+  if (nextManifest === null || nextLock === null) return { ok: false, why: `main's ${nextManifest === null ? "package.json" : "package-lock.json"} doesn't have the shape whose version alone can be changed` };
+  let nextChangelog = changelog;
+  if (!changelogHas(changelog, version)) {
+    if (input.notes === null || input.notes.trim() === "") return { ok: false, why: `CHANGELOG.md has no "## ${version}" entry: write it in a file and pass --notes <file>` };
+    nextChangelog = changelogWith(changelog, version, input.notes, input.date);
+  }
+  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> => {
+    const out = await run(gh, ["api", "--hostname", "github.com", "--method", "POST", `repos/${repo}/${path}`, "--input", "-"], { cwd: "/", env: ciEnv(), input: JSON.stringify(body) });
+    if (out.code !== 0) throw new Error(`GitHub refused ${path}: ${(out.stderr || out.stdout).trim().split("\n").slice(-1)[0]?.slice(0, 200)}`);
+    return object(JSON.parse(out.stdout));
+  };
+  try {
+    const blobs = await Promise.all([["package.json", nextManifest], ["package-lock.json", nextLock], ["CHANGELOG.md", nextChangelog]].map(async ([path, content]) =>
+      ({ path: path!, mode: "100644", type: "blob", sha: String((await post("git/blobs", { content, encoding: "utf-8" }))["sha"]) })));
+    const tree = String((await post("git/trees", { base_tree: baseTree, tree: blobs }))["sha"]);
+    const made = String((await post("git/commits", { message: `Release ${version}`, tree, parents: [head] }))["sha"]);
+    if (!/^[0-9a-f]{40}$/.test(made)) return { ok: false, why: "GitHub made no commit" };
+    await post("git/refs", { ref: `refs/heads/${branch}`, sha: made });
+    const opened = await run(gh, ["pr", "create", "--repo", repo, "--head", branch, "--base", "main", "--title", `Release ${version}`,
+      "--body", `The version and changelog for ${version}. Once its checks pass, merge it like any pull request, then run \`toolroll release ${version}\`.`], { cwd: "/", env: ciEnv() });
+    if (opened.code !== 0) return { ok: false, why: `${branch} was pushed, but its pull request wasn't opened: ${(opened.stderr || opened.stdout).trim().split("\n").slice(-1)[0]}` };
+    const pr = Number(/\/pull\/(\d+)/.exec(opened.stdout)?.[1]);
+    return Number.isSafeInteger(pr) && pr > 0 ? { ok: true, pr, branch, commit: made } : { ok: false, why: "GitHub didn't name the pull request it opened" };
+  } catch (error) { return { ok: false, why: String((error as Error)?.message ?? error) }; }
+}
+
+/** main's own version, from its package.json at main's head as GitHub has it (a release with no version named). */
+export async function readMainVersion(run: Exec, gh: string, repo: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
+  const head = await readMainHead(run, gh, repo);
+  const out = await run(gh, ["api", "--hostname", "github.com", "--method", "GET", `repos/${repo}/contents/package.json?ref=${head}`, "--jq", ".content"], { cwd: "/", env: ciEnv() });
+  if (out.code !== 0) return null;
+  try {
+    const version = object(JSON.parse(Buffer.from(out.stdout.replace(/\\n|\s/g, ""), "base64").toString("utf8")))["version"];
+    return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version) ? version : null;
+  } catch { return null; }
 }

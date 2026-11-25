@@ -28,7 +28,7 @@ describe("toolroll release <branch>", () => {
   });
 
   test("usage slips answer with one envelope", async () => {
-    for (const argv of [[], ["a", "b"], ["main..x"], ["b", "--limit", "nap=5"], ["b", "--frobnicate"], ["b", "--repo"]]) {
+    for (const argv of [["a", "b"], ["main..x"], ["prepare"], ["prepare", "x"], ["0.9.119", "--no-carry"], ["b", "--full"], ["0.9.119", "--notes", "n.md"], ["b", "--limit", "nap=5"], ["b", "--frobnicate"], ["b", "--repo"]]) {
       const lines: string[] = [];
       expect(await runReleaseCommand([...argv, "--json"], line => lines.push(line)), argv.join(" ")).toBe(2);
       expect(JSON.parse(lines.join("\n")), argv.join(" ")).toMatchObject({ ok: false, command: "release", reason: "usage" });
@@ -89,7 +89,7 @@ describe("toolroll release <branch>", () => {
   test("the binary routes `release` to the release and `worker release` to the lease", async () => {
     const lines: string[] = [];
     expect(await main(["release", "--help"], line => lines.push(line))).toBe(0);
-    expect(lines.join("\n")).toMatch(/^toolroll release <branch>/);
+    expect(lines.join("\n")).toMatch(/^toolroll release \[<version>\]/);
     lines.length = 0;
     const db = join(mkdtempSync(join(tmpdir(), "so-release-cli-")), "orders.db");
     expect(await main(["worker", "release", "--json"], line => lines.push(line), { operate: { databaseFile: db } })).toBe(2);
