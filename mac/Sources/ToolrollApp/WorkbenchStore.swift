@@ -207,7 +207,7 @@ public final class WorkbenchStore {
     public var isChatDiffDrawerOpen: Bool = false
     public var isChatThreadsExpanded: Bool = true
     public var composerFocusTick: Int = 0
-    public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "chat" {
+    public var preferredOrchestrationMode: String = UserDefaults.standard.string(forKey: "toolroll.orchestrationMode") ?? "lead" {
         didSet { UserDefaults.standard.set(preferredOrchestrationMode, forKey: "toolroll.orchestrationMode") }
     }
     public var defaultChatProvider: AgentChatProvider = AgentChatProvider(rawValue: UserDefaults.standard.string(forKey: "toolroll.chatProvider") ?? "claude") ?? .claude {
@@ -978,7 +978,11 @@ public final class WorkbenchStore {
     }
 
     public func toggleOrchestrationMode() {
-        preferredOrchestrationMode = (preferredOrchestrationMode == "task") ? "chat" : "task"
+        switch preferredOrchestrationMode {
+        case "lead": preferredOrchestrationMode = "chat"
+        case "chat": preferredOrchestrationMode = "task"
+        default: preferredOrchestrationMode = "lead"
+        }
     }
 
     public func selectChatThread(_ id: String) {
@@ -2582,10 +2586,65 @@ public final class WorkbenchStore {
         }
     }
 
+    public func openLeadCanvas() {
+        openWorkHome()
+        preferredOrchestrationMode = "lead"
+        Task { await refreshLeadChat() }
+    }
+
+    public func refreshLeadChat() async {
+        guard let client, !activeProfile.isDemo else { return }
+        if let refreshed = try? await client.fetchLeadChat(project: selectedProject) {
+            leadChat = refreshed
+            startLeadBusyPollingIfNeeded()
+        }
+    }
+
+    public func confirmLeadProposal(_ card: LeadChatCard) async {
+        guard let client, !activeProfile.isDemo else { return }
+        busyLabel = "\(card.primary?.label ?? "Confirming")…"
+        defer { busyLabel = nil }
+        do {
+            let said = try await client.confirmLeadProposal(
+                id: card.id,
+                irreversible: card.primary?.irreversible ?? false
+            )
+            notice = WorkbenchNotice(kind: .info, message: said)
+            await refreshLeadChat()
+            await refreshAll()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func dismissLeadProposal(_ card: LeadChatCard) async {
+        guard let client, !activeProfile.isDemo else { return }
+        busyLabel = "Dismissing…"
+        defer { busyLabel = nil }
+        do {
+            let said = try await client.dismissLeadProposal(id: card.id)
+            notice = WorkbenchNotice(kind: .info, message: said)
+            await refreshLeadChat()
+        } catch {
+            notice = WorkbenchNotice(kind: .refusal, message: error.localizedDescription)
+        }
+    }
+
+    public func openLeadLink(_ link: LeadChatLink) async {
+        if let taskId = link.task, !taskId.isEmpty {
+            await selectTask(taskId)
+            if link.tab == "diff" {
+                isInspectorVisible = true
+                inspectorTab = .diff
+            }
+            return
+        }
+        openInBrowser(path: link.href)
+    }
+
     @discardableResult
     public func askLeadAboutCanvas(_ message: String) async -> String? {
-        isInspectorVisible = true
-        inspectorTab = .lead
+        openLeadCanvas()
         return await sendLeadMessage(message)
     }
 
@@ -2653,8 +2712,8 @@ public final class WorkbenchStore {
     public var automationToResume: Automation?
 
     public func startAutomationWithLead() {
-        inspectorTab = .lead
-        isInspectorVisible = true
+        openLeadCanvas()
+        workDraftText = "Set up an automation: every "
         leadDraftSeed = "Set up an automation: every "
     }
 

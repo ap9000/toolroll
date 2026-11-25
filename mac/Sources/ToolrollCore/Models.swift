@@ -1427,17 +1427,197 @@ public struct StartRemoteTerminalResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct LeadChatLink: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { "\(label)|\(href)" }
+    public let label: String
+    public let href: String
+    public let task: String?
+    public let tab: String?
+
+    public init(label: String, href: String, task: String? = nil, tab: String? = nil) {
+        self.label = label
+        self.href = href
+        self.task = task
+        self.tab = tab
+    }
+}
+
+public struct LeadCardPrimary: Codable, Sendable, Equatable {
+    public let kind: String
+    public let label: String
+    public let irreversible: Bool
+    public let native: Bool
+    public let href: String?
+    public let task: String?
+    public let tab: String?
+
+    public init(
+        kind: String,
+        label: String,
+        irreversible: Bool = false,
+        native: Bool = false,
+        href: String? = nil,
+        task: String? = nil,
+        tab: String? = nil
+    ) {
+        self.kind = kind
+        self.label = label
+        self.irreversible = irreversible
+        self.native = native
+        self.href = href
+        self.task = task
+        self.tab = tab
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        label = try c.decode(String.self, forKey: .label)
+        irreversible = (try? c.decodeIfPresent(Bool.self, forKey: .irreversible)) ?? false
+        native = (try? c.decodeIfPresent(Bool.self, forKey: .native)) ?? false
+        href = try? c.decodeIfPresent(String.self, forKey: .href)
+        task = try? c.decodeIfPresent(String.self, forKey: .task)
+        tab = try? c.decodeIfPresent(String.self, forKey: .tab)
+    }
+}
+
+public struct LeadChatCard: Codable, Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let kind: String
+    public let label: String
+    public let state: String
+    public let data: Bool
+    public let lines: [String]
+    public let said: String?
+    public let note: String?
+    public let primary: LeadCardPrimary?
+    public let dismissable: Bool
+    public let links: [LeadChatLink]
+
+    public init(
+        id: Int,
+        kind: String,
+        label: String,
+        state: String = "pending",
+        data: Bool = false,
+        lines: [String] = [],
+        said: String? = nil,
+        note: String? = nil,
+        primary: LeadCardPrimary? = nil,
+        dismissable: Bool = false,
+        links: [LeadChatLink] = []
+    ) {
+        self.id = id
+        self.kind = kind
+        self.label = label
+        self.state = state
+        self.data = data
+        self.lines = lines
+        self.said = said
+        self.note = note
+        self.primary = primary
+        self.dismissable = dismissable
+        self.links = links
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "card"
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "pending"
+        data = try c.decodeIfPresent(Bool.self, forKey: .data) ?? false
+        lines = (try? c.decodeIfPresent([String].self, forKey: .lines)) ?? []
+        said = try? c.decodeIfPresent(String.self, forKey: .said)
+        note = try? c.decodeIfPresent(String.self, forKey: .note)
+        primary = try? c.decodeIfPresent(LeadCardPrimary.self, forKey: .primary)
+        dismissable = try c.decodeIfPresent(Bool.self, forKey: .dismissable) ?? false
+        links = (try? c.decodeIfPresent([LeadChatLink].self, forKey: .links)) ?? []
+    }
+}
+
+public struct LeadChatAsk: Codable, Sendable, Equatable {
+    public let turn: Int
+    public let question: String
+    public let options: [String]
+    public let open: Bool
+    public let stale: Bool
+
+    public init(turn: Int, question: String, options: [String], open: Bool = true, stale: Bool = false) {
+        self.turn = turn
+        self.question = question
+        self.options = options
+        self.open = open
+        self.stale = stale
+    }
+}
+
+public struct LeadQueuedMessage: Codable, Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let text: String
+    public let status: String
+    public let detail: String?
+
+    public init(id: Int, text: String, status: String, detail: String? = nil) {
+        self.id = id
+        self.text = text
+        self.status = status
+        self.detail = detail
+    }
+}
+
 public struct LeadMessage: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
     public let role: String
     public let text: String
     public let at: String?
+    public let activity: String?
+    public let cards: [LeadChatCard]
+    public let ask: LeadChatAsk?
 
-    public init(id: Int, role: String, text: String, at: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case id, role, text, at, createdAt, activity, cards, ask
+    }
+
+    public init(
+        id: Int,
+        role: String,
+        text: String,
+        at: String? = nil,
+        activity: String? = nil,
+        cards: [LeadChatCard] = [],
+        ask: LeadChatAsk? = nil
+    ) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
+        self.activity = activity
+        self.cards = cards
+        self.ask = ask
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        role = try c.decode(String.self, forKey: .role)
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        at = (try? c.decodeIfPresent(String.self, forKey: .at))
+            ?? (try? c.decodeIfPresent(String.self, forKey: .createdAt))
+        activity = try? c.decodeIfPresent(String.self, forKey: .activity)
+        cards = (try? c.decodeIfPresent([LeadChatCard].self, forKey: .cards)) ?? []
+        ask = try? c.decodeIfPresent(LeadChatAsk.self, forKey: .ask)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(role, forKey: .role)
+        try c.encode(text, forKey: .text)
+        try c.encodeIfPresent(at, forKey: .at)
+        try c.encodeIfPresent(activity, forKey: .activity)
+        if !cards.isEmpty { try c.encode(cards, forKey: .cards) }
+        try c.encodeIfPresent(ask, forKey: .ask)
     }
 }
 
@@ -1448,18 +1628,32 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
     public let canSend: Bool
     public let problem: String?
     public let busy: Bool
+    public let pendingProposals: Int
+    public let queued: [LeadQueuedMessage]
     public let messages: [LeadMessage]
     public let session: Int?
 
     enum CodingKeys: String, CodingKey {
-        case version, room, busy, messages, problem, session
+        case version, room, busy, messages, problem, session, queued
         case leadName = "lead_name"
         case canSend = "can_send"
+        case pendingProposals = "pending_proposals"
     }
 
-    private enum CamelKeys: String, CodingKey { case leadName, canSend }
+    private enum CamelKeys: String, CodingKey { case leadName, canSend, pendingProposals }
 
-    public init(version: Int = 1, room: String = "chat", leadName: String = "Lead", canSend: Bool = true, problem: String? = nil, busy: Bool = false, messages: [LeadMessage] = [], session: Int? = nil) {
+    public init(
+        version: Int = 1,
+        room: String = "chat",
+        leadName: String = "Lead",
+        canSend: Bool = true,
+        problem: String? = nil,
+        busy: Bool = false,
+        pendingProposals: Int = 0,
+        queued: [LeadQueuedMessage] = [],
+        messages: [LeadMessage] = [],
+        session: Int? = nil
+    ) {
         self.session = session
         self.version = version
         self.room = room
@@ -1467,6 +1661,8 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
         self.canSend = canSend
         self.problem = problem
         self.busy = busy
+        self.pendingProposals = pendingProposals
+        self.queued = queued
         self.messages = messages
     }
 
@@ -1483,6 +1679,10 @@ public struct LeadChatResponse: Codable, Sendable, Equatable {
             ?? false
         problem = try c.decodeIfPresent(String.self, forKey: .problem)
         busy = try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false
+        pendingProposals = (try? c.decodeIfPresent(Int.self, forKey: .pendingProposals))
+            ?? (try? alt.decodeIfPresent(Int.self, forKey: .pendingProposals))
+            ?? 0
+        queued = (try? c.decodeIfPresent([LeadQueuedMessage].self, forKey: .queued)) ?? []
         messages = try c.decodeIfPresent([LeadMessage].self, forKey: .messages) ?? []
         session = try? c.decodeIfPresent(Int.self, forKey: .session)
     }

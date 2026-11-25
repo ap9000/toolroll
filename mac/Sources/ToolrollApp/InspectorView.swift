@@ -784,7 +784,20 @@ private struct LeadThreadView: View {
                             LeadMessageRow(
                                 message: msg,
                                 account: store.activeProfile.account,
-                                leadName: store.leadChat.leadName
+                                leadName: store.leadChat.leadName,
+                                wide: false,
+                                onSelectAskOption: { option in
+                                    Task { _ = await store.sendLeadMessage(option) }
+                                },
+                                onConfirmProposal: { card in
+                                    Task { await store.confirmLeadProposal(card) }
+                                },
+                                onDismissProposal: { card in
+                                    Task { await store.dismissLeadProposal(card) }
+                                },
+                                onOpenLink: { link in
+                                    Task { await store.openLeadLink(link) }
+                                }
                             )
                             .id(msg.id)
                         }

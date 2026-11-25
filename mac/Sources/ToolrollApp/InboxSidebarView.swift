@@ -261,23 +261,38 @@ public struct InboxSidebarView: View {
 
     private var workNavRow: some View {
         let isHomeActive = store.workspaceMode == .workbench && store.isShowingWorkHome
+        let pending = store.leadChat.pendingProposals
         return Button {
-            store.openNewWorkCanvas()
+            store.openLeadCanvas()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(isHomeActive ? ToolrollPalette.ink : ToolrollPalette.muted)
-                    .frame(width: 16)
-                Text("Work")
+                if store.leadChat.busy {
+                    ToolrollKineticLoader(provider: "lead", height: 11)
+                        .frame(width: 16, height: 16)
+                } else {
+                    ToolrollBrandMark(height: 12.5)
+                        .opacity(isHomeActive ? 1.0 : 0.72)
+                        .frame(width: 16, height: 16)
+                }
+                Text(store.leadChat.leadName)
                     .font(.system(size: 12.5, weight: isHomeActive ? .semibold : .medium))
                     .tracking(-0.15)
                     .foregroundStyle(isHomeActive ? ToolrollPalette.ink : ToolrollPalette.ink.opacity(0.85))
                 Spacer()
-                Text("⌘N")
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                if pending > 0 {
+                    Text("\(pending)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(ToolrollPalette.inverseInk)
+                        .padding(.horizontal, 5.5)
+                        .padding(.vertical, 1)
+                        .background(ToolrollPalette.ink, in: Capsule())
+                } else {
+                    Text("⌘N")
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
+                }
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
@@ -289,8 +304,8 @@ public struct InboxSidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Work")
-        .help("Work & new chat or task (⌘N)")
+        .accessibilityLabel(pending > 0 ? "\(store.leadChat.leadName), \(pending) proposals" : store.leadChat.leadName)
+        .help("\(store.leadChat.leadName) canvas — talk to Lead, or start a Chat or Task (⌘N)")
     }
 
     private var canvasNavRow: some View {

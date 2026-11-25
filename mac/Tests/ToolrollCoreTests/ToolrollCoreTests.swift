@@ -1092,8 +1092,22 @@ struct ToolrollCoreTests {
         let id = ToolrollClient.leadRequestId()
         #expect(id.count == 32)
         #expect(id.allSatisfy { "0123456789abcdef".contains($0) })
-        let read = try JSONDecoder().decode(LeadChatResponse.self, from: Data(#"{"version":1,"room":"chat","session":7,"leadName":"Lead","canSend":true,"busy":false,"messages":[]}"#.utf8))
+        let payload = """
+        {"version":1,"room":"chat","session":7,"leadName":"Lead","canSend":true,"busy":false,"pendingProposals":1,"queued":[],
+         "messages":[{"id":12,"role":"assistant","text":"Ready to file the homepage fix.","activity":"Checked 2 files","createdAt":"2026-11-24T18:00:00Z",
+           "cards":[{"id":99,"kind":"task","label":"New task","state":"pending","data":false,"lines":["Fix homepage corner","Replace orange dots with cobalt"],
+             "said":null,"note":null,"primary":{"kind":"confirm","label":"File task","irreversible":false,"native":false},"dismissable":true,
+             "links":[{"label":"Open task","href":"/t/t-1","task":"t-1","tab":"diff"}]}],
+           "ask":{"turn":4,"question":"Keep the peel shadow?","options":["Keep subtle shadow","Remove shadow"],"open":true,"stale":false}}]}
+        """
+        let read = try JSONDecoder().decode(LeadChatResponse.self, from: Data(payload.utf8))
         #expect(read.session == 7)
+        #expect(read.pendingProposals == 1)
+        #expect(read.messages.count == 1)
+        #expect(read.messages[0].cards.count == 1)
+        #expect(read.messages[0].cards[0].primary?.label == "File task")
+        #expect(read.messages[0].cards[0].links.first?.task == "t-1")
+        #expect(read.messages[0].ask?.options == ["Keep subtle shadow", "Remove shadow"])
     }
 
     @Test("Interrupted Claude chat turn recovers sessionId, tool steps, and final reply from Claude project transcript")

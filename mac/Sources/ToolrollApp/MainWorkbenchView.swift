@@ -173,12 +173,26 @@ public struct MainWorkbenchView: View {
             if let chatThread = store.selectedChatThread {
                 chatTopBarLeading(chatThread)
             } else if store.workspaceMode == .workbench && store.isShowingWorkHome {
-                if let proj = store.selectedProject {
-                    Text(proj)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(ToolrollPalette.muted)
-                        .padding(.leading, 6)
+                HStack(spacing: 7) {
+                    if store.leadChat.busy {
+                        ToolrollKineticLoader(provider: "lead", height: 11)
+                    } else {
+                        ToolrollBrandMark(height: 12.5)
+                    }
+                    Text(store.leadChat.leadName)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    if let proj = store.selectedProject {
+                        Text(proj)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(ToolrollPalette.raised, in: Capsule())
+                            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
                 }
+                .padding(.leading, 6)
             } else {
                 HStack(spacing: 5) {
                     if let project = breadcrumbProject {

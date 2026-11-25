@@ -778,6 +778,26 @@ public actor ToolrollClient {
         return reply.message ?? "Sent to Lead."
     }
 
+    public func confirmLeadProposal(id: Int, irreversible: Bool = false) async throws -> String {
+        var fields: [(String, String)] = [("return", "/chat")]
+        if irreversible {
+            fields.append(("confirm", "yes"))
+        }
+        return try await sendFormAct(
+            path: "/chat/proposal/\(id)/confirm",
+            fields: fields,
+            defaultDone: "Confirmed."
+        )
+    }
+
+    public func dismissLeadProposal(id: Int) async throws -> String {
+        return try await sendFormAct(
+            path: "/chat/proposal/\(id)/dismiss",
+            fields: [("return", "/chat")],
+            defaultDone: "Dismissed."
+        )
+    }
+
     // MARK: - Native In-App Approvals, Reviews, Questions & Task Lifecycle
 
     public func approveTask(taskId: String, digest: String, nonce: String, password: String = "") async throws -> String {

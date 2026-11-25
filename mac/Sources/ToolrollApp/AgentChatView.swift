@@ -155,43 +155,36 @@ public struct AgentChatView: View {
             .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         } else {
-            let activeToolVerb: String = {
-                if let runningTool = msg.tools.last(where: { $0.status == "running" }) {
-                    return runningTool.detail.isEmpty ? "\(runningTool.name)…" : "\(runningTool.name): \(runningTool.detail)…"
-                }
-                return "Thinking…"
-            }()
-
             HStack(alignment: .top, spacing: 10) {
                 ProviderBrandGlyph(provider: thread.provider.rawValue, size: 22, tinted: true, inTile: true)
                     .padding(.top, 1)
 
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(thread.provider.label(for: thread.modelId))
                         .font(.system(size: 12, weight: .semibold))
                         .tracking(-0.1)
                         .foregroundStyle(ToolrollPalette.ink)
 
-                    if !msg.tools.isEmpty {
-                        toolActivityGroup(for: msg)
+                    if msg.isStreaming || !msg.tools.isEmpty {
+                        liveActivityRow(for: msg)
                     }
 
                     if !msg.text.isEmpty {
-                        Text(msg.text)
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(msg.isError ? ToolrollPalette.danger : ToolrollPalette.ink.opacity(0.93))
-                            .textSelection(.enabled)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if msg.isError {
+                            Text(msg.text)
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(ToolrollPalette.danger)
+                                .textSelection(.enabled)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            NativeMarkdownView(markdown: msg.text, compact: true, bodyFontSize: 13.5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else if !msg.isStreaming && !msg.isError {
                         Text(msg.tools.isEmpty ? "Response was interrupted before finishing." : "Completed steps with no final text reply.")
                             .font(.system(size: 12.5))
                             .foregroundStyle(ToolrollPalette.muted)
-                    }
-
-                    if msg.isStreaming {
-                        KineticThinkingRow(provider: thread.provider.rawValue, label: activeToolVerb)
-                            .padding(.top, msg.text.isEmpty ? 0 : 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -201,80 +194,124 @@ public struct AgentChatView: View {
         }
     }
 
-    private func toolActivityGroup(for msg: AgentChatMessage) -> some View {
+    private func liveActivityRow(for msg: AgentChatMessage) -> some View {
         let isExpanded = expandedToolMessageIds.contains(msg.id)
-        let visibleTools: [AgentChatToolEvent] = {
-            if isExpanded { return msg.tools }
-            if msg.isStreaming {
-                return Array(msg.tools.suffix(2))
-            }
-            return []
-        }()
+        let currentTool = msg.tools.last(where: { $0.status == "running" }) ?? msg.tools.last
+        let hasSteps = !msg.tools.isEmpty
 
-        return VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
-                    if isExpanded {
-                        expandedToolMessageIds.remove(msg.id)
-                    } else {
-                        expandedToolMessageIds.insert(msg.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            if hasSteps {
+                Button {
+                    withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                        if isExpanded {
+                            expandedToolMessageIds.remove(msg.id)
+                        } else {
+                            expandedToolMessageIds.insert(msg.id)
+                        }
                     }
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.muted)
-                    Text("\(msg.tools.count) \(msg.tools.count == 1 ? "step" : "steps")")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(ToolrollPalette.muted)
-                    if !isExpanded, let latest = msg.tools.last, !latest.detail.isEmpty {
-                        Text("· \(latest.name) \(latest.detail)")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.muted.opacity(0.75))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if !visibleTools.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(visibleTools) { tool in
-                        HStack(spacing: 6) {
-                            if tool.status == "running" {
-                                ToolrollKineticLoader(provider: thread.provider.rawValue, height: 9)
-                            } else if tool.status == "error" {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8.5, weight: .semibold))
-                                    .foregroundStyle(ToolrollPalette.danger)
-                            } else {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 8.5, weight: .semibold))
+                } label: {
+                    HStack(spacing: 7) {
+                        if msg.isStreaming {
+                            ToolrollKineticLoader(provider: thread.provider.rawValue, height: 11)
+                                .frame(width: 12, height: 12)
+                            Text(liveStepHeadline(tool: currentTool))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if msg.tools.count > 1 {
+                                Text("· \(msg.tools.count) steps")
+                                    .font(.system(size: 11.5))
+                                    .monospacedDigit()
                                     .foregroundStyle(ToolrollPalette.muted)
+                                    .fixedSize()
                             }
-                            Text(tool.name)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(ToolrollPalette.ink.opacity(0.9))
-                            if !tool.detail.isEmpty {
-                                Text(tool.detail)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(ToolrollPalette.muted)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                        } else {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted)
+                                .frame(width: 10)
+                            Text("Worked through \(msg.tools.count) \(msg.tools.count == 1 ? "step" : "steps")")
+                                .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
+
+                        if msg.isStreaming {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(msg.tools) { tool in
+                            HStack(spacing: 7) {
+                                stepStatusIcon(tool.status)
+                                    .frame(width: 12, height: 12)
+                                Text(tool.name)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(ToolrollPalette.ink.opacity(0.85))
+                                if !tool.detail.isEmpty {
+                                    Text(tool.detail)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.muted)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer(minLength: 0)
                             }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                    }
+                    .padding(.leading, 10)
+                    .padding(.vertical, 4)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(ToolrollPalette.line)
+                            .frame(width: 1)
+                            .padding(.leading, 4)
                     }
                 }
+            } else if msg.isStreaming {
+                KineticThinkingRow(provider: thread.provider.rawValue, label: "Thinking…")
             }
+        }
+    }
+
+    private func liveStepHeadline(tool: AgentChatToolEvent?) -> String {
+        guard let tool else { return "Thinking…" }
+        let verb: String
+        switch tool.name.lowercased() {
+        case "read": verb = "Reading"
+        case "edit": verb = "Editing"
+        case "write": verb = "Writing"
+        case "bash", "shell", "run": verb = "Running"
+        case "grep", "search": verb = "Searching"
+        case "glob", "browse": verb = "Browsing"
+        default: verb = tool.name
+        }
+        return tool.detail.isEmpty ? "\(verb)…" : "\(verb) \(tool.detail)"
+    }
+
+    @ViewBuilder
+    private func stepStatusIcon(_ status: String) -> some View {
+        if status == "running" {
+            ToolrollKineticLoader(provider: thread.provider.rawValue, height: 9)
+        } else if status == "error" {
+            Image(systemName: "xmark")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.danger)
+        } else {
+            Image(systemName: "checkmark")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(ToolrollPalette.muted.opacity(0.8))
         }
     }
 

@@ -225,33 +225,37 @@ struct ArtifactPaneView: View {
     }
 }
 
-private struct NativeMarkdownView: View {
+struct NativeMarkdownView: View {
     let markdown: String
+    var compact: Bool = false
+    var bodyFontSize: CGFloat = 13
 
     private var blocks: [MarkdownBlock] {
         MarkdownBlockParser.parse(markdown)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: compact ? 9 : 14) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .heading(let level, let text):
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: compact ? 3 : 6) {
                         inlineText(text)
                             .font(headingFont(level))
+                            .tracking(-0.2)
                             .foregroundStyle(ToolrollPalette.ink)
-                            .padding(.top, level == 1 ? 2 : 8)
-                        if level == 2 {
+                            .padding(.top, level == 1 ? (compact ? 2 : 2) : (compact ? 4 : 8))
+                        if level == 2 && !compact {
                             HairlineDivider()
                         }
                     }
 
                 case .paragraph(let text):
                     inlineText(text)
-                        .font(.system(size: 13))
+                        .font(.system(size: bodyFontSize))
                         .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
-                        .lineSpacing(4)
+                        .lineSpacing(compact ? 3 : 4)
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .callout(let text):
@@ -260,11 +264,12 @@ private struct NativeMarkdownView: View {
                             .fill(ToolrollPalette.muted.opacity(0.55))
                             .frame(width: 2.5)
                         inlineText(text)
-                            .font(.system(size: 12.5))
+                            .font(.system(size: max(12, bodyFontSize - 0.5)))
                             .foregroundStyle(ToolrollPalette.ink.opacity(0.88))
-                            .lineSpacing(4)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
+                            .lineSpacing(3.5)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, compact ? 7 : 10)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -277,17 +282,18 @@ private struct NativeMarkdownView: View {
                     MarkdownTableView(headers: headers, rows: rows)
 
                 case .list(let ordered, let items):
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: compact ? 4.5 : 6) {
                         ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline, spacing: 7) {
                                 Text(ordered ? "\(idx + 1)." : "•")
                                     .font(.system(size: 12, weight: .semibold, design: ordered ? .monospaced : .default))
                                     .foregroundStyle(ToolrollPalette.muted)
-                                    .frame(minWidth: ordered ? 18 : 10, alignment: .trailing)
+                                    .frame(minWidth: ordered ? 18 : 9, alignment: .trailing)
                                 inlineText(item)
-                                    .font(.system(size: 13))
+                                    .font(.system(size: bodyFontSize))
                                     .foregroundStyle(ToolrollPalette.ink.opacity(0.92))
-                                    .lineSpacing(3.5)
+                                    .lineSpacing(3)
+                                    .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -295,13 +301,21 @@ private struct NativeMarkdownView: View {
 
                 case .divider:
                     HairlineDivider()
-                        .padding(.vertical, 4)
+                        .padding(.vertical, compact ? 2 : 4)
                 }
             }
         }
     }
 
     private func headingFont(_ level: Int) -> Font {
+        if compact {
+            switch level {
+            case 1: return .system(size: 16.5, weight: .semibold)
+            case 2: return .system(size: 14.5, weight: .semibold)
+            case 3: return .system(size: 13.5, weight: .semibold)
+            default: return .system(size: 13, weight: .semibold)
+            }
+        }
         switch level {
         case 1: return .system(size: 19, weight: .bold)
         case 2: return .system(size: 15, weight: .semibold)
@@ -311,7 +325,13 @@ private struct NativeMarkdownView: View {
     }
 
     private func inlineText(_ raw: String) -> Text {
-        if let attr = try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+        if var attr = try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            for run in attr.runs {
+                if run.inlinePresentationIntent?.contains(.code) == true {
+                    attr[run.range].font = .system(size: max(11.5, bodyFontSize - 1), design: .monospaced)
+                    attr[run.range].backgroundColor = Color.white.opacity(0.08)
+                }
+            }
             return Text(attr)
         }
         return Text(raw)

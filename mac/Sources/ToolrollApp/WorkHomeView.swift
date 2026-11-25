@@ -5,10 +5,21 @@ import ToolrollCore
 struct WorkHomeView: View {
     @Bindable var store: WorkbenchStore
     @State private var isComposerDropTargeted = false
+    @State private var expandedFleetSection: String? = nil
     @FocusState private var quickPromptFocused: Bool
 
-    private var isTaskMode: Bool {
-        store.preferredOrchestrationMode == "task"
+    private enum ComposerGear: String {
+        case lead
+        case chat
+        case task
+    }
+
+    private var currentGear: ComposerGear {
+        switch store.preferredOrchestrationMode {
+        case "chat": return .chat
+        case "task": return .task
+        default: return .lead
+        }
     }
 
     private var rows: [WorkRow] { store.filteredRows }
@@ -16,7 +27,10 @@ struct WorkHomeView: View {
     private var running: [WorkRow] { rows.filter { $0.rank == 1 } }
     private var queued: [WorkRow] { rows.filter { $0.rank == 2 } }
     private var asks: [NeedRow] { store.workRowsResponse.needs.flatMap(\.rows) }
-    private var hasActiveWork: Bool { !waiting.isEmpty || !asks.isEmpty || !running.isEmpty || !queued.isEmpty }
+    private var needsTotal: Int { waiting.count + asks.count }
+    private var inFlightTotal: Int { running.count + queued.count + store.runningChatThreadIds.count }
+    private var hasActiveWork: Bool { needsTotal > 0 || inFlightTotal > 0 }
+    private var hasLeadConversation: Bool { !store.leadChat.messages.isEmpty || store.leadChat.busy }
 
     private var activeProject: String? {
         store.activeProject ?? store.selectedProject ?? store.allProjects.first
@@ -29,30 +43,10 @@ struct WorkHomeView: View {
                 HairlineDivider()
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if !hasActiveWork {
-                        Spacer().frame(height: 56)
-                    }
-
-                    if !waiting.isEmpty || !asks.isEmpty {
-                        needsAttentionSection
-                    }
-
-                    heroHeading
-
-                    unifiedComposer
-
-                    compactQuotaBar
-
-                    if !running.isEmpty || !queued.isEmpty {
-                        activeRunsSection
-                    }
-                }
-                .padding(.horizontal, 36)
-                .padding(.vertical, 28)
-                .frame(maxWidth: 740, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+            if hasLeadConversation {
+                activeLeadCanvas
+            } else {
+                freshHomeCanvas
             }
         }
         .background(ToolrollPalette.ground)
@@ -62,6 +56,7 @@ struct WorkHomeView: View {
                 store.pendingComposerDraft = nil
             }
             quickPromptFocused = true
+            Task { await store.refreshLeadChat() }
         }
         .onChange(of: store.pendingComposerDraft) { _, pending in
             if let pending, !pending.isEmpty {
@@ -71,6 +66,274 @@ struct WorkHomeView: View {
         }
         .onChange(of: store.composerFocusTick) { _, _ in
             quickPromptFocused = true
+        }
+    }
+
+    private var activeLeadCanvas: some View {
+        VStack(spacing: 0) {
+            if hasActiveWork || store.leadChat.pendingProposals > 0 {
+                ambientFleetHeader
+                HairlineDivider()
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(store.leadChat.messages) { msg in
+                            LeadMessageRow(
+                                message: msg,
+                                account: store.activeProfile.account,
+                                leadName: store.leadChat.leadName,
+                                wide: true,
+                                onSelectAskOption: { option in
+                                    Task { _ = await store.sendLeadMessage(option) }
+                                },
+                                onConfirmProposal: { card in
+                                    Task { await store.confirmLeadProposal(card) }
+                                },
+                                onDismissProposal: { card in
+                                    Task { await store.dismissLeadProposal(card) }
+                                },
+                                onOpenLink: { link in
+                                    Task { await store.openLeadLink(link) }
+                                }
+                            )
+                            .id(msg.id)
+                        }
+
+                        if store.leadChat.busy {
+                            KineticThinkingRow(
+                                provider: "lead",
+                                label: "\(store.leadChat.leadName) is thinking…"
+                            )
+                            .padding(.horizontal, 2)
+                            .id(LeadMessageRow.thinkingId)
+                        }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("lead-bottom-anchor")
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.top, 20)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: 800, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .onAppear {
+                    scrollLeadToBottom(proxy, animated: false)
+                }
+                .onChange(of: store.leadChat.messages.count) { _, _ in
+                    scrollLeadToBottom(proxy, animated: true)
+                }
+                .onChange(of: store.leadChat.busy) { _, _ in
+                    scrollLeadToBottom(proxy, animated: true)
+                }
+            }
+
+            VStack(spacing: 8) {
+                if currentGear == .lead, let problem = store.leadChat.problem, !problem.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ToolrollPalette.warning)
+                        Text(problem)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .lineLimit(2)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 4)
+                }
+
+                unifiedComposer
+
+                compactQuotaBar
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 6)
+            .padding(.bottom, 14)
+            .frame(maxWidth: 848)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func scrollLeadToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo("lead-bottom-anchor", anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo("lead-bottom-anchor", anchor: .bottom)
+        }
+    }
+
+    private var ambientFleetHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                if needsTotal > 0 {
+                    fleetPill(
+                        id: "needs",
+                        dotColor: ToolrollPalette.warning,
+                        isLive: false,
+                        title: needsTotal == 1 ? "1 needs you" : "\(needsTotal) needs you"
+                    )
+                }
+                if inFlightTotal > 0 {
+                    fleetPill(
+                        id: "inflight",
+                        dotColor: ToolrollPalette.live,
+                        isLive: true,
+                        title: inFlightTotal == 1 ? "1 in flight" : "\(inFlightTotal) in flight"
+                    )
+                }
+                if store.leadChat.pendingProposals > 0 {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(ToolrollPalette.ink)
+                            .frame(width: 5.5, height: 5.5)
+                        Text(store.leadChat.pendingProposals == 1 ? "1 proposal ready" : "\(store.leadChat.pendingProposals) proposals ready")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.ink)
+                    }
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(ToolrollPalette.raised, in: Capsule())
+                    .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 848, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            if expandedFleetSection == "needs" && needsTotal > 0 {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(waiting.enumerated()), id: \.element.id) { idx, row in
+                        if idx > 0 { HairlineDivider() }
+                        taskRow(row)
+                    }
+                    ForEach(Array(asks.enumerated()), id: \.element.id) { idx, need in
+                        if idx > 0 || !waiting.isEmpty { HairlineDivider() }
+                        askRow(need)
+                    }
+                }
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
+                .frame(maxWidth: 848)
+                .frame(maxWidth: .infinity)
+            } else if expandedFleetSection == "inflight" && inFlightTotal > 0 {
+                let activeTasks = running + queued
+                let activeChats = store.chatThreads.filter { store.runningChatThreadIds.contains($0.id) }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(activeTasks.enumerated()), id: \.element.id) { idx, row in
+                        if idx > 0 { HairlineDivider() }
+                        taskRow(row)
+                    }
+                    ForEach(Array(activeChats.enumerated()), id: \.element.id) { idx, thread in
+                        if idx > 0 || !activeTasks.isEmpty { HairlineDivider() }
+                        runningChatRow(thread)
+                    }
+                }
+                .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
+                .frame(maxWidth: 848)
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func fleetPill(id: String, dotColor: Color, isLive: Bool, title: String) -> some View {
+        let isOpen = expandedFleetSection == id
+        return Button {
+            withAnimation(WorkspaceThemeEngine.shared.snappyAnimation) {
+                expandedFleetSection = isOpen ? nil : id
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if isLive {
+                    ToolrollKineticLoader(provider: "lead", height: 9)
+                } else {
+                    Circle().fill(dotColor).frame(width: 5.5, height: 5.5)
+                }
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ToolrollPalette.ink)
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(isOpen ? ToolrollPalette.raised : ToolrollPalette.ground, in: Capsule())
+            .overlay(Capsule().strokeBorder(isOpen ? ToolrollPalette.inputLine : ToolrollPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var freshHomeCanvas: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if !hasActiveWork {
+                    Spacer().frame(height: 52)
+                }
+
+                if needsTotal > 0 {
+                    needsAttentionSection
+                }
+
+                heroHeading
+
+                unifiedComposer
+
+                if currentGear == .lead {
+                    leadStarterChips
+                }
+
+                compactQuotaBar
+
+                if !running.isEmpty || !queued.isEmpty {
+                    activeRunsSection
+                }
+            }
+            .padding(.horizontal, 36)
+            .padding(.vertical, 28)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    private var leadStarterChips: some View {
+        let prompts = [
+            "What needs my attention right now?",
+            "Summarize recent progress across my projects",
+            "Check my agents and project setup",
+        ]
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(prompts, id: \.self) { prompt in
+                    Button {
+                        Task { _ = await store.sendLeadMessage(prompt) }
+                    } label: {
+                        Text(prompt)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(ToolrollPalette.muted)
+                            .padding(.horizontal, 11)
+                            .frame(height: 28)
+                            .background(ToolrollPalette.raised.opacity(0.65), in: Capsule())
+                            .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .toolrollHoverSurface(cornerRadius: 14, isSelected: false)
+                }
+            }
         }
     }
 
@@ -90,6 +353,8 @@ struct WorkHomeView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.muted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -99,9 +364,11 @@ struct WorkHomeView: View {
     }
 
     private var heroHeading: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(activeProject.map { "Build in \($0)" } ?? "What are we building?")
-                .font(.system(size: 24, weight: .semibold))
+        HStack(alignment: .center, spacing: 10) {
+            ProviderBrandGlyph(provider: "lead", size: 24, tinted: false, inTile: true)
+
+            Text(heroTitle)
+                .font(.system(size: 23, weight: .semibold))
                 .tracking(-0.4)
                 .foregroundStyle(ToolrollPalette.ink)
                 .lineLimit(1)
@@ -109,19 +376,29 @@ struct WorkHomeView: View {
 
             Spacer(minLength: 8)
 
-            if !running.isEmpty || !store.runningChatThreadIds.isEmpty {
-                let totalLive = running.count + store.runningChatThreadIds.count
+            if inFlightTotal > 0 {
                 HStack(spacing: 5) {
                     Circle()
                         .fill(ToolrollPalette.live)
                         .frame(width: 6, height: 6)
-                    Text(totalLive == 1 ? "1 running" : "\(totalLive) running")
+                    Text(inFlightTotal == 1 ? "1 running" : "\(inFlightTotal) running")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(ToolrollPalette.muted)
                 }
             }
         }
         .padding(.horizontal, 2)
+    }
+
+    private var heroTitle: String {
+        switch currentGear {
+        case .lead:
+            return activeProject.map { "Coordinate \($0) with \(store.leadChat.leadName)" } ?? "What should \(store.leadChat.leadName) coordinate?"
+        case .chat:
+            return activeProject.map { "Chat in \($0)" } ?? "Start a direct chat"
+        case .task:
+            return activeProject.map { "Build in \($0)" } ?? "Kick off a task"
+        }
     }
 
     private var unifiedComposer: some View {
@@ -140,7 +417,7 @@ struct WorkHomeView: View {
             .textFieldStyle(.plain)
             .font(.system(size: 14.5))
             .foregroundStyle(ToolrollPalette.ink)
-            .lineLimit(2...7)
+            .lineLimit(hasLeadConversation ? 1...6 : 2...7)
             .focused($quickPromptFocused)
             .onSubmit { submitQuickPrompt() }
             .padding(.horizontal, 2)
@@ -155,9 +432,9 @@ struct WorkHomeView: View {
 
                 gearSwitch
 
-                if isTaskMode {
+                if currentGear == .task {
                     planFirstChip
-                } else {
+                } else if currentGear == .chat {
                     chatTargetMenu
                 }
 
@@ -174,10 +451,13 @@ struct WorkHomeView: View {
                     .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
-                .disabled(store.workDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.workDraftAttachments.isEmpty)
+                .disabled(
+                    (store.workDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.workDraftAttachments.isEmpty)
+                        || (currentGear == .lead && !store.leadChat.canSend && !store.activeProfile.isDemo)
+                )
             }
         }
-        .padding(16)
+        .padding(hasLeadConversation ? 13 : 16)
         .background(ToolrollPalette.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -197,40 +477,45 @@ struct WorkHomeView: View {
     }
 
     private var composerPlaceholder: String {
-        if isTaskMode {
+        switch currentGear {
+        case .lead:
+            return "Ask \(store.leadChat.leadName) to plan, delegate, or check \(activeProject ?? "your workspace")…"
+        case .chat:
+            return "Message \(store.defaultChatProvider.displayName) directly in \(activeProject ?? "your workspace")…"
+        case .task:
             return store.workDraftPlanFirst
                 ? "Describe a task to plan & verify in \(activeProject ?? "your workspace")…"
                 : "Describe a task to build in an isolated worktree…"
         }
-        if store.useLeadForNextChat {
-            return "Ask Lead across your workspace…"
-        }
-        return "Message \(store.defaultChatProvider.displayName) in \(activeProject ?? "your workspace")…"
     }
 
     private var submitLabel: String {
-        if isTaskMode {
+        switch currentGear {
+        case .lead:
+            return "Ask \(store.leadChat.leadName)"
+        case .chat:
+            return "Chat"
+        case .task:
             return store.workDraftPlanFirst ? "Plan" : "Build"
         }
-        if store.useLeadForNextChat {
-            return "Ask Lead"
-        }
-        return "Chat"
     }
 
     private var gearSwitch: some View {
         HStack(spacing: 2) {
-            gearPill(title: "Chat", active: !isTaskMode) {
+            gearPill(title: store.leadChat.leadName, active: currentGear == .lead) {
+                store.preferredOrchestrationMode = "lead"
+            }
+            gearPill(title: "Chat", active: currentGear == .chat) {
                 store.preferredOrchestrationMode = "chat"
             }
-            gearPill(title: "Task", active: isTaskMode) {
+            gearPill(title: "Task", active: currentGear == .task) {
                 store.preferredOrchestrationMode = "task"
             }
         }
         .padding(2.5)
         .background(ToolrollPalette.ground, in: Capsule())
         .overlay(Capsule().strokeBorder(ToolrollPalette.line, lineWidth: 1))
-        .help("Chat: direct streaming loop · Task: sandboxed worktree + checks (⌘.)")
+        .help("Lead: coordinate across projects · Chat: direct streaming CLI · Task: isolated worktree + checks (⌘.)")
     }
 
     private func gearPill(title: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -238,7 +523,7 @@ struct WorkHomeView: View {
             Text(title)
                 .font(.system(size: 11, weight: active ? .semibold : .medium))
                 .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 9)
                 .frame(height: 22)
                 .background(active ? ToolrollPalette.raised : Color.clear, in: Capsule())
                 .contentShape(Capsule())
@@ -257,7 +542,7 @@ struct WorkHomeView: View {
                         } label: {
                             HStack {
                                 Text(preset.label)
-                                if !store.useLeadForNextChat && store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
+                                if store.defaultChatProvider == provider && store.defaultChatModelId == preset.id {
                                     Image(systemName: "checkmark")
                                 }
                             }
@@ -265,26 +550,15 @@ struct WorkHomeView: View {
                     }
                 }
             }
-            Divider()
-            Button {
-                store.useLeadForNextChat = true
-            } label: {
-                HStack {
-                    Text("Workspace Lead")
-                    if store.useLeadForNextChat {
-                        Image(systemName: "checkmark")
-                    }
-                }
-            }
         } label: {
             HStack(spacing: 6) {
                 ProviderBrandGlyph(
-                    provider: store.useLeadForNextChat ? "lead" : store.defaultChatProvider.rawValue,
+                    provider: store.defaultChatProvider.rawValue,
                     size: 12,
-                    tinted: !store.useLeadForNextChat,
+                    tinted: true,
                     inTile: false
                 )
-                Text(store.useLeadForNextChat ? "Workspace Lead" : store.defaultChatProvider.label(for: store.defaultChatModelId))
+                Text(store.defaultChatProvider.label(for: store.defaultChatModelId))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
                 Image(systemName: "chevron.up.chevron.down")
@@ -395,6 +669,7 @@ struct WorkHomeView: View {
 
                 if let gemini {
                     HStack(spacing: 5) {
+                        ProviderBrandGlyph(provider: "gemini", size: 11, tinted: true, inTile: false)
                         Text("Gemini")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(ToolrollPalette.muted)
@@ -443,8 +718,8 @@ struct WorkHomeView: View {
                 .accessibilityLabel("Refresh subscription usage")
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(ToolrollPalette.raised.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.vertical, 6)
+            .background(ToolrollPalette.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
         }
     }
@@ -457,6 +732,7 @@ struct WorkHomeView: View {
         let stale: Bool = { if case .passed = state { return true }; return false }()
 
         return HStack(spacing: 6) {
+            ProviderBrandGlyph(provider: limit.provider, size: 11, tinted: true, inTile: false)
             Text(limit.providerLabel)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ToolrollPalette.muted)
@@ -489,12 +765,12 @@ struct WorkHomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(ToolrollPalette.ink)
+                    .fill(ToolrollPalette.warning)
                     .frame(width: 6, height: 6)
                 Text("Needs you")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
-                Text("\(waiting.count + asks.count)")
+                Text("\(needsTotal)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.muted)
             }
@@ -542,8 +818,40 @@ struct WorkHomeView: View {
         }
     }
 
+    private func runningChatRow(_ thread: AgentChatThread) -> some View {
+        Button {
+            expandedFleetSection = nil
+            store.selectChatThread(thread.id)
+        } label: {
+            HStack(spacing: 10) {
+                ToolrollKineticLoader(provider: thread.provider.rawValue, height: 11)
+                    .frame(width: 14, height: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(thread.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .lineLimit(1)
+                    Text("\(thread.projectName) · \(thread.provider.label(for: thread.modelId))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 10)
+                Text(thread.relativeAge)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+            .toolrollHoverSurface(cornerRadius: 8, isSelected: false)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func taskRow(_ row: WorkRow) -> some View {
         Button {
+            expandedFleetSection = nil
             Task { await store.selectTask(row.id) }
         } label: {
             HStack(spacing: 10) {
@@ -584,7 +892,7 @@ struct WorkHomeView: View {
 
     private func askRow(_ need: NeedRow) -> some View {
         HStack(spacing: 10) {
-            Circle().fill(ToolrollPalette.ink).frame(width: 6, height: 6)
+            Circle().fill(ToolrollPalette.warning).frame(width: 6, height: 6)
             Text(need.line ?? need.ask ?? need.reason ?? "Waiting on you")
                 .font(.system(size: 13))
                 .foregroundStyle(ToolrollPalette.ink)
@@ -604,7 +912,7 @@ struct WorkHomeView: View {
     private func statusDot(_ tone: TaskStatusTone) -> some View {
         Group {
             switch tone {
-            case .needs: Circle().fill(ToolrollPalette.ink)
+            case .needs: Circle().fill(ToolrollPalette.warning)
             case .running: Circle().fill(ToolrollPalette.live)
             case .failed: Circle().fill(ToolrollPalette.danger)
             case .queued: Circle().fill(ToolrollPalette.muted)
@@ -622,7 +930,10 @@ struct WorkHomeView: View {
         store.workDraftAttachments = []
         let targetProject = activeProject
 
-        if isTaskMode {
+        switch currentGear {
+        case .lead:
+            Task { _ = await store.sendLeadMessage(composed.combinedMessage) }
+        case .task:
             let planFirst = store.workDraftPlanFirst
             Task {
                 await store.createTask(
@@ -632,18 +943,10 @@ struct WorkHomeView: View {
                     planFirst: planFirst
                 )
             }
-            return
-        }
-
-        if store.useLeadForNextChat {
-            store.isInspectorVisible = true
-            store.inspectorTab = .lead
-            Task { await store.sendLeadMessage(composed.combinedMessage) }
-            return
-        }
-
-        Task {
-            await store.startChatThread(prompt: composed.combinedMessage, project: targetProject)
+        case .chat:
+            Task {
+                await store.startChatThread(prompt: composed.combinedMessage, project: targetProject)
+            }
         }
     }
 }
