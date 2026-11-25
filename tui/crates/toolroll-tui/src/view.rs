@@ -3759,6 +3759,10 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
                 out.push((k, what));
             }
         }
+        // A result's Diff: its own keys (n the next note among them) shadow the list's while it shows; Esc leaves it.
+        if app.tab == Tab::Diff && app.thread_selected().is_none() && !app.items.is_empty() {
+            out.push(("Esc".into(), "list"));
+        }
     }
     let palette = key_name(app, Palette);
     if !palette.is_empty() {

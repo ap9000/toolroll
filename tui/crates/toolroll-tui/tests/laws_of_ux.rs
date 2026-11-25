@@ -128,8 +128,8 @@ fn explicit_list_vs_detail_focus_prevents_diff_key_collisions() {
     assert_eq!(app.selected, task_before);
     assert_eq!(app.diff_cursor, cursor_before + 1);
 
-    // Esc returns focus cleanly to List while keeping the Diff tab visible on the right.
-    app.key(code(KeyCode::Esc));
+    // Left returns focus cleanly to List while keeping the Diff tab visible on the right.
+    app.key(code(KeyCode::Left));
     assert_eq!(app.focus, Focus::List);
     assert_eq!(app.tab, Tab::Diff);
 
@@ -143,11 +143,12 @@ fn explicit_list_vs_detail_focus_prevents_diff_key_collisions() {
     answer(&mut app, fx);
     assert_eq!(app.selected, task_before + 1);
 
-    // Right focuses Detail again; Left returns to List.
+    // Right focuses Detail again; Esc leaves Diff for Live and returns focus to List (PR #489).
     app.key(code(KeyCode::Right));
     assert_eq!(app.focus, Focus::Detail);
-    app.key(code(KeyCode::Left));
+    app.key(code(KeyCode::Esc));
     assert_eq!(app.focus, Focus::List);
+    assert_eq!(app.tab, Tab::Live);
 }
 
 #[test]

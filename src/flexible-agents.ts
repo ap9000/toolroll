@@ -16,19 +16,21 @@
  *   Toolroll's relay: its base URL and a per-launch relay token, never a key or the person's own sign-in.
  * - The relay's port is the thread fence's second relay (the only loopback port it admits beside the run proxy), so the
  *   agent reaches the relay and nothing else on this computer.
- * - A running agent is replaced only across a verified boundary: another level, agent or fence waits for the old one to
- *   be stopped and its whole tree's exit proved (flexible-launch.ts). Lowering stops a running agent above the new level
- *   at once; while any of its processes survive, the thread stays pending and no new turn starts.
+ * - Every turn starts its own agent. An earlier turn's agent is never reused: its run proxy (port and credential) and its
+ *   relay grant are fixed in its environment, so taking it over would let a turn use another turn's network grant. The
+ *   earlier one is stopped and its whole tree's exit proved first (flexible-launch.ts). Lowering stops a running agent
+ *   above the new level at once; while any of its processes survive, the thread stays pending and no new turn starts.
+ * - Whatever an agent's own exit sets off stops that launch only (by its launch id and holder), never the thread's agent
+ *   of the moment: an earlier agent exiting after its replacement started never touches the replacement.
  */
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { flexibleAvailable } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
-import { defaultCustodyIO, flexibleLaunch, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { flexibleLaunch, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider, type SettleResult } from "./flexible-launch.js";
 import { relayUrlInside, type FlexibleRelay, type FlexibleRelayEndpoint } from "./flexible-relay.js";
-import { startIdentityOf } from "./flexible-custody.js";
-import { flexibleFenceDigest, flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
+import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
 import { beginFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleTurnsOf, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove, type FlexibleClock, type FlexibleTurnRefusal } from "./flexible-turns.js";
 import { CLAUDE_BUILD_ISOLATION_ARGV, HEADLESS_DISALLOWED_TOOLS } from "./provider.js";
 import type { ProtectedStorage } from "./protected-storage.js";
@@ -95,11 +97,12 @@ export type FlexibleTurnStartInput = {
    * is issued for this launch only if it launches. */
   relay: FlexibleRelay;
   storage: ProtectedStorage;
-  proven?: FlexibleProvenMatrix; platform?: NodeJS.Platform; seams?: FlexibleThreadSpawnSeams;
+  proven?: FlexibleProvenMatrix; platform?: NodeJS.Platform; seams?: FlexibleTurnSeams;
 };
-export type FlexibleTurnStarted =
-  | { ok: true; launched: "started"; launchId: string; pid: number; child: ChildProcess; stopWatching: () => void }
-  | { ok: true; launched: "reused"; launchId: string };
+/** Test seams (parameters, never settings): the spawn's own, and `exitSettled`, told when the stop a launch's own exit
+ * set off has answered (so a test waits on that fact, never on time). */
+export type FlexibleTurnSeams = FlexibleThreadSpawnSeams & { exitSettled?: (launch: string, settled: SettleResult | FlexibleThreadRefusal | null) => void };
+export type FlexibleTurnStarted = { ok: true; launched: "started"; launchId: string; pid: number; child: ChildProcess; stopWatching: () => void };
 
 /** Why a begun turn may no longer open its agent's start gate, or null: re-checked under the lock at the last moment. */
 function stillMayStart(store: Store, turnId: string, holder: string): string | null {
@@ -118,9 +121,8 @@ function stillMayStart(store: Store, turnId: string, holder: string): string | n
 
 /**
  * Start an admitted turn, wholly under the thread's lock (a level change, a stop or a removal is wholly before or after
- * it): check its agent and level are offered; reuse the thread's running agent only when it is the same launch (its
- * leader's pid AND start identity, this holder's) at the same agent, level and fence digest; otherwise the old launch
- * is stopped and its exit verified first (or the turn doesn't start). Then the turn begins (its admission re-checked)
+ * it): check its agent and level are offered; an earlier turn's agent still running is stopped and its exit verified
+ * first (or the turn doesn't start), never reused. Then the turn begins (its admission re-checked)
  * and its agent launches inside the thread fence behind the start gate, which opens only if the turn, its level and
  * its authority still hold at that moment. The launch's proxy and relay grant close the moment it is stopped, and the
  * holder watches its descendants while it runs. Handles the caller passed but the turn didn't use are closed.
@@ -139,7 +141,7 @@ export async function startFlexibleTurn(store: Store, input: FlexibleTurnStartIn
     await unused();
     throw error;
   }
-  if (!started.ok || started.launched === "reused") await unused();
+  if (!started.ok) await unused();
   return started;
 }
 
@@ -149,7 +151,6 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   if (turn.status !== "admitted") return { ok: false, reason: "turn-not-admitted", message: "This turn isn't waiting to start, so it wasn't started again." };
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   if (turn.holder !== input.holder) return { ok: false, reason: "held-elsewhere", message: "Another Toolroll process holds this turn, so this one didn't touch it." };
-  const io = input.seams?.io ?? defaultCustodyIO();
   // Before anything starts: a turn this build won't run is withdrawn (it counts toward nothing).
   const withdraw = <R extends { message: string }>(refusal: R): R => { withdrawFlexibleTurn(store, { turn: turn.id, holder: input.holder, detail: refusal.message, ...clocked }); return refusal; };
   const allowed = threadLevelAllowed(store.orgPolicy(), turn.provider, turn.level, input.proven ?? FLEXIBLE_PROVEN);
@@ -157,19 +158,13 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   const network = { proxyPort: input.network.proxyPort, token: input.network.token, relayPort: input.relay.port };
   const fenced = flexibleThreadFence(store, { id: turn.thread, network, storage: input.storage });
   if (!fenced.ok) return withdraw(fenced);
-  // The thread's running agent takes the turn only if it is provably the same launch, in the same fence.
+  // An earlier turn's agent never takes this turn: its proxy and relay grant were made for the turn that launched it (a
+  // new turn's own proxy differs by port and credential every time). It is stopped, that launch exactly, and its exit
+  // verified before a new one starts; this turn is kept.
   const running = unsettledLaunch(store, turn.thread);
   if (running !== null) {
-    const same = running.state === "live" && running.holder === input.holder && running.provider === turn.provider && running.level === turn.level
-      && running.leaderPid !== null && running.leaderStart !== null && startIdentityOf(running.leaderPid, io) === running.leaderStart
-      && running.fenceDigest === flexibleFenceDigest(fenced.launch);
-    if (same) {
-      const begun = beginFlexibleTurn(store, { turn: turn.id, holder: input.holder, ...clocked });
-      if (!begun.ok) return begun;
-      return { ok: true, launched: "reused", launchId: running.id };
-    }
-    // Anything else is a stale agent: it is stopped and its exit verified before a new one starts; this turn is kept.
-    const stopped = await stopFlexibleThreadAgent(store, { id: turn.thread, reason: "its agent was replaced", ...clocked, ...(input.seams?.io === undefined ? {} : { io: input.seams.io }), keepTurn: turn.id });
+    const stopped = await stopFlexibleThreadAgent(store, { id: turn.thread, reason: "its agent was replaced", ...clocked, ...(input.seams?.io === undefined ? {} : { io: input.seams.io }), keepTurn: turn.id,
+      expect: { launch: running.id, holder: running.holder } });
     if ("reason" in stopped) return withdraw(stopped);
     if (!stopped.ok) return withdraw(refuse("level-pending", `This thread's earlier agent couldn't be stopped (${stopped.why}), so no new one started.`));
   }
@@ -219,9 +214,12 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   if (issued !== null) onLaunchStopped(spawned.launchId, issued.revoke);
   const stopWatching = watchLaunch(store, spawned.launchId, fenced.paths.folder, input.seams?.io);
   // When the agent's own process ends (its exit, not its output closing: a survivor may hold that open), what it left
-  // behind is stopped and the exit proved (its network closes first).
+  // behind is stopped and the exit proved (its network closes first): this launch only, by its id and holder. By then a
+  // later turn may have replaced it; that launch is left alone ("replaced").
+  const launchId = spawned.launchId;
   spawned.child.once("exit", () => {
-    void stopFlexibleThreadAgent(store, { id: turn.thread, reason: "its agent exited", ...(input.seams?.io === undefined ? {} : { io: input.seams.io }) }).catch(() => { /* a later stop or recovery settles it */ });
+    void stopFlexibleThreadAgent(store, { id: turn.thread, reason: "its agent exited", expect: { launch: launchId, holder: input.holder }, ...(input.seams?.io === undefined ? {} : { io: input.seams.io }) })
+      .then(settled => { input.seams?.exitSettled?.(launchId, settled); }, () => { input.seams?.exitSettled?.(launchId, null); /* a later stop or recovery settles it */ });
   });
   return { ok: true, launched: "started", launchId: spawned.launchId, pid: spawned.pid, child: spawned.child, stopWatching };
 }

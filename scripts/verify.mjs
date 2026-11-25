@@ -667,7 +667,10 @@ async function exercise(feature, context) {
       if (!/Ended\./.test(shown)) throw new Error(`The thread did not end: ${/Refused: [^\n]*/.exec(shown)?.[0]}`);
       await wait(/Review the subtraction[^\n]*\sEnded\b/);
       await seen(() => sql(`SELECT ended_at FROM flexible_thread_meta WHERE thread = '${context.thread}'`)[0]?.ended_at, 'the end on the record');
+      // s says it ended; its box opens all the same, so typing never reaches the workbench's keys. Esc closes it.
       shown = await press('s', /This thread has ended/);
+      term.send(esc);
+      await until(() => !/Reply:/.test(term.text()) && term.text(), 'the ended thread\'s reply box closed');
       break;
     }
     case 'threads-sign-in': {

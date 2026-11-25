@@ -105,7 +105,8 @@ describe("admission", () => {
     expect(admit({ requestKey: "msg-1" })).toEqual({ ok: true, turn: first, seq: 1, replayed: true });
     expect(admit({ requestKey: "msg-2" })).toMatchObject({ ok: false, reason: "turn-in-progress" });
     expect(beginFlexibleTurn(store, { turn: first, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
-    expect(admit({ requestKey: "msg-1" })).toMatchObject({ ok: false, reason: "already-sent", message: "That message already started a turn. Nothing new was started." });
+    // Begun (its start may still open its agent): delivered, said with its state.
+    expect(admit({ requestKey: "msg-1" })).toMatchObject({ ok: false, reason: "already-sent", message: "That message already reached the agent in turn 1, and it is still working. Nothing new was started." });
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn").get()!["n"]).toBe(1);
   });
 
@@ -346,6 +347,8 @@ describe("the turn's life", () => {
     const waiting = admitted({ thread: T1, requestKey: "msg-1" });
     const running = admitted({ thread: T2, requestKey: "msg-2", billing: "api-key" });
     expect(beginFlexibleTurn(store, { turn: running, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
+    // Its agent started (its start gate's ledger line, as the launch records it): a retry of it is delivered, never resent.
+    store.recordAction({ at: NOW.toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible agent launched", outcome: "launched", detail: `turn ${running} · launch x` });
     expect(interruptFlexibleTurnsOf(store, { holder: "h0", clock: () => NOW })).toEqual({ ok: true, withdrawn: 0, interrupted: 0 }); // another process's turns are left alone
     expect(interruptFlexibleTurnsOf(store, { holder: "h1", clock: () => NOW })).toEqual({ ok: true, withdrawn: 1, interrupted: 1 });
     expect(flexibleTurn(store, waiting)).toMatchObject({ status: "withdrawn" });

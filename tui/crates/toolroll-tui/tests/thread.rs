@@ -714,9 +714,10 @@ fn threads_with(turn: &str, live: bool) -> Value {
 #[test]
 fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
     let mut app = thread_app(window());
-    // While its turn is still working, s says so and opens nothing.
+    // While its turn is still working, s says so, and its box opens all the same (what is typed goes there, never to
+    // the workbench's keys: tests/stranger11.rs); Esc closes it.
     assert_eq!(app.key(key('s')), vec![]);
-    assert!(matches!(app.mode, Mode::Normal));
+    assert!(matches!(&app.mode, Mode::ThreadReply(t, _) if t == fake::THREAD));
     assert!(
         app.status
             .as_ref()
@@ -724,6 +725,8 @@ fn s_on_a_thread_is_reply_and_enter_posts_the_message_under_its_own_key() {
         "{:?}",
         app.status
     );
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
     app.update(Msg::Threads(Ok(parse(threads_with("finished", false)))));
     assert_eq!(app.key(key('s')), vec![]);
     assert!(
@@ -770,10 +773,16 @@ fn an_ended_thread_takes_no_reply() {
     let mut list = threads_with("interrupted", false);
     list["threads"][0]["ended"] = json!(true);
     app.update(Msg::Threads(Ok(parse(list))));
-    // Still selected (an ended thread moves to Recent): s says it ended.
+    // Still selected (an ended thread moves to Recent): s says it ended. Its box opens so what is typed goes there
+    // (never to the workbench's keys), and Enter sends nothing from it.
     app.selected = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
     assert_eq!(app.key(key('s')), vec![]);
-    assert!(matches!(app.mode, Mode::Normal));
+    assert!(matches!(&app.mode, Mode::ThreadReply(t, _) if t == fake::THREAD));
+    for c in "new".chars() {
+        app.key(key(c));
+    }
+    assert_eq!(app.key(enter()), vec![]);
+    assert!(matches!(&app.mode, Mode::ThreadReply(_, text) if text == "new"));
     assert!(
         app.status
             .as_ref()

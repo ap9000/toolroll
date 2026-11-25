@@ -94,6 +94,14 @@ pub struct Threads {
     /// What the person has looked at, per thread: the news key (news_key) of its latest turn and Ship when it was last
     /// selected or its view open. Kept in the workbench's own view state (viewstate.rs), like task unread marks.
     pub seen: std::collections::BTreeMap<String, String>,
+    /// The reply on its way (its thread and the text typed), until the console answers: a refusal puts it back in its
+    /// box, so the text is never lost and never falls through to the workbench's keys.
+    pub reply_sent: Option<(String, String)>,
+    /// The request key of every reply not known to be done, by its exact thread and message: an unchanged retry (after a
+    /// refusal, or an answer that never came, whatever was sent elsewhere in between) posts the same key, so the console
+    /// takes it once even if the first post did start a turn (and sends it again only if that one provably ran nothing).
+    /// A changed message is another entry, with a new key; a done one leaves.
+    pub reply_keys: std::collections::BTreeMap<(String, String), String>,
 }
 
 /// A thread's news: its latest turn (number and state) and its latest Ship (number and state). A new finished turn, a
@@ -248,34 +256,48 @@ pub const NO_THREAD_SELECTED: &str = "Select a thread first.";
 pub const REPLY_STARTS_FRESH: &str =
     "This starts a fresh agent: it won't remember earlier turns. Your files are as it left them.";
 
-/// `s` on a thread: the reply box, unless the thread ended (End is final) or a turn is still working.
+/// Said when a reply can't go yet because the thread's turn is still working: the box stays open with what was typed.
+pub const REPLY_WAITS_FOR_TURN: &str =
+    "The agent is still working on your last message. Your reply stays here: press Enter once it finishes, or stop it with x.";
+
+/// Whether the thread's latest turn is still working (admitted or running), as the console last listed it.
+fn turn_working(app: &App, thread: &str) -> bool {
+    app.threads
+        .rows
+        .iter()
+        .any(|t| t.id == thread && matches!(t.turn.as_deref(), Some("admitted" | "running")))
+}
+
+/// `s` on a thread: the reply box, unless the thread ended (End is final). While a turn is still working the box opens
+/// anyway, saying so: what the person types goes into it, never to the workbench's keys, and Enter sends it only once
+/// the turn finishes.
 pub fn open_reply(app: &mut App) -> Vec<crate::app::Effect> {
     let Some(id) = app.thread_selected() else {
         app.status = Some((Tone::Refused, NO_THREAD_SELECTED.into()));
         return vec![];
     };
-    let row = app.threads.rows.iter().find(|t| t.id == id);
-    if row.is_some_and(|t| t.ended) {
-        app.status = Some((
-            Tone::Refused,
-            "This thread has ended. Press T to start a new one.".into(),
-        ));
-        return vec![];
-    }
-    if row.is_some_and(|t| matches!(t.turn.as_deref(), Some("admitted" | "running"))) {
-        app.status = Some((
-            Tone::Refused,
-            "The agent is still working on your last message. Wait for it, or stop it with x."
-                .into(),
-        ));
-        return vec![];
-    }
-    app.status = None;
+    // An ended thread takes no reply, but its box opens all the same, saying so: what is typed next goes into it, never
+    // to the workbench's keys.
+    app.status = if thread_ended(app, &id) {
+        Some((Tone::Refused, REPLY_THREAD_ENDED.into()))
+    } else {
+        turn_working(app, &id).then(|| (Tone::Refused, REPLY_WAITS_FOR_TURN.into()))
+    };
     app.mode = Mode::ThreadReply(id, String::new());
     vec![]
 }
 
-/// Enter in the reply box: the message, posted with a fresh key of its own (the same post twice takes one turn).
+/// Said in the reply box of an ended thread: nothing is sent from it.
+pub const REPLY_THREAD_ENDED: &str =
+    "This thread has ended, so it takes no reply. Esc closes this; T starts a new thread.";
+
+/// Whether the thread ended (End is final), as the console last listed it.
+fn thread_ended(app: &App, thread: &str) -> bool {
+    app.threads.rows.iter().any(|t| t.id == thread && t.ended)
+}
+
+/// Enter in the reply box: the message, posted with a key of its own (the same post twice takes one turn), the same key
+/// again for an unchanged retry of a reply not known done.
 pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app::Effect> {
     let message = text.trim().to_string();
     if message.is_empty() {
@@ -288,7 +310,32 @@ pub fn send_reply(app: &mut App, thread: String, text: String) -> Vec<crate::app
         ));
         return vec![];
     }
-    let key = app.token(32);
+    if thread_ended(app, &thread) {
+        app.status = Some((Tone::Refused, REPLY_THREAD_ENDED.into()));
+        app.mode = Mode::ThreadReply(thread, text);
+        return vec![];
+    }
+    if turn_working(app, &thread) {
+        app.status = Some((Tone::Refused, REPLY_WAITS_FOR_TURN.into()));
+        app.mode = Mode::ThreadReply(thread, text);
+        return vec![];
+    }
+    app.threads.reply_sent = Some((thread.clone(), text));
+    // The same thread and message as the reply still not known done: its key again. Anything else: a new one.
+    let key = match app
+        .threads
+        .reply_keys
+        .get(&(thread.clone(), message.clone()))
+    {
+        Some(k) => k.clone(),
+        None => {
+            let k = app.token(32);
+            app.threads
+                .reply_keys
+                .insert((thread.clone(), message.clone()), k.clone());
+            k
+        }
+    };
     vec![Effect::Act {
         path: format!(
             "/agents/live/thread/{}/turn",
@@ -332,6 +379,18 @@ pub fn ask_ship(app: &mut App) -> Vec<crate::app::Effect> {
         fields: vec![],
         done: "Shipping.".into(),
     }]
+}
+
+/// The console refused the reply on its way (or never answered): it goes back in its box, text and all, while its thread
+/// is still the one selected and nothing else is open. Never a second send by itself.
+pub fn keep_refused_reply(app: &mut App) {
+    let Some((thread, text)) = app.threads.reply_sent.take() else {
+        return;
+    };
+    if matches!(app.mode, Mode::Normal) && app.thread_selected().as_deref() == Some(thread.as_str())
+    {
+        app.mode = Mode::ThreadReply(thread, text);
+    }
 }
 
 /// Whether the selected thread's Ship is armed (x cancels it, r sends it back).

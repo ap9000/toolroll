@@ -4,7 +4,7 @@ import { readStoredGeminiStatus, refreshSubscriptions } from "./subscription-usa
 import { liveCommandsShown } from "./live-detail.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { directChatArmedPass } from "./direct-chat-ship.js";
-import { closeFlexibleThread, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
+import { closeFlexibleThread, flexibleShipNeedsFor, flexibleThreadRecords, flexibleThreadShipTerms, flexibleThreadTitleOf, latestFlexibleShip, removeFlexibleThreadCopy, shipFlexibleThread, stopFlexibleThreadsEverywhere, type FlexibleStopReport } from "./flexible-session.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -15628,6 +15628,9 @@ async function threadCommand(positional: readonly string[], flags: Map<string, s
     return found.length === 1 ? found[0]!.id : null;
   };
   if (verb === "ship") {
+    // What Ship needs that the project hasn't got (a check command, pull requests), said before any password is asked.
+    const needs = flexibleShipNeedsFor(store, positional[1] ?? "");
+    if (needs !== null) return fail(write, json, command, needs.reason, needs.message, EXIT.refused);
     if (passwordFreeOwner(store)) return fail(write, json, command, "laptop", "Nobody on this install has a password, so this thread ships from the workbench (`toolroll`), after its terms are read there.", EXIT.refused);
     const acting = await typedForCommand(flags, context, true);
     if (acting === null) return fail(write, json, command, "usage", "Shipping asks for your Toolroll password at a hidden prompt, typed for this command: run it in your own terminal (never --token).", EXIT.usage);
