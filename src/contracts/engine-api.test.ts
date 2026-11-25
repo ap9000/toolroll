@@ -40,6 +40,12 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "automations.json": "automations",
   "automations-every-kind.json": "automations",
   "projects.json": "projects",
+  "direct-chats-list.json": "directChatsList",
+  "direct-chat-detail.json": "directChatDetail",
+  "direct-chat-started.json": "directChatStarted",
+  "direct-chat-start-refused.json": "directChatStarted",
+  "direct-chat-mutated.json": "directChatMutated",
+  "direct-chat-mutate-refused.json": "directChatMutated",
 };
 /** Not a response: every schema as JSON Schema, with the contract's digest (what a client generates its models from). */
 const SCHEMAS = "schemas.json";

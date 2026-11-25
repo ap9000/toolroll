@@ -1,5 +1,5 @@
 {
-  "digest": "78fe037718ecf203bbc24c54f0075554c056c51c93daa9e47e04d988ef223e84",
+  "digest": "ba63710ae57d7a3afa79b583f696e3f58013a1bec6a6ccb94bb1e4a0c673fc3f",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -4492,6 +4492,495 @@
               "const": false
             },
             "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "directChatsList": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "backgroundOn": {
+          "type": "boolean"
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "codex",
+                  "gemini"
+                ]
+              },
+              "modelId": {
+                "type": "string"
+              },
+              "posture": {
+                "type": "object",
+                "properties": {
+                  "summary": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "sandboxed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "summary",
+                  "detail",
+                  "sandboxed"
+                ],
+                "additionalProperties": false
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "lastStatus": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "running",
+                      "completed",
+                      "stopped",
+                      "failed",
+                      "interrupted"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "changedFilesCount": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "mainDirtyFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "project",
+              "branch",
+              "provider",
+              "modelId",
+              "posture",
+              "running",
+              "lastStatus",
+              "changedFilesCount",
+              "mainDirtyFiles",
+              "createdAt",
+              "updatedAt"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "available",
+        "problem",
+        "backgroundOn",
+        "threads"
+      ],
+      "additionalProperties": false
+    },
+    "directChatDetail": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "room": {
+          "type": "string"
+        },
+        "thread": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "title": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "gemini"
+              ]
+            },
+            "modelId": {
+              "type": "string"
+            },
+            "posture": {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "sandboxed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "summary",
+                "detail",
+                "sandboxed"
+              ],
+              "additionalProperties": false
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "lastStatus": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "running",
+                    "completed",
+                    "stopped",
+                    "failed",
+                    "interrupted"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "changedFilesCount": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "mainDirtyFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "project",
+            "branch",
+            "provider",
+            "modelId",
+            "posture",
+            "running",
+            "lastStatus",
+            "changedFilesCount",
+            "mainDirtyFiles",
+            "createdAt",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "seq": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "userPrompt": {
+                "type": "string"
+              },
+              "switchedFromProvider": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "claude",
+                      "codex",
+                      "gemini"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "running",
+                  "completed",
+                  "stopped",
+                  "failed",
+                  "interrupted"
+                ]
+              },
+              "assistantText": {
+                "type": "string"
+              },
+              "errorText": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "ordinal": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "running",
+                        "done",
+                        "error"
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "ordinal",
+                    "name",
+                    "detail",
+                    "status",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "id",
+              "seq",
+              "userPrompt",
+              "switchedFromProvider",
+              "status",
+              "assistantText",
+              "errorText",
+              "createdAt",
+              "finishedAt",
+              "tools"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "diff": {
+          "type": "object",
+          "properties": {
+            "changedFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "diffText": {
+              "type": "string"
+            },
+            "dirty": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "changedFiles",
+            "diffText",
+            "dirty"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "room",
+        "thread",
+        "turns",
+        "diff"
+      ],
+      "additionalProperties": false
+    },
+    "directChatStarted": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "threadId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "turnId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "room": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "threadId",
+            "turnId",
+            "room"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "error": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "directChatMutated": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "said": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "said"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "error": {
+              "type": "string"
+            },
+            "code": {
               "type": "string"
             }
           },

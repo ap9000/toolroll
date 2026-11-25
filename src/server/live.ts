@@ -82,7 +82,7 @@ export class PingBudget {
 
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
-const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
+const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live|direct-chat)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
 /** At most one workspace nudge a second: a burst of writes is one re-read, the first heard at once. */
 const WORKSPACE_SETTLE_MS = 1_000;
 /** A running reply's preview: at most one snapshot every 80 ms; the last one always goes out. */
@@ -107,7 +107,8 @@ export type LiveRoom =
   | { kind: "team"; conversation: string | null }
   | { kind: "agent"; run: number }
   /** The Agents view's Live grid (agents-live-room.ts): per viewer, watching only. */
-  | { kind: "agents-live" };
+  | { kind: "agents-live" }
+  | { kind: "direct-chat"; threadId: string };
 
 /** A room's name, read strictly: anything else is not a room. */
 export function parseLiveRoom(name: string): LiveRoom | null {
@@ -136,6 +137,8 @@ export function parseLiveRoom(name: string): LiveRoom | null {
       return { kind, conversation: params.get("conversation") || null };
     case "agent":
       return key !== null && /^[1-9][0-9]{0,9}$/.test(key) && query === undefined ? { kind, run: Number(key) } : null;
+    case "direct-chat":
+      return key !== null && /^[0-9a-f]{32}$/.test(key) && query === undefined ? { kind, threadId: key } : null;
   }
   return null;
 }
@@ -190,6 +193,16 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const chatViewers = new Set<ChatViewer>();
   // One agent's open view (Agents board): what it shows, keyed by the exact run.
   const agentRooms = createLiveRooms<number, Viewer>(run => agentRunFingerprint(store, run), null, { bus: live.bus });
+  const directChatRooms = createLiveRooms<string, Viewer>(threadId => {
+    const row = store.handle.prepare(`
+      SELECT th.updated_at AS updated_at,
+             (SELECT status || ':' || byte_offset || ':' || length(assistant_text) FROM direct_chat_turn WHERE thread_id = th.id ORDER BY seq DESC LIMIT 1) AS turn_fp,
+             (SELECT COUNT(*) FROM direct_chat_tool tl JOIN direct_chat_turn tn ON tn.id = tl.turn_id WHERE tn.thread_id = th.id) AS tools_count
+      FROM direct_chat_thread th WHERE th.id = ? AND th.archived_at IS NULL
+    `).get(threadId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return `${String(row["updated_at"] ?? "")}:${String(row["turn_fp"] ?? "")}:${String(row["tools_count"] ?? 0)}`;
+  }, null, { bus: live.bus, minIntervalMs: TURN_SETTLE_MS });
   // The Live grid: one room per viewer and scope, watching only (no lease, no seen mark).
   // Each Live page's own lead tiles, read as its viewer's saved session now (a page's room key carries the page).
   const liveLeads = new Map<string, () => unknown>();
@@ -346,6 +359,20 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         joins.push(connection => {
           agentRooms.join(runId, { name: who.name, room: name, connection, valid });
         });
+      } else if (room.kind === "direct-chat") {
+        const browser = who as Who & { via: "cookie" };
+        if (!runtime.fromThisComputer(request)) return json(response, 403, { error: "session" });
+        const row = store.handle.prepare(`SELECT owner, repo FROM direct_chat_thread WHERE id = ? AND archived_at IS NULL`).get(room.threadId) as Record<string, unknown> | undefined;
+        if (!row || String(row["owner"]) !== browser.name) return json(response, 404, { error: "direct-chat" });
+        const repo = String(row["repo"]);
+        if (!visible(repo) || !store.accountCanAccess(browser.name, repo)) return json(response, 404, { error: "direct-chat" });
+        const signedIn = sameBrowser(request, browser);
+        joins.push(connection => directChatRooms.join(room.threadId, {
+          name: browser.name,
+          room: name,
+          connection,
+          valid: () => signedIn() && runtime.fromThisComputer(request) && rowVisible(liveCeiling(), repo) && store.accountCanAccess(browser.name, repo),
+        }));
       } else if (room.kind === "flow") {
         const browser = who as Who & { via: "cookie" };
         const flow = store.getFlow(room.flow);
@@ -499,6 +526,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
       summaryRooms.close();
       teamRooms.close();
       agentRooms.close();
+      directChatRooms.close();
       agentsLive.rooms.close();
       for (const viewer of [...chatViewers]) viewer.connection.close();
     },

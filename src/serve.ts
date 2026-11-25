@@ -186,6 +186,7 @@ import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
+import { createDirectChatHandlers } from './server/direct-chat.js';
 import { declareSoloOnUpgrade, sessionStandsIn } from './install-mode.js';
 import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
@@ -2286,6 +2287,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     flowRooms.close();
     taskRooms.close();
     liveHandlers.close();
+    directChatHandlers.close();
     detachReads();
     liveFollower.close();
     void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close()), bounded(engineHandlers.close())])
@@ -2498,11 +2500,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server,
     ...(options.agentCommandEnv === undefined ? {} : { agentEnv: options.agentCommandEnv }) });
   terminalClosing.close = terminalHandlers.close;
+  const directChatHandlers = createDirectChatHandlers(handlerRuntime, {
+    bus: liveBus,
+    ...(options.directChatSeams === undefined ? {} : { seams: options.directChatSeams, disableLegacyImport: true }),
+  });
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...directChatHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
     ...createWelcomeHandlers(handlerRuntime).registrations, ...engineHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */

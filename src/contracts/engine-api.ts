@@ -653,6 +653,74 @@ export const projectsSchema = z.object({
   found: z.array(namedPathSchema).max(40),
 });
 
+export const directChatProviderSchema = z.enum(["claude", "codex", "gemini"]);
+export const directChatPostureSchema = z.object({
+  summary: z.string(),
+  detail: z.string(),
+  sandboxed: z.boolean(),
+});
+export const directChatToolSchema = z.object({
+  id: z.string(),
+  ordinal: z.number().int(),
+  name: z.string(),
+  detail: z.string(),
+  status: z.enum(["running", "done", "error"]),
+  updatedAt: iso,
+});
+export const directChatTurnSchema = z.object({
+  id: hex32,
+  seq: z.number().int(),
+  userPrompt: z.string(),
+  switchedFromProvider: directChatProviderSchema.nullable(),
+  status: z.enum(["running", "completed", "stopped", "failed", "interrupted"]),
+  assistantText: z.string(),
+  errorText: z.string().nullable(),
+  createdAt: iso,
+  finishedAt: iso.nullable(),
+  tools: z.array(directChatToolSchema),
+});
+export const directChatSummarySchema = z.object({
+  id: hex32,
+  title: z.string(),
+  project: z.string(),
+  branch: z.string(),
+  provider: directChatProviderSchema,
+  modelId: z.string(),
+  posture: directChatPostureSchema,
+  running: z.boolean(),
+  lastStatus: z.enum(["running", "completed", "stopped", "failed", "interrupted"]).nullable(),
+  changedFilesCount: z.number().int(),
+  mainDirtyFiles: z.array(z.string()),
+  createdAt: iso,
+  updatedAt: iso,
+});
+export const directChatsListSchema = z.object({
+  version,
+  available: z.boolean(),
+  problem: z.string().nullable(),
+  backgroundOn: z.boolean(),
+  threads: z.array(directChatSummarySchema),
+});
+export const directChatDetailSchema = z.object({
+  version,
+  room: z.string(),
+  thread: directChatSummarySchema,
+  turns: z.array(directChatTurnSchema),
+  diff: z.object({
+    changedFiles: z.array(z.string()),
+    diffText: z.string(),
+    dirty: z.boolean(),
+  }),
+});
+export const directChatStartedSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), threadId: hex32, turnId: hex32, room: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+export const directChatMutatedSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), said: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+]);
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -703,6 +771,10 @@ export const ENGINE_RESPONSES = {
   projects: { route: "GET /engine/projects", schema: projectsSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
   termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
+  directChatsList: { route: "GET /engine/direct-chats", schema: directChatsListSchema },
+  directChatDetail: { route: "GET /engine/direct-chats/<id>", schema: directChatDetailSchema },
+  directChatStarted: { route: "POST /engine/direct-chats, /engine/direct-chats/<id>/messages", schema: directChatStartedSchema },
+  directChatMutated: { route: "POST /engine/direct-chats/<id>/{stop,model,delete}", schema: directChatMutatedSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -724,6 +796,10 @@ export type LeadChatLink = z.infer<typeof leadLinkSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
 export type AutomationsRead = z.infer<typeof automationsSchema>;
 export type ProjectsRead = z.infer<typeof projectsSchema>;
+export type DirectChatsList = z.infer<typeof directChatsListSchema>;
+export type DirectChatDetail = z.infer<typeof directChatDetailSchema>;
+export type DirectChatStarted = z.infer<typeof directChatStartedSchema>;
+export type DirectChatMutated = z.infer<typeof directChatMutatedSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

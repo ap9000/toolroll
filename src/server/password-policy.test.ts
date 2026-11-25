@@ -71,6 +71,8 @@ const COOKIE_ONLY_POSTS = [
   'settings.flexible-sign-in', 'settings.flexible-sign-in-check', 'settings.flexible-sign-in-clear',
   // Browser-confirmed CLI device pairing: credential step-up from a full browser session only, never a token.
   'edge.connect-pair-confirm',
+  // Direct Chat: local-clone direct agent chats, loopback + cookie session only, never a token.
+  'direct-chat.start', 'direct-chat.send', 'direct-chat.stop', 'direct-chat.model', 'direct-chat.delete',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

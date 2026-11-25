@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "room": "direct-chat:0123456789abcdef0123456789abcdef",
+  "thread": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "title": "Fix navbar spacing",
+    "project": "payments-api",
+    "branch": "toolroll/chat-01234567",
+    "provider": "claude",
+    "modelId": "claude-sonnet-4-6",
+    "posture": {
+      "summary": "Runs commands without asking",
+      "detail": "Claude runs inside this chat's isolated local clone with auto-approved tools and no remote configured.",
+      "sandboxed": false
+    },
+    "running": false,
+    "lastStatus": "completed",
+    "changedFilesCount": 1,
+    "mainDirtyFiles": ["README.md"],
+    "createdAt": "2026-10-20T10:00:00.000Z",
+    "updatedAt": "2026-10-20T10:01:30.000Z"
+  },
+  "turns": [
+    {
+      "id": "abcdef0123456789abcdef0123456789",
+      "seq": 1,
+      "userPrompt": "Tighten the navbar horizontal padding.",
+      "switchedFromProvider": null,
+      "status": "completed",
+      "assistantText": "Updated the navbar spacing in src/nav.tsx.",
+      "errorText": null,
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "finishedAt": "2026-10-20T10:01:30.000Z",
+      "tools": [
+        {
+          "id": "tool-1",
+          "ordinal": 1,
+          "name": "Edit",
+          "detail": "src/nav.tsx",
+          "status": "done",
+          "updatedAt": "2026-10-20T10:00:45.000Z"
+        }
+      ]
+    }
+  ],
+  "diff": {
+    "changedFiles": ["src/nav.tsx"],
+    "diffText": "diff --git a/src/nav.tsx b/src/nav.tsx\n--- a/src/nav.tsx\n+++ b/src/nav.tsx\n@@ -1 +1 @@\n-gap: 16px;\n+gap: 12px;\n",
+    "dirty": true
+  }
+}

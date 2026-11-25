@@ -1480,3 +1480,118 @@ impl From<FalseOnly> for bool {
         false
     }
 }
+
+// ---- Direct Chat (server-backed local-clone agent chats) ------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatPosture {
+    pub summary: String,
+    pub detail: String,
+    pub sandboxed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatTool {
+    pub id: String,
+    pub ordinal: i64,
+    pub name: String,
+    pub detail: String,
+    pub status: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatTurn {
+    pub id: String,
+    pub seq: i64,
+    pub user_prompt: String,
+    pub switched_from_provider: Option<String>,
+    pub status: String,
+    pub assistant_text: String,
+    pub error_text: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    pub tools: Vec<DirectChatTool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatSummary {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    pub branch: String,
+    pub provider: String,
+    pub model_id: String,
+    pub posture: DirectChatPosture,
+    pub running: bool,
+    pub last_status: Option<String>,
+    pub changed_files_count: i64,
+    pub main_dirty_files: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatDiff {
+    pub changed_files: Vec<String>,
+    pub diff_text: String,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatsList {
+    pub version: u32,
+    pub available: bool,
+    pub problem: Option<String>,
+    pub background_on: bool,
+    pub threads: Vec<DirectChatSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DirectChatDetail {
+    pub version: u32,
+    pub room: String,
+    pub thread: DirectChatSummary,
+    pub turns: Vec<DirectChatTurn>,
+    pub diff: DirectChatDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatStarted {
+    #[serde(rename_all = "camelCase")]
+    Started {
+        ok: TrueOnly,
+        thread_id: String,
+        turn_id: String,
+        room: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectChatMutated {
+    Ok {
+        ok: TrueOnly,
+        said: String,
+    },
+    Refused {
+        ok: FalseOnly,
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}

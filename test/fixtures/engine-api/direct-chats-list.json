@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "available": true,
+  "problem": null,
+  "backgroundOn": true,
+  "threads": [
+    {
+      "id": "0123456789abcdef0123456789abcdef",
+      "title": "Fix navbar spacing",
+      "project": "payments-api",
+      "branch": "toolroll/chat-01234567",
+      "provider": "claude",
+      "modelId": "claude-sonnet-4-6",
+      "posture": {
+        "summary": "Runs commands without asking",
+        "detail": "Claude runs inside this chat's isolated local clone with auto-approved tools and no remote configured.",
+        "sandboxed": false
+      },
+      "running": false,
+      "lastStatus": "completed",
+      "changedFilesCount": 1,
+      "mainDirtyFiles": ["README.md"],
+      "createdAt": "2026-10-20T10:00:00.000Z",
+      "updatedAt": "2026-10-20T10:01:30.000Z"
+    }
+  ]
+}

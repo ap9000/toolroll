@@ -134,6 +134,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   "trigger-pause",
   "trigger-resume",
   "trigger-run",
+  "direct-chat-start",
+  "direct-chat-send",
+  "direct-chat-stop",
+  "direct-chat-manage",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 /**
