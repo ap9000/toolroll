@@ -2587,11 +2587,31 @@ public final class WorkbenchStore {
             if let refreshed = try? await client.fetchLeadChat(project: selectedProject) {
                 leadChat = refreshed
             }
+            startLeadBusyPollingIfNeeded()
             return nil
         } catch {
             let words = error.localizedDescription
             notice = WorkbenchNotice(kind: .refusal, message: words)
             return words
+        }
+    }
+
+    private var leadBusyPollTask: Task<Void, Never>?
+
+    private func startLeadBusyPollingIfNeeded() {
+        leadBusyPollTask?.cancel()
+        guard leadChat.busy, let client, !activeProfile.isDemo else { return }
+        let project = selectedProject
+        leadBusyPollTask = Task { [weak self] in
+            for _ in 0..<90 {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                if let refreshed = try? await client.fetchLeadChat(project: project) {
+                    self.leadChat = refreshed
+                    if !refreshed.busy { return }
+                }
+            }
         }
     }
 
@@ -3044,9 +3064,12 @@ public final class WorkbenchStore {
     private func handleLiveSignal(room: String) async {
         if room == "home" {
             await refreshAll()
-        } else if room == "chat", let client {
+        } else if room == "chat" || room.hasPrefix("chat?"), let client {
             if let chat = try? await client.fetchLeadChat(project: selectedProject) {
                 leadChat = chat
+                if !chat.busy {
+                    leadBusyPollTask?.cancel()
+                }
             }
         } else if room.hasPrefix("task:") {
             let taskId = String(room.dropFirst(5))
