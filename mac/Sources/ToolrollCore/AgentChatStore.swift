@@ -420,14 +420,14 @@ public enum AgentChatRunner {
 
         case .codex:
             if let sessionId, !sessionId.isEmpty {
-                var args = ["exec", "resume", "--json", "--full-auto"]
+                var args = ["exec", "resume", "--json", "--skip-git-repo-check"]
                 if !modelId.isEmpty {
                     args.append(contentsOf: ["-m", modelId])
                 }
                 args.append(contentsOf: [sessionId, prompt])
                 return args
             } else {
-                var args = ["exec", "--json", "--full-auto", "--skip-git-repo-check"]
+                var args = ["exec", "--json", "--approve-for-me", "--skip-git-repo-check"]
                 if !modelId.isEmpty {
                     args.append(contentsOf: ["-m", modelId])
                 }
@@ -469,88 +469,144 @@ public enum AgentChatRunner {
             let args = buildCommand(provider: provider, modelId: modelId, prompt: prompt, sessionId: sessionId)
 
             DispatchQueue.global(qos: .userInitiated).async {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: binary)
-                proc.arguments = args
-                if FileManager.default.fileExists(atPath: projectPath) {
-                    proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
-                }
-
-                let home = FileManager.default.homeDirectoryForCurrentUser.path
-                var env = ProcessInfo.processInfo.environment
-                let extraPath = "\(home)/.local/bin:\(home)/.gemini/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                env["PATH"] = [extraPath, env["PATH"]].compactMap { $0 }.joined(separator: ":")
-                proc.environment = env
-
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError = errPipe
-                proc.standardInput = FileHandle.nullDevice
-
-                handle.attach(proc)
-
-                let bufferBox = StreamBufferBox()
-
-                outPipe.fileHandleForReading.readabilityHandler = { fh in
-                    let chunk = fh.availableData
-                    if chunk.isEmpty { return }
-                    let lines = bufferBox.appendStdout(chunk)
-                    for line in lines {
-                        let events = AgentChatStreamParser.parse(line: line, provider: provider)
-                        for ev in events {
-                            if case .completed = ev { bufferBox.markTerminal() }
-                            if case .failed = ev { bufferBox.markTerminal() }
-                            continuation.yield(ev)
-                        }
+                let maxAttempts = (provider == .gemini) ? 2 : 1
+                for attempt in 1...maxAttempts {
+                    let outcome = runSingleTurn(
+                        binary: binary,
+                        args: args,
+                        provider: provider,
+                        projectPath: projectPath,
+                        handle: handle,
+                        continuation: continuation,
+                        deferRetryableFailure: attempt < maxAttempts
+                    )
+                    if !outcome.shouldRetry {
+                        break
                     }
-                }
-
-                errPipe.fileHandleForReading.readabilityHandler = { fh in
-                    let chunk = fh.availableData
-                    if chunk.isEmpty { return }
-                    bufferBox.appendStderr(chunk)
-                }
-
-                do {
-                    try proc.run()
-                    proc.waitUntilExit()
-                } catch {
-                    continuation.yield(.failed(error.localizedDescription))
-                    continuation.finish()
-                    return
-                }
-
-                outPipe.fileHandleForReading.readabilityHandler = nil
-                errPipe.fileHandleForReading.readabilityHandler = nil
-
-                let tailOut = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let tailErr = errPipe.fileHandleForReading.readDataToEndOfFile()
-                let drained = bufferBox.drain(tailOut: tailOut, tailErr: tailErr)
-                for line in drained.lines {
-                    let events = AgentChatStreamParser.parse(line: line, provider: provider)
-                    for ev in events {
-                        if case .completed = ev { bufferBox.markTerminal() }
-                        if case .failed = ev { bufferBox.markTerminal() }
-                        continuation.yield(ev)
-                    }
-                }
-                let stderrText = drained.stderr
-                let finishedNormally = bufferBox.sawTerminal()
-
-                if !finishedNormally {
-                    if proc.terminationStatus == 0 {
-                        continuation.yield(.completed)
-                    } else if proc.terminationReason == .uncaughtSignal {
-                        continuation.yield(.failed("Stopped."))
-                    } else {
-                        let lastErr = stderrText.components(separatedBy: .newlines).last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                        continuation.yield(.failed(lastErr ?? "\(provider.displayName) exited with code \(proc.terminationStatus)."))
-                    }
+                    Thread.sleep(forTimeInterval: 0.6)
                 }
                 continuation.finish()
             }
         }
+    }
+
+    private struct SingleTurnOutcome {
+        let shouldRetry: Bool
+    }
+
+    private static func runSingleTurn(
+        binary: String,
+        args: [String],
+        provider: AgentChatProvider,
+        projectPath: String,
+        handle: AgentChatProcessHandle,
+        continuation: AsyncStream<AgentChatStreamEvent>.Continuation,
+        deferRetryableFailure: Bool
+    ) -> SingleTurnOutcome {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: binary)
+        proc.arguments = args
+        if FileManager.default.fileExists(atPath: projectPath) {
+            proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var env = ProcessInfo.processInfo.environment
+        let extraPath = "\(home)/.local/bin:\(home)/.gemini/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        env["PATH"] = [extraPath, env["PATH"]].compactMap { $0 }.joined(separator: ":")
+        proc.environment = env
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        proc.standardInput = FileHandle.nullDevice
+
+        handle.attach(proc)
+
+        let bufferBox = StreamBufferBox()
+
+        outPipe.fileHandleForReading.readabilityHandler = { fh in
+            let chunk = fh.availableData
+            if chunk.isEmpty { return }
+            let lines = bufferBox.appendStdout(chunk)
+            for line in lines {
+                let events = AgentChatStreamParser.parse(line: line, provider: provider)
+                for ev in events {
+                    if case .textDelta = ev { bufferBox.markOutput() }
+                    if case .textReplace = ev { bufferBox.markOutput() }
+                    if case .completed = ev { bufferBox.markTerminal() }
+                    if case .failed(let msg) = ev {
+                        bufferBox.markTerminal()
+                        if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
+                            bufferBox.markRetryableAuthFailure()
+                            continue
+                        }
+                    }
+                    continuation.yield(ev)
+                }
+            }
+        }
+
+        errPipe.fileHandleForReading.readabilityHandler = { fh in
+            let chunk = fh.availableData
+            if chunk.isEmpty { return }
+            bufferBox.appendStderr(chunk)
+        }
+
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            continuation.yield(.failed(error.localizedDescription))
+            return SingleTurnOutcome(shouldRetry: false)
+        }
+
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+
+        let tailOut = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let tailErr = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let drained = bufferBox.drain(tailOut: tailOut, tailErr: tailErr)
+        for line in drained.lines {
+            let events = AgentChatStreamParser.parse(line: line, provider: provider)
+            for ev in events {
+                if case .textDelta = ev { bufferBox.markOutput() }
+                if case .textReplace = ev { bufferBox.markOutput() }
+                if case .completed = ev { bufferBox.markTerminal() }
+                if case .failed(let msg) = ev {
+                    bufferBox.markTerminal()
+                    if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
+                        bufferBox.markRetryableAuthFailure()
+                        continue
+                    }
+                }
+                continuation.yield(ev)
+            }
+        }
+
+        if bufferBox.shouldRetryAuth() {
+            return SingleTurnOutcome(shouldRetry: true)
+        }
+
+        let stderrText = drained.stderr
+        let finishedNormally = bufferBox.sawTerminal()
+
+        if !finishedNormally {
+            if proc.terminationStatus == 0 {
+                continuation.yield(.completed)
+            } else if proc.terminationReason == .uncaughtSignal {
+                continuation.yield(.failed("Stopped."))
+            } else {
+                let lastErr = stderrText.components(separatedBy: .newlines).last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                let msg = lastErr ?? "\(provider.displayName) exited with code \(proc.terminationStatus)."
+                if deferRetryableFailure && !bufferBox.sawOutput() && msg.localizedCaseInsensitiveContains("authentication failed or timed out") {
+                    return SingleTurnOutcome(shouldRetry: true)
+                }
+                continuation.yield(.failed(msg))
+            }
+        }
+        return SingleTurnOutcome(shouldRetry: false)
     }
 
     private final class StreamBufferBox: @unchecked Sendable {
@@ -558,6 +614,8 @@ public enum AgentChatRunner {
         private var outBuffer = Data()
         private var errBuffer = Data()
         private var terminal = false
+        private var emittedOutput = false
+        private var retryableAuthFailure = false
 
         func appendStdout(_ chunk: Data) -> [String] {
             lock.lock()
@@ -581,6 +639,30 @@ public enum AgentChatRunner {
             if errBuffer.count > 16_384 {
                 errBuffer = errBuffer.suffix(16_384)
             }
+        }
+
+        func markOutput() {
+            lock.lock()
+            emittedOutput = true
+            lock.unlock()
+        }
+
+        func sawOutput() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return emittedOutput
+        }
+
+        func markRetryableAuthFailure() {
+            lock.lock()
+            retryableAuthFailure = true
+            lock.unlock()
+        }
+
+        func shouldRetryAuth() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return retryableAuthFailure
         }
 
         func markTerminal() {
