@@ -15991,8 +15991,14 @@ async function landTaskCommand(positional: readonly string[], flags: Map<string,
   const access = { repos: authority.kind === "person" ? authority.who.repos : localRepos };
   const result = await land(store, id, { key, ...(into === undefined ? {} : { into }), ...(undo ? { undo: true } : {}) }, authority, access, now, { root: context.evidenceRoot });
   if (!result.ok) return fail(write, json, command, result.reason, result.message, EXIT.refused);
+  if (result.handoff !== null) {
+    const handoff = result.handoff;
+    return succeed(write, json, command, { landing: result }, () => [
+      `${id} · Landing commit ${result.commit.slice(0, 7)} is ready (kept at ${handoff.ref}). Your folder has ${result.branch} checked out with changes, so Toolroll didn't touch it.`,
+      `To bring it onto ${result.branch}: ${handoff.command}`]);
+  }
   return succeed(write, json, command, { landing: result }, () => [
-    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : ""}.`,
+    `${id} · ${result.replayed ? "Already " : ""}${result.kind === "undo" ? "Undone" : "Landed"} on ${result.branch} (${result.commit.slice(0, 7)})${result.mode === "ref" ? "; no folder had it open" : result.mode === "files" ? "; your project folder's files are updated" : ""}.`,
     ...(result.warning === null ? [] : [result.warning])]);
 }
 

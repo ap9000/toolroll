@@ -3287,6 +3287,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     const done = await land(store, act.taskId, { key, ...(into === "" ? {} : { into }), ...(undo ? { undo: true } : {}) }, principal !== null ? { kind: "person", who: principal } : { kind: "local" }, access, now, { root: evidenceRoot });
     if (!done.ok) return taskScreen(response, who, act.taskId, done.message, done.reason === "authority" ? 403 : 409);
+    if (done.handoff !== null) return taskScreen(response, who, act.taskId, `Landing commit ${done.commit.slice(0, 7)} is ready. Your folder has ${done.branch} checked out with changes, so Toolroll didn't touch it. To bring it in: ${done.handoff.command}`, 200);
     if (answersInPlace(ctx.request)) return answerActInPlace(response, "done", `${done.kind === "undo" ? "Undone" : "Landed"} on ${done.branch} (${done.commit.slice(0, 7)}).`, 200);
     return redirect(response, taskHref(act.taskId));
   }

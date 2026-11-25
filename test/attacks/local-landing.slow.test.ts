@@ -10,7 +10,7 @@
  * commit after a last in-transaction check of authority, policy, receipt and check bindings; a key pinning everything
  * the person saw; recovery that only records, for people who may land there.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { git, useScratch, write } from "./harness.js";
@@ -161,8 +161,6 @@ describe("land on main: the legitimate path", () => {
 
 describe("attack: a destination that isn't a free, real branch", () => {
   const refusals: Record<string, { setup: () => void; reason: string; says?: (head: string) => string }> = {
-    "main checked out in the person's own folder": { setup: () => git(repo, "checkout", "-q", "main"), reason: "occupied", says: head => `merge --squash ${head}` },
-    "main checked out in another folder": { setup: () => git(repo, "worktree", "add", "-q", join(scratch(), "other"), "main"), reason: "occupied" },
     "main is a symbolic ref to another branch": { setup: () => { git(repo, "branch", "other", "main"); git(repo, "symbolic-ref", "refs/heads/main", "refs/heads/other"); }, reason: "destination" },
     "main moved on since the work started": { setup: () => { git(repo, "checkout", "-q", "main"); write(join(repo, "c.txt"), "later\n"); git(repo, "add", "-A"); git(repo, "commit", "-qm", "later"); git(repo, "checkout", "-q", "work"); }, reason: "moved", says: () => "bring this task up to date first" },
     "a .git that is a link": { setup: () => { renameSync(join(repo, ".git"), join(scratch(), "real-git")); symlinkSync(join(scratch(), "real-git"), join(repo, ".git")); }, reason: "destination" },
@@ -391,15 +389,134 @@ describe("undo: a new commit that reverts exactly what landed", () => {
     expect(await readLanding(store, "t", access(), NOW, { ...options(), undo: true })).toMatchObject({ ok: false, reason: "nothing" });
   });
 
-  test("undo while main is checked out in the folder refuses with the git revert command; main unchanged", async () => {
+  test("undo while main is checked out in the folder with changes refuses with the git revert command; main unchanged", async () => {
     built("t", { "a.txt": "two\n" });
     await landNow("t");
     git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, "notes.txt"), "mine\n");
     const landedAt = at();
     const read = await readLanding(store, "t", access(), NOW, { ...options(), undo: true });
     expect(read).toMatchObject({ ok: false, reason: "occupied" });
     expect(!read.ok && read.message).toContain("revert --no-edit");
     expect(at()).toBe(landedAt);
+  });
+});
+
+describe("checked-out main (everyday-9 A1): in place only when the folder is completely clean, else a handoff", () => {
+  const planOf = async () => {
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error(JSON.stringify(read));
+    return read.plan;
+  };
+
+  test("clean folder on main: main and its files move together, hooks stay silent, the folder reads clean; undo goes back the same way", async () => {
+    const { head } = built("t", { "a.txt": "two\n", "b.txt": "new\n" });
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, ".git", "hooks", "post-checkout"), `#!/bin/sh\necho ran > '${join(markers, "post-checkout")}'\n`);
+    chmodSync(join(repo, ".git", "hooks", "post-checkout"), 0o755);
+    expect((await planOf()).mode).toBe("files");
+    expect((await landNow("t")).landed).toMatchObject({ ok: true, mode: "files" });
+    expect(git(repo, "rev-parse", "HEAD^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));
+    expect(plain(join(repo, "a.txt"))).toBe("two\n");
+    expect(plain(join(repo, "b.txt"))).toBe("new\n");
+    expect(git(repo, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(markers, "post-checkout"))).toBe(false);
+    expect((await landNow("t", { undo: true })).landed).toMatchObject({ ok: true, kind: "undo", mode: "files" });
+    expect(plain(join(repo, "a.txt"))).toBe("one\n");
+    expect(existsSync(join(repo, "b.txt"))).toBe(false);
+    expect(git(repo, "status", "--porcelain")).toBe("");
+  });
+
+  const dirty: Record<string, () => void> = {
+    "a changed tracked file": () => writeFileSync(join(repo, "a.txt"), "my edit\n"),
+    "a staged change": () => { writeFileSync(join(repo, "c.txt"), "staged\n"); git(repo, "add", "c.txt"); },
+    "an untracked file": () => writeFileSync(join(repo, "notes.txt"), "mine\n"),
+    "a merge in progress": () => writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${at()}\n`),
+    "a rebase in progress": () => mkdirSync(join(repo, ".git", "rebase-merge")),
+  };
+  for (const [name, make] of Object.entries(dirty)) {
+    test(`${name}: no checkout is touched; the commit is kept and the exact ff-only command is shown`, async () => {
+      const { head } = built("t", { "a.txt": "two\n" });
+      git(repo, "checkout", "-q", "main");
+      make();
+      const before = at();
+      const files = plain(join(repo, "a.txt"));
+      const plan = await planOf();
+      expect(plan.mode, name).toBe("handoff");
+      const { landed } = await landNow("t");
+      if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+      expect(at(), name).toBe(before);
+      expect(plain(join(repo, "a.txt")), name).toBe(files);
+      expect(git(repo, "rev-parse", landed.handoff.ref)).toBe(landed.commit);
+      expect(landed.handoff.command).toBe(`git -C ${repo} merge --ff-only ${landed.commit}`);
+      expect(git(repo, "rev-parse", `${landed.commit}^{tree}`)).toBe(git(repo, "rev-parse", `${head}^{tree}`));
+      expect(git(repo, "rev-parse", `${landed.commit}^`)).toBe(before);
+      // The same yes again names the same commit.
+      expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: true, replayed: true, commit: landed.commit });
+    });
+  }
+
+  test("main checked out in another folder: a handoff naming that folder; neither folder is touched", async () => {
+    built("t", { "a.txt": "two\n" });
+    const other = join(scratch(), "other");
+    git(repo, "worktree", "add", "-q", other, "main");
+    const before = at();
+    const { landed } = await landNow("t");
+    if (landed?.ok !== true || landed.handoff === null) throw new Error(JSON.stringify(landed));
+    expect(landed.handoff.command).toContain(`merge --ff-only ${landed.commit}`);
+    expect(landed.handoff.command).toContain(realpathSync(other));
+    expect(at()).toBe(before);
+    expect(plain(join(other, "a.txt"))).toBe("one\n");
+  });
+
+  test("HEAD elsewhere (detached at main's commit): only the branch moves; the folder stays where it was", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "--detach", "main");
+    const was = at("HEAD");
+    expect((await planOf()).mode).toBe("ref");
+    expect((await landNow("t")).landed).toMatchObject({ ok: true, mode: "ref" });
+    expect(at("HEAD")).toBe(was);
+    expect(plain(join(repo, "a.txt"))).toBe("one\n");
+  });
+
+  test("the folder gets a change between the look and the yes: refused, nothing moved", async () => {
+    built("t", { "a.txt": "two\n" });
+    git(repo, "checkout", "-q", "main");
+    const plan = await planOf();
+    expect(plan.mode).toBe("files");
+    const before = at();
+    writeFileSync(join(repo, "notes.txt"), "mine\n");
+    expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options())).toMatchObject({ ok: false });
+    expect(at()).toBe(before);
+    expect(plain(join(repo, "a.txt"))).toBe("one\n");
+  });
+
+  test("an ignored file in the way of a file the change adds: never overwritten; main goes back (or it's handed off), nothing changed", async () => {
+    built("t", { "a.txt": "two\n", "b.txt": "theirs\n" });
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(join(repo, ".git", "info", "exclude"), "b.txt\n");
+    writeFileSync(join(repo, "b.txt"), "my secret\n");
+    expect(git(repo, "status", "--porcelain")).toBe("");
+    const before = at();
+    const { read, landed } = await landNow("t");
+    expect(read.ok && "plan" in read && read.plan.mode).toMatch(/^(files|handoff)$/);
+    if (read.ok && "plan" in read && read.plan.mode === "files") expect(landed).toMatchObject({ ok: false, reason: "dirty" });
+    expect(at()).toBe(before);
+    expect(plain(join(repo, "b.txt"))).toBe("my secret\n");
+    expect(plain(join(repo, "a.txt"))).toBe("one\n");
+  });
+
+  test("an ignored file appears in the way between the look and the yes: refused at the write, never overwritten", async () => {
+    built("t", { "a.txt": "two\n", "b.txt": "theirs\n" });
+    git(repo, "checkout", "-q", "main");
+    const plan = await planOf();
+    expect(plan.mode).toBe("files");
+    const before = at();
+    // Right after the look inside the yes (as the commit is made), the ignored file appears.
+    const appears = racing("commit-tree", () => { writeFileSync(join(repo, ".git", "info", "exclude"), "b.txt\n"); writeFileSync(join(repo, "b.txt"), "my secret\n"); });
+    expect(await land(store, "t", { key: plan.key, into: "main" }, person, access(), NOW, options({ git: appears }))).toMatchObject({ ok: false, reason: "dirty" });
+    expect(at()).toBe(before);
+    expect(plain(join(repo, "b.txt"))).toBe("my secret\n");
   });
 });
 
