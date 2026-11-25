@@ -123,7 +123,7 @@ test("every lead proposal kind and chat operation is decided, and the decisions 
   expect(Object.keys(CHAT_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_ACTIONS).sort());
   expect(Object.keys(CHAT_TASK_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_TASK_ACTIONS).sort());
   expect(Object.entries(CHAT_ACTION_LOCAL_ACTS).filter(([, act]) => act !== null).sort()).toEqual([
-    ["code_map_switch", "code-map-switch"], ["direct_chat_promote", "file-task"], ["direct_chat_reply", "direct-chat-send"], ["direct_chat_start", "direct-chat-start"],
+    ["code_map_switch", "code-map-switch"], ["direct_chat_promote", "file-task"], ["direct_chat_reply", "direct-chat-send"], ["direct_chat_ship", "direct-chat-ship"], ["direct_chat_start", "direct-chat-start"],
     ["result_accept", "complete-task"], ["scope_approve", "approve-plan"], ["suggestion_not_now", "dismiss-suggestion"], ["task_cancel", "stop-run"], ["task_resume", "resume-run"],
     // A Start card is the fast start's own act: the console's tasks.fast route, said in chat.
     ["task_start", "build-now"], ["trial_stop", "trial-stop"]]);

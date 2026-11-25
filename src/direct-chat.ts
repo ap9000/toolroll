@@ -831,6 +831,7 @@ export class DirectChatHost {
   private readonly onNotify: (note: DirectChatNotification) => void;
   private readonly sawTerminalByTurn = new Set<string>();
   private readonly resetOnNextTextDelta = new Set<string>();
+  private readonly leadNotifiedTurnIds = new Set<string>();
   private readonly pendingSwitchFrom = new Map<string, DirectChatProvider>();
   private readonly preTurnImages = new Map<string, WorkspaceImageSnapshot>();
   private readonly inFlightCreates = new Map<string, Promise<{ ok: true; thread: DirectChatThreadRow; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }>>();
@@ -958,6 +959,56 @@ export class DirectChatHost {
       .prepare(`UPDATE direct_chat_thread SET diff_cache_json = ? WHERE id = ?`)
       .run(JSON.stringify(diff), thread.id);
     return diff;
+  }
+
+  inspectThreadDiff(owner: string, threadId: string): { ok: true; diff: DirectChatDiffSummary; running: boolean } | { ok: false; status: number; error: string } {
+    if (!HEX32.test(threadId)) return { ok: false, status: 400, error: "Invalid thread id." };
+    const thread = this.getThreadRecord(owner, threadId);
+    if (!thread) return { ok: false, status: 404, error: "Chat thread not found." };
+    const running = this.store.handle
+      .prepare(`SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1`)
+      .get(thread.id) !== undefined;
+    const diff = this.refreshDiffCache(thread);
+    return { ok: true, diff, running };
+  }
+
+  private notifyOwnerLeadThread(
+    thread: DirectChatThreadRow,
+    turnId: string,
+    finalStatus: DirectChatTurnStatus,
+    assistantText: string,
+    errorText: string | null,
+    diff: DirectChatDiffSummary | null,
+    now: Date,
+  ): void {
+    if (finalStatus !== "completed" && finalStatus !== "failed" && finalStatus !== "interrupted") return;
+    if (this.leadNotifiedTurnIds.has(turnId)) return;
+    this.leadNotifiedTurnIds.add(turnId);
+    const openLead = this.store.handle
+      .prepare(`SELECT id FROM lead_thread WHERE approver = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1`)
+      .get(thread.owner) as Record<string, unknown> | undefined;
+    if (openLead === undefined) return;
+    const leadThreadId = Number(openLead["id"]);
+    if (!Number.isInteger(leadThreadId) || leadThreadId <= 0) return;
+
+    const providerLabel = thread.provider === "claude" ? "Claude" : thread.provider === "codex" ? "Codex" : "Gemini";
+    const proj = projectName(thread.repo);
+    const title = sanitizeLine(thread.title).slice(0, 80) || "Direct Chat";
+    let text: string;
+    if (finalStatus === "completed") {
+      const changed = diff?.changedFiles.length ?? 0;
+      const diffPart = changed > 0
+        ? `${changed} ${changed === 1 ? "file" : "files"} changed — ready to review or ship.`
+        : "no file changes yet.";
+      const snippet = sanitizeLine(assistantText).slice(0, 160);
+      text = snippet !== ""
+        ? `Direct Chat finished — "${title}" (${providerLabel}, ${proj}): ${diffPart}\n${snippet}${assistantText.trim().length > 160 ? "…" : ""}`
+        : `Direct Chat finished — "${title}" (${providerLabel}, ${proj}): ${diffPart}`;
+    } else {
+      const reason = sanitizeLine(errorText ?? "Ended without completing.").slice(0, 180);
+      text = `Direct Chat ${finalStatus} — "${title}" (${providerLabel}, ${proj}): ${reason}`;
+    }
+    this.store.appendLeadMessage({ thread: leadThreadId, turn: null, role: "assistant", text, activity: null }, now);
   }
 
   getThreadRecord(owner: string, threadId: string): DirectChatThreadRow | null {
@@ -1505,7 +1556,8 @@ export class DirectChatHost {
           ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
           now: this.now(),
         });
-        this.refreshDiffCache(thread);
+        const freshDiff = this.refreshDiffCache(thread);
+        this.notifyOwnerLeadThread(thread, turn.id, latest.status, latest.assistantText, latest.errorText, freshDiff, this.now());
         this.cleanupTurnState(turn.id);
         this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
       } else {
@@ -1619,7 +1671,11 @@ export class DirectChatHost {
         `).run(stamp, turn.id);
         this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
       }
-      this.refreshDiffCache(thread);
+      const freshDiff = this.refreshDiffCache(thread);
+      const settledLatest = this.reloadTurn(turn.id) ?? latestAfterDrain;
+      if (settledLatest.status !== "running") {
+        this.notifyOwnerLeadThread(thread, turn.id, settledLatest.status, settledLatest.assistantText, settledLatest.errorText, freshDiff, this.now());
+      }
       this.cleanupTurnState(turn.id);
       this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
       return;
@@ -1638,9 +1694,10 @@ export class DirectChatHost {
       ...(preImages !== undefined ? { before: preImages } : Number.isFinite(sinceMs) ? { sinceMs } : {}),
       now: this.now(),
     });
-    this.refreshDiffCache(thread);
+    const refreshedDiff = this.refreshDiffCache(thread);
 
     if (latest.status !== "running") {
+      this.notifyOwnerLeadThread(thread, turn.id, latest.status, latest.assistantText, latest.errorText, refreshedDiff, this.now());
       this.cleanupTurnState(turn.id);
       this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
       return;
@@ -1662,7 +1719,7 @@ export class DirectChatHost {
       }
     }
 
-    this.store.handle.prepare(`
+    const settled = this.store.handle.prepare(`
       UPDATE direct_chat_turn
       SET status = ?, error_text = ?, finished_at = ?
       WHERE id = ? AND status = 'running'
@@ -1673,6 +1730,10 @@ export class DirectChatHost {
       WHERE turn_id = ? AND status = 'running'
     `).run(stamp, turn.id);
     this.store.handle.prepare(`UPDATE direct_chat_thread SET updated_at = ? WHERE id = ?`).run(stamp, thread.id);
+    const freshDiff = finalStatus === "completed" ? this.refreshDiffCache(thread) : null;
+    if (Number(settled.changes) === 1) {
+      this.notifyOwnerLeadThread(thread, turn.id, finalStatus, latest.assistantText, errorText, freshDiff, this.now());
+    }
     this.cleanupTurnState(turn.id);
     this.onNotify({ threadId: thread.id, turnId: turn.id, event: "change" });
   }

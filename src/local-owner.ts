@@ -321,6 +321,7 @@ export const CHAT_ACTION_LOCAL_ACTS: Readonly<Record<ChatAction, LocalOwnerAct |
   direct_chat_start: "direct-chat-start",
   direct_chat_reply: "direct-chat-send",
   direct_chat_promote: "file-task",
+  direct_chat_ship: "direct-chat-ship",
 });
 
 /** Every task card operation (chat-task-actions.ts), decided for the local owner. */

@@ -967,6 +967,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Read during a turn: reads one Direct Chat's full turn transcript, tool history, and token usage from SQLite.",
     gap: null,
   },
+  get_direct_chat_diff: {
+    support: "direct",
+    how: "Read during a turn: inspects a Direct Chat's changed files, bounded patch, and Ship readiness.",
+    gap: null,
+  },
   manage_direct_chat: {
     support: "missing",
     how: "Refused on the phone by design: instant Direct Chat controls require the owner's local solo console session on this computer.",
