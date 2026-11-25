@@ -735,6 +735,9 @@ describe("the command", () => {
     expect(await cli(["land", "t", "--into", "main"]), lines.join("\n")).toBe(EXIT.ok);
     const key = /--key ([0-9a-f]{16})/.exec(lines.join("\n"))?.[1];
     expect(lines.join("\n")).toContain("Lands 1 commit on main: a.txt (+1 −1).");
+    // Said up front: from a plain shell, the yes asks for a name and password.
+    expect(lines.join("\n")).toContain("--as <you>");
+    expect(lines.join("\n")).toContain("That asks for your Toolroll password.");
     expect(await cli(["land", "t", "--into", "main", "--yes", "--as", "alex", "--token", password])).toBe(EXIT.usage);
     expect(await cli(["land", "t", "--into", "main", "--yes", "--key", key!, "--as", "alex", "--token", password]), lines.join("\n")).toBe(EXIT.ok);
     expect(git(repo, "rev-parse", "main^{tree}")).toBe(git(repo, "rev-parse", `${head}^{tree}`));

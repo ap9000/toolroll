@@ -109,6 +109,7 @@ Tasks (\`toolroll task --help\` lists every task command)
                                the yes — nothing builds without one
   toolroll task accept <id> --finish
                                accept the result you read (--despite "<why>": accept it with a reason, without finishing)
+  toolroll task land <id>   put accepted work on your branch as one commit (no pull requests)
   toolroll task send-back <id> --feedback "<what to change>"
                                send the result back for changes
   toolroll task retry <id>  build it again

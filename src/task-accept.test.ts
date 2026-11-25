@@ -178,6 +178,8 @@ describe("a completion stays complete when the check command changes", () => {
   test("Run checks after completing (everyday-9 A2): its own log and receipt never reopen it; any other later evidence does", async () => {
     const runId = built("t-recheck");
     await complete("t-recheck");
+    // A project with no pull requests: Accept says what's next (everyday-9 A4).
+    expect(lines.join("\n")).toContain("Next: toolroll task land t-recheck");
     const sealed = receipt("t-recheck");
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.log", Buffer.from("1 failed\n"), FOLLOW_UP_LOG, LATER, { captureStatus: "ok" });
     storeEvidence(store, root(), runId, "structured-output", "follow-up-check-1.json", Buffer.from("{}"), FOLLOW_UP_RECEIPT, LATER, { captureStatus: "ok" });
