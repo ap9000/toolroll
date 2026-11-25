@@ -471,20 +471,23 @@ describe("DirectChatHost & helpers", () => {
     );
     expect(geminiDenied.some(e => e.kind === "failed" && e.message.includes("push_remote"))).toBe(true);
 
-    // Sanitized env strips push/deploy tokens and disables git prompts.
-    const env = buildSanitizedChildEnv({
+    // The agent's environment is an allowlist: plain settings, home and temp, and where its own CLI keeps its sign-in.
+    // No token, key or other variable of the server's reaches it (test/attacks/direct-chat-env.test.ts).
+    const env = buildSanitizedChildEnv("claude", {
       PATH: "/usr/bin",
+      HOME: "/home/someone",
+      CLAUDE_CONFIG_DIR: "/home/someone/.claude-alt",
+      CODEX_HOME: "/home/someone/.codex",
       GH_TOKEN: "ghp_secret",
-      GITHUB_TOKEN: "gho_secret",
-      NPM_TOKEN: "npm_secret",
-      VERCEL_TOKEN: "vrc_secret",
-      SAFE_VAR: "keep",
+      ANTHROPIC_API_KEY: "sk-ant-secret",
+      SAFE_VAR: "dropped",
     });
     expect(env["GH_TOKEN"]).toBeUndefined();
-    expect(env["GITHUB_TOKEN"]).toBeUndefined();
-    expect(env["NPM_TOKEN"]).toBeUndefined();
-    expect(env["VERCEL_TOKEN"]).toBeUndefined();
-    expect(env["SAFE_VAR"]).toBe("keep");
+    expect(env["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(env["SAFE_VAR"]).toBeUndefined();
+    expect(env["CODEX_HOME"]).toBeUndefined();
+    expect(env["CLAUDE_CONFIG_DIR"]).toBe("/home/someone/.claude-alt");
+    expect(env["HOME"]).toBe("/home/someone");
     expect(env["GIT_TERMINAL_PROMPT"]).toBe("0");
 
     // Plain-English posture copy and handoff prompt helper.

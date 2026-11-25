@@ -580,6 +580,13 @@ export function buildCacheFolder(repo: string, home: string = homedir(), platfor
   return join(root, "toolroll-builds", createHash("sha256").update(real(repo)).digest("hex").slice(0, 16));
 }
 
+/** The plain settings of Toolroll's own environment an agent it launches may start with (its path, locale, terminal,
+ * time zone and who is signed in to this computer): never a token, key or provider variable. */
+export const PLAIN_AGENT_ENV: readonly string[] = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM", "TZ", "USER", "LOGNAME", "SHELL", "COLORTERM"];
+export function plainAgentEnv(base: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  return Object.fromEntries(PLAIN_AGENT_ENV.flatMap(name => base[name] === undefined ? [] : [[name, base[name]!]]));
+}
+
 /** The environment that points a build's package managers at its project's cache folder, not the user's own. */
 export function buildCacheEnv(folder: string): Record<string, string> {
   const at = (name: string) => join(folder, name);

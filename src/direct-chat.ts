@@ -8,6 +8,7 @@ import { resolveExecutable } from "./attest.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import { scanCustody, type CustodyIO, type LaunchCustody, type ProcessWitness, type ProcRow } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
+import { plainAgentEnv } from "./agent-fence.js";
 import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
 import { projectName } from "./project.js";
 import {
@@ -181,20 +182,6 @@ const DEFAULT_STOP_GRACE_MS = 5_000;
 const EMPTY_DIFF: DirectChatDiffSummary = Object.freeze({ changedFiles: [], diffText: "", dirty: false });
 const HANDOFF_MAX_TURNS = 6;
 const HANDOFF_MAX_CHARS = 6_000;
-const STRIPPED_ENV_KEYS = new Set([
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "NPM_TOKEN",
-  "NODE_AUTH_TOKEN",
-  "VERCEL_TOKEN",
-  "CLOUDFLARE_API_TOKEN",
-  "NETLIFY_AUTH_TOKEN",
-  "FLY_API_TOKEN",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "SSH_AUTH_SOCK",
-]);
 
 function sanitizeDisplay(raw: string): string {
   return raw
@@ -664,12 +651,26 @@ export function locateDirectChatBinary(provider: DirectChatProvider): string | n
   return resolveExecutable(DIRECT_CHAT_BINARIES[provider]);
 }
 
-export function buildSanitizedChildEnv(baseEnv: NodeJS.ProcessEnv = process.env, homeDir = homedir()): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
-    if (value === undefined) continue;
-    if (STRIPPED_ENV_KEYS.has(key)) continue;
-    out[key] = value;
+/** Where each provider CLI keeps its own sign-in, when its person moved it (folders, never keys). */
+const SIGN_IN_LOCATION_ENV: Readonly<Record<DirectChatProvider, readonly string[]>> = {
+  claude: ["CLAUDE_CONFIG_DIR"],
+  codex: ["CODEX_HOME"],
+  gemini: [],
+};
+const XDG_FOLDERS = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"] as const;
+
+/**
+ * The environment a Direct Chat agent starts with, exactly (never Toolroll's own with some names taken out): the plain
+ * settings every agent launch keeps (agent-fence.ts plainAgentEnv), the home and temp folders, and where this
+ * provider's CLI keeps its own sign-in. The CLI signs in from its own files there; no API key, token or other secret
+ * of the server's reaches the agent or the commands it runs.
+ */
+export function buildSanitizedChildEnv(provider: DirectChatProvider, baseEnv: NodeJS.ProcessEnv = process.env, homeDir = homedir()): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...plainAgentEnv(baseEnv) };
+  out["HOME"] = baseEnv["HOME"] ?? homeDir;
+  for (const name of ["TMPDIR", ...XDG_FOLDERS, ...SIGN_IN_LOCATION_ENV[provider]]) {
+    const value = baseEnv[name];
+    if (value !== undefined && value !== "") out[name] = value;
   }
   const extraPath = `${homeDir}/.local/bin:${homeDir}/.gemini/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
   out["PATH"] = out["PATH"] ? `${extraPath}:${out["PATH"]}` : extraPath;
@@ -1315,7 +1316,7 @@ export class DirectChatHost {
         binary,
         args,
         cwd: managed.realClone,
-        env: buildSanitizedChildEnv(),
+        env: buildSanitizedChildEnv(thread.provider),
         logPath,
         stderrPath,
       });
