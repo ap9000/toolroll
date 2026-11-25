@@ -133,6 +133,7 @@ public struct AgentChatView: View {
                 artifacts: selection.artifacts,
                 initialIndex: selection.initialIndex
             )
+            .dismissSheetOnOutsideClick()
         }
     }
 

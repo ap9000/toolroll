@@ -96,30 +96,39 @@ public struct MainWorkbenchView: View {
         .background(WindowGlassConfigurator())
         .sheet(isPresented: $store.isPairSheetOpen) {
             PairWorkspaceSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isNewTaskSheetOpen) {
             NewTaskSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isAddProjectSheetOpen) {
             AddProjectSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isForkSheetOpen) {
             ForkTaskSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isPhonePairSheetOpen) {
             PhonePairSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isAppearanceSheetOpen) {
             AppearanceSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isProjectSettingsOpen) {
             ProjectSettingsSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isSetPasswordOpen) {
             SetPasswordSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .sheet(isPresented: $store.isChatShipSheetOpen) {
             DirectChatShipSheet(store: store)
+                .dismissSheetOnOutsideClick()
         }
         .confirmationDialog(
             "Unmerged changes in \(store.chatDeleteConfirmationThread?.title ?? "this chat")",
@@ -148,6 +157,7 @@ public struct MainWorkbenchView: View {
         .sheet(isPresented: Binding(get: { store.modelPickerTaskId != nil }, set: { if !$0 { store.modelPickerTaskId = nil } })) {
             if let taskId = store.modelPickerTaskId {
                 ModelPickerPopover(store: store, initialRoleKey: "all", taskId: taskId, onDismiss: { store.modelPickerTaskId = nil })
+                    .dismissSheetOnOutsideClick()
             }
         }
         .preferredColorScheme(WorkspaceThemeEngine.shared.preferredColorScheme)

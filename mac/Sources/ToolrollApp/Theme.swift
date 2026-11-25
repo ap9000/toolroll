@@ -602,3 +602,84 @@ public extension Color {
         }
     }
 }
+
+private struct SheetOutsideClickObserver: NSViewRepresentable {
+    let onDismiss: () -> Void
+
+    @MainActor
+    final class Coordinator {
+        var onDismiss: () -> Void
+        weak var anchorView: NSView?
+        var monitor: Any?
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        func installIfNeeded() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self,
+                      let sheetWindow = self.anchorView?.window,
+                      let parentWindow = sheetWindow.sheetParent,
+                      sheetWindow.attachedSheet == nil,
+                      event.window === parentWindow
+                else {
+                    return event
+                }
+                let dismissAction = self.onDismiss
+                DispatchQueue.main.async {
+                    dismissAction()
+                }
+                return nil
+            }
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.anchorView = view
+        context.coordinator.installIfNeeded()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.anchorView = nsView
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.installIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+}
+
+private struct DismissSheetOnOutsideClickModifier: ViewModifier {
+    @Environment(\.dismiss) private var dismiss
+
+    func body(content: Content) -> some View {
+        content.background(
+            SheetOutsideClickObserver {
+                dismiss()
+            }
+            .frame(width: 0, height: 0)
+        )
+    }
+}
+
+public extension View {
+    func dismissSheetOnOutsideClick() -> some View {
+        modifier(DismissSheetOnOutsideClickModifier())
+    }
+}
