@@ -1005,7 +1005,8 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   // settled after: its worktree state carried back) and the write flags. It takes no checkout lock (that lock is
   // async): such a command changes no HEAD or index another plane command's carry-back could undo.
   const write = options.write === true;
-  if (write && (options.buffer === true || !syncWriteAllowed(args))) throw new Error(`git ${subcommandOf(args) ?? ""} can't run as a synchronous write`);
+  const writeArgv = write && options.buffer !== true ? syncWriteArgv(args) : null;
+  if (write && writeArgv === null) throw new Error(`git ${args[0] ?? ""} can't run as a synchronous write in that form`);
   // `deadline` (absolute, wall-clock ms): every subprocess here, setup included, gets only what is left of it, and an
   // expired deadline throws before the next one starts or after the last one ran.
   const deadline = options.deadline;
@@ -1032,7 +1033,7 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
     // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
     if (!lazyFetchSupported(gitFile) && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
-    const safeArgs = withoutUnsupportedFlags(args, gitFile);
+    const safeArgs = writeArgv ?? withoutUnsupportedFlags(args, gitFile);
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     // An external diff program is named by config, which may change after it was read: never used here.
@@ -1057,23 +1058,30 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   } finally { view.dispose(); }
 }
 
-/** What viewedGitSync may run as a write: commands that write objects and refs, never HEAD, the index or a checkout
- * (a branch only deleted: its other forms rename the current one or open an editor). */
-function syncWriteAllowed(args: readonly string[]): boolean {
-  const command = subcommandOf(args);
-  if (command === "fetch" || command === "update-ref") return true;
-  return command === "branch" && args.some(arg => arg === "-D" || arg === "-d" || arg === "--delete");
+/** A branch name as a synchronous write may name it: plain characters only, never HEAD, an option, `..`, `@{`, a
+ * `.lock` or a dot-led component (stricter than git's check-ref-format, never looser). */
+function plainBranch(name: string): boolean {
+  if (name === "" || name === "HEAD" || name.startsWith("-") || name.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  return name.split("/").every(part => part !== "" && !part.startsWith(".") && !part.endsWith(".lock") && !part.endsWith(".")) && !name.includes("..");
 }
 
-/** The git command `args` runs: the first word after the global options (`-c name=value` pairs, `--flag`s). */
-function subcommandOf(args: readonly string[]): string | null {
-  for (let at = 0; at < args.length; at += 1) {
-    const arg = args[at]!;
-    if (arg === "-c" || arg === "-C") { at += 1; continue; }
-    if (arg.startsWith("-")) continue;
-    return arg;
-  }
-  return null;
+/**
+ * The exact argv viewedGitSync runs for a synchronous write, or null: only these shapes, with no option or global
+ * setting of the caller's (each setting below is Toolroll's own).
+ * - `fetch --no-tags --no-write-fetch-head <path> <sha>:refs/heads/<branch>`: a fetch of one commit from a local
+ *   repository, `<path>` an absolute real folder (no link on the way, no transport prefix), into a new branch. File
+ *   transport is allowed for that one fetch; every other protocol stays refused (WRITE_VIEW_FLAGS protocol.allow=never).
+ * - `branch -D <branch>`.
+ */
+export function syncWriteArgv(args: readonly string[]): string[] | null {
+  if (args.length === 3 && args[0] === "branch" && args[1] === "-D" && plainBranch(args[2]!)) return ["branch", "-D", args[2]!];
+  if (args.length !== 5 || args[0] !== "fetch" || args[1] !== "--no-tags" || args[2] !== "--no-write-fetch-head") return null;
+  const path = args[3]!, refspec = args[4]!;
+  if (!path.startsWith("/") || path.includes("::") || /[\0\n\r]/.test(path)) return null;
+  try { if (realpathSync(path) !== path || !lstatSync(path).isDirectory()) return null; } catch { return null; }
+  const spec = /^([0-9a-f]{40}|[0-9a-f]{64}):refs\/heads\/(.+)$/.exec(refspec);
+  if (spec === null || !plainBranch(spec[2]!)) return null;
+  return ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head", "--", path, refspec];
 }
 
 /**

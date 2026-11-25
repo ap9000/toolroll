@@ -471,15 +471,6 @@ export function fetchTrustedSnapshotIntoMainRepo(input: {
   if (!verified.ok) {
     throw new Error(verified.error);
   }
-  runHardenedMainGit(
-    [
-      "-c", "protocol.file.allow=always",
-      "-c", "transfer.fsckObjects=true",
-      "fetch", "--no-tags", "--no-write-fetch-head",
-      verified.realGitDir,
-      `${input.candidateSha}:${input.targetRef}`,
-    ],
-    input.repo,
-    { write: true },
-  );
+  // The one fetch shape a synchronous write accepts (teardown-git.ts syncWriteArgv adds its own settings).
+  runHardenedMainGit(["fetch", "--no-tags", "--no-write-fetch-head", verified.realGitDir, `${input.candidateSha}:${input.targetRef}`], input.repo, { write: true });
 }
