@@ -494,8 +494,9 @@ public struct CanvasWorkspaceView: View {
                     let logH = store.canvasViewport.logicalHeight
                     let scale = scaledW / logW
 
+                    let liveURL = resolvedURL(for: board.path)
                     ScaledLiveArtboardWebView(
-                        urlString: resolvedURL(for: board.path),
+                        urlString: liveURL,
                         logicalWidth: logW,
                         logicalHeight: logH,
                         sessionCookie: store.localSessionCookie,
@@ -521,6 +522,8 @@ public struct CanvasWorkspaceView: View {
                             selectedPinId = nil
                         }
                     )
+                    // A preview and a view of the console never share a web view (or its data store).
+                    .id(SessionWebViews.consoleOrigin(for: liveURL, cookie: store.localSessionCookie) ?? "preview")
                     .frame(width: logW, height: logH)
                     .scaleEffect(scale, anchor: .topLeading)
                     .frame(width: scaledW, height: scaledH, alignment: .topLeading)
@@ -1168,7 +1171,9 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
+        // A private, non-persistent store per web view; only a view of the console itself carries the session cookie.
+        let config = SessionWebViews.configuration()
+        context.coordinator.consoleOrigin = SessionWebViews.consoleOrigin(for: urlString, cookie: sessionCookie)
         config.userContentController.add(context.coordinator, name: "toolrollInspect")
         config.userContentController.addUserScript(WKUserScript(
             source: Self.inspectorScript,
@@ -1178,7 +1183,7 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight), configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
+        context.coordinator.load(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         return webView
     }
 
@@ -1187,7 +1192,7 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
         context.coordinator.onSnapshotPNG = onSnapshotPNG
         context.coordinator.onInspectClick = onInspectClick
         if context.coordinator.loadedURL != urlString {
-            context.coordinator.loadWithCookie(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
+            context.coordinator.load(webView: webView, urlString: urlString, sessionCookie: sessionCookie)
         }
         let flag = inspectorEnabled ? "true" : "false"
         webView.evaluateJavaScript("window.__toolrollInspectOn = \(flag);", completionHandler: nil)
@@ -1206,25 +1211,20 @@ private struct ScaledLiveArtboardWebView: NSViewRepresentable {
             self.onInspectClick = onInspectClick
         }
 
-        func loadWithCookie(webView: WKWebView, urlString: String, sessionCookie: (name: String, value: String, origin: String)?) {
-            guard let targetURL = URL(string: urlString) else { return }
+        /// Set once when the web view is made: the console origin it may carry the cookie for, or nil for a preview.
+        var consoleOrigin: String?
+
+        func load(webView: WKWebView, urlString: String, sessionCookie: SessionWebViews.Cookie?) {
             loadedURL = urlString
-            if let sc = sessionCookie,
-               let cookieOrigin = URL(string: sc.origin),
-               cookieOrigin.host == targetURL.host,
-               cookieOrigin.port == targetURL.port,
-               let cookie = HTTPCookie(properties: [
-                   .domain: targetURL.host ?? "127.0.0.1",
-                   .path: "/",
-                   .name: sc.name,
-                   .value: sc.value,
-               ]) {
-                webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
-                    webView.load(URLRequest(url: targetURL))
-                }
-            } else {
-                webView.load(URLRequest(url: targetURL))
-            }
+            SessionWebViews.load(webView, urlString: urlString, consoleOrigin: consoleOrigin, cookie: sessionCookie)
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(SessionWebViews.decide(navigationAction, consoleOrigin: consoleOrigin))
+        }
+
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            SessionWebViews.checkRedirect(webView, consoleOrigin: consoleOrigin)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

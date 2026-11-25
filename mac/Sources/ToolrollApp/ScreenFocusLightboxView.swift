@@ -380,9 +380,10 @@ struct ScreenFocusLightboxView: View {
                         let logH = store.canvasViewport.logicalHeight
                         let scale = renderW / logW
 
+                        let liveURL = resolvedURL(for: board.path)
                         FocusLiveWebView(
                             bridge: bridge,
-                            urlString: resolvedURL(for: board.path),
+                            urlString: liveURL,
                             logicalWidth: logW,
                             logicalHeight: logH,
                             sessionCookie: store.localSessionCookie,
@@ -394,6 +395,8 @@ struct ScreenFocusLightboxView: View {
                                 handleInlineTextChanged(elId: elId, newText: newText, finished: finished)
                             }
                         )
+                        // A preview and a view of the console never share a web view (or its data store).
+                        .id(SessionWebViews.consoleOrigin(for: liveURL, cookie: store.localSessionCookie) ?? "preview")
                         .frame(width: logW, height: logH)
                         .scaleEffect(scale, anchor: .topLeading)
                         .frame(width: renderW, height: renderH, alignment: .topLeading)
@@ -2444,12 +2447,15 @@ private struct FocusLiveWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
+        // A private, non-persistent store per web view; only a view of the console itself carries the session cookie.
+        let config = SessionWebViews.configuration()
+        context.coordinator.consoleOrigin = SessionWebViews.consoleOrigin(for: urlString, cookie: sessionCookie)
         config.userContentController.add(context.coordinator, name: "trFocusInspect")
         config.userContentController.add(context.coordinator, name: "trFocusTextEdit")
         config.userContentController.addUserScript(WKUserScript(source: Self.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight), configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
+        webView.navigationDelegate = context.coordinator
         bridge.webView = webView
         context.coordinator.load(webView: webView, urlString: urlString, cookie: sessionCookie)
         return webView
@@ -2466,8 +2472,10 @@ private struct FocusLiveWebView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var loadedURL: String = ""
+        /// Set once when the web view is made: the console origin it may carry the cookie for, or nil for a preview.
+        var consoleOrigin: String?
         var onElementSelected: (SelectedElementContext, Bool) -> Void
         var onInlineTextChanged: (String, String, Bool) -> Void
 
@@ -2479,24 +2487,17 @@ private struct FocusLiveWebView: NSViewRepresentable {
             self.onInlineTextChanged = onInlineTextChanged
         }
 
-        func load(webView: WKWebView, urlString: String, cookie: (name: String, value: String, origin: String)?) {
-            guard let targetURL = URL(string: urlString) else { return }
+        func load(webView: WKWebView, urlString: String, cookie: SessionWebViews.Cookie?) {
             loadedURL = urlString
-            if let sc = cookie,
-               let co = URL(string: sc.origin),
-               co.host == targetURL.host, co.port == targetURL.port,
-               let httpCookie = HTTPCookie(properties: [
-                   .domain: targetURL.host ?? "127.0.0.1",
-                   .path: "/",
-                   .name: sc.name,
-                   .value: sc.value,
-               ]) {
-                webView.configuration.websiteDataStore.httpCookieStore.setCookie(httpCookie) {
-                    webView.load(URLRequest(url: targetURL))
-                }
-            } else {
-                webView.load(URLRequest(url: targetURL))
-            }
+            SessionWebViews.load(webView, urlString: urlString, consoleOrigin: consoleOrigin, cookie: cookie)
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(SessionWebViews.decide(navigationAction, consoleOrigin: consoleOrigin))
+        }
+
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            SessionWebViews.checkRedirect(webView, consoleOrigin: consoleOrigin)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
