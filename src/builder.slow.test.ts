@@ -3581,6 +3581,8 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       const source = request({ leaseId: "test-lease", verify, agent: agentWithProof(metProof) });
       expect(await build(store, source)).toMatchObject({ ok: true, committed: true });
       expect(store.proofVerdictFor(source.runId as number)).toMatchObject({ verdict: "verified" });
+      // The family's start on main, distinct from the head the revision builds on (the stubbed git answers one name).
+      store.handle.prepare("UPDATE run SET base_revision = 'family-start' WHERE id = ?").run(source.runId as number);
       const sourceRun = store.getRun(source.runId as number)!;
       const evidenceRoot = join2(wt, ".evidence");
       const briefBytes = Buffer.from(JSON.stringify({ schema: 1, sourceTask: "t-1", sourceRun: sourceRun.id, sourceScopeDigest: store.getScope("t-1")!.digest, head: sourceRun.headRevision, comments: [] }), "utf8");
@@ -3610,6 +3612,9 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       };
       expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
       expectFrozen(req.runId, childRef, correcting, "drop-extra-negative", [["c1", "not-met"], ["x1", "not-met"]]);
+      // Its sealed diff runs from the family's start on main, never from the head it builds on (everyday-9 A1).
+      const revisionStat = readVerifiedArtifact(evidenceRoot, store.artifactsFor(req.runId).find(one => one.kind === "diff-stat")!);
+      expect(revisionStat.ok && JSON.parse(revisionStat.content.toString("utf8"))).toMatchObject({ base: "family-start" });
       // The source run's own receipt and verdict are untouched by the revision.
       expect(store.proofVerdictFor(source.runId as number)).toMatchObject({ verdict: "verified" });
       expect(pairsOf(source.runId as number)).toEqual([["c1", "met"]]);

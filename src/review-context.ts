@@ -49,6 +49,7 @@ import { EVIDENCE_CAPS, isBinaryAssetPath, isImagePath, readVerifiedArtifact, re
 import { parseProof, type ApprovedCriterion, type CriterionJudgementWord, type ParsedProof } from "./proof.js";
 import type { Artifact, Store } from "./store.js";
 import { noLazyFetch } from "./teardown-git.js";
+import { familyStartOf } from "./task-base.js";
 
 /** Explicit bounds. Content bytes are UTF-8 of the stored (possibly
  * redacted) text; the aggregate is the sum over every stored item. */
@@ -846,7 +847,7 @@ export async function deriveReviewContext(
     try {
       const stat = JSON.parse(statBytes.toString("utf8")) as { schema?: unknown; base?: unknown; head?: unknown; fileCount?: unknown; filesTruncated?: unknown; files?: { path?: unknown }[] } | null;
       if (stat?.filesTruncated === true) sourceProblems.push("the source run's diff-stat file list is truncated");
-      else if (stat?.schema !== 1 || stat.base !== sourceRun.baseRevision || stat.head !== sourceHead || stat.filesTruncated !== false || !Array.isArray(stat.files) || stat.files.length > 400 || stat.fileCount !== stat.files.length || !stat.files.every(one => one !== null && typeof one.path === "string" && safeContextPath(one.path)) || new Set(stat.files.map(one => one.path)).size !== stat.files.length) sourceProblems.push("the source run's diff-stat shape, endpoints or path inventory is unsupported");
+      else if (stat?.schema !== 1 || (stat.base !== sourceRun.baseRevision && stat.base !== familyStartOf(store, sourceRun.taskRef)) || stat.head !== sourceHead || stat.filesTruncated !== false || !Array.isArray(stat.files) || stat.files.length > 400 || stat.fileCount !== stat.files.length || !stat.files.every(one => one !== null && typeof one.path === "string" && safeContextPath(one.path)) || new Set(stat.files.map(one => one.path)).size !== stat.files.length) sourceProblems.push("the source run's diff-stat shape, endpoints or path inventory is unsupported");
       else sourceDiffPaths = stat.files.map(one => one.path as string);
     } catch {
       sourceProblems.push("the source run's diff-stat is not JSON");

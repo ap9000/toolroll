@@ -4,6 +4,7 @@ import { agentSaidTail } from "./agent-said.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
 import { localModeOn } from "./local-owner.js";
 import { checkoutGit, refusal as gitRefusal } from "./teardown-git.js";
+import { wholeChangeBaseOf } from "./task-base.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
@@ -2183,7 +2184,9 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   // branch's earliest recorded builder base. A first attempt has no
   // earlier row, so this is exactly baseRevision — legacy behavior,
   // unchanged.
-  const pinnedBase = store.firstBuilderBase(taskRef, branch) ?? baseRevision;
+  // A revision's whole change (everyday-9 A1): it builds on the head of the attempt it revises, so its diff runs from
+  // its family's original start on main instead, earlier attempts' work that's still in it included.
+  const pinnedBase = wholeChangeBaseOf(store, taskRef, branch) ?? baseRevision;
 
   if (handoff.status === "no-change") {
     if (dirty.length > 0) {
