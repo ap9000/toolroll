@@ -449,7 +449,12 @@ export async function handleStartRemoteTerminalHttp(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
-  options: Omit<PresenceHandlerOptions, "taskRooms" | "identify">,
+  options: Omit<PresenceHandlerOptions, "taskRooms" | "identify"> & {
+    /** A terminal runs native tools under the installation's login, which reach beyond any one project: only an
+     * installation-wide operator (bound to their account generation) and a project the coding workspace admits. */
+    codingActorAllowed: (actor: { name: string; generation: number }) => boolean;
+    codingProjectAllowed: (repo: string) => boolean;
+  },
 ): Promise<void> {
   if (request.method !== "POST") {
     return sendJson(response, 405, { ok: false, error: "method_not_allowed" }, { allow: "POST" });
@@ -463,7 +468,7 @@ export async function handleStartRemoteTerminalHttp(
     return sendJson(response, 400, { ok: false, error: "bad_task", message: "Invalid task id." });
   }
 
-  const { store, clock, liveCeiling, terminalHost, authenticateBearer, admitBearer } = options;
+  const { store, clock, liveCeiling, terminalHost, authenticateBearer, admitBearer, codingActorAllowed, codingProjectAllowed } = options;
   const auth = admitRemoteToken(request, response, store, clock, authenticateBearer, admitBearer);
   if (auth === null) return;
   if (auth.scope !== "act") {
@@ -499,6 +504,12 @@ export async function handleStartRemoteTerminalHttp(
     rowVisible(ceiling, targetRepo) && store.accountCanAccess(auth.principal.account, targetRepo) && remoteAllows(store, auth.principal, targetRepo);
   if (family === null || family.problem !== null || repo === null || !canSeeRepo(repo)) {
     return sendJson(response, 404, { ok: false, error: "not_found", message: "Task not found or outside your projects." });
+  }
+
+  // The same rule as the coding workspace and the console's own terminals, read before a terminal is reused or started.
+  const codingAllowed = (): boolean => codingActorAllowed({ name: auth.principal.account, generation: account.generation }) && codingProjectAllowed(repo);
+  if (!codingAllowed()) {
+    return sendJson(response, 403, { ok: false, error: "operator_required", message: "Live Terminals need operator access to the whole installation and this project." });
   }
 
   if (program !== "shell") {
@@ -544,6 +555,7 @@ export async function handleStartRemoteTerminalHttp(
     const acc = store.accountOf(auth.principal.account);
     if (acc === null || acc.revokedAt !== null || acc.role !== "approver") return "Your account access changed.";
     if (!canSeeRepo(repo)) return "That project is no longer available to your account.";
+    if (!codingAllowed()) return "Live Terminals need operator access to the whole installation and this project.";
     return null;
   };
   const precheck = stillAllowed();

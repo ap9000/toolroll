@@ -2487,6 +2487,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get options() { return options; },
     get coding() { return coding; },
     get codingProjects() { return codingProjects; },
+    get codingActorAllowed() { return codingActorAllowed; },
+    get codingProjectAllowed() { return codingProjectAllowed; },
     get liveCeiling() { return liveCeiling; },
     get clock() { return clock; },
     get evidenceRoot() { return evidenceRoot; },
