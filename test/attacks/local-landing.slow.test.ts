@@ -21,7 +21,7 @@ import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "../../src/assignment.js";
 import { verifyApproverByPassword, type VerifiedApprover } from "../../src/principal.js";
-import { land, landableBranch, landingOf, LAND_INTENT, LAND_SETTLED, readLanding, type LandAuthority } from "../../src/local-landing.js";
+import { land, landableBranch, landingOf, landingWords, LAND_INTENT, LAND_SETTLED, readLanding, shownName, type LandAuthority } from "../../src/local-landing.js";
 import { recordActionWhole } from "../../src/action-ledger.js";
 import { run as execRun } from "../../src/exec.js";
 import type { Runner } from "../../src/backend.js";
@@ -229,6 +229,19 @@ describe("attack: the repository's own config, hooks and attributes", () => {
       expect(existsSync(join(markers, "planted")), name).toBe(false);
     });
   }
+
+  test("a file name with a terminal escape, a newline and a bidi override can't spoof the yes; the key binds the raw name", async () => {
+    const hostile = "a\u001b[2J\nb\u202ec.txt";
+    built("t", { [hostile]: "x\n" });
+    const read = await readLanding(store, "t", access(), NOW, options());
+    if (!read.ok || !("plan" in read)) throw new Error("plan");
+    expect(read.plan.squash?.files).toEqual([hostile]);
+    const shown = landingWords(read.plan).join("\n");
+    expect(shown).not.toMatch(/[\u001b\u202e]/);
+    expect(shown.split("\n")[0]).toContain("a\\u{1b}[2J\\u{a}b\\u{202e}c.txt");
+    // Two names that would show alike never share a key: the key is over the raw names.
+    expect(shownName("a\\u{1b}")).not.toBe(shownName("a\u001b"));
+  });
 
   test("a tree that needs a Git filter (LFS) or holds a submodule is refused", async () => {
     built("t", { ".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n", "x.bin": "pointer\n" });

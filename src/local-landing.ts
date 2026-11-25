@@ -369,6 +369,16 @@ async function readUndo(store: Store, rootId: string, project: { repo: string; c
     reverts: { intent: landed.intent.id, old: landed.intent.old, landed: landed.intent.commit }, bindings: checkBindingsOf(store, project.repo) });
 }
 
+/** Characters that could restyle, reorder or rewrite what a person reads before saying yes (terminal escapes, C0/C1
+ * controls, DEL, line and paragraph separators, bidi and zero-width marks). */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_SHOWN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\\]/g;
+/** A file name or folder as the yes shows it: every such character (and the backslash) written as a visible escape, so
+ * nothing in an agent-written name can spoof the screen. Display only: the key binds the raw names. */
+export function shownName(name: string): string {
+  return name.replace(UNSAFE_SHOWN, ch => ch === "\\" ? "\\\\" : `\\u{${ch.codePointAt(0)!.toString(16)}}`);
+}
+
 /** The lines a person reads before saying yes. */
 export function landingWords(plan: LandingPlan): string[] {
   const where = `${plan.branch} in ${plan.repo} (no folder has it checked out; only the branch moves)`;
@@ -377,9 +387,9 @@ export function landingWords(plan: LandingPlan): string[] {
       "A new commit reverts exactly what it changed; nothing is rewritten. No check runs on the undo."];
   }
   const squash = plan.squash!;
-  const names = squash.files.slice(0, 3).join(", ") + (squash.fileCount > 3 ? ` and ${squash.fileCount - 3} more` : "");
+  const names = squash.files.slice(0, 3).map(shownName).join(", ") + (squash.fileCount > 3 ? ` and ${squash.fileCount - 3} more` : "");
   return [`Lands 1 commit on ${plan.branch}: ${squash.fileCount === 0 ? "no file changes" : names} (+${squash.added} −${squash.removed}).`,
-    `"${squash.message}", on top of ${short(plan.old)} in ${plan.repo} (no folder has ${plan.branch} checked out; only the branch moves).`,
+    `"${squash.message}", on top of ${short(plan.old)} in ${shownName(plan.repo)} (no folder has ${plan.branch} checked out; only the branch moves).`,
     plan.checks === "passed" ? `Checks passed on ${short(plan.candidate!)}, whose files it lands exactly.` : "No check ran: this project has no check command.",
     ...(plan.recorded ? [] : [`Toolroll remembers ${plan.branch} as where this project's work lands.`])];
 }
