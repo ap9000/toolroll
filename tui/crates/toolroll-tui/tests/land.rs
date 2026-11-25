@@ -1,5 +1,5 @@
-//! Land from the workbench (everyday-9 A4): the palette's "Land" on a finished task asks the console what landing does,
-//! shows exactly its lines, and Enter posts back exactly the key it read; any other key lands nothing.
+//! Land from the workbench (everyday-9 A4): B (or the palette's "Land") on a finished task asks the console what landing
+//! does, shows exactly its lines, and Enter posts back exactly the key it read; any other key lands nothing.
 #[path = "common/pairs.rs"]
 mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -91,4 +91,19 @@ fn land_is_not_offered_on_work_that_isnt_finished() {
     // Terms arriving for a selection that isn't finished open nothing.
     terms(&mut app);
     assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn b_lands_a_finished_task_through_the_same_path_and_the_key_bar_says_so() {
+    let mut app = on("t-old");
+    assert!(screen(&mut app, 120, 30).contains("B land"));
+    let fx = app.key(key('B'));
+    assert!(
+        matches!(&fx[..], [Effect::Act { path, fields, .. }] if path == "/t/t-old/land" && fields.is_empty()),
+        "{fx:?}"
+    );
+    // Not on work that isn't finished: nothing is asked.
+    let mut live = on("t-live");
+    assert!(!screen(&mut live, 120, 30).contains("B land"));
+    assert_eq!(live.key(key('B')), vec![]);
 }

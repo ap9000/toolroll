@@ -1787,7 +1787,7 @@ impl App {
     /// The console decides the rest (accepted, a project with no pull requests, not landed yet) and says why not.
     pub fn land_here(&self) -> Option<String> {
         self.selected_item()
-            .filter(|i| i.is_task && !i.thread && i.section == Section::Recent)
+            .filter(|i| i.is_task && !i.thread && i.section == Section::Recent && i.tone == "done")
             .map(|i| i.id.clone())
     }
 

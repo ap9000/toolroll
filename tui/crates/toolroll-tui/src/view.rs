@@ -3623,6 +3623,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let plan = !live && app.plan_pins().is_some();
     let waiting = !live && app.queued_here();
     let held = !live && app.held_here().is_some();
+    // A finished task: Land (the console says why not when it can't).
+    let land = !live && app.land_here().is_some();
     let composer_visible = app.tab == Tab::Live
         && live
         && app.areas.right.height >= 12
@@ -3650,6 +3652,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         } else if waiting {
             // Work that would start for the first time (approved, or a plan asked for): a pause, not a retry.
             v.push((&[Stop], "pause task"));
+        } else if land {
+            v.push((&[Land], "land"));
         }
         if plan {
             v.push((&[Pause], "plan"));

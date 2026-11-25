@@ -977,8 +977,10 @@
     },
     {
       "action": "land",
-      "keys": [],
-      "feature": "Land a completed task's accepted work on the project's branch (palette: Land; preview, then Enter)",
+      "keys": [
+        "B"
+      ],
+      "feature": "Land a completed task's accepted work on the project's branch (B or the palette's Land; preview, then Enter)",
       "reason": "Needs an accepted task on a project with no pull requests; covered by Rust tests/land.rs and the landing attack suite."
     },
     {
