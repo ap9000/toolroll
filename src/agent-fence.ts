@@ -44,6 +44,11 @@ import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } 
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
+/** Folders beside the database that hold files Toolroll writes for one launch, or runs' evidence: denied whatever the
+ * state folder is called (agentFence), and made first. coding-context: coding sessions' skills (serve.ts);
+ * code-map-delivery: builds' code maps (code-map-admission.ts deliveryRoot). An `evidence` folder there is denied too. */
+export const RESERVED_STATE_FOLDERS = ["coding-context", "code-map-delivery"] as const;
+
 /** The folder beside the database that holds Flexible threads' own folders (flexible-thread.ts). */
 export const FLEXIBLE_THREADS_DIR = "threads";
 
@@ -169,6 +174,19 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(codexSessions, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(codexSessions);
     fence.add(real(codexSessions));
+    // Where Toolroll writes what it hands one launch to read (coding sessions' skills, builds' code maps): denied by
+    // path, whatever the state folder is called, so no launch reaches another's files there (a launch's own files are
+    // granted back one by one). Made first (owner-only), like the folders above, so a launch never creates them.
+    for (const name of RESERVED_STATE_FOLDERS) {
+      const path = join(state, name);
+      try { mkdirSync(path, { mode: 0o700 }); } catch { /* name and target remain denied */ }
+      fence.add(path);
+      fence.add(real(path));
+    }
+    // An evidence root beside the database: denied by name, there or not, where the sandbox denies a missing path
+    // without making it (Seatbelt; Codex's profile gets the same list); elsewhere when it is there.
+    const evidence = join(state, "evidence");
+    if (process.platform === "darwin" || existsSync(evidence)) { fence.add(evidence); fence.add(real(evidence)); }
     // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
     // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
     // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it

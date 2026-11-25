@@ -4,9 +4,9 @@ import { TextDecoder } from "node:util";
 import { homedir, hostname } from "node:os";
 import { readDenyPath } from "./project-sandbox.js";
 import { dirname, join } from "node:path";
-import { codexFenceConfig, fenceFor, FENCE_POLICY_CURRENT, runFolders, taskBoundary, trustedWorktreeBinding } from "./agent-fence.js";
+import { codexFenceConfig, ExactFileChanged, fenceFor, FENCE_POLICY_CURRENT, runFolders, taskBoundary, trustedWorktreeBinding } from "./agent-fence.js";
 import type { CodingPermissions } from "./coding-workspace.js";
-import { checkSkillsManifest, type SkillsManifest } from "./skills-manifest.js";
+import { skillsGrant, type SkillsManifest } from "./skills-manifest.js";
 import type { Store } from "./store.js";
 import { poolRootOf } from "./worktree.js";
 import { currentBootId } from "./boot-identity.js";
@@ -417,9 +417,6 @@ export function codingSessionPermissions(store: Pick<Store, "databaseFile" | "li
 async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorktrees" | "projectSandbox">, input: { repo: string; worktree: string; worktreeRoot: string; skills?: SkillsManifest | null }): Promise<CodingPermissions> {
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { problem: "The coding session has no state folder to fence, so it was not started." };
-  // The session's project skills, rechecked right before the thread starts: exactly those files, read-only, or no session.
-  const skills = input.skills === undefined || input.skills === null ? null : checkSkillsManifest(input.skills);
-  if (skills !== null && !skills.ok) return { problem: `${skills.problem}, so the session was not started.` };
   try {
     const poolRoots = [join(dirname(databaseFile), "worktrees"), input.worktreeRoot, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
     const binding = trustedWorktreeBinding(input.repo, input.worktree, poolRoots);
@@ -428,10 +425,14 @@ async function sessionPermissions(store: Pick<Store, "databaseFile" | "listWorkt
     const boundary = taskBoundary({ worktree: input.worktree, provider: "codex", binding, policy: FENCE_POLICY_CURRENT, storage });
     // The project's read denies, read live (a session seals none; they only narrow).
     const readDeny = store.projectSandbox(input.repo).readDeny.map(one => readDenyPath(one, homedir()));
-    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, policy: FENCE_POLICY_CURRENT, storage, exactFiles: skills?.ok === true ? skills.files : [] });
+    // The session's project skills, rechecked after the storage check, right before the profile is made: every
+    // session's skills folder denied, and exactly this session's files read back, or no session.
+    const skills = skillsGrant({ root: join(dirname(databaseFile), "coding-context"), manifest: input.skills ?? null });
+    if (skills.problem !== null) return { problem: `${skills.problem}, so the session was not started.` };
+    const launch = fenceFor("build", { databaseFile, worktree: input.worktree, boundary, binding, runFolders: runFolders(null), poolRoots, readDeny, extra: skills.deny, policy: FENCE_POLICY_CURRENT, storage, exactFiles: skills.files });
     return { config: codexFenceConfig(launch.fence, false, launch.fenceGrants) };
   } catch (error) {
     // The storage check's own words survive: what didn't finish, and which program macOS may need to allow.
-    return { problem: storageRefusalOf(error)?.message ?? "The session's worktree couldn't be bound to its project, so the session was not started." };
+    return { problem: storageRefusalOf(error)?.message ?? (error instanceof ExactFileChanged ? error.message : "The session's worktree couldn't be bound to its project, so the session was not started.") };
   }
 }

@@ -13,7 +13,8 @@ import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./che
 import { captureCheckConditions, learnRequestFor, recordCheckFacts, type CheckConditions } from "./check-facts.js";
 import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
-import { skillsContext, type SkillsManifest } from "./project-skills.js";
+import { skillsContext } from "./project-skills.js";
+import type { LaunchSkills } from "./skills-manifest.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, sealJson, type PreparedAttempt } from "./check-report.js";
 import { CHECK_LOAD_CAPTURE, CheckLoadWatch, type MachineSample } from "./check-load.js";
@@ -1372,9 +1373,11 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
 
   let projectSkillContext: string;
   // The skills the brief names, and the manifest the launch grants them by (each file, rechecked right before it starts).
-  let projectSkills: SkillsManifest | null;
+  let projectSkills: LaunchSkills;
   try {
-    ({ text: projectSkillContext, manifest: projectSkills } = skillsContext(store, root, request.runId));
+    let manifest;
+    ({ text: projectSkillContext, manifest } = skillsContext(store, root, request.runId));
+    projectSkills = { root, manifest };
   } catch (error) {
     return { ok: false, reason: "skills-unavailable", message: `Project skills could not be loaded: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -1866,7 +1869,7 @@ export type CapturedBuild = {
   plan?: PlanBinding;
   /** The project skills the brief named (project-skills.ts SkillsManifest): a turn that resumes the session gets the
    * same files, rechecked again at its launch. */
-  skills?: SkillsManifest | null;
+  skills?: LaunchSkills | null;
   /** A Claude build's live input (live-input.ts): why Toolroll closed its stdin, and its total turn budget. */
   live?: { close: LiveCloseReason | null; maxTurns: number };
 };
@@ -3431,7 +3434,7 @@ async function ingestPark(args: {
    * are paid work under the SAME approval and route from it. */
   profile?: ExecutionProfile;
   /** The skills the session was told about: its repair turns resume it, so they get the same files. */
-  skills?: SkillsManifest | null;
+  skills?: LaunchSkills | null;
 }): Promise<
   | { ok: true; park: ParkPackage }
   | { ok: false; problems: Problem[] }

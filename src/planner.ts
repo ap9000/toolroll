@@ -1,6 +1,7 @@
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import type { ProviderId } from "./contracts/provider.js";
-import { skillsContext, type SkillsManifest } from "./project-skills.js";
+import { skillsContext } from "./project-skills.js";
+import type { LaunchSkills } from "./skills-manifest.js";
 import { learningContext } from "./project-learning.js";
 import { deliverCodeMap } from "./code-map-admission.js";
 import { knowledgeContext } from "./project-knowledge.js";
@@ -750,9 +751,11 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
   const clock = request.clock ?? (() => now);
   let projectSkillContext: string;
   // The skills the brief names, and the manifest the launch grants them by (each file, rechecked right before it starts).
-  let projectSkills: SkillsManifest | null;
+  let projectSkills: LaunchSkills;
   try {
-    ({ text: projectSkillContext, manifest: projectSkills } = skillsContext(store, root, request.runId));
+    let manifest;
+    ({ text: projectSkillContext, manifest } = skillsContext(store, root, request.runId));
+    projectSkills = { root, manifest };
   } catch (error) {
     return { ok: false, kind: "failure", reason: "skills-unavailable", message: `Project skills could not be loaded: ${error instanceof Error ? error.message : String(error)}` };
   }

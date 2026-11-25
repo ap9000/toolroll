@@ -247,7 +247,7 @@ describe("the agent fence", () => {
     const threads = (folder: string) => [join(folder, "threads")];
     expect(fence).toEqual([...threads(state),
       join(home, ".standing-orders"), ...views,
-      join(state, "backups"), join(state, "codex-sessions"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
+      join(state, "backups"), join(state, "code-map-delivery"), join(state, "codex-sessions"), join(state, "coding-context"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
       // The journal and shared memory by name, there or not.
       join(state, "orders.db-journal"), join(state, "orders.db-shm"),
       join(state, "repos.json"), join(state, ".toolroll-run"), join(state, ".toolroll-secrets"), join(state, "runner-token"), join(state, "runner-processes"), join(state, "up-login.txt"),
@@ -259,11 +259,12 @@ describe("the agent fence", () => {
     writeFileSync(join(worktree, ".git"), `gitdir: ${join(state, "repo", ".git", "worktrees", "task-1")}\n`);
     const withRepos = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     expect(withRepos).toEqual(fence);
-    // A database in a shared folder (a repository): only it and secret-looking entries.
+    // A database in a shared folder (a repository): only it, secret-looking entries and Toolroll's own reserved folders
+    // (made first, denied by path whatever the folder is called; an evidence folder by name where the sandbox can).
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "backups"), join(shared, "codex-sessions"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, ".toolroll-secrets"), join(shared, "runner-processes"), join(shared, "up-login.txt"), ...threads(shared)].sort());
+    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "backups"), join(shared, "code-map-delivery"), join(shared, "codex-sessions"), join(shared, "coding-context"), ...(process.platform === "darwin" ? [join(shared, "evidence")] : []), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, ".toolroll-secrets"), join(shared, "runner-processes"), join(shared, "up-login.txt"), ...threads(shared)].sort());
     // No database file: only ~/.standing-orders, the git views and the operator's Codex home.
     expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views].sort());
   });

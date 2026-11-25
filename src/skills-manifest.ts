@@ -45,3 +45,20 @@ export function checkSkillsManifest(manifest: SkillsManifest): { ok: true; files
   return { ok: true, files: manifest.files.map(file => file.path) };
 }
 
+
+/** A launch's skills as its caller hands them over: the folder every run's skills are written in, and this launch's. */
+export type LaunchSkills = { root: string; manifest: SkillsManifest | null };
+
+/**
+ * What a launch's fence gets for its skills, decided right before the fence is made: the folder they are written in
+ * (and the one this launch's were) denied whole, wherever it is and whatever it is called, and exactly the manifest's
+ * files read back. A file or folder that changed grants none of them, with the reason in plain words.
+ */
+export function skillsGrant(skills: LaunchSkills | null): { deny: string[]; files: string[]; problem: string | null } {
+  if (skills === null) return { deny: [], files: [], problem: null };
+  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  const deny = [...new Set([skills.root, ...(skills.manifest === null ? [] : [dirname(skills.manifest.directory)])].flatMap(path => [path, canonical(path)]))].sort();
+  if (skills.manifest === null) return { deny, files: [], problem: null };
+  const checked = checkSkillsManifest(skills.manifest);
+  return checked.ok ? { deny, files: checked.files, problem: null } : { deny, files: [], problem: checked.problem };
+}
