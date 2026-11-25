@@ -957,6 +957,41 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Refused on the phone by design: the workbench's look is the person's own conversation in the console on this computer (view-tools.ts); the tool answers in words and nothing is read or written.",
     gap: "No phone path by design: restyle from the console on this computer, or edit tui.toml.",
   },
+  list_direct_chats: {
+    support: "direct",
+    how: "Read during a turn: lists active Direct Chat threads in admitted projects with model, effort, status, and token usage.",
+    gap: null,
+  },
+  get_direct_chat: {
+    support: "direct",
+    how: "Read during a turn: reads one Direct Chat's full turn transcript, tool history, and token usage from SQLite.",
+    gap: null,
+  },
+  manage_direct_chat: {
+    support: "missing",
+    how: "Refused on the phone by design: instant Direct Chat controls require the owner's local solo console session on this computer.",
+    gap: "No phone path by design: stop, rename, switch model, or archive Direct Chats from the local Mac app or console.",
+  },
+  get_usage_limits: {
+    support: "direct",
+    how: "Read during a turn: reports live Claude, Codex, and Gemini subscription windows and monthly spend budgets.",
+    gap: null,
+  },
+  get_recent_updates: {
+    support: "direct",
+    how: "Read during a turn: aggregates Ready results, completions, failures, updated Direct Chats, open decisions, and recent actions.",
+    gap: null,
+  },
+  propose_direct_chat: {
+    support: "handoff",
+    how: "Drafts a confirmation card to start, reply to, or promote a Direct Chat; promote files a Task on confirm while start and reply execute only on the local solo console.",
+    gap: "Incomplete phone action: starting or replying to a local Direct Chat clone runs in the local console or Mac app.",
+  },
+  propose_report_followups: {
+    support: "direct",
+    how: "Batch-drafts standard Task confirmation cards from a verified Scout Report's follow-up recommendations through the shared door.",
+    gap: null,
+  },
 };
 
 /** Every tool the model can call, mapped; a new tool must name its phone road. */

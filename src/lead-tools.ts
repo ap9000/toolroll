@@ -2400,21 +2400,24 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         }, { chat: chatId, ...detail });
       };
       if (op === "stop") {
-        if (ctx.directChatStop !== undefined) {
-          const stopped = ctx.directChatStop(ctx.who.name, chatId);
-          if (!stopped.ok) return { ok: false, message: stopped.error };
-          logAction({ stopped: stopped.stopped, stopping: stopped.stopping });
-          const said = stopped.stopped ? "Stopped the running Direct Chat." : stopped.stopping ? "Stopping the running Direct Chat." : "That Direct Chat is not running.";
-          return { ok: true, body: { chat: chatId, operation: op, said } };
+        if (ctx.directChatStop === undefined) {
+          return { ok: false, message: "Stopping a Direct Chat is not available on this connection." };
         }
-        const changed = ctx.store.handle.prepare(
-          "UPDATE direct_chat_turn SET status = 'stopped', stop_requested_at = ?, finished_at = ? WHERE thread_id = ? AND status = 'running'",
-        ).run(nowIso, nowIso, chatId);
-        logAction({ stopped: Number(changed.changes) > 0 });
-        ctx.publishDirectChat?.(chatId);
-        return { ok: true, body: { chat: chatId, operation: op, said: Number(changed.changes) > 0 ? "Stopped the running Direct Chat." : "That Direct Chat is not running." } };
+        const stopped = ctx.directChatStop(ctx.who.name, chatId);
+        if (!stopped.ok) return { ok: false, message: stopped.error };
+        logAction({ stopped: stopped.stopped, stopping: stopped.stopping });
+        const said = stopped.stopped ? "Stopped the running Direct Chat." : stopped.stopping ? "Stopping the running Direct Chat." : "That Direct Chat is not running.";
+        return { ok: true, body: { chat: chatId, operation: op, said } };
       }
       if (op === "archive" || op === "unarchive") {
+        if (op === "archive") {
+          const active = ctx.store.handle.prepare(
+            "SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1",
+          ).get(chatId);
+          if (active !== undefined) {
+            return { ok: false, message: "Stop the running Direct Chat before archiving it." };
+          }
+        }
         ctx.store.handle.prepare("UPDATE direct_chat_thread SET archived_at = ?, updated_at = ? WHERE id = ? AND owner = ?")
           .run(op === "archive" ? nowIso : null, nowIso, chatId, ctx.who.name);
         logAction({ archived: op === "archive" });
@@ -2433,6 +2436,12 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         return { ok: true, body: { chat: chatId, operation: op, said: `Renamed Direct Chat to "${title}".` } };
       }
       if (op === "set_model") {
+        const active = ctx.store.handle.prepare(
+          "SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND status = 'running' LIMIT 1",
+        ).get(chatId);
+        if (active !== undefined) {
+          return { ok: false, message: "Stop the running Direct Chat before switching its model." };
+        }
         const currentProvider = String(row["provider"]);
         const nextProvider = args["provider"] === undefined ? currentProvider : String(args["provider"]);
         if (!isDirectChatProvider(nextProvider)) return { ok: false, message: "Choose claude, codex, or gemini." };

@@ -58,7 +58,7 @@ public enum SubscriptionUsageBridge {
         guard let bin = BackgroundServiceBridge.locateToolrollBinary() else {
             return (false, nil, "toolroll CLI not found.")
         }
-        var args = ["spend", "--refresh", "--json"]
+        var args = ["spend", "--live", "--json"]
         if let databasePath, !databasePath.isEmpty {
             args.append(contentsOf: ["--db", databasePath])
         }

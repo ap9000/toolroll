@@ -140,6 +140,26 @@ describe("Lead instant solo actions and Direct Chat tools", () => {
     expect(after["model_id"]).toBe("gpt-6-astra");
     expect(after["effort"]).toBe("xhigh");
     expect(after["archived_at"]).not.toBeNull();
+
+    // Unarchive, then add a running turn: archive, set_model, and unwired stop must all refuse without corrupting DB state.
+    expect(executeLeadTool(localCtx, "manage_direct_chat", { chat: "dc-1", operation: "unarchive" }).ok).toBe(true);
+    store.handle.prepare(
+      `INSERT INTO direct_chat_turn (id, thread_id, seq, user_prompt, log_path, stderr_path, status, assistant_text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("turn-2", "dc-1", 2, "Keep going", "/tmp/l2.log", "/tmp/e2.log", "running", "", T0.toISOString());
+
+    const archRunning = executeLeadTool(localCtx, "manage_direct_chat", { chat: "dc-1", operation: "archive" });
+    expect(archRunning.ok).toBe(false);
+    const modelRunning = executeLeadTool(localCtx, "manage_direct_chat", { chat: "dc-1", operation: "set_model", provider: "claude", model: "opus" });
+    expect(modelRunning.ok).toBe(false);
+    const stopUnwired = executeLeadTool(localCtx, "manage_direct_chat", { chat: "dc-1", operation: "stop" });
+    expect(stopUnwired.ok).toBe(false);
+
+    // Running turn and unarchived thread must remain untouched when stop is unwired.
+    const turnRow = store.handle.prepare("SELECT status FROM direct_chat_turn WHERE id = ?").get("turn-2") as Record<string, unknown>;
+    expect(turnRow["status"]).toBe("running");
+    const threadRow = store.handle.prepare("SELECT archived_at FROM direct_chat_thread WHERE id = ?").get("dc-1") as Record<string, unknown>;
+    expect(threadRow["archived_at"]).toBeNull();
   });
 
   test("get_usage_limits is discoverable and returns live subscription windows and budgets", () => {

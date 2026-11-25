@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { fakePid } from "../test/fake-pid.js";
 import {
   buildProviderCommand,
   buildSanitizedChildEnv,
@@ -102,7 +103,7 @@ describe("DirectChatHost & helpers", () => {
     const store = openStore(join(root, "state.db"));
     const custody = new FakeCustody();
     const spawned: Array<{ cwd: string; args: string[] }> = [];
-    let nextPid = 4000;
+    let nextPidOffset = 100;
 
     const host = new DirectChatHost(store, {
       stateRoot: join(root, "state"),
@@ -111,7 +112,7 @@ describe("DirectChatHost & helpers", () => {
       locateBinary: () => "/fake/claude",
       spawnTurn: input => {
         spawned.push({ cwd: input.cwd, args: input.args });
-        const pid = nextPid++;
+        const pid = fakePid(nextPidOffset++);
         custody.add(pid, pid, "start-1");
         return { pid, pgid: pid, startIdentity: "start-1" };
       },
@@ -225,8 +226,9 @@ describe("DirectChatHost & helpers", () => {
           `${JSON.stringify({ type: "system", subtype: "init", session_id: "sess-abc" })}\n`,
           { mode: 0o600 },
         );
-        custody.add(5001, 5001, "s1764028801");
-        return { pid: 5001, pgid: 5001, startIdentity: "s1764028801" };
+        const pid = fakePid(110);
+        custody.add(pid, pid, "s1764028801");
+        return { pid, pgid: pid, startIdentity: "s1764028801" };
       },
     });
     const started = await hostA.createThread({
@@ -244,7 +246,7 @@ describe("DirectChatHost & helpers", () => {
     hostA.close();
     storeA.close();
     // Detached process is still running after Host A closed.
-    expect(custody.rows.has(5001)).toBe(true);
+    expect(custody.rows.has(fakePid(110))).toBe(true);
 
     // Process keeps streaming mid-turn while server is down.
     const midTurnLines = [
@@ -289,7 +291,7 @@ describe("DirectChatHost & helpers", () => {
         capturedLogPath,
         readFileSync(capturedLogPath, "utf8") + `${JSON.stringify({ type: "result", subtype: "success", result: "All tests passed." })}\n`,
       );
-      custody.kill(5001);
+      custody.kill(fakePid(110));
       hostB.reconcileRunningTurns();
       detail = hostB.getThread("alex", started.thread.id)!;
       expect(detail.running).toBe(false);
@@ -308,7 +310,7 @@ describe("DirectChatHost & helpers", () => {
     const store = openStore(join(root, "state.db"));
     const custody = new FakeCustody();
     const capturedPrompts: string[] = [];
-    let pidSeq = 6000;
+    let pidSeq = 120;
 
     const host = new DirectChatHost(store, {
       stateRoot: join(root, "state"),
@@ -317,7 +319,7 @@ describe("DirectChatHost & helpers", () => {
       locateBinary: () => "/fake/bin",
       spawnTurn: input => {
         capturedPrompts.push(input.args.join(" "));
-        const pid = pidSeq++;
+        const pid = fakePid(pidSeq++);
         custody.add(pid, pid, `start-${pid}`);
         return { pid, pgid: pid, startIdentity: `start-${pid}` };
       },
@@ -362,7 +364,7 @@ describe("DirectChatHost & helpers", () => {
       // Stop running turn via custody signal.
       const stopped = host.stopThread("alex", started.thread.id);
       expect(stopped).toEqual({ ok: true, stopped: true, stopping: false });
-      expect(custody.signaled).toEqual([{ targets: [{ pid: 6000, start: "start-6000" }], signal: "SIGTERM" }]);
+      expect(custody.signaled).toEqual([{ targets: [{ pid: fakePid(120), start: `start-${fakePid(120)}` }], signal: "SIGTERM" }]);
 
       // Now switch to Codex and send a follow-up turn.
       const switched = host.switchModel({
@@ -403,8 +405,9 @@ describe("DirectChatHost & helpers", () => {
       bootId: () => "boot-1",
       locateBinary: () => "/fake/claude",
       spawnTurn: () => {
-        custody.add(7001, 7001, "start-7001");
-        return { pid: 7001, pgid: 7001, startIdentity: "start-7001" };
+        const pid = fakePid(130);
+        custody.add(pid, pid, "start-7001");
+        return { pid, pgid: pid, startIdentity: "start-7001" };
       },
     });
 
@@ -608,8 +611,9 @@ describe("DirectChatHost & helpers", () => {
             + `{"event":"result","result":{"conversation_id":"conv-`,
           { mode: 0o600 },
         );
-        rows.set(8801, { pid: 8801, ppid: 1, pgid: 8801, uid: 501, start: "s8801", zombie: false });
-        return { pid: 8801, pgid: 8801, startIdentity: "s8801" };
+        const pid = fakePid(140);
+        rows.set(pid, { pid, ppid: 1, pgid: pid, uid: 501, start: "s8801", zombie: false });
+        return { pid, pgid: pid, startIdentity: "s8801" };
       },
     });
 
@@ -687,8 +691,9 @@ describe("DirectChatHost & helpers", () => {
         spawnTurn: input => {
           mkdirSync(dirname(input.logPath), { recursive: true });
           writeFileSync(input.logPath, "", { mode: 0o600 });
-          rows.set(9911, { pid: 9911, ppid: 1, pgid: 9911, uid: 501, start: "reused-pid", zombie: false });
-          return { pid: 9911, pgid: 9911, startIdentity: null };
+          const pid = fakePid(150);
+          rows.set(pid, { pid, ppid: 1, pgid: pid, uid: 501, start: "reused-pid", zombie: false });
+          return { pid, pgid: pid, startIdentity: null };
         },
       });
       const third = missingIdHost.sendMessage({
@@ -701,7 +706,7 @@ describe("DirectChatHost & helpers", () => {
       const beforeSignals = signalsSent.length;
       const stopUnknown = missingIdHost.stopThread("alex", started.thread.id);
       expect(stopUnknown).toEqual({ ok: true, stopped: false, stopping: true });
-      // Must NOT signal unproven PID 9911!
+      // Must NOT signal unproven PID!
       expect(signalsSent).toHaveLength(beforeSignals);
       nowMs += 6_000;
       missingIdHost.reconcileRunningTurns();
@@ -732,8 +737,9 @@ describe("DirectChatHost & helpers", () => {
         turnLogPath = input.logPath;
         mkdirSync(dirname(input.logPath), { recursive: true });
         writeFileSync(input.logPath, "", { mode: 0o600 });
-        custody.add(7701, 7701, "start-stream");
-        return { pid: 7701, pgid: 7701, startIdentity: "start-stream" };
+        const pid = fakePid(160);
+        custody.add(pid, pid, "start-stream");
+        return { pid, pgid: pid, startIdentity: "start-stream" };
       },
     });
 
@@ -863,8 +869,9 @@ describe("DirectChatHost & helpers", () => {
         return { changedFiles: [], diffText: "", dirty: false };
       },
       spawnTurn: () => {
-        custody.add(7701, 7701, "start-7701");
-        return { pid: 7701, pgid: 7701, startIdentity: "start-7701" };
+        const pid = fakePid(170);
+        custody.add(pid, pid, "start-heavy");
+        return { pid, pgid: pid, startIdentity: "start-heavy" };
       },
     });
 

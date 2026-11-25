@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { fakePid } from "../test/fake-pid.js";
 import { DirectChatHost } from "./direct-chat.js";
 import {
   captureNewWorkspaceArtifacts,
@@ -183,8 +184,9 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       spawnTurn: input => {
         mkdirSync(dirname(input.logPath), { recursive: true });
         writeFileSync(input.logPath, "", { mode: 0o600 });
-        custody.add(9050, "s9050");
-        return { pid: 9050, pgid: 9050, startIdentity: "s9050" };
+        const pid = fakePid(10);
+        custody.add(pid, "s9050");
+        return { pid, pgid: pid, startIdentity: "s9050" };
       },
     });
     try {
@@ -233,8 +235,9 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       spawnTurn: input => {
         mkdirSync(dirname(input.logPath), { recursive: true });
         writeFileSync(input.logPath, "", { mode: 0o600 });
-        custody.add(9100, "s9100");
-        return { pid: 9100, pgid: 9100, startIdentity: "s9100" };
+        const pid = fakePid(11);
+        custody.add(pid, "s9100");
+        return { pid, pgid: pid, startIdentity: "s9100" };
       },
     });
 
@@ -333,8 +336,9 @@ describe("Direct Chat Phase 1b (workspace, artifacts, Ship)", () => {
       spawnTurn: input => {
         mkdirSync(dirname(input.logPath), { recursive: true });
         writeFileSync(input.logPath, "", { mode: 0o600 });
-        custody.add(9200, "s9200");
-        return { pid: 9200, pgid: 9200, startIdentity: "s9200" };
+        const pid = fakePid(12);
+        custody.add(pid, "s9200");
+        return { pid, pgid: pid, startIdentity: "s9200" };
       },
     });
 

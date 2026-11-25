@@ -1052,7 +1052,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-check", "check",
   // agent --request: wait until the person approves or declines the filed request in Toolroll.app.
   "wait",
-  "refresh",
+  "live",
 ]);
 
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
@@ -12180,10 +12180,10 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
 /** `spend [--month YYYY-MM] [--csv]` (v105): what agent work cost in a month, by project, person, subagent and model. */
 async function spendCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
   const command = "spend";
-  for (const name of flags.keys()) if (!["month", "csv", "refresh", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
+  for (const name of flags.keys()) if (!["month", "csv", "live", "db", "json"].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a spend option.`, EXIT.usage);
   const month = text(flags, "month") === undefined ? monthOf(context.clock()) : monthNamed(text(flags, "month") ?? null);
   if (month === null) return fail(context.write, context.json, command, "usage", "Use spend --month YYYY-MM.", EXIT.usage);
-  const refreshed = flags.has("refresh")
+  const refreshed = flags.has("live")
     ? await refreshSubscriptions(context.store, context.databaseFile, { forceClaude: true, forceGemini: true, now: context.clock() })
     : null;
   const gemini = refreshed?.gemini ?? readStoredGeminiStatus(context.databaseFile);
@@ -12199,7 +12199,7 @@ async function spendCommand(flags: Map<string, string | true>, context: Context)
   const windows = limitsView(limits, [], { project: repo => basename(repo), subagent: id => String(id) }, context.clock())?.tiles ?? [];
   const tiers = tierReport(context.store.handle, month.from, month.to, items);
   const suggestions = savingsReportOrError(context.store, context.store.knownRepos(), context.clock());
-  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, gemini, tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
+  return succeed(context.write, context.json, command, { month: month.name, totalMicrousd: total, unpriced, items: items.length, budgets, limits, ...(gemini !== null ? { gemini } : {}), tiers: { rows: tiers.rows, saved: tiers.saved }, suggestions }, () => [
     `${month.name}: ${spendUsd(total)} (${items.length} pieces of work${unpriced > 0 ? `, ${unpriced} unpriced` : ""}; subscription work is $0)`,
     ...windows.map(tile => `  ${`${tile.name} ${tile.window}`.padEnd(24)} ${tile.value}% · ${tile.detail}`),
     ...[...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([repo, microusd]) => `  ${basename(repo).padEnd(24)} ${spendUsd(microusd)}`),

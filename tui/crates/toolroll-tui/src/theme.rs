@@ -543,9 +543,16 @@ impl Theme {
         // All together when they keep the rules; else one by one, in the file's order, each kept only if it does.
         let has_bubble_ink = overrides.iter().any(|(r, _)| *r == Role::ChatBubbleInk);
         let auto_bubble_ink = |bg: Rgb| -> Rgb {
-            let candidates = [Rgb(0x17, 0x17, 0x17), Rgb(0xed, 0xed, 0xed), Rgb(0, 0, 0), Rgb(255, 255, 255)];
+            let candidates = [
+                Rgb(0x17, 0x17, 0x17),
+                Rgb(0xed, 0xed, 0xed),
+                Rgb(0, 0, 0),
+                Rgb(255, 255, 255),
+            ];
             for c in candidates {
-                if c.contrast(bg) >= TEXT_FLOOR && c.quantized256().contrast(bg.quantized256()) >= TEXT_FLOOR {
+                if c.contrast(bg) >= TEXT_FLOOR
+                    && c.quantized256().contrast(bg.quantized256()) >= TEXT_FLOOR
+                {
                     return c;
                 }
             }
@@ -605,7 +612,9 @@ impl Theme {
                 Paint::Rgb(c) => Some(c),
                 Paint::Terminal => match r {
                     Role::Paper => Some(self.reference),
-                    Role::Ink | Role::NeedsYou | Role::SelectionInk | Role::ChatBubbleInk => Some(ink_on),
+                    Role::Ink | Role::NeedsYou | Role::SelectionInk | Role::ChatBubbleInk => {
+                        Some(ink_on)
+                    }
                     _ => None,
                 },
             }

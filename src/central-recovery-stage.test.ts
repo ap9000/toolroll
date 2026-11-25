@@ -435,7 +435,7 @@ test("only exact178/709 is admitted; old177, missing, extra, ordinary and varian
     expect(retireCentralRecoveryStage(h)).toMatchObject({ outcome: "unsupported-schema", schemaSupported: false, complete: false, recoveryReady: false });
     expect(hash(f.source)).toBe(before); expect(hash(h.copyPath)).toBe(copied);
     const after = new DatabaseSync(h.copyPath, { readOnly: true });
-    expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(change === "old177" ? 177 : 180); after.close();
+    expect(after.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(change === "old177" ? 177 : 184); after.close();
     closeCentralRecoveryStage(h); handles.splice(handles.indexOf(h), 1); fs.rmSync(root!, { recursive: true, force: true }); root = undefined;
   }
 });

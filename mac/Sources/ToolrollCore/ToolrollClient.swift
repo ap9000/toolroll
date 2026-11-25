@@ -1071,6 +1071,7 @@ public actor ToolrollClient {
             var fields = [
                 ("message", message),
                 ("request", Self.leadRequestId()),
+                ("instant", "1"),
             ]
             if let session { fields.append(("request-session", String(session))) }
             if let project, !project.isEmpty { fields.append(("project", project)) }
