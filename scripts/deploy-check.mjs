@@ -188,9 +188,21 @@ function fenceFor(platform, root, name, options) {
   };
 }
 
+/** Remove what a step left in `root` (its throwaway computer, its fence profiles, and with `copy` the copy too):
+ * every problem said, never swallowed (Codex review, finding 5). */
+function removeLeft(root, paths) {
+  const problems = [];
+  for (const path of paths) {
+    try { rmSync(path, { recursive: true, force: true }); } catch (error) { problems.push(`${path} couldn't be deleted (${error?.code ?? error?.message ?? error})`); continue; }
+    if (existsSync(path)) problems.push(`${path} is still there`);
+  }
+  return problems;
+}
+
 /**
  * The rehearsal. `io` (tests): `platform`, `spawnSync`, `spawn`, `fetch`, `home`, `kill`, `sleep`. Returns `{ ok: true, facts }`
- * or `{ ok: false, step, why }`. The throwaway folder, the fences and the copy are deleted however it ended.
+ * or `{ ok: false, step, why }`. Cleanup fails closed (Codex review, finding 5): a process of the rehearsal still
+ * running, or the throwaway folder or the copy still there, is a failure, whatever came before.
  */
 export async function rehearse({ checkout, copy }, io = {}) {
   const platform = io.platform ?? process.platform, run = io.spawnSync ?? spawnSync, start = io.spawn ?? spawn, get = io.fetch ?? fetch;
@@ -250,14 +262,14 @@ export async function rehearse({ checkout, copy }, io = {}) {
   } catch (error) {
     outcome = fail("rehearsal", String(error?.message ?? error));
   }
-  // 4. Every process stopped and proven gone; the throwaway folder, the fences and the copy deleted.
+  // 4. Every process stopped and proven gone; the throwaway folder, the fences and the copy deleted. Anything left fails.
+  const left = [];
   if (group !== null) {
     const running = await stopGroup(group, { ...(io.kill === undefined ? {} : { kill: io.kill }), ...(io.sleep === undefined ? {} : { sleep: io.sleep }) });
-    if (running !== null) say(`deploy check: ${running}`);
+    if (running !== null) left.push(running);
   }
-  rmSync(world, { recursive: true, force: true });
-  for (const name of ["fence.sb", "serve-fence.sb"]) rmSync(join(root, name), { force: true });
-  for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(`${copy}${suffix}`, { force: true });
+  left.push(...removeLeft(root, [world, join(root, "fence.sb"), join(root, "serve-fence.sb"), ...["", "-wal", "-shm", "-journal"].map(suffix => `${copy}${suffix}`)]));
+  if (left.length > 0) return fail("cleanup", `${outcome.ok ? "" : `${outcome.step} failed (${outcome.why}), and `}what the rehearsal started or made isn't all gone: ${left.join("; ")}`);
   return outcome;
 }
 

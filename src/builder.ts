@@ -2691,6 +2691,8 @@ async function settleProof(
   let checkAttempt: PreparedAttempt | null = null;
   /** The deploy check's own folder, holding the plane's copy of its database: removed once the check has ended. */
   let deployCopyDir: string | null = null;
+  /** Why the deploy check's copy couldn't be removed: the check then fails (Codex review, finding 5). */
+  let deployCleanupProblem: string | null = null;
   // A release check's limit and the machine's load while it runs, measured by the plane itself (check-load.ts).
   let loadWatch: CheckLoadWatch | null = null;
   let releaseFacts: ReleaseCheckFacts | null = null;
@@ -2735,6 +2737,16 @@ async function settleProof(
     verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
     recordCheckNote("Verification did not start: this worker no longer owned the build.");
   } else {
+    // The deploy check's copy of this database is removed however the check ends: an exception included (finally).
+    const removeDeployCopy = (): void => {
+      if (deployCopyDir === null) return;
+      const dir = deployCopyDir;
+      deployCopyDir = null;
+      try { rmSync(dir, { recursive: true, force: true }); } catch (error) { deployCleanupProblem = `its copy of this computer's database couldn't be deleted (${error instanceof Error ? error.message : String(error)})`; }
+      if (deployCleanupProblem === null && existsSync(dir)) deployCleanupProblem = `its copy of this computer's database is still at ${dir}`;
+      if (deployCleanupProblem !== null) recordCheckNote(`The deploy check has no result: ${deployCleanupProblem}.`);
+    };
+    try {
     const verifyRunner = request.verify ?? run;
     const verifyShell = approvedCommandShell(configured.command);
     let baselineUnverifiable: string | null = null;
@@ -2980,7 +2992,7 @@ async function settleProof(
       }
     }
     // The deploy check's copy of this database goes as soon as the check ended, however it ended.
-    if (deployCopyDir !== null) { try { rmSync(deployCopyDir, { recursive: true, force: true }); } catch { /* the plane's own temp folder */ } deployCopyDir = null; }
+    removeDeployCopy();
     // The display's final snapshot (Codex review round 1, finding 6): the writer keeps it until a write succeeds and
     // never throws; a display failure of any kind never keeps the check's outcome below from being sealed.
     try { checkProgress.finish(); } catch { /* display only */ }
@@ -3008,7 +3020,8 @@ async function settleProof(
       const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
       // The one place coverage meets the outcome: a partial or identity-removed check is a failed attempt for every
       // reader from here on (the verdict, the run's check, the receipt, reuse, the deploy gates).
-      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode === "deploy" ? "full" : checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
+      // A deploy check whose copy of this database couldn't be removed has no result (fail closed).
+      const effective = effectiveCheckFacts(verifyCommand, { coverage: deployCleanupProblem !== null ? "no-result" : settled.coverage, check: { attempt: checkAttempt.mode === "deploy" ? "full" : checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
       verifyCommand = effective.result;
       releaseFacts = effective.facts;
     } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && releaseCheckScope(store.getScope(request.taskId))) {
@@ -3016,6 +3029,7 @@ async function settleProof(
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "no-result" };
       recordCheckNote("The release check ran without a sealed attempt (its commit couldn't be read before it ran), so it has no result that can count.");
     }
+    } finally { removeDeployCopy(); }
   }
   if (configured !== null && checkLog.length > 0) {
     const summary = `=== Attempt summary ===\n${checkOutcomes.length === 0 ? "No command started." : checkOutcomes.map(one => `- ${one}`).join("\n")}`;

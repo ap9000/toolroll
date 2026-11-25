@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { fenced, fenceProfile, freePort, migrationProblem, rehearse, SECRET_FOLDERS, stopGroup } from "../scripts/deploy-check.mjs";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
+import { PassThrough } from "node:stream";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 import { openStore } from "./store.js";
 
@@ -63,6 +65,48 @@ describe("deploy check rules", () => {
     expect(signals).toContain("SIGKILL");
     const stubborn = (_pid: number, _signal: string | number) => true;
     expect(await stopGroup(42, { kill: stubborn, waitMs: 100, sleep: async () => {} })).toMatch(/still running after SIGKILL/);
+  });
+});
+
+describe("the rehearsal fails closed", () => {
+  /** A copy and stand-ins for every candidate process (the platform says macOS, so the fence is written, never run). */
+  function standIns(options: { stuck?: boolean; health?: number } = {}) {
+    const copyDir = realpathSync(mkdtempSync(join(tmpdir(), "toolroll-deploy-check-unit-")));
+    const copy = join(copyDir, "orders.db");
+    openStore(copy).close();
+    const signals: (string | number)[] = [];
+    let port = 0;
+    const io = {
+      platform: "darwin" as const, home: copyDir, say: () => {},
+      spawnSync: (_cmd: string, args: readonly string[]) => args.includes("task")
+        ? { status: 0, stdout: JSON.stringify({ ok: true, tasks: [] }), stderr: "" }
+        : { status: 0, stdout: `${JSON.stringify({ from: 184, to: 184, wanted: 184, changed: [], integrity: "ok", foreign: 0 })}\n`, stderr: "" },
+      spawn: (_cmd: string, args: readonly string[]) => {
+        port = Number(args[args.indexOf("--port") + 1]);
+        const child = Object.assign(new EventEmitter(), { pid: 999_999_9, stdout: new PassThrough(), stderr: new PassThrough() });
+        queueMicrotask(() => child.stdout.write(`${JSON.stringify({ ok: true, command: "serve", port }, null, 2)}\n`));
+        return child;
+      },
+      fetch: async (_url: string, init: { redirect?: string }) => { expect(init.redirect).toBe("manual"); return { status: options.health ?? 200 }; },
+      kill: (_pid: number, signal: string | number) => { signals.push(signal); if (!options.stuck && signal !== 0) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (!options.stuck && signals.includes("SIGTERM")) throw Object.assign(new Error("gone"), { code: "ESRCH" }); return true; },
+      sleep: async () => {},
+    };
+    return { copy, copyDir, io, signals };
+  }
+
+  test("a rehearsal whose console won't stop fails, saying so, even when everything else passed", async () => {
+    const { copy, io } = standIns({ stuck: true });
+    const outcome = await rehearse({ checkout: resolve(import.meta.dirname, ".."), copy }, io as never);
+    expect(outcome).toMatchObject({ ok: false, step: "cleanup", why: expect.stringMatching(/still running after SIGKILL/) });
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  test("a redirect is no answer; a clean run leaves nothing behind", async () => {
+    const redirected = standIns({ health: 302 });
+    expect(await rehearse({ checkout: resolve(import.meta.dirname, ".."), copy: redirected.copy }, redirected.io as never)).toMatchObject({ ok: false, step: "health" });
+    const clean = standIns();
+    expect(await rehearse({ checkout: resolve(import.meta.dirname, ".."), copy: clean.copy }, clean.io as never)).toMatchObject({ ok: true });
+    expect(readdirSync(clean.copyDir).filter(name => /^(world|.*\.sb|orders\.db.*)$/.test(name))).toEqual([]);
   });
 });
 
