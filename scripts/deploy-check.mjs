@@ -219,7 +219,8 @@ export function buildInFence({ checkout, copy }, io = {}) {
     const signal = io.kill ?? ((pid, sig) => process.kill(pid, sig));
     let left = false;
     if (typeof built.pid === "number" && built.pid > 0) {
-      try { signal(-built.pid, 0); left = true; } catch { left = false; }
+      // Only "no such process" means gone; any other answer can't prove it, so it counts as left (fails closed).
+      try { signal(-built.pid, 0); left = true; } catch (error) { left = error?.code !== "ESRCH"; }
       if (left) { try { signal(-built.pid, "SIGKILL"); } catch { /* gone meanwhile */ } }
     }
     if (built.error !== undefined) return { ok: false, why: `the build couldn't start: ${built.error.message}` };
