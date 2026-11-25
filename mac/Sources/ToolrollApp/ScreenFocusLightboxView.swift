@@ -411,10 +411,14 @@ struct ScreenFocusLightboxView: View {
                             Text("Preview not captured yet")
                                 .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(ToolrollPalette.ink)
-                            Button("Wake Preview Server") {
-                                Task { await store.wakePreviewServerAndHydrate(forceAll: true) }
+                            if case .needsStart(let cmd, let folder) = store.previewServer.status {
+                                StartDevServerButton(store: store, command: cmd, folder: folder, compact: false)
+                            } else {
+                                Button("Wake Preview Server") {
+                                    Task { await store.wakePreviewServerAndHydrate(forceAll: true) }
+                                }
+                                .buttonStyle(KitButtonStyle(.primary))
                             }
-                            .buttonStyle(KitButtonStyle(.primary))
                         }
                         .frame(width: renderW, height: renderH)
                         .background(ToolrollPalette.codeBg)

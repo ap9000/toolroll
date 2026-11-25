@@ -5,27 +5,38 @@ public enum PreviewServerStatus: Sendable, Equatable {
     case asleep
     case needsInstall(packageManager: String, command: String)
     case installing(command: String)
+    /// The project's dev server is not running, and Toolroll never starts it on its own: the person clicks Start, which
+    /// names this exact command and folder.
+    case needsStart(command: String, folder: String)
     case external(url: String)
     case starting(command: String)
     case running(url: String, command: String)
     case failed(String)
 }
 
-public struct DetectedDevCommand: Sendable, Equatable {
+public struct DetectedDevCommand: Sendable, Hashable {
     public let packageManager: String
     public let executable: String
     public let arguments: [String]
     public let displayCommand: String
+    /// The package.json script the command runs, exactly as written there.
+    public let scriptBody: String
     public let expectedPort: Int
     public let expectedURL: String
 
-    public init(packageManager: String = "npm", executable: String, arguments: [String], displayCommand: String, expectedPort: Int) {
+    public init(packageManager: String = "npm", executable: String, arguments: [String], displayCommand: String, scriptBody: String = "", expectedPort: Int) {
         self.packageManager = packageManager
         self.executable = executable
         self.arguments = arguments
         self.displayCommand = displayCommand
+        self.scriptBody = scriptBody
         self.expectedPort = expectedPort
         self.expectedURL = "http://localhost:\(expectedPort)"
+    }
+
+    /// What the Start button says it runs: the command and the script it runs.
+    public var startWords: String {
+        scriptBody.isEmpty ? displayCommand : "\(displayCommand) (\(scriptBody))"
     }
 }
 
@@ -38,6 +49,16 @@ public final class PreviewServerManager {
 
     private var process: Process?
     private var idleSleepTask: Task<Void, Never>?
+    /// What the person clicked Start for in this run of the app: this folder and exactly this command and script. Never
+    /// saved, so the next launch asks again; a changed script asks again.
+    private var startConsent: Set<StartConsent> = []
+    /// The command the Start button currently names, so the click consents to exactly what was shown.
+    public private(set) var pendingStart: (projectRoot: String, command: DetectedDevCommand)?
+
+    private struct StartConsent: Hashable {
+        let projectRoot: String
+        let command: DetectedDevCommand
+    }
     private let idleTimeoutSeconds: UInt64 = 300
 
     public init() {}
@@ -88,6 +109,7 @@ public final class PreviewServerManager {
             executable: exe,
             arguments: args,
             displayCommand: "\(pm) \(scriptName)",
+            scriptBody: scriptBody,
             expectedPort: port
         )
     }
@@ -144,6 +166,13 @@ public final class PreviewServerManager {
             return nil
         }
 
+        // Never on its own: only after the person clicked Start for exactly this command in this folder, this run.
+        guard startConsent.contains(StartConsent(projectRoot: projectRoot, command: detected)) else {
+            pendingStart = (projectRoot, detected)
+            status = .needsStart(command: detected.startWords, folder: projectRoot)
+            return nil
+        }
+        pendingStart = nil
         status = .starting(command: detected.displayCommand)
 
         do {
@@ -182,6 +211,15 @@ public final class PreviewServerManager {
             status = .failed("Could not start \(detected.displayCommand): \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// The person clicked Start for the command the button named: allow exactly that command in that folder for the
+    /// rest of this run. Returns false when nothing is waiting to start.
+    @discardableResult
+    public func consentToPendingStart() -> Bool {
+        guard let pending = pendingStart else { return false }
+        startConsent.insert(StartConsent(projectRoot: pending.projectRoot, command: pending.command))
+        return true
     }
 
     public func installDependenciesAndRun(projectRoot: String, preferredOrigin: String? = nil) async -> String? {
@@ -226,8 +264,12 @@ public final class PreviewServerManager {
     }
 
     nonisolated private static func buildSubprocessEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        minimalEnvironment(inherited: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser.path)
+    }
+
+    /// The repo's own scripts run with only PATH, HOME, LANG and TERM (and BROWSER=none so they open nothing): never the
+    /// app's environment, which may hold tokens and keys.
+    nonisolated static func minimalEnvironment(inherited: [String: String], home: String) -> [String: String] {
         let extraPaths = [
             "/opt/homebrew/bin",
             "/usr/local/bin",
@@ -236,9 +278,13 @@ public final class PreviewServerManager {
             "\(home)/.local/share/pnpm",
             "\(home)/.local/bin",
         ].joined(separator: ":")
-        env["PATH"] = "\(extraPaths):\(env["PATH"] ?? "/usr/bin:/bin")"
-        env["BROWSER"] = "none"
-        return env
+        return [
+            "PATH": "\(extraPaths):\(inherited["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")",
+            "HOME": home,
+            "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+            "TERM": inherited["TERM"] ?? "dumb",
+            "BROWSER": "none",
+        ]
     }
 
     nonisolated private static func extractLastMeaningfulLine(from data: Data) -> String? {

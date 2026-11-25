@@ -476,6 +476,12 @@ public final class WorkbenchStore {
         }
     }
 
+    /// The person clicked Start dev server: start exactly the command and folder the button named, for this run only.
+    public func startPreviewServerAndHydrate() async {
+        guard previewServer.consentToPendingStart() else { return }
+        await wakePreviewServerAndHydrate(forceAll: false)
+    }
+
     public func installPreviewDependenciesAndHydrate() async {
         guard let root = canvasProjectRoot else { return }
         let isToolrollRepo = (root as NSString).lastPathComponent.lowercased() == "toolroll"

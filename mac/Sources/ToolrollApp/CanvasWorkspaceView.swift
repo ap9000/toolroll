@@ -292,6 +292,10 @@ public struct CanvasWorkspaceView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ToolrollPalette.ink)
 
+            case .needsStart(let cmd, let folder):
+                Circle().fill(ToolrollPalette.muted).frame(width: 6, height: 6)
+                StartDevServerButton(store: store, command: cmd, folder: folder, compact: true)
+
             case .starting(let cmd):
                 Circle().fill(ToolrollPalette.live).frame(width: 6, height: 6)
                 Text("Starting \(cmd)…")
@@ -548,6 +552,8 @@ public struct CanvasWorkspaceView: View {
                                 Task { await store.installPreviewDependenciesAndHydrate() }
                             }
                             .buttonStyle(KitButtonStyle(.primary, compact: true))
+                        } else if case .needsStart(let cmd, let folder) = store.previewServer.status {
+                            StartDevServerButton(store: store, command: cmd, folder: folder, compact: false)
                         } else if case .installing(let cmd) = store.previewServer.status {
                             Text("Running \(cmd)…")
                                 .font(.system(size: 11, design: .monospaced))
@@ -1106,6 +1112,33 @@ private struct DOMInspectHit {
     let line: Int?
     let xFrac: Double
     let yFrac: Double
+}
+
+/// Starts the project's dev server only when the person clicks, naming the exact command and the folder it runs in.
+struct StartDevServerButton: View {
+    let store: WorkbenchStore
+    let command: String
+    let folder: String
+    let compact: Bool
+
+    var body: some View {
+        let place = (folder as NSString).abbreviatingWithTildeInPath
+        let layout = compact ? AnyLayout(HStackLayout(spacing: 6)) : AnyLayout(VStackLayout(spacing: 6))
+        layout {
+            Text("\(command) in \(place)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ToolrollPalette.ink)
+                .lineLimit(compact ? 1 : 3)
+                .truncationMode(.middle)
+                .multilineTextAlignment(compact ? .leading : .center)
+                .textSelection(.enabled)
+                .help("Runs \(command) in \(folder)")
+            Button("Start dev server") {
+                Task { await store.startPreviewServerAndHydrate() }
+            }
+            .buttonStyle(KitButtonStyle(.primary, compact: true))
+        }
+    }
 }
 
 private struct ScaledLiveArtboardWebView: NSViewRepresentable {
