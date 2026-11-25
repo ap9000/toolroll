@@ -200,3 +200,19 @@ function keepSessions(from: string, kept: string): void {
     throw error;
   }
 }
+
+/**
+ * Removes every kept-sessions folder under `root` whose name isn't in `keep` (the open tasks of this database, by
+ * codexSessionsName): a closed task's, a deleted one's, and any left by an earlier database in the same folder. A copy
+ * half made by a launch keeping its sessions right now (`.new-…`) or one being replaced (`.old-…`) is removed only when
+ * its task isn't kept either. Best effort, never following a link (rm removes a link itself).
+ */
+export function pruneCodexSessions(root: string, keep: ReadonlySet<string>): void {
+  let names: string[];
+  try { names = readdirSync(root); } catch { return; }
+  for (const name of names) {
+    const task = /^([0-9a-f]{32})(?:\.(?:new|old)-[0-9a-f]{16})?$/.exec(name)?.[1];
+    if (task !== undefined && keep.has(task)) continue;
+    try { rmSync(join(root, name), { recursive: true, force: true }); } catch { /* the next launch tries again */ }
+  }
+}

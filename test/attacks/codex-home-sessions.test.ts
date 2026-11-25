@@ -7,11 +7,13 @@
  * in a folder of Toolroll's own that every launch is denied (agent-fence.ts codexSessionsFolder), copied out after the
  * run only as plain files proven to be inside the launch's own folder.
  */
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { agentFence, codexSessionsFolder, homeWriteDenies, type FenceGrants } from "../../src/agent-fence.js";
 import { isolatedCodexHome, type CodexHome } from "../../src/provider-home.js";
+import { keptCodexSessions } from "../../src/invoke.js";
+import type * as StoreModule from "../../src/store.js";
 import { lines, needs, osFence, underSandbox, useScratch } from "./harness.js";
 
 const homes: CodexHome[] = [];
@@ -29,10 +31,10 @@ function world(dir: string) {
   writeFileSync(database, "");
   writeFileSync(join(codex, "auth.json"), '{"operator":"sign-in"}');
   writeFileSync(join(codex, "sessions", "2026", "11", "25", "rollout-operator.jsonl"), "operator-session-secret\n");
-  const otherTask = codexSessionsFolder(database, "task-other")!;
+  const otherTask = codexSessionsFolder(database, "workspace-a", 2)!;
   mkdirSync(join(otherTask, "2026"), { recursive: true });
   writeFileSync(join(otherTask, "2026", "rollout-other.jsonl"), "other-task-session-secret\n");
-  const ownTask = codexSessionsFolder(database, "task-own")!;
+  const ownTask = codexSessionsFolder(database, "workspace-a", 1)!;
   mkdirSync(join(ownTask, "2026"), { recursive: true });
   writeFileSync(join(ownTask, "2026", "rollout-own.jsonl"), "own-earlier-session\n");
   const run = isolatedCodexHome(codex, runs, { signIn: true, sessions: ownTask });
@@ -97,5 +99,48 @@ describe("attack: a Codex build reaching other sessions or the operator's sign-i
       expect(lstatSync(join(ownTask, path)).isSymbolicLink()).toBe(false);
       expect(readFileSync(join(ownTask, path), "utf8")).not.toMatch(/operator|other-task/);
     }
+  });
+});
+
+describe("attack: a task inheriting another task's kept Codex sessions", () => {
+  const scratch = useScratch("codexkept");
+  const T0 = new Date("2026-11-25T00:00:00.000Z");
+
+  test("the same task ref in a recreated database gets a different folder; a closed task's folder is removed", async () => {
+    // A real database each time (the test setup copies one migrated template, which shares its workspace identity).
+    const { openStore } = await vi.importActual<typeof StoreModule>("../../src/store.js");
+    const state = join(scratch(), "state");
+    mkdirSync(state);
+    const database = join(state, "orders.db");
+    const first = openStore(database);
+    first.createTask({ id: "t-1", title: "first" }, T0);
+    const ref = first.refFor("built-in", "t-1").id;
+    const before = keptCodexSessions(first, ref)!;
+    mkdirSync(before, { recursive: true });
+    writeFileSync(join(before, "rollout-first.jsonl"), "first database's session\n");
+    first.close();
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(`${database}${suffix}`, { force: true });
+
+    const second = openStore(database);
+    try {
+      second.createTask({ id: "t-1", title: "recreated" }, T0);
+      const again = second.refFor("built-in", "t-1").id;
+      expect(again).toBe(ref);
+      const after = keptCodexSessions(second, again)!;
+      expect(after).not.toBe(before);
+      // The earlier database's folder belongs to no task of this one: gone, never handed to the recreated task.
+      expect(existsSync(before)).toBe(false);
+      mkdirSync(after, { recursive: true });
+
+      second.createTask({ id: "t-2", title: "other" }, T0);
+      const other = second.refFor("built-in", "t-2").id;
+      const otherFolder = keptCodexSessions(second, other)!;
+      mkdirSync(otherFolder, { recursive: true });
+      expect(second.setTaskState("t-1", "done", T0)).toEqual({ ok: true });
+      // The next Codex launch (any task's) removes the closed task's kept sessions and keeps the open one's.
+      keptCodexSessions(second, other);
+      expect(existsSync(after)).toBe(false);
+      expect(existsSync(otherFolder)).toBe(true);
+    } finally { second.close(); }
   });
 });

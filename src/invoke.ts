@@ -52,10 +52,10 @@ import { readDenyPath } from "./project-sandbox.js";
 import { linuxSandboxToolsWords, sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
-import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, codexSessionsFolder, codexSessionsName, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { localServicesRefusal, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
-import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type CodexHome, type ProviderDefaults } from "./provider-home.js";
+import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, pruneCodexSessions, type CodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
@@ -490,7 +490,11 @@ export async function invokeAgent(
   // nothing that leads back to the operator's Codex folder or another task's sessions.
   let codexHome: CodexHome | null = null;
   if (codexHarness && invocation.phase !== "review") {
-    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex", sessions: codexSessionsFolder(store.databaseFile(), String(run.taskRef)) }); }
+    try {
+      // Kept sessions of tasks that closed (or of an earlier database here) go first; this task's are kept.
+      const sessions = keptCodexSessions(store, run.taskRef);
+      codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()), undefined, { signIn: spec.provider === "codex", sessions });
+    }
     catch {
       tools?.cleanup();
       removeAgentDatabase(isolatedDb.dir);
@@ -1534,4 +1538,24 @@ export function childAuthEnv(args: { provider: string; phase: string; authMode: 
       ...(args.authMode === "subscription" ? args.ownKeyEnv : args.ownKeyEnv.filter(name => name !== args.keyEnvName)),
     ],
   };
+}
+
+/**
+ * This task's kept Codex sessions folder (agent-fence.ts codexSessionsFolder), after removing every kept folder whose
+ * task is closed: a built-in task done, cancelled or expired (or deleted) with no run still going, and anything not
+ * named for one of this database's task rows. Null (sessions live only as long as the launch) when the database has no
+ * folder or its workspace identity can't be read.
+ */
+export function keptCodexSessions(store: Store, taskRef: number): string | null {
+  const databaseFile = store.databaseFile();
+  let workspace: string;
+  try { workspace = store.workspaceIdentity().id; } catch { return null; }
+  const folder = codexSessionsFolder(databaseFile, workspace, taskRef);
+  if (folder === null) return null;
+  const open = store.handle.prepare(`SELECT r.id AS ref FROM task_ref r LEFT JOIN task t ON r.backend = 'built-in' AND t.id = r.external_id
+    WHERE NOT (r.backend = 'built-in' AND (t.id IS NULL OR t.state IN ('done', 'cancelled', 'expired'))
+      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.task_ref = r.id AND live.finished_at IS NULL))`).all();
+  const keep = new Set([...open.map(row => codexSessionsName(workspace, Number(row["ref"]))), codexSessionsName(workspace, taskRef)]);
+  pruneCodexSessions(dirname(folder), keep);
+  return folder;
 }

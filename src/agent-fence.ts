@@ -724,9 +724,15 @@ function worktreeGitDir(worktree: string): string | null {
 /** Where each task's Codex sessions are kept between its launches, beside the database (agentFence denies the
  * folder to every launch). */
 export const CODEX_SESSIONS_DIR = "codex-sessions";
-export function codexSessionsFolder(databaseFile: string | null, taskRef: string): string | null {
-  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
-  return join(dirname(real(databaseFile)), CODEX_SESSIONS_DIR, createHash("sha256").update(`codex-sessions:${taskRef}`, "utf8").digest("hex").slice(0, 32));
+/** The kept-sessions folder's name for one task: its database's own workspace id (random, made with the database, so a
+ * database recreated in the same folder never matches) and the task's row id (AUTOINCREMENT: never reused within that
+ * database, even after the task is deleted), domain-hashed. */
+export function codexSessionsName(workspaceId: string, taskRef: number): string {
+  return createHash("sha256").update(`codex-sessions:${workspaceId}:${taskRef}`, "utf8").digest("hex").slice(0, 32);
+}
+export function codexSessionsFolder(databaseFile: string | null, workspaceId: string, taskRef: number): string | null {
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:" || workspaceId === "") return null;
+  return join(dirname(real(databaseFile)), CODEX_SESSIONS_DIR, codexSessionsName(workspaceId, taskRef));
 }
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
