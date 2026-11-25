@@ -43,7 +43,7 @@ afterEach(() => {
 const logged = async (name: string, timeoutMs = 5_000): Promise<string[]> => {
   const file = join(dir, `${name}.log`);
   const lines = (): string[] => existsSync(file) && readFileSync(file, "utf8").endsWith("\n") ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
-  for (const until = Date.now() + timeoutMs; Date.now() < until && lines().length === 0;) await new Promise(done => setTimeout(done, 25));
+  for (const until = Date.now() + timeoutMs; Date.now() < until && lines().length === 0;) await new Promise(done => setTimeout(done, 25)); // guard: bound polls for the logged line, up to timeoutMs
   return lines();
 };
 
