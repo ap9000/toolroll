@@ -91,6 +91,8 @@ const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
  */
 export function isolatedCodexHome(source: string, root: string = tmpdir(), options: { signIn: boolean; sessions?: string | null } = { signIn: true }): CodexHome {
   const dir = mkdtempSync(join(root, "so-codex-"));
+  // The home's real path as Toolroll made it: what its sessions are proven against when they are kept.
+  const home = realpathSync(dir);
   const sessions = join(dir, "sessions");
   try {
     chmodSync(dir, 0o700);
@@ -108,7 +110,7 @@ export function isolatedCodexHome(source: string, root: string = tmpdir(), optio
   return {
     dir,
     // Best effort: a task whose sessions couldn't be kept resumes in a fresh session's place (its next launch finds none).
-    keep: () => { if (options.sessions != null) { try { keepSessions(sessions, options.sessions); } catch { /* not kept */ } } },
+    keep: () => { if (options.sessions != null) { try { keepSessions(sessions, home, options.sessions); } catch { /* not kept */ } } },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -134,9 +136,10 @@ function provenFile(root: string, path: string, limit: number): Buffer | null {
   try { fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch { return null; }
   try {
     const held = fstatSync(fd);
-    if (!held.isFile() || held.size > limit) return null;
+    // One name only: a hard link the run made to a file outside its folder is the outside file.
+    if (!held.isFile() || held.size > limit || held.nlink !== 1) return null;
     const there = lstatSync(path);
-    if (!there.isFile() || there.ino !== held.ino || there.dev !== held.dev) return null;
+    if (!there.isFile() || there.nlink !== 1 || there.ino !== held.ino || there.dev !== held.dev) return null;
     const inside = relative(root, realpathSync(dirname(path)));
     if (inside.startsWith("..") || inside.startsWith("/")) return null;
     const bytes = Buffer.alloc(held.size);
@@ -146,14 +149,28 @@ function provenFile(root: string, path: string, limit: number): Buffer | null {
   } catch { return null; } finally { closeSync(fd); }
 }
 
-/** Every plain file under `from` (Codex's session names only, never through a link, bounded), written under `to`. */
-function copyTree(from: string, to: string): void {
-  const root = realpathSync(from);
+/** A folder as found at `path`: a real folder (never a link), whose real path is `expected`. */
+function provenFolder(path: string, expected: string): boolean {
+  try {
+    const held = lstatSync(path);
+    return held.isDirectory() && !held.isSymbolicLink() && realpathSync(path) === expected;
+  } catch { return false; }
+}
+
+/**
+ * Every plain file under `root` (Codex's session names only, bounded), written under `to`. `root` is a real path the
+ * caller proved; each folder on the walk is proven a real folder at its own place before and after it is listed (a
+ * folder swapped for a link in between is caught and skipped whole), and each file is read only as provenFile reads it.
+ */
+function copyTree(root: string, to: string): void {
   let entries = 0, bytes = 0;
   const walk = (dir: string, depth: number): void => {
     if (depth > SESSIONS_MAX_DEPTH) return;
+    const here = join(root, dir);
+    if (!provenFolder(here, here)) return;
     let names: string[];
-    try { names = readdirSync(join(root, dir)); } catch { return; }
+    try { names = readdirSync(here); } catch { return; }
+    if (!provenFolder(here, here)) return;
     for (const name of names) {
       if (!SESSION_NAME.test(name) || ++entries > SESSIONS_MAX_ENTRIES) continue;
       const rel = join(dir, name);
@@ -176,13 +193,19 @@ function copyTree(from: string, to: string): void {
 
 /** A task's kept sessions into a launch's own sessions folder. */
 function copySessions(kept: string, into: string): void {
-  try { if (!lstatSync(kept).isDirectory()) return; } catch { return; }
-  copyTree(kept, into);
+  let root: string;
+  try { root = realpathSync(kept); } catch { return; }
+  if (!provenFolder(kept, root)) return;
+  copyTree(root, into);
 }
 
 /** A launch's sessions, after its run, as its task's kept sessions: copied (never moved: the launch's folder may still
  * be written by what it left running) into a fresh folder of Toolroll's own, then put in place of the earlier ones. */
-function keepSessions(from: string, kept: string): void {
+function keepSessions(from: string, home: string, kept: string): void {
+  // The sessions folder must still be the one made in the launch's own home: a run that swapped it (or the home) for
+  // a link to anything else gets nothing kept, rather than Toolroll copying what the link leads to.
+  const expected = join(home, "sessions");
+  if (!provenFolder(from, expected)) throw new Error("the launch's sessions folder isn't the one Toolroll made");
   const parent = dirname(kept);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const tag = randomBytes(8).toString("hex");
@@ -190,7 +213,7 @@ function keepSessions(from: string, kept: string): void {
   const old = `${kept}.old-${tag}`;
   mkdirSync(next, { mode: 0o700 });
   try {
-    copyTree(from, next);
+    copyTree(expected, next);
     let had = false;
     try { renameSync(kept, old); had = true; } catch { had = false; }
     renameSync(next, kept);
