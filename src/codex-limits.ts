@@ -4,7 +4,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { codingEnvironment } from "./coding-provider.js";
 import { codexLimitsOf, record, type LimitReading } from "./provider-limits.js";
-import { refreshSubscriptions } from "./subscription-usage.js";
+import { refreshSubscriptions, type SubscriptionReaders } from "./subscription-usage.js";
+import { directChatRunning, onPlanLimitsViewed, planLimitsWanted } from "./plan-limits-demand.js";
 import { billingOf, type Billing } from "./spend.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -92,32 +93,15 @@ export function readCodexLimits(options: { command?: string; timeoutMs?: number;
   });
 }
 
-/** The loop beside the console: Codex's limits and account every five minutes while Toolroll runs Codex on its
- * plan. Never in tests, the demo, or the end-to-end harness (which runs with the person's own sign-in), and never while
- * a Codex build is running (both would refresh the same sign-in). One read at a time: the next waits for the last
- * process to end. */
+/** The loop beside the console: plan limits (Codex's from its app server, then Claude's and Antigravity's when stale)
+ * every five minutes, but only while they are wanted (plan-limits-demand.ts): agent work queued or running, or a person
+ * opened a page that shows them in the last ten minutes. An idle Toolroll asks no provider anything (everyday 9, B3:
+ * Claude's read is a real model turn). Never in tests, the demo, or the end-to-end harness (which runs with the person's
+ * own sign-in), and never while a Codex build is running (both would refresh the same sign-in). One read at a time: the
+ * next waits for the last process to end. */
 export function startCodexLimits(store: Store, signedIn: () => Promise<boolean>, everyMs = 5 * 60_000): () => void {
   if (process.env["VITEST"] !== undefined || envValue(process.env, "NO_PLAN_PROBE") !== undefined || store.isDemo()) return () => {};
-  let stopped = false, busy = false;
-  const pass = async () => {
-    if (stopped || busy) return;
-    busy = true;
-    try {
-      await codexLimitsPass(store, { signedIn, stopped: () => stopped });
-      if (!stopped) {
-        await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true });
-      }
-    } catch {
-      // The next pass tries again.
-    } finally {
-      busy = false;
-    }
-  };
-  const timer = setInterval(() => void pass(), everyMs);
-  timer.unref?.();
-  const first = setTimeout(() => void pass(), 10_000);
-  first.unref?.();
-  return () => { stopped = true; clearInterval(timer); clearTimeout(first); };
+  return scheduleLimitsLoop(store, { signedIn }, everyMs);
 }
 
 /**
@@ -130,6 +114,7 @@ export async function codexLimitsPass(store: Store, seams: { signedIn: () => Pro
   if (billingOf("codex") !== "subscription") return "skipped";
   const recent = new Date(Date.now() - 6 * 3_600_000).toISOString();
   if (store.handle.prepare("SELECT 1 AS live FROM run WHERE provider = 'codex' AND outcome IS NULL AND started_at > ? LIMIT 1").get(recent) !== undefined) return "skipped";
+  if (directChatRunning(store, "codex", new Date())) return "skipped";
   if (!(await seams.signedIn())) return "skipped";
   const reading = await (seams.read ?? (() => readCodexLimits()))();
   if (reading !== null && seams.stopped?.() !== true) store.recordProviderLimits(reading, new Date());
@@ -144,4 +129,37 @@ export async function codexLimitsPass(store: Store, seams: { signedIn: () => Pro
 export async function codexSignedInNow(check: (provider: "codex", fresh?: boolean) => Promise<{ state: string }>): Promise<boolean> {
   if ((await check("codex")).state !== "connected") return false;
   return (await check("codex", true)).state === "connected";
+}
+
+/** A page open starts a read at once, but at most once a minute (a person paging through Spend asks once). */
+const VIEWED_PASS_GAP_MS = 60_000;
+
+/** The limits loop itself, without startCodexLimits' guards: the seams replace each provider read (tests). */
+export function scheduleLimitsLoop(store: Store, seams: { signedIn: () => Promise<boolean>; readCodex?: () => Promise<LimitReading | null>; readers?: SubscriptionReaders; clock?: () => Date }, everyMs = 5 * 60_000): () => void {
+  const clock = seams.clock ?? (() => new Date());
+  let stopped = false, busy = false, lastPass = -Infinity;
+  const pass = async (viewed: boolean) => {
+    if (stopped || busy) return;
+    const now = clock();
+    if (!planLimitsWanted(store, now)) return;
+    if (viewed && now.getTime() - lastPass < VIEWED_PASS_GAP_MS) return;
+    busy = true;
+    lastPass = now.getTime();
+    try {
+      await codexLimitsPass(store, { signedIn: seams.signedIn, stopped: () => stopped, ...(seams.readCodex === undefined ? {} : { read: seams.readCodex }) });
+      if (!stopped) {
+        await refreshSubscriptions(store, store.databaseFile(), { skipCodex: true, now: clock(), ...(seams.readers === undefined ? {} : { readers: seams.readers }) });
+      }
+    } catch {
+      // The next pass tries again.
+    } finally {
+      busy = false;
+    }
+  };
+  const timer = setInterval(() => void pass(false), everyMs);
+  timer.unref?.();
+  const first = setTimeout(() => void pass(false), 10_000);
+  first.unref?.();
+  const stopListening = onPlanLimitsViewed(store, () => void pass(true));
+  return () => { stopped = true; clearInterval(timer); clearTimeout(first); stopListening(); };
 }

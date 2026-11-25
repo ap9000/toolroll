@@ -156,6 +156,7 @@ import { approvalFactsNow } from "./kit.js";
 import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
 import { savingsReportOrError } from "../route-savings.js";
 import { limitsView } from "../limits-ui.js";
+import { notePlanLimitsViewed } from "../plan-limits-demand.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -228,6 +229,8 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       fieldError: url.searchParams.get("field") === "usd" ? url.searchParams.get("problem") : null,
       problem: url.searchParams.get("field") === "usd" ? null : url.searchParams.get("problem"),
     };
+    // A person looking at plan limits: the limits loop keeps them fresh for the next ten minutes (plan-limits-demand.ts).
+    notePlanLimitsViewed(store, now);
     const windows = limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now);
     const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), current: current.name, report: spendReport(rows),
       budgets, unlimited, targets, windows, subagentNames, edit, facts: approvalFactsNow(),
