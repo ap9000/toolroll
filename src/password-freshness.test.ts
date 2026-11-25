@@ -341,8 +341,9 @@ describe("where freshness may be honoured", () => {
     expect(files.some(one => one.path.endsWith(".tsx"))).toBe(true);
   });
 
-  test("exactly three routes are allowlisted: approving a plan, confirming a chat proposal (its scope_approve only), and sending a chat message", () => {
-    expect(ROUTES.filter(one => one.freshness === "allowlist").map(one => one.id).sort()).toEqual(["chat.proposal.confirm", "chat.send", "task.act.approve"]);
+  test("exactly four routes are allowlisted: approving a plan, confirming a chat proposal (its scope_approve only), sending a chat message, and Send back and build", () => {
+    // Everyday 9 A6: Send back and build's yes on /r/<id>/comment is the same standard approval (its withFreshness only).
+    expect(ROUTES.filter(one => one.freshness === "allowlist").map(one => one.id).sort()).toEqual(["chat.proposal.confirm", "chat.send", "run.act.comment", "task.act.approve"]);
   });
 
   test("an SSO 'fresh' flag authorises nothing: it is read only to draw the step-up field's words", () => {
@@ -374,9 +375,11 @@ describe("where freshness may be honoured", () => {
     // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
     // One-tap release approval: the release sheet's remembered-password preview (display only, task-views' rule) and its
     // Approve release (the task approval door's own standard-approval freshness and refund), both in tasks.ts.
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 6 });
+    // Everyday 9 A6: Send back and build's offer (send-back-build.ts) and its yes (tasks.ts sessionYesNow), the same class.
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/send-back-build.ts": 1, "src/server/task-views.ts": 1, "src/server/tasks.ts": 7 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
-    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 3 });
+    // Everyday 9 A6: Send back and build refunds around its yes and around the revision that holds it (tasks.ts 2 more).
+    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 5 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
     expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
@@ -887,6 +890,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Build's password rule (fast-start.ts) reads what the approve forms read.
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61>freshAt:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>withFreshness(approve-standard,_)@14": 1,
+    // Everyday 9 A6, Codex round 1 finding 3 (reviewed): Send back and build tries the Approve button's empty-field proofs.
+    "src/server/send-back-build.ts#<module>": 2,
+    "src/server/send-back-build.ts#sessionYesPossible@1>withFreshness(approve-standard,_)@1": 1,
   },
   "mergeAsPerson": {
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
@@ -940,6 +946,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Build is the fast path's approval door (fast-start.ts): the same refund as the task page's.
     "src/server/tasks.ts#createTasksHandlers@2>buildNow@62": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
+    // Everyday 9 A6, Codex round 1 finding 3 (reviewed): Send back and build tries the Approve button's empty-field proofs.
+    "src/server/tasks.ts#createTasksHandlers@2>runComment@32": 1,
+    "src/server/tasks.ts#sessionYesNow@19>store.savepoint(_)@1": 1,
   },
   "ssoNow": {
     "src/scope.ts#<module>": 1,
@@ -965,6 +974,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10>sso.fresh:freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
+    // Everyday 9 A6, Codex round 1 finding 3 (reviewed): Send back and build tries the Approve button's empty-field proofs.
+    "src/server/send-back-build.ts#<module>": 2,
+    "src/server/send-back-build.ts#sessionYesPossible@1": 1,
   },
   "ssoReauthAt": {
     "src/scope.ts#<module>": 1,
@@ -1020,6 +1032,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@16": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
     "src/chat-actions.ts#fileSweep@34": 1,
+    // Everyday 9 A6, Codex round 1 finding 3 (reviewed): Send back and build tries the Approve button's empty-field proofs.
+    "src/server/send-back-build.ts#<module>": 2,
+    "src/server/send-back-build.ts#sessionYesPossible@1": 1,
+    "src/server/tasks.ts#sessionYesNow@19>store.savepoint(_)@1>yes:spendingOnlyOnSuccess(_,_)@1": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
@@ -1121,12 +1137,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
-    // Everyday 9 A6 (reviewed new sites): Send back and build for a signed-in approver whose session stands in. The page
-    // offers the box on the same reading; the send re-reads it, then approve() decides inside the revision's savepoint.
-    "src/server/task-views.ts#<module>": 2,
-    "src/server/task-views.ts#createTaskViews@1>resultDetailOf@31": 1,
-    "src/server/tasks.ts#createTasksHandlers@2>runComment@32": 1,
-    "src/server/tasks.ts#sessionYesNow@19>store.savepoint(_)@1": 1,
+    // Everyday 9 A6 (reviewed new site): whether Send back and build may try the ordinary empty-field approval.
+    "src/server/send-back-build.ts#<module>": 2,
+    "src/server/send-back-build.ts#sessionYesPossible@1": 1,
   },
 };
 describe("the tripwire", () => {

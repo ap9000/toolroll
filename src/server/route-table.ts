@@ -945,7 +945,9 @@ post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up",
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
-for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}` });
+// Send back and build (intent=revise on /comment) approves through the ordinary approve(): a password remembered on this
+// session may stand in there, as on the task's own Approve (everyday 9 A6); only that act reads it (withFreshness).
+for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}`, ...(one === "comment" ? { freshness: "allowlist" as const } : {}) });
 // Cockpit E: reveal a running attempt's proved checkout in Finder (nothing is launched in it).
 post("tasks", "run.act.reveal", `^\\/r\\/${ID}\\/reveal$`, { project: "run", limited: "resource", callers: ["cookie"], sample: "/r/1/reveal", ...approver("Only an approver can show an agent's files.") });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });

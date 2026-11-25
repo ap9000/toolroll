@@ -127,6 +127,7 @@ import { approvalFactsNow, btn } from "./kit.js";
 import { land, landingWords, publishesThroughPullRequests, PULL_REQUESTS_INSTEAD, readLanding } from "../local-landing.js";
 import { localActNow, localOwnerRefusal, withLocalAct } from "../local-owner.js";
 import { localChecksRefusal } from "../local-checks.js";
+import { sessionYesPossible } from "./send-back-build.js";
 import { firstTaskRouted } from "../welcome-facts.js";
 import { plural } from "../design/kit.js";
 
@@ -1317,14 +1318,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (body.get("intent") === "revise") {
       // Send back and build (everyday-8 #7; everyday 9 A6): the person says yes to the revision in the same act, through
       // the ordinary approval (approve(): every rule, the exact digest, in the revision's own transaction). This computer's
-      // local owner as the approve-plan act (approve() re-proves it and its eligibility); a signed-in approver only where
-      // their own session stands in for a password (Passwordless, or a solo install), as the Approve button's token-less
-      // yes does. Anyone else, and any refusal (a vote kept for protected work included, taken back whole), keeps the
+      // local owner as the approve-plan act (approve() re-proves it and its eligibility); a signed-in approver wherever the
+      // Approve button would take their yes with an empty password field (send-back-build.ts: session standing in, a
+      // re-check waiting, a remembered password), approve() deciding as it does there. Anyone else, and any refusal (a vote kept for protected work included, taken back whole), keeps the
       // revised plan's own approval.
       const localBuild = who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
-      const sessionBuild = who.via === "cookie" && who.authority !== "local-owner" && who.role === "approver" && passwordlessSessionFor(store, who.name);
+      const sessionBuild = who.via === "cookie" && who.authority !== "local-owner" && who.role === "approver" && sessionYesPossible(store, who.name, false);
       const buildNow = body.get("approve") === "1" && (localBuild || sessionBuild);
-      const result = requestResultChanges(store, evidenceRoot, {
+      // A re-check or remembered password spent by the yes is given back if the revision itself is refused.
+      const result = spendingOnlyOnSuccess(() => requestResultChanges(store, evidenceRoot, {
         ...(buildNow ? {
           // Only the exact result this form was drawn for, while it is still its task's current one.
           currentResult: () => {
@@ -1343,7 +1345,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // A browser session is a person's proof; a bearer credential is a machine's.
         origin: who.via === "cookie" ? "person" : "machine", typedWords: who.via === "cookie" ? typedNote : null,
         note: sentNote, path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
-      }, now);
+      }, now), revised => !revised.ok);
       // Work's panel asked for its answer in place (read only after requestResultChanges decided).
       if (answersInPlace(incoming)) return result.ok ? answerActInPlace(response, "done", "Sent back. The revision is filed.", 200) : answerActInPlace(response, "refused", result.message, result.status);
       if (!result.ok) {
@@ -3644,9 +3646,9 @@ export function localOwnerRoute(store: Store, taskId: string, body: { get(name: 
 /** Thrown inside a savepoint to take a refused yes back whole. */
 const NOT_SEALED = Symbol("not sealed");
 /**
- * Send back and build for a signed-in approver whose own session stands in for a password (everyday 9 A6): the revision
- * approved through the ordinary approve() (its proof re-read there: `session` only while Passwordless or solo still holds
- * and the session is live), in the revision's own transaction. Anything but a seal (a refusal, or a first vote on
+ * Send back and build for a signed-in approver (everyday 9 A6): the revision approved through the ordinary approve() with
+ * an empty password field (its proof read there, as the Approve button's: a session standing in, a re-check, a password
+ * remembered within its window, each live), in the revision's own transaction. Anything but a seal (a refusal, or a first vote on
  * protected work) is rolled back to nothing, and the revision is then planned and approved as before. Appended here:
  * src/password-freshness.test.ts pins this file's functions by position.
  */
@@ -3654,8 +3656,10 @@ function sessionYesNow(store: Store, child: string, by: string, now: Date): bool
   try {
     return store.savepoint(() => {
       const filed = store.getScope(child);
-      if (filed === null || approvalOf(filed).approved || !passwordlessSessionFor(store, by)) throw NOT_SEALED;
-      if (!approveScope(store, child, by, now, filed.digest, "").ok) throw NOT_SEALED;
+      if (filed === null || approvalOf(filed).approved) throw NOT_SEALED;
+      // The Approve button's own road: approve() reads the proof (session, re-check, remembered password) and its limits.
+      const yes = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => approveScope(store, child, by, now, filed.digest, "")), result => !result.ok);
+      if (!yes.ok) throw NOT_SEALED;
       return true;
     });
   } catch (error) {

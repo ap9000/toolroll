@@ -15,7 +15,8 @@ import { agentSaidOf, releaseProgressFor, shipChecksForTask, type CiCheckRow, ty
 import type { TimingRow } from "../design/kit.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
 import { releaseObligationsOf } from "../release-recheck.js";
-import { approvalProofOf, freshnessFor, passwordlessSessionFor, withFreshness } from "../scope.js";
+import { approvalProofOf, freshnessFor, withFreshness } from "../scope.js";
+import { sessionYesPossible } from "./send-back-build.js";
 import { approvalPasswordField } from "../approval-password.js";
 import { fastChangeProblem, fastStarted } from "../fast-start.js";
 import { routeChangeOf } from "../route-change.js";
@@ -1278,8 +1279,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       publication,
       pullRequestTo: pullRequestTargetOf(run.id),
       // Offered where the send-back's own yes can succeed (tasks.ts runComment): the local owner, or a signed-in approver
-      // whose session stands in for a password (Passwordless, or a solo install). approve() still decides at the press.
-      buildNowOnSendBack: who.via === "cookie" && who.role === "approver" && (who.authority === "local-owner" || passwordlessSessionFor(runtime.store, who.name)),
+      // the Approve button would take with an empty field (send-back-build.ts). approve() still decides at the press.
+      buildNowOnSendBack: who.via === "cookie" && who.role === "approver" && (who.authority === "local-owner" || sessionYesPossible(runtime.store, who.name, true)),
       publishing: pullRequestTargetOf(run.id) !== null ? "pull-request" : publishingOf(runtime.store, runtime.store.refById(run.taskRef)?.repo ?? null).on ? "other" : "off",
       ciFailing: publication !== null && publication.prNumber !== null && runtime.store.hasOpenCiEpisode(publication.githubRepo, publication.prNumber),
       files,

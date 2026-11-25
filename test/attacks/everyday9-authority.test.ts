@@ -11,7 +11,7 @@
  *   session are refused with nothing asked; asking twice is one request; the worker runs it only while the install still
  *   allows it.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
 import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { resultFixtures } from "../local-owner-results.js";
@@ -76,9 +76,10 @@ describe("Build again right away, for a signed-in approver", () => {
     expect(revisions(result.runId)).toHaveLength(1);
   });
 
-  test("Passwordless off (a password is needed): the box approves nothing; the revision is planned and waits for its approval", async () => {
+  test("Passwordless off and no password remembered (Forget): the box approves nothing; the revision is planned and waits for its approval", async () => {
     const session = await fullSession();
     world.store.recordAction({ at: LOCAL_T0.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: "off", source: "policy", detail: "test" });
+    expect((await world.post("/session/forget-password", session.cookie, { csrf: session.csrf, return: "/tasks" })).status).toBe(303);
     const result = fixtures.ready("ordinary");
     expect((await sendBack(session, result, { approve: "1", request: "b".repeat(32) })).status).toBe(303);
     const [child] = revisions(result.runId);
@@ -122,6 +123,41 @@ describe("Build again right away, for a signed-in approver", () => {
     world.store.handle.prepare("DELETE FROM web_session WHERE account = 'alex'").run();
     expect((await sendBack(session, result, { approve: "1", request: "9".repeat(32) })).status).not.toBe(303);
     expect(revisions(result.runId)).toHaveLength(before);
+  });
+});
+
+// Codex round 1, finding 3: the ordinary approval's own proofs decide, on a team install too.
+describe("Build again right away on a team install: the Approve button's empty-field proofs, no more", () => {
+  test("a password typed at sign-in on this computer (within its window) approves the revision, recorded as fresh-password", async () => {
+    secondPerson();
+    expect(soloNow(world.store)).toBe(false);
+    const session = await fullSession();
+    const result = fixtures.ready("ordinary");
+    expect((await sendBack(session, result, { approve: "1", request: "1".repeat(32) })).status).toBe(303);
+    const [child] = revisions(result.runId);
+    expect(approvedNow(child!)).toBe(true);
+    expect(world.store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id = ? AND action = 'approval proved'").all(child!).map(row => row["outcome"])).toEqual(["fresh-password"]);
+  });
+
+  test("the window expired, or Forget: nothing approved, the revision replans", async () => {
+    secondPerson();
+    const session = await fullSession();
+    const later = fixtures.ready("ordinary");
+    const sixteen = Date.now() + 16 * 60_000;
+    vi.spyOn(Date, "now").mockReturnValue(sixteen);
+    try {
+      await sendBack(session, later, { approve: "1", request: "2".repeat(32) });
+    } finally { vi.restoreAllMocks(); }
+    for (const child of revisions(later.runId)) {
+      expect(approvedNow(child)).toBe(false);
+      expect(world.store.lookupRef(child)?.plan).not.toBeNull();
+    }
+    expect((await world.post("/session/forget-password", session.cookie, { csrf: session.csrf, return: "/tasks" })).status).toBe(303);
+    const forgotten = fixtures.ready("ordinary");
+    expect((await sendBack(session, forgotten, { approve: "1", request: "3".repeat(32) })).status).toBe(303);
+    const [child] = revisions(forgotten.runId);
+    expect(approvedNow(child!)).toBe(false);
+    expect(world.store.lookupRef(child!)?.plan).not.toBeNull();
   });
 });
 
