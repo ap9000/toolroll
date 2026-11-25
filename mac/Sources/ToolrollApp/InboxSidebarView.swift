@@ -263,18 +263,20 @@ public struct InboxSidebarView: View {
         let isHomeActive = store.workspaceMode == .workbench && store.isShowingWorkHome
         let pending = store.leadChat.pendingProposals
         return Button {
-            store.openLeadCanvas()
+            store.openWorkHome()
+            Task { await store.refreshLeadChat() }
         } label: {
             HStack(spacing: 8) {
                 if store.leadChat.busy {
                     ToolrollKineticLoader(provider: "lead", height: 11)
                         .frame(width: 16, height: 16)
                 } else {
-                    ToolrollBrandMark(height: 12.5)
-                        .opacity(isHomeActive ? 1.0 : 0.72)
-                        .frame(width: 16, height: 16)
+                    Image(systemName: isHomeActive ? "house.fill" : "house")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isHomeActive ? ToolrollPalette.ink : ToolrollPalette.muted)
+                        .frame(width: 16)
                 }
-                Text(store.leadChat.leadName)
+                Text("Home")
                     .font(.system(size: 12.5, weight: isHomeActive ? .semibold : .medium))
                     .tracking(-0.15)
                     .foregroundStyle(isHomeActive ? ToolrollPalette.ink : ToolrollPalette.ink.opacity(0.85))
@@ -304,8 +306,8 @@ public struct InboxSidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(pending > 0 ? "\(store.leadChat.leadName), \(pending) proposals" : store.leadChat.leadName)
-        .help("\(store.leadChat.leadName) canvas — talk to Lead, or start a Chat or Task (⌘N)")
+        .accessibilityLabel(pending > 0 ? "Home, \(pending) proposals" : "Home")
+        .help("Home — Lead canvas and unified Lead, Chat, or Task launcher (⌘N)")
     }
 
     private var canvasNavRow: some View {

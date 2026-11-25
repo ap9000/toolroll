@@ -179,7 +179,7 @@ public struct MainWorkbenchView: View {
                     } else {
                         ToolrollBrandMark(height: 12.5)
                     }
-                    Text(store.leadChat.leadName)
+                    Text("Home")
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(ToolrollPalette.ink)
                     if let proj = store.selectedProject {
