@@ -79,7 +79,6 @@ public final class WorkbenchStore {
     public private(set) var activeProfile: ConnectionProfile {
         didSet {
             guard oldValue.origin != activeProfile.origin || oldValue.account != activeProfile.account else { return }
-            passwordMemory.forget()
             projectsRead = nil
         }
     }
@@ -92,7 +91,6 @@ public final class WorkbenchStore {
     public var modelPickerTaskId: String?
     public var modelPickerSteps: StepCardsResponse?
     public var pendingModelPick: ModelPick?
-    public let passwordMemory = PasswordMemory()
 
     public var workspaceMode: WorkspaceMode = .workbench {
         didSet { UserDefaults.standard.set(workspaceMode.rawValue, forKey: "toolroll.workspaceMode") }
@@ -1758,7 +1756,7 @@ public final class WorkbenchStore {
             chatShipError = "Connect to your local Toolroll engine to ship."
             return false
         }
-        let pw = effectivePassword(password)
+        let pw = password
         do {
             let res = try await client.executeDirectChatShip(
                 threadId: threadId,
@@ -1878,7 +1876,6 @@ public final class WorkbenchStore {
     }
 
     public func approveProjectWorktreeSetup(repoPath: String, command: String, password: String) async -> Bool {
-        let password = effectivePassword(password)
         let cleanCmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanCmd.isEmpty else {
             notice = WorkbenchNotice(kind: .refusal, message: "Enter a worktree setup command first.")
@@ -2213,13 +2210,11 @@ public final class WorkbenchStore {
     }
 
     public func retryPendingModelChange(password: String) async {
-        let password = effectivePassword(password)
         guard let fields = pendingModelFields else { return }
         await submitModelFields(fields, friendlyLabel: "model selection", password: password)
     }
 
     private func submitModelFields(_ fields: [String: String], friendlyLabel: String, password: String = "") async {
-        let password = effectivePassword(password)
         busyLabel = "Switching to \(friendlyLabel)…"
         modelChangeError = nil
         defer { busyLabel = nil }
@@ -2710,7 +2705,6 @@ public final class WorkbenchStore {
     }
 
     public func approveSelectedTask(password: String = "") async {
-        let password = effectivePassword(password)
         guard let rootTaskId = selectedTaskId else { return }
         let queryTaskId = stepCards?.task.id ?? rootTaskId
         busyLabel = "Approving plan…"
@@ -3628,22 +3622,13 @@ public final class WorkbenchStore {
         notice = WorkbenchNotice(kind: .info, message: "\(touchIDLabel) password removed from Keychain.")
     }
 
-    func effectivePassword(_ typed: String) -> String {
-        guard typed.isEmpty else {
-            passwordMemory.remember(typed, for: passwordOwner)
-            return typed
-        }
-        return passwordMemory.recall(for: passwordOwner) ?? ""
-    }
-
-    var passwordOwner: String { "\(activeProfile.account)|\(activeProfile.origin)" }
-
+    /// The app never remembers a password. An empty password is sent as empty: the server alone decides whether a
+    /// password verified moments ago on this session stands in (docs/guide/security.md: standard plan approval and
+    /// chat messages, 15 minutes, direct local requests only). Every other step-up needs a password typed now or a
+    /// Touch ID unlock that actually runs.
     public func unlockPasswordWithTouchID(reason: String) async -> String? {
-        if let remembered = passwordMemory.recall(for: passwordOwner) { return remembered }
         do {
-            let unlocked = try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
-            passwordMemory.remember(unlocked, for: passwordOwner)
-            return unlocked
+            return try await TouchIDVault.unlockPassword(account: activeProfile.account, reason: reason)
         } catch TouchIDVaultError.cancelled {
             return nil
         } catch {
@@ -3699,7 +3684,6 @@ public final class WorkbenchStore {
     }
 
     public func approveAgentRequest(_ request: AgentRequest, typedPassword: String? = nil) async -> (ok: Bool, message: String) {
-        let typedPassword: String? = { let pw = effectivePassword(typedPassword ?? ""); return pw.isEmpty ? nil : pw }()
         guard let dbPath = resolvedLocalDatabasePath else {
             return (false, "No local Toolroll database connected.")
         }

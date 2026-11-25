@@ -51,7 +51,7 @@ public struct DirectChatShipSheet: View {
                         titleField
                         changedFilesSection(preview)
                         statusSummary(preview)
-                        if selectedMode == "ship" && store.passwordSet == true && store.effectivePassword("").isEmpty {
+                        if selectedMode == "ship" && store.passwordSet == true {
                             passwordField
                         }
                         detailsDisclosure(preview)

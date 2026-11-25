@@ -387,7 +387,6 @@ public struct ProjectSettingsSheet: View {
             badgeActive: store.isTouchIDEnabled,
             subtitle: "Store your Toolroll password in macOS Keychain behind \(store.touchIDLabel) so approving plans, settings, and agent requests takes one tap. Never bypasses server authentication."
         ) {
-            RememberPasswordPicker(memory: store.passwordMemory)
             if !store.isTouchIDAvailable {
                 Text("Touch ID or Mac device-owner authentication is unavailable on this Mac.")
                     .font(.system(size: 11.5))
