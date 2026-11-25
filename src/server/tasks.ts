@@ -1319,10 +1319,19 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       // a refusal) keeps the revised plan's own approval.
       const buildNow = body.get("approve") === "1" && who.via === "cookie" && who.authority === "local-owner" && who.role === "approver";
       const result = requestResultChanges(store, evidenceRoot, {
-        ...(buildNow ? { approveNow: (child: string) => withLocalAct("approve-plan", () => {
-          const filed = store.getScope(child);
-          return filed !== null && !approvalOf(filed).approved && approveScope(store, child, who.name, now, filed.digest, "").ok;
-        }) } : {}),
+        ...(buildNow ? {
+          // Only the exact result this form was drawn for, while it is still its task's current one.
+          currentResult: () => {
+            const task = store.externalIdFor(found.taskRef);
+            const current = task === null ? null : assignmentOf(store, task, now, { principal: "operator", repos: admissionList() }, evidenceRoot);
+            return current !== null && current.activeTaskId === task && current.receipt?.runId === id ? null
+              : "A newer build of this task came in since this page was drawn. Open the current result, then send it back.";
+          },
+          approveNow: (child: string) => withLocalAct("approve-plan", () => {
+            const filed = store.getScope(child);
+            return filed !== null && !approvalOf(filed).approved && approveScope(store, child, who.name, now, filed.digest, "").ok;
+          }),
+        } : {}),
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
         // A browser session is a person's proof; a bearer credential is a machine's.

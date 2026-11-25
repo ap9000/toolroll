@@ -227,6 +227,17 @@ describe("Send back and build, from the browser", () => {
     expect(revisions(result.runId)).toHaveLength(1);
   });
 
+  test("a stale form (a newer build finished under the same task since it was drawn) seals nothing and approves nothing", async () => {
+    const session = await world.localSession();
+    const fixtures = web();
+    const result = fixtures.ready("ordinary");
+    fixtures.rebuild(result.id);
+    const sent = await send(session, result, { approve: "1", request: "e".repeat(32) });
+    expect(sent.status).toBe(409);
+    expect(revisions(result.runId)).toHaveLength(0);
+    expect(notes(result.runId)).toHaveLength(0);
+  });
+
   test("not ticked: planned afresh, waiting for its approval", async () => {
     const session = await world.localSession();
     const result = web().ready("ordinary");
