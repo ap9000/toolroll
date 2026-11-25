@@ -1723,6 +1723,142 @@ public actor ToolrollClient {
         }
         return req
     }
+
+    public func fetchPhoneChannelStatus(channel: PhoneChannel) async throws -> PhoneChannelStatus {
+        guard let path = channel.settingsPath else {
+            return PhoneChannelStatus(channel: channel, botConnected: true, isPaired: false)
+        }
+        return try await renewingStaleSession {
+            let req = try makeRequest(path: path, accept: "text/html")
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode >= 400 {
+                let parsed = PhonePairingParser.parse(html: html, channel: channel)
+                if let problem = parsed.problem {
+                    throw Self.refusal(problem)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not load \(channel.title) settings.")
+            }
+            return PhonePairingParser.parse(html: html, channel: channel)
+        }
+    }
+
+    private func postPhoneSettingsForm(
+        path: String,
+        fields: [(String, String)],
+        channel: PhoneChannel
+    ) async throws -> PhoneChannelStatus {
+        try await renewingStaleSession {
+            guard case .localSession(let s) = transport else {
+                throw ToolrollClientError.refused("Sign in locally to change \(channel.title) phone pairing.")
+            }
+            let formBody = Self.formEncoded([("csrf", s.csrf)] + fields)
+            let req = try makeRequest(
+                path: path,
+                method: "POST",
+                body: Data(formBody.utf8),
+                contentType: "application/x-www-form-urlencoded",
+                accept: "text/html",
+                includeMutationKey: true
+            )
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw ToolrollClientError.unreachable(error.localizedDescription)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw ToolrollClientError.unreachable("No HTTP response")
+            }
+            if http.statusCode == 401 { throw ToolrollClientError.unauthenticated }
+            let redirectOutcome = Self.parseRedirectFeedback(
+                finalURL: http.url,
+                locationHeader: http.value(forHTTPHeaderField: "Location")
+            )
+            if let problem = redirectOutcome.problem {
+                throw Self.refusal(problem)
+            }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode >= 400 {
+                let parsed = PhonePairingParser.parse(html: html, channel: channel)
+                if let problem = parsed.problem {
+                    throw Self.refusal(problem)
+                }
+                throw ToolrollClientError.httpStatus(http.statusCode, "Could not update \(channel.title) pairing.")
+            }
+            let parsed = PhonePairingParser.parse(html: html, channel: channel)
+            if let problem = parsed.problem {
+                throw Self.refusal(problem)
+            }
+            if parsed.pairingCode != nil {
+                return parsed
+            }
+            return try await fetchPhoneChannelStatus(channel: channel)
+        }
+    }
+
+    public func saveTelegramBotToken(token: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/telegram-token",
+            fields: [("token", token), ("password", password)],
+            channel: .telegram
+        )
+    }
+
+    public func connectSlackApp(appToken: String, botToken: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/slack/connect",
+            fields: [("app-token", appToken), ("bot-token", botToken), ("password", password)],
+            channel: .slack
+        )
+    }
+
+    public func connectDiscordBot(botToken: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/discord/connect",
+            fields: [("bot-token", botToken), ("password", password)],
+            channel: .discord
+        )
+    }
+
+    public func connectTeamsApp(appId: String, tenant: String, secret: String, password: String) async throws -> PhoneChannelStatus {
+        try await postPhoneSettingsForm(
+            path: "/settings/teams/connect",
+            fields: [("app-id", appId), ("tenant", tenant), ("secret", secret), ("password", password)],
+            channel: .teams
+        )
+    }
+
+    public func mintPhonePairingCode(channel: PhoneChannel, password: String) async throws -> PhoneChannelStatus {
+        guard let endpoint = channel.pairEndpoint else {
+            throw ToolrollClientError.refused("\(channel.title) does not use a pairing code.")
+        }
+        return try await postPhoneSettingsForm(
+            path: endpoint,
+            fields: [("password", password)],
+            channel: channel
+        )
+    }
+
+    public func unpairPhoneChannel(channel: PhoneChannel, password: String) async throws -> PhoneChannelStatus {
+        guard let endpoint = channel.unpairEndpoint else {
+            throw ToolrollClientError.refused("\(channel.title) cannot be unpaired here.")
+        }
+        return try await postPhoneSettingsForm(
+            path: endpoint,
+            fields: [("password", password)],
+            channel: channel
+        )
+    }
 }
 
 public enum SSEParser {

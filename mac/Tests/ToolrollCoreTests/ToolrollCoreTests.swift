@@ -1299,4 +1299,52 @@ struct ToolrollCoreTests {
         #expect(ToolrollClientError.fullSignInNeeded("Sign in with your password to do this.").errorDescription?.contains("browser") == false)
         #expect(DemoFixtures.steps(for: "t-auth-refresh").headline?.contains("browser") == false)
     }
+
+    @Test("PhonePairingParser decodes Telegram, Slack, Discord, and Teams settings states and minted pairing codes")
+    func phonePairingParserDecodesAllStates() {
+        let tgEmpty = """
+        <section id="telegram-bot"><h2>1. Bot token <span> · Not saved</span></h2><p>No Telegram bot is connected yet.</p></section>
+        """
+        let s1 = PhonePairingParser.parse(html: tgEmpty, channel: .telegram)
+        #expect(s1.botConnected == false)
+        #expect(s1.isPaired == false)
+        #expect(s1.pairingCode == nil)
+
+        let tgCode = """
+        <section id="telegram-bot"><h2>1. Bot token <span> · Saved</span></h2></section>
+        <section id="telegram-pair"><h2>2. Pair your phone <span> · Code ready</span></h2><code class="k-mono">/pair ABCD-1234</code></section>
+        """
+        let s2 = PhonePairingParser.parse(html: tgCode, channel: .telegram)
+        #expect(s2.botConnected == true)
+        #expect(s2.isPaired == false)
+        #expect(s2.pairingCode == "/pair ABCD-1234")
+
+        let tgPaired = """
+        <section id="telegram-bot"><h2>1. Bot token <span> · Saved</span></h2></section>
+        <section id="telegram-pair"><p>Your phone is paired. No teammates are paired yet.</p><form id="telegram-unpair-form"></form></section>
+        """
+        let s3 = PhonePairingParser.parse(html: tgPaired, channel: .telegram)
+        #expect(s3.botConnected == true)
+        #expect(s3.isPaired == true)
+        #expect(s3.isLive == true)
+
+        let slackCode = """
+        <section id="connection"><h2>Acme Workspace <span class="k-chip">Connected</span></h2></section>
+        <section id="pair"><code class="k-mono">pair WXYZ-9876</code></section>
+        """
+        let s4 = PhonePairingParser.parse(html: slackCode, channel: .slack)
+        #expect(s4.botConnected == true)
+        #expect(s4.isLive == true)
+        #expect(s4.isPaired == false)
+        #expect(s4.workspaceLabel == "Acme Workspace")
+        #expect(s4.pairingCode == "pair WXYZ-9876")
+
+        let discordError = """
+        <p class="k-notice" role="alert">Enter your Toolroll password to change your phone pairing.</p>
+        <section id="connect"><form id="connect-form"></form></section>
+        """
+        let s5 = PhonePairingParser.parse(html: discordError, channel: .discord)
+        #expect(s5.botConnected == false)
+        #expect(s5.problem == "Enter your Toolroll password to change your phone pairing.")
+    }
 }

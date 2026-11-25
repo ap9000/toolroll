@@ -801,7 +801,7 @@ struct WorkspaceMenu: View {
                 Task { _ = await store.connectToLocalConsoleIfAvailable(silent: false) }
             }
             Button("Connect Remote Workspace…") { store.isPairSheetOpen = true }
-            Button("Pair Phone for Push Alerts…") { store.isPhonePairSheetOpen = true }
+            Button("Pair Phone (Telegram / Slack / Discord)…") { store.isPhonePairSheetOpen = true }
             Button("Appearance & Themes…") { store.isAppearanceSheetOpen = true }
             if !store.activeProfile.isDemo {
                 Divider()
