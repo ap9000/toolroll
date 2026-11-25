@@ -15,6 +15,11 @@ public struct AgentChatView: View {
     @State private var isComposerDropTargeted: Bool = false
     @State private var expandedToolMessageIds: Set<String> = []
     @State private var selectedDiffFileFilter: String? = nil
+    @State private var diffSelectionFile: String? = nil
+    @State private var diffSelectionStart: Int? = nil
+    @State private var diffSelectionEnd: Int? = nil
+    @State private var diffCommentDraft: String = ""
+    @State private var isDiffBatchExpanded: Bool = false
     @State private var isPosturePopoverOpen: Bool = false
     @State private var isUsagePopoverOpen: Bool = false
     @State private var lightboxSelection: DirectChatGallerySelection? = nil
@@ -62,6 +67,50 @@ public struct AgentChatView: View {
         store.chatThreadDiffs[thread.id] ?? AgentChatGitDiff()
     }
 
+    private var activeScopedDiff: AgentChatGitDiff {
+        store.activeChatDiff(for: thread.id)
+    }
+
+    private var parsedDiffFiles: [ParsedUnifiedDiffFile] {
+        let all = DiffReviewEngine.parseUnifiedDiff(activeScopedDiff.diffText)
+        guard let targetFile = selectedDiffFileFilter else { return all }
+        let matched = all.filter { $0.path == targetFile || $0.path.hasSuffix("/\(targetFile)") }
+        return matched.isEmpty ? all : matched
+    }
+
+    private var queuedReviewComments: [InlineDiffComment] {
+        store.pendingChatReviewComments[thread.id] ?? []
+    }
+
+    private func chatSelectionRange(for filePath: String) -> ClosedRange<Int>? {
+        guard diffSelectionFile == filePath, let start = diffSelectionStart else { return nil }
+        let end = diffSelectionEnd ?? start
+        return min(start, end)...max(start, end)
+    }
+
+    private func handleChatDiffLineClick(filePath: String, line: Int) {
+        let shiftHeld = NSEvent.modifierFlags.contains(.shift)
+        if shiftHeld, diffSelectionFile == filePath, let anchor = diffSelectionStart {
+            diffSelectionEnd = (line == anchor) ? nil : line
+            return
+        }
+        if diffSelectionFile == filePath && diffSelectionStart == line && diffSelectionEnd == nil {
+            clearChatDiffSelection()
+        } else {
+            diffSelectionFile = filePath
+            diffSelectionStart = line
+            diffSelectionEnd = nil
+            diffCommentDraft = ""
+        }
+    }
+
+    private func clearChatDiffSelection() {
+        diffSelectionFile = nil
+        diffSelectionStart = nil
+        diffSelectionEnd = nil
+        diffCommentDraft = ""
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             workspaceStatusStrip
@@ -86,7 +135,7 @@ public struct AgentChatView: View {
                 HairlineDivider()
             }
 
-            if store.isChatDiffDrawerOpen && !gitDiff.isEmpty {
+            if store.isChatDiffDrawerOpen && (!gitDiff.isEmpty || !activeScopedDiff.isEmpty || !queuedReviewComments.isEmpty) {
                 diffPreviewDrawer
                 HairlineDivider()
             }
@@ -455,34 +504,55 @@ public struct AgentChatView: View {
         .background(tone.opacity(0.08))
     }
 
-    private var filteredDiffLines: [String] {
-        let rawLines = gitDiff.diffText.components(separatedBy: "\n")
-        guard let targetFile = selectedDiffFileFilter else { return rawLines }
-        var out: [String] = []
-        var inSection = false
-        for line in rawLines {
-            if line.hasPrefix("diff --git ") {
-                inSection = line.contains("b/\(targetFile)") || line.contains(targetFile)
-            }
-            if inSection { out.append(line) }
-        }
-        return out.isEmpty ? rawLines : out
-    }
-
     private var diffPreviewDrawer: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let shownDiff = activeScopedDiff
+        let parsed = parsedDiffFiles
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Changed files (\(gitDiff.changedFiles.count))")
+                Text("Changed files (\(shownDiff.changedFiles.count))")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(ToolrollPalette.ink)
+
+                HStack(spacing: 2) {
+                    ForEach(DiffScopeMode.allCases, id: \.self) { mode in
+                        let active = store.chatDiffScope == mode
+                        Button {
+                            clearChatDiffSelection()
+                            selectedDiffFileFilter = nil
+                            Task { await store.setChatDiffScope(mode, threadId: thread.id) }
+                        } label: {
+                            Text(mode.title)
+                                .font(.system(size: 10.5, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? ToolrollPalette.ink : ToolrollPalette.muted)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2.5)
+                                .background(active ? ToolrollPalette.ground : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+
                 Spacer()
+
+                Text("Shift-click lines to comment range")
+                    .font(.system(size: 10))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.85))
+
                 Button("Ship (⌘⏎)") {
                     Task { await store.openChatShipSheet(threadId: thread.id) }
                 }
                 .buttonStyle(KitButtonStyle(.primary, compact: true))
                 .disabled(isRunning)
                 Button("Refresh") {
-                    Task { await store.refreshDirectChatDetail(threadId: thread.id) }
+                    Task {
+                        await store.refreshDirectChatDetail(threadId: thread.id)
+                        if store.chatDiffScope == .turn {
+                            await store.setChatDiffScope(.turn, threadId: thread.id)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
@@ -493,27 +563,80 @@ public struct AgentChatView: View {
                     .foregroundStyle(ToolrollPalette.muted)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    diffFilterChip(label: "All (\(gitDiff.changedFiles.count))", isSelected: selectedDiffFileFilter == nil) {
-                        selectedDiffFileFilter = nil
-                    }
-                    ForEach(gitDiff.changedFiles.prefix(24), id: \.self) { file in
-                        diffFilterChip(
-                            label: (file as NSString).lastPathComponent,
-                            isSelected: selectedDiffFileFilter == file
-                        ) {
-                            selectedDiffFileFilter = (selectedDiffFileFilter == file) ? nil : file
+            if !shownDiff.changedFiles.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        diffFilterChip(label: "All (\(shownDiff.changedFiles.count))", isSelected: selectedDiffFileFilter == nil) {
+                            selectedDiffFileFilter = nil
                         }
-                        .help(file)
+                        ForEach(shownDiff.changedFiles.prefix(24), id: \.self) { file in
+                            let queuedCount = queuedReviewComments.filter { $0.path == file }.count
+                            let chipLabel = queuedCount > 0
+                                ? "\((file as NSString).lastPathComponent) (\(queuedCount))"
+                                : (file as NSString).lastPathComponent
+                            diffFilterChip(
+                                label: chipLabel,
+                                isSelected: selectedDiffFileFilter == file
+                            ) {
+                                selectedDiffFileFilter = (selectedDiffFileFilter == file) ? nil : file
+                            }
+                            .help(file)
+                        }
                     }
                 }
             }
 
-            if !gitDiff.diffText.isEmpty {
+            if !parsed.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(parsed) { file in
+                            VStack(alignment: .leading, spacing: 0) {
+                                HStack(spacing: 6) {
+                                    Text(file.path)
+                                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.ink)
+                                    if file.added > 0 {
+                                        Text("+\(file.added)")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.success)
+                                    }
+                                    if file.removed > 0 {
+                                        Text("-\(file.removed)")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(ToolrollPalette.danger)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(ToolrollPalette.raised)
+
+                                ForEach(file.hunks) { hunk in
+                                    Text(hunk.header)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(ToolrollPalette.live)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 2)
+                                        .background(ToolrollPalette.live.opacity(0.06))
+
+                                    ForEach(hunk.lines) { line in
+                                        chatDiffLineRow(line: line, filePath: file.path, hunkLines: hunk.lines)
+                                    }
+                                }
+                            }
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ToolrollPalette.line, lineWidth: 0.75))
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxHeight: 280)
+                .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            } else if !shownDiff.diffText.isEmpty {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(Array(filteredDiffLines.enumerated()), id: \.offset) { _, line in
+                        ForEach(Array(shownDiff.diffText.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
                             Text(line.isEmpty ? " " : line)
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(diffLineForeground(line))
@@ -529,11 +652,229 @@ public struct AgentChatView: View {
                 .frame(maxHeight: 240)
                 .background(ToolrollPalette.codeBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            } else if store.chatDiffScope == .turn {
+                Text("The last turn made no file changes. Switch to Branch to see earlier changes.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ToolrollPalette.muted)
+                    .padding(.vertical, 6)
+            }
+
+            if !queuedReviewComments.isEmpty {
+                chatReviewBatchBar
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(ToolrollPalette.raised)
+    }
+
+    private func chatDiffLineRow(line: DiffLine, filePath: String, hunkLines: [DiffLine]) -> some View {
+        let targetLine = line.newLine ?? line.oldLine
+        let activeRange = chatSelectionRange(for: filePath)
+        let isSelected = targetLine.map { activeRange?.contains($0) ?? false } ?? false
+        let isComposerAnchor = targetLine != nil && activeRange?.upperBound == targetLine
+        let queuedAtLine = targetLine.map { ln in
+            queuedReviewComments.filter { $0.path == filePath && ($0.endLine ?? $0.line) == ln }
+        } ?? []
+        let prefix = line.isAddition ? "+" : (line.isDeletion ? "-" : " ")
+        let rowBg: Color = isSelected
+            ? ToolrollPalette.live.opacity(0.16)
+            : (line.isAddition
+                ? ToolrollPalette.success.opacity(0.11)
+                : (line.isDeletion ? ToolrollPalette.danger.opacity(0.11) : .clear))
+        let fg: Color = line.isAddition
+            ? ToolrollPalette.success
+            : (line.isDeletion ? ToolrollPalette.danger : ToolrollPalette.ink.opacity(0.88))
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                if let ln = targetLine {
+                    Button {
+                        handleChatDiffLineClick(filePath: filePath, line: ln)
+                    } label: {
+                        Image(systemName: !queuedAtLine.isEmpty ? "text.bubble.fill" : "plus")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(isSelected || !queuedAtLine.isEmpty ? ToolrollPalette.live : ToolrollPalette.muted)
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Comment on line \(ln) (Shift-click to select range)")
+                } else {
+                    Color.clear.frame(width: 14, height: 14)
+                }
+
+                Text(line.oldLine.map(String.init) ?? "")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
+                    .frame(width: 26, alignment: .trailing)
+
+                Text(line.newLine.map(String.init) ?? "")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(ToolrollPalette.muted.opacity(0.7))
+                    .frame(width: 26, alignment: .trailing)
+
+                Text(prefix)
+                    .font(.system(size: 10.5, weight: (line.isAddition || line.isDeletion) ? .bold : .regular, design: .monospaced))
+                    .foregroundStyle(fg)
+                    .frame(width: 10, alignment: .center)
+
+                Text(line.text.isEmpty ? " " : line.text)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(fg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(rowBg)
+
+            if isComposerAnchor, let range = activeRange {
+                let rangeLabel = range.lowerBound == range.upperBound ? "L\(range.lowerBound)" : "L\(range.lowerBound)-\(range.upperBound)"
+                HStack(spacing: 6) {
+                    Text(rangeLabel)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ToolrollPalette.live)
+                    TextField("Comment for follow-up batch…", text: $diffCommentDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.ink)
+                        .onSubmit {
+                            let trimmed = diffCommentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            let snippet = DiffReviewEngine.extractSnippet(from: hunkLines, startLine: range.lowerBound, endLine: range.upperBound)
+                            store.queueChatReviewComment(
+                                threadId: thread.id,
+                                path: filePath,
+                                startLine: range.lowerBound,
+                                endLine: range.lowerBound == range.upperBound ? nil : range.upperBound,
+                                snippet: snippet,
+                                text: trimmed
+                            )
+                            clearChatDiffSelection()
+                        }
+                    Button("Queue") {
+                        let trimmed = diffCommentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        let snippet = DiffReviewEngine.extractSnippet(from: hunkLines, startLine: range.lowerBound, endLine: range.upperBound)
+                        store.queueChatReviewComment(
+                            threadId: thread.id,
+                            path: filePath,
+                            startLine: range.lowerBound,
+                            endLine: range.lowerBound == range.upperBound ? nil : range.upperBound,
+                            snippet: snippet,
+                            text: trimmed
+                        )
+                        clearChatDiffSelection()
+                    }
+                    .buttonStyle(KitButtonStyle(.primary, compact: true))
+                    .disabled(diffCommentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Cancel") {
+                        clearChatDiffSelection()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(ToolrollPalette.muted)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(ToolrollPalette.raised)
+            }
+
+            ForEach(queuedAtLine) { item in
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.badge.checkmark")
+                        .font(.system(size: 9))
+                        .foregroundStyle(ToolrollPalette.live)
+                    Text("L\(item.lineRangeLabel): \(item.text)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ToolrollPalette.ink)
+                    Spacer()
+                    Button {
+                        store.removeChatReviewComment(threadId: thread.id, id: item.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(ToolrollPalette.muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(ToolrollPalette.live.opacity(0.08))
+            }
+        }
+    }
+
+    private var chatReviewBatchBar: some View {
+        let queued = queuedReviewComments
+        let fileCount = Set(queued.map(\.path)).count
+        return VStack(alignment: .leading, spacing: 6) {
+            if isDiffBatchExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(queued) { item in
+                        HStack(spacing: 6) {
+                            Text("\((item.path as NSString).lastPathComponent):\(item.lineRangeLabel)")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.live)
+                            Text(item.text)
+                                .font(.system(size: 11))
+                                .foregroundStyle(ToolrollPalette.ink)
+                                .lineLimit(1)
+                            Spacer()
+                            Button {
+                                store.removeChatReviewComment(threadId: thread.id, id: item.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(ToolrollPalette.paper, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ToolrollPalette.line, lineWidth: 1))
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        isDiffBatchExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isDiffBatchExpanded ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("\(queued.count) review \(queued.count == 1 ? "comment" : "comments") across \(fileCount) \(fileCount == 1 ? "file" : "files")")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(ToolrollPalette.ink)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button("Clear") {
+                    store.clearChatReviewComments(threadId: thread.id)
+                    isDiffBatchExpanded = false
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(ToolrollPalette.muted)
+
+                Button("Send Batch (⌘⏎)") {
+                    isDiffBatchExpanded = false
+                    Task { await store.sendQueuedChatReviewBatch(threadId: thread.id) }
+                }
+                .buttonStyle(KitButtonStyle(.primary, compact: true))
+                .disabled(isRunning)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(ToolrollPalette.ground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolrollPalette.live.opacity(0.35), lineWidth: 1))
     }
 
     private func diffFilterChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {

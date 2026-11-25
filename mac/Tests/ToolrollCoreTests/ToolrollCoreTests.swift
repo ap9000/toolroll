@@ -1299,4 +1299,54 @@ struct ToolrollCoreTests {
         #expect(ToolrollClientError.fullSignInNeeded("Sign in with your password to do this.").errorDescription?.contains("browser") == false)
         #expect(DemoFixtures.steps(for: "t-auth-refresh").headline?.contains("browser") == false)
     }
+
+    @Test("DiffReviewEngine parses unified git diffs with line numbers and formats multi-file line-range review batches")
+    func diffReviewEngineParsesUnifiedDiffAndFormatsBatch() {
+        let patch = """
+        diff --git a/src/auth.ts b/src/auth.ts
+        index 1111111..2222222 100644
+        --- a/src/auth.ts
+        +++ b/src/auth.ts
+        @@ -10,3 +10,4 @@ export function refresh() {
+         const now = Date.now();
+        -return oldToken();
+        +if (!token) return null;
+        +return renew(token, now);
+        diff --git a/src/ui.swift b/src/ui.swift
+        new file mode 100644
+        --- /dev/null
+        +++ b/src/ui.swift
+        @@ -0,0 +1,2 @@
+        +let title = "Toolroll"
+        +print(title)
+        """
+
+        let files = DiffReviewEngine.parseUnifiedDiff(patch)
+        #expect(files.count == 2)
+        #expect(files[0].path == "src/auth.ts")
+        #expect(files[0].added == 2)
+        #expect(files[0].removed == 1)
+        #expect(files[0].hunks.count == 1)
+        #expect(files[0].hunks[0].lines.count == 4)
+        #expect(files[0].hunks[0].lines[2].newLine == 11)
+        #expect(files[0].hunks[0].lines[3].newLine == 12)
+        #expect(files[1].path == "src/ui.swift")
+        #expect(files[1].added == 2)
+
+        let snippet = DiffReviewEngine.extractSnippet(from: files[0].hunks[0].lines, startLine: 11, endLine: 12)
+        #expect(snippet?.contains("if (!token) return null;") == true)
+        #expect(snippet?.contains("return renew(token, now);") == true)
+
+        let c1 = InlineDiffComment(path: "src/auth.ts", line: 12, endLine: 11, snippet: snippet, text: "Check expiry before renew.")
+        let c2 = InlineDiffComment(path: "src/ui.swift", line: 1, text: "Use localized string.")
+        #expect(c1.lineRangeLabel == "11-12")
+        #expect(c1.covers(line: 11) && c1.covers(line: 12) && !c1.covers(line: 13))
+        #expect(c2.lineRangeLabel == "1")
+
+        let prompt = DiffReviewEngine.formatBatchPrompt(comments: [c1, c2])
+        #expect(prompt.contains("1. `src/auth.ts:11-12`"))
+        #expect(prompt.contains("Check expiry before renew."))
+        #expect(prompt.contains("2. `src/ui.swift:1`"))
+        #expect(prompt.contains("Use localized string."))
+    }
 }

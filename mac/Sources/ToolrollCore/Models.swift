@@ -2204,15 +2204,50 @@ public struct LiveRunWindowResponse: Codable, Sendable, Equatable {
 }
 
 public struct InlineDiffComment: Sendable, Equatable, Identifiable {
-    public let id = UUID()
+    public let id: UUID
     public let path: String
     public let line: Int
+    public let endLine: Int?
+    public let snippet: String?
     public let text: String
 
-    public init(path: String, line: Int, text: String) {
+    public init(
+        id: UUID = UUID(),
+        path: String,
+        line: Int,
+        endLine: Int? = nil,
+        snippet: String? = nil,
+        text: String
+    ) {
+        self.id = id
         self.path = path
-        self.line = line
+        if let endLine, endLine < line {
+            self.line = endLine
+            self.endLine = line
+        } else {
+            self.line = line
+            self.endLine = (endLine != nil && endLine != line) ? endLine : nil
+        }
+        self.snippet = snippet
         self.text = text
+    }
+
+    public var lineRangeLabel: String {
+        if let endLine, endLine != line {
+            return "\(line)-\(endLine)"
+        }
+        return "\(line)"
+    }
+
+    public var locationLabel: String {
+        "\(path):\(lineRangeLabel)"
+    }
+
+    public func covers(line target: Int) -> Bool {
+        if let endLine {
+            return target >= line && target <= endLine
+        }
+        return target == line
     }
 }
 
