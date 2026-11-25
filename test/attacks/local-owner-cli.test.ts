@@ -58,7 +58,7 @@ describe("CLI commands as the local owner", () => {
       "memory decisions": "read", "memory show": "read", "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review",
       "memory unmerge": "memory-review", "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read",
       welcome: "read", "task add": "file-task", "task new": "build-now", chat: "lead-send", "task steer": "lead-send", "task approve": "approve-plan", decide: "answer-question",
-      "task stop": "stop-run", "task pause": "pause-run", "task hold": "pause-run", "task resume": "resume-run", "task continue": "resume-run", "task unhold": "resume-run",
+      "task stop": "stop-run", "task pause": "pause-run", "task hold": "pause-run", "task land": "land-task", "task resume": "resume-run", "task continue": "resume-run", "task unhold": "resume-run",
       // Slice 1: the terminal's Accept is this row's own road (task-outcome-cli.ts runLocalCompletion), never the password road.
       "task complete": "complete-task", "task revise": "request-revision",
       // Slice 2: asking for a plan is its own road (operate.ts localPlanCommand): no password, no pins, no pre-authorization.
