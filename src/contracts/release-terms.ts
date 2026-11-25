@@ -84,7 +84,13 @@ export function storedReleaseTerms(raw: unknown): { ok: true; terms: ReleaseTerm
  * digest when present; read strictly. A scope carries terms or this purpose, never both.
  */
 export const releaseCheckPurposeSchema = versioned(1, {
-  purpose: z.literal("release-check"),
+  /** `main-release` (docs/plans/release-from-main.md): the release commit is main's own squash merge of the release pull
+   * request, proven with publish.yml's proof; its check is the deploy check (or, `check: "full"`, the full one). A plane
+   * that doesn't know it reads the row as a problem, never as a release check it can run. */
+  purpose: z.enum(["release-check", "main-release"]),
+  /** A main release's check: `deploy` (build, upgrade a copy of the live database, start against it) or `full`. Only
+   * with purpose main-release. */
+  check: z.enum(["deploy", "full"]).optional(),
   repo: z.string().min(1).max(4096),
   packageVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
   branch: z.string().min(1).max(255).regex(/^[A-Za-z0-9._/-]+$/),
@@ -98,7 +104,16 @@ export const releaseCheckPurposeSchema = versioned(1, {
 export type ReleaseCheckPurpose = z.infer<typeof releaseCheckPurposeSchema>;
 
 export function readReleaseCheckPurpose(input: unknown): ContractResult<ReleaseCheckPurpose> {
-  return readVersioned(releaseCheckPurposeSchema, input);
+  const read = readVersioned(releaseCheckPurposeSchema, input);
+  // The check belongs to a main release, and a main release always names it.
+  if (read.ok && (read.value.purpose === "main-release") !== (read.value.check !== undefined)) return { ok: false, issues: [{ path: "check", kind: "invalid", line: "check: only a main release names its check, and it always does" }] };
+  return read;
+}
+
+/** The check a release check's purpose asks the plane to run: the deploy check only for a main release that asked for it. */
+export function purposeCheckMode(purpose: ReleaseCheckPurpose | null | undefined): "deploy" | "full" | null {
+  if (purpose == null) return null;
+  return purpose.purpose === "main-release" && purpose.check === "deploy" ? "deploy" : "full";
 }
 
 /** The digest a scope binds for its release check purpose, domain-separated from the terms' and every other input. */

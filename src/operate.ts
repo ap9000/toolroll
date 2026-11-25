@@ -1015,6 +1015,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "diagnostic", "keep",
   // task scope --release ... --no-carry: every later commit asks again.
   "no-carry",
+  // task scope --release ... --from-main [--full-check]: a release from main (release-from-main.md).
+  "from-main", "full-check",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "single-process", "laptop", "web", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
@@ -10971,11 +10973,25 @@ async function scopeTask(
   let releaseTerms: ReleaseTerms | undefined;
   let releaseCheck: ReleaseCheckPurpose | undefined;
   let releaseNote: string | null = null;
+  const fromMain = flags.get("from-main") === true;
+  if ((fromMain || flags.get("full-check") === true) && releaseGiven === undefined) return fail(write, json, "task scope", "usage", "--from-main and --full-check go with --release <version>:<pull request>:<branch>", EXIT.usage);
+  if (flags.get("full-check") === true && !fromMain) return fail(write, json, "task scope", "usage", "--full-check goes with --from-main", EXIT.usage);
   if (releaseGiven !== undefined) {
     const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven);
     if (spec === null || candidateGiven === undefined) return fail(write, json, "task scope", "usage", "--release takes <version>:<pull request>:<branch>, with --candidate <commit>", EXIT.usage);
     const repo = store.lookupRef(id)?.repo ?? null;
     if (repo === null) return fail(write, json, "task scope", "usage", "a release scope's task has to be placed in its project first", EXIT.usage);
+    // A release from main (docs/plans/release-from-main.md): never terms (nothing carries; the commit never moves), always
+    // its purpose, sealed with the check it runs. One that can't be made refuses, rather than file a release check.
+    if (fromMain) {
+      const purpose = releaseCheckPurposeFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, main: { check: flags.get("full-check") === true ? "full" : "deploy" } });
+      if (!purpose.ok) return fail(write, json, "task scope", "refused", `This release from main can't be filed: ${purpose.why}.`, EXIT.refused);
+      releaseCheck = purpose.purpose;
+    }
+  }
+  if (releaseGiven !== undefined && candidateGiven !== undefined && !fromMain) {
+    const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven)!;
+    const repo = store.lookupRef(id)!.repo!;
     const made = releaseTermsFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, now, noCarry: flags.get("no-carry") === true });
     if (made.ok) releaseTerms = made.terms;
     else {
@@ -14393,7 +14409,8 @@ async function releaseApproveCommand(positional: readonly string[], flags: Map<s
   const stateDir = dirname(context.databaseFile);
   const { journals, unreadable } = waitingJournals(stateDir, name => journalFile(stateDir, name));
   // The exact branch asked for, never another that shares its file name (feature/foo and feature_foo).
-  const named = branch === undefined ? journals : journals.filter(one => one.branch === branch);
+  // A version names the release from main of that version (release-from-main.md).
+  const named = branch === undefined ? journals : journals.filter(one => one.branch === branch || (/^\d+\.\d+\.\d+$/.test(branch) && one.version === branch && one.file.endsWith(`/from-main/${branch}.json`)));
   if (branch !== undefined && named.length === 0 && unreadable.includes(basename(journalFile(stateDir, branch)))) {
     return fail(write, json, command, "unreadable", `${branch}'s release journal can't be read as one; nothing was approved. Run \`toolroll release ${branch}\` again.`, EXIT.refused);
   }
