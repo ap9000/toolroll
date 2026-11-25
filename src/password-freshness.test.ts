@@ -573,9 +573,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@13": 1,
     // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
     "src/server/engine-api.ts#<module>": 2,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@13": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@21": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@25": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@15": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@23": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@27": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
@@ -807,8 +807,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>sendScreen@130": 2,
     "src/serve.ts#createDecisionServer@1>sendScreen@130>workspace@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 2,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadTurn@21": 1,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadShipSendBack@25": 1,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@10": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
