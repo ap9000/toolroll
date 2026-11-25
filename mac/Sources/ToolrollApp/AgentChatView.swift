@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 import ToolrollCore
 
+private struct DirectChatGallerySelection: Identifiable, Equatable {
+    let id = UUID()
+    let artifacts: [DirectChatArtifact]
+    let initialIndex: Int
+}
+
 public struct AgentChatView: View {
     @Bindable var store: WorkbenchStore
     let thread: AgentChatThread
@@ -10,7 +16,7 @@ public struct AgentChatView: View {
     @State private var expandedToolMessageIds: Set<String> = []
     @State private var selectedDiffFileFilter: String? = nil
     @State private var isPosturePopoverOpen: Bool = false
-    @State private var lightboxArtifact: DirectChatArtifact? = nil
+    @State private var lightboxSelection: DirectChatGallerySelection? = nil
     @FocusState private var replyFocused: Bool
 
     public init(store: WorkbenchStore, thread: AgentChatThread) {
@@ -121,8 +127,12 @@ public struct AgentChatView: View {
                 Task { await store.refreshDirectChatDetail(threadId: thread.id) }
             }
         }
-        .sheet(item: $lightboxArtifact) { artifact in
-            DirectChatArtifactLightbox(store: store, artifact: artifact)
+        .sheet(item: $lightboxSelection) { selection in
+            DirectChatArtifactLightbox(
+                store: store,
+                artifacts: selection.artifacts,
+                initialIndex: selection.initialIndex
+            )
         }
     }
 
@@ -446,12 +456,26 @@ public struct AgentChatView: View {
         }
     }
 
+    private func artifactDisplayLabel(_ artifact: DirectChatArtifact, index: Int) -> String {
+        if artifact.filename.hasPrefix("tool-capture-") {
+            return "Screenshot \(index + 1)"
+        }
+        return artifact.filename
+    }
+
     private func artifactGallery(_ artifacts: [DirectChatArtifact]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(artifacts) { artifact in
-                    DirectChatArtifactCard(store: store, artifact: artifact) {
-                        lightboxArtifact = artifact
+                ForEach(Array(artifacts.enumerated()), id: \.element.id) { idx, artifact in
+                    DirectChatArtifactCard(
+                        store: store,
+                        artifact: artifact,
+                        label: artifactDisplayLabel(artifact, index: idx)
+                    ) {
+                        lightboxSelection = DirectChatGallerySelection(
+                            artifacts: artifacts,
+                            initialIndex: idx
+                        )
                     }
                 }
             }
@@ -750,6 +774,7 @@ public struct AgentChatView: View {
 private struct DirectChatArtifactCard: View {
     @Bindable var store: WorkbenchStore
     let artifact: DirectChatArtifact
+    let label: String
     let onOpen: () -> Void
 
     @State private var loadedImage: NSImage? = nil
@@ -778,7 +803,7 @@ private struct DirectChatArtifactCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ToolrollPalette.line, lineWidth: 1))
 
-                Text(artifact.filename)
+                Text(label)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(ToolrollPalette.ink)
                     .lineLimit(1)
@@ -799,25 +824,101 @@ private struct DirectChatArtifactCard: View {
 
 private struct DirectChatArtifactLightbox: View {
     @Bindable var store: WorkbenchStore
-    let artifact: DirectChatArtifact
+    let artifacts: [DirectChatArtifact]
     @Environment(\.dismiss) private var dismiss
 
-    @State private var loadedImage: NSImage? = nil
+    @State private var currentIndex: Int
+    @State private var loadedImages: [String: NSImage] = [:]
+    @FocusState private var galleryFocused: Bool
+
+    init(store: WorkbenchStore, artifacts: [DirectChatArtifact], initialIndex: Int) {
+        self.store = store
+        self.artifacts = artifacts
+        let clamped = max(0, min(initialIndex, max(0, artifacts.count - 1)))
+        self._currentIndex = State(initialValue: clamped)
+    }
+
+    private var currentArtifact: DirectChatArtifact? {
+        guard artifacts.indices.contains(currentIndex) else { return nil }
+        return artifacts[currentIndex]
+    }
+
+    private var canGoPrevious: Bool { currentIndex > 0 }
+    private var canGoNext: Bool { currentIndex + 1 < artifacts.count }
+
+    private func labelFor(_ artifact: DirectChatArtifact, index: Int) -> String {
+        if artifact.filename.hasPrefix("tool-capture-") {
+            return "Screenshot \(index + 1)"
+        }
+        return artifact.filename
+    }
+
+    private func step(_ delta: Int) {
+        let next = currentIndex + delta
+        guard artifacts.indices.contains(next) else { return }
+        withAnimation(.easeOut(duration: 0.14)) {
+            currentIndex = next
+        }
+    }
+
+    private func loadImage(for artifact: DirectChatArtifact) async {
+        guard artifact.isImage, loadedImages[artifact.url] == nil else { return }
+        if let data = await store.loadDirectChatArtifactData(for: artifact),
+           let img = NSImage(data: data) {
+            loadedImages[artifact.url] = img
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(artifact.filename)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(ToolrollPalette.ink)
-                    if let src = artifact.sourcePath, !src.isEmpty {
-                        Text(src)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(ToolrollPalette.muted)
+            HStack(spacing: 10) {
+                if let artifact = currentArtifact {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(labelFor(artifact, index: currentIndex))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(ToolrollPalette.ink)
+                            if artifacts.count > 1 {
+                                Text("\(currentIndex + 1) / \(artifacts.count)")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(ToolrollPalette.muted)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(ToolrollPalette.ground, in: Capsule())
+                            }
+                        }
+                        if let src = artifact.sourcePath, !src.isEmpty {
+                            Text(src)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ToolrollPalette.muted)
+                        }
                     }
                 }
+
                 Spacer()
+
+                if artifacts.count > 1 {
+                    HStack(spacing: 4) {
+                        Button { step(-1) } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 24)
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                        .disabled(!canGoPrevious)
+                        .help("Previous image (←)")
+
+                        Button { step(1) } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 24)
+                        }
+                        .buttonStyle(KitButtonStyle(.ghost, compact: true))
+                        .disabled(!canGoNext)
+                        .help("Next image (→)")
+                    }
+                }
+
                 Button("Close") { dismiss() }
                     .buttonStyle(KitButtonStyle(.ghost, compact: true))
             }
@@ -829,23 +930,129 @@ private struct DirectChatArtifactLightbox: View {
 
             ZStack {
                 ToolrollPalette.ground
-                if let img = loadedImage {
+                if let artifact = currentArtifact, let img = loadedImages[artifact.url] {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .padding(20)
+                        .padding(.horizontal, artifacts.count > 1 ? 56 : 20)
+                        .padding(.vertical, 18)
+                        .id(artifact.id)
                 } else {
                     ProgressView()
                 }
+
+                if artifacts.count > 1 {
+                    HStack {
+                        galleryEdgeArrow(systemName: "chevron.left", enabled: canGoPrevious) {
+                            step(-1)
+                        }
+                        Spacer()
+                        galleryEdgeArrow(systemName: "chevron.right", enabled: canGoNext) {
+                            step(1)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(width: 760, height: 540)
-        .task(id: artifact.url) {
-            if let data = await store.loadDirectChatArtifactData(for: artifact),
-               let img = NSImage(data: data) {
-                loadedImage = img
+
+            if artifacts.count > 1 {
+                HairlineDivider()
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(artifacts.enumerated()), id: \.element.id) { idx, item in
+                                let selected = idx == currentIndex
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.14)) {
+                                        currentIndex = idx
+                                    }
+                                } label: {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(ToolrollPalette.codeBg)
+                                        if let thumb = loadedImages[item.url] {
+                                            Image(nsImage: thumb)
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fill)
+                                                .frame(width: 72, height: 48)
+                                                .clipped()
+                                        } else {
+                                            ProgressView().controlSize(.mini)
+                                        }
+                                    }
+                                    .frame(width: 72, height: 48)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(
+                                                selected ? ToolrollPalette.live : ToolrollPalette.line,
+                                                lineWidth: selected ? 2 : 1
+                                            )
+                                    )
+                                    .opacity(selected ? 1.0 : 0.68)
+                                }
+                                .buttonStyle(.plain)
+                                .id(idx)
+                                .task(id: item.url) {
+                                    await loadImage(for: item)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                    .background(ToolrollPalette.raised)
+                    .onChange(of: currentIndex) { _, newIdx in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(newIdx, anchor: .center)
+                        }
+                    }
+                }
             }
         }
+        .frame(width: 900, height: 640)
+        .focusable()
+        .focused($galleryFocused)
+        .focusEffectDisabled()
+        .onAppear {
+            galleryFocused = true
+        }
+        .onKeyPress(.leftArrow) {
+            if canGoPrevious { step(-1); return .handled }
+            return .ignored
+        }
+        .onKeyPress(.rightArrow) {
+            if canGoNext { step(1); return .handled }
+            return .ignored
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+        .task(id: currentIndex) {
+            if let cur = currentArtifact {
+                await loadImage(for: cur)
+            }
+            if currentIndex + 1 < artifacts.count {
+                await loadImage(for: artifacts[currentIndex + 1])
+            }
+            if currentIndex - 1 >= 0 {
+                await loadImage(for: artifacts[currentIndex - 1])
+            }
+        }
+    }
+
+    private func galleryEdgeArrow(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(enabled ? ToolrollPalette.ink : ToolrollPalette.muted.opacity(0.3))
+                .frame(width: 34, height: 34)
+                .background(ToolrollPalette.raised.opacity(enabled ? 0.9 : 0.4), in: Circle())
+                .overlay(Circle().strokeBorder(ToolrollPalette.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }
