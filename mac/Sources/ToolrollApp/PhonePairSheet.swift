@@ -609,7 +609,7 @@ struct PhonePairSheet: View {
     }
 
     private func resolvedPassword() -> String {
-        store.effectivePassword(passwordInput)
+        passwordInput
     }
 
     private func refreshAllChannels() async {
