@@ -241,7 +241,8 @@ describe("the agent fence", () => {
     const withoutStorage = withoutStorageOf(home);
     const fence = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     // The plane's git views (git-views.ts) are made in ~/.toolroll and fenced by name in every fence.
-    const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views")];
+    // The operator's own Codex home, denied to every launch by name (on Linux only when it is there).
+    const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views"), ...(process.platform === "linux" ? [] : [join(home, ".codex")])];
     // Flexible threads' folder (flexible-thread.ts): made first, then denied whole, on every platform.
     const threads = (folder: string) => [join(folder, "threads")];
     expect(fence).toEqual([...threads(state),
@@ -263,7 +264,7 @@ describe("the agent fence", () => {
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
     expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "backups"), join(shared, "codex-sessions"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, ".toolroll-secrets"), join(shared, "runner-processes"), join(shared, "up-login.txt"), ...threads(shared)].sort());
-    // No database file: only ~/.standing-orders and the git views.
+    // No database file: only ~/.standing-orders, the git views and the operator's Codex home.
     expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views].sort());
   });
 

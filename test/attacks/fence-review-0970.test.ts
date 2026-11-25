@@ -57,7 +57,9 @@ describe("the 0.9.70 review's findings", () => {
     for (const name of [".ssh", ".codex"]) mkdirSync(join(home, name), { recursive: true });
     const build = launch();
     const table = codexFenceArgv(build.fence, true, build.fenceGrants).find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-    for (const path of [join(home, "Library", "LaunchAgents"), join(home, ".ssh"), join(home, ".codex")]) expect(table).toContain(`"${realpathSync(home)}${path.slice(home.length)}"="read"`);
+    for (const path of [join(home, "Library", "LaunchAgents"), join(home, ".ssh")]) expect(table).toContain(`"${realpathSync(home)}${path.slice(home.length)}"="read"`);
+    // The operator's own Codex home is denied outright (read and written), not merely read-only.
+    expect(table).toContain(`"${realpathSync(home)}/.codex"="deny"`);
     needs(ctx, codexSandbox());
     const probe = `echo planted >> ${JSON.stringify(agents)} 2>/dev/null && echo written || echo refused`;
     const held = underCodex(probe, build.fence, true, build.fenceGrants, { cwd: worktree, codexHome: join(root, "codex-home") });

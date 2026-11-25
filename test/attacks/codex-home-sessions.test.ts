@@ -64,7 +64,7 @@ describe("attack: a Codex build reaching other sessions or the operator's sign-i
     const { home, codex, runs, database, otherTask, ownTask, run } = world(dir);
     const runFolders = { root: realpathSync(runs), own: null, alsoOwn: [realpathSync(run.dir)] };
     const fence = agentFence({ databaseFile: database, worktree: null, home, runFolders });
-    const grants: FenceGrants = { readOnly: [], readable: [], lookup: [], runFolders, homeNames: [codex], writeDenies: homeWriteDenies(home, null, "codex") };
+    const grants: FenceGrants = { readOnly: [], readable: [], lookup: [], runFolders, writeDenies: homeWriteDenies(home, null, "codex") };
     const result = underSandbox([
       `cat "${run.dir}/sessions/2026/rollout-own.jsonl"`,
       `touch "${run.dir}/sessions/rollout-new.jsonl" && echo own-written`,

@@ -222,6 +222,10 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   try { ensureGitViewsRoot(home); } catch { /* fenced by name below either way */ }
   fence.add(gitViewsRoot(home));
   for (const secrets of existingFolders(home, { dot: true })) fence.add(secrets);
+  // The operator's own Codex home (its sessions, sign-in and history), under every policy version, by name whether or
+  // not it is there: no launch reads or writes it. A Codex build signs in and keeps its sessions in a home of its own
+  // (provider-home.ts isolatedCodexHome), a sign-ins check reads its sign-in file inside it by name and nothing else.
+  for (const path of operatorCodexHomes(home, worktree)) fence.add(path);
   // v104: the folder the audit stream writes to holds the whole instance's history.
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
     const stream = readMonitoring(dirname(real(options.databaseFile))).folder?.path;
@@ -721,6 +725,16 @@ function worktreeGitDir(worktree: string): string | null {
   }
 }
 
+/** Where the operator's own Codex keeps its state, as Toolroll's own process resolves it (its CODEX_HOME, else
+ * ~/.codex), spelled and resolved: never the home folder or one above it, nor one holding the launch's checkout. */
+export function operatorCodexHomes(home: string, worktree: string | null = null, env: Readonly<Record<string, string | undefined>> = process.env): string[] {
+  const named = env["CODEX_HOME"];
+  const candidates = [join(home, ".codex"), ...(named !== undefined && isAbsolute(named) ? [named] : [])].flatMap(path => [path, resolvedPath(path)]);
+  // On Linux a missing path would be stubbed into being for the launch: there, only one that is there.
+  return [...new Set(candidates)].filter(path => path !== sep && path !== home && !inside(home, path) && !(worktree !== null && (worktree === path || inside(worktree, path)))
+    && (process.platform !== "linux" || existsSync(path)));
+}
+
 /** Where each task's Codex sessions are kept between its launches, beside the database (agentFence denies the
  * folder to every launch). */
 export const CODEX_SESSIONS_DIR = "codex-sessions";
@@ -1079,8 +1093,8 @@ const SIGN_IN_FILES = (platform: NodeJS.Platform): string[] => [
  * through its sandbox. Nothing privileged reads or copies one: the sandbox resolves the name in its own view, so a link
  * planted there into Toolroll's state leads to a denied path (Seatbelt checks the resolved file; bubblewrap resolves
  * inside its mount namespace, where the state is masked). On a Mac, the checkout's own Claude transcript folder (made
- * when absent, only as the real folder it is), whose session files alone are written; and Codex's session and log
- * folders (when ~/.codex is there), never its config.
+ * when absent, only as the real folder it is), whose session files alone are written. Nothing of the operator's Codex
+ * home is written (every launch is denied it).
  */
 export function signInGrants(home: string, checkout: string, platform: NodeJS.Platform = process.platform): SignInGrants {
   const base = real(home);
@@ -1090,9 +1104,9 @@ export function signInGrants(home: string, checkout: string, platform: NodeJS.Pl
   const transcript = claudeProjectFolder(base, real(checkout));
   // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
   const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
-  const codex = join(base, ".codex");
-  const writes = grantFolder(codex, false) === null ? [] : ["sessions", "log"].map(name => grantFolder(join(codex, name))).filter((path): path is string => path !== null);
-  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder], writes, mach: platform === "darwin" ? ["com.apple.trustd.agent"] : [] };
+  // Nothing of the operator's Codex home is written: every launch is denied it (operatorCodexHomes), its sign-in read
+  // by name above.
+  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder], writes: [], mach: platform === "darwin" ? ["com.apple.trustd.agent"] : [] };
 }
 
 /** Whether a sign-in file is itself, now: every folder from the (real) home folder down a real folder, the file a
