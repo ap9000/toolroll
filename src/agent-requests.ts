@@ -12,6 +12,8 @@ export type AgentRequestParams = {
   command?: string;
   timeoutSeconds?: number;
   showCommands?: boolean;
+  /** A network request's explicit change (agent-network-request.ts): what an approval applies to the setting then. */
+  change?: { add?: string[]; remove?: string[]; mode?: "open" | "allowlist"; local?: "any" | "proxy-only" };
 };
 
 export type AgentRequest = {

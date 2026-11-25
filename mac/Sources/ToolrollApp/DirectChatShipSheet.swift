@@ -51,7 +51,7 @@ public struct DirectChatShipSheet: View {
                         titleField
                         changedFilesSection(preview)
                         statusSummary(preview)
-                        if selectedMode == "ship" && store.passwordSet == true && store.effectivePassword("").isEmpty {
+                        if selectedMode == "ship" && store.passwordSet == true {
                             passwordField
                         }
                         detailsDisclosure(preview)
@@ -70,6 +70,7 @@ public struct DirectChatShipSheet: View {
         .frame(width: 510, height: showDetails ? 560 : 420)
         .background(ToolrollPalette.ground)
         .animation(.easeInOut(duration: 0.16), value: showDetails)
+        .onDisappear { passwordDraft = "" }
         .onChange(of: store.chatShipPreview) { _, newPreview in
             guard let newPreview else { return }
             if !didSeedDrafts {
@@ -362,6 +363,8 @@ public struct DirectChatShipSheet: View {
     }
 
     private func submitShip() {
+        let password = passwordDraft
+        passwordDraft = ""
         Task {
             if needsRepreview {
                 await store.reloadChatShipPreview(
@@ -374,7 +377,7 @@ public struct DirectChatShipSheet: View {
                 mode: selectedMode,
                 title: titleDraft,
                 goal: goalDraft,
-                password: passwordDraft
+                password: password
             )
             if ok {
                 dismiss()

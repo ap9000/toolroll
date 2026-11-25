@@ -1,4 +1,5 @@
 import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
+import { approveNetworkRequest } from "../agent-network-request.js";
 import { declareJustMe, installModeNow, sessionStandsIn, soloNow, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
@@ -975,10 +976,17 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes what its builds may reach.", "/settings/project");
     const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#network");
-    const hosts = (body.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean).map(normalizeHost);
+    // An agent's request: only the server's terms apply (agent-network-request.ts), bound to the digest the page showed;
+    // the posted mode, hosts and local are never read on that road.
+    const request = body.get("request") ?? "";
+    const hosts = request !== "" ? [] : (body.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean).map(normalizeHost);
     if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
     if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change what builds may reach.");
+    if (request !== "") {
+      const approved = approveNetworkRequest(store, { id: request, repo, digest: body.get("digest") ?? "", by: who.name, now });
+      return back(approved.ok ? "said" : "problem", approved.ok ? `Approved the agent's request.${waitingWords(approved.waiting)}` : approved.problem);
+    }
     // One transaction: the setting, and each idle task in the project re-filed on it, waiting for the same Approve.
     const { changed, waiting } = store.transact(() => {
       const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);

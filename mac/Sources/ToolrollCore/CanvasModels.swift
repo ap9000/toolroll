@@ -611,16 +611,39 @@ public enum YouiCanvasStorage {
     }
 
     public static func gitStateKey(projectRoot: String) -> String {
-        let head = runGit(["rev-parse", "--short=10", "HEAD"], in: projectRoot) ?? "nogit"
-        let status = runGit(["status", "--porcelain"], in: projectRoot) ?? ""
-        if status.isEmpty { return head }
-        let digest = SHA256.hash(data: Data(status.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
+        guard HardenedGit.refusal(in: projectRoot) == nil else { return "unread" }
+        let head = HardenedGit.text(["rev-parse", "--short=10", "HEAD"], in: projectRoot) ?? "nogit"
+        let tracked = HardenedGit.run(["ls-files", "-z"], in: projectRoot).flatMap { $0.status == 0 ? $0.stdout : nil } ?? Data()
+        let untracked = HardenedGit.run(["ls-files", "-z", "-o", "--exclude-standard"], in: projectRoot).flatMap { $0.status == 0 ? $0.stdout : nil } ?? Data()
+        guard let digest = fileFingerprint(projectRoot: projectRoot, tracked: tracked, untracked: untracked) else { return head }
         return "\(head)-\(digest)"
     }
 
+    static func fileFingerprint(projectRoot: String, tracked: Data, untracked: Data, limit: Int = 50_000) -> String? {
+        var hasher = SHA256()
+        var count = 0
+        for (tag, list) in [("t", tracked), ("u", untracked)] {
+            for entry in list.split(separator: 0) where count < limit {
+                count += 1
+                let rel = String(decoding: entry, as: UTF8.self)
+                var st = stat()
+                let line: String
+                if lstat(projectRoot + "/" + rel, &st) == 0 {
+                    line = "\(tag)\u{0}\(rel)\u{0}\(st.st_size)\u{0}\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)\n"
+                } else {
+                    line = "\(tag)\u{0}\(rel)\u{0}missing\n"
+                }
+                hasher.update(data: Data(line.utf8))
+            }
+        }
+        guard count > 0 else { return nil }
+        return hasher.finalize().prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func mainBranchKey(projectRoot: String) -> String {
-        runGit(["rev-parse", "--short=10", "main"], in: projectRoot)
-            ?? runGit(["rev-parse", "--short=10", "HEAD"], in: projectRoot)
+        guard HardenedGit.refusal(in: projectRoot) == nil else { return "baseline" }
+        return HardenedGit.text(["rev-parse", "--short=10", "main"], in: projectRoot)
+            ?? HardenedGit.text(["rev-parse", "--short=10", "HEAD"], in: projectRoot)
             ?? "baseline"
     }
 
@@ -930,51 +953,6 @@ public enum YouiCanvasStorage {
         return nil
     }
 
-    static let gitTimeout: TimeInterval = 3
-
-    private static func runGit(_ args: [String], in cwd: String) -> String? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = ["--no-optional-locks"] + args
-        proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        let output = GitOutputBuffer()
-        pipe.fileHandleForReading.readabilityHandler = { handle in output.append(handle.availableData) }
-        let finished = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in finished.signal() }
-        do {
-            try proc.run()
-        } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
-            return nil
-        }
-        guard finished.wait(timeout: .now() + gitTimeout) == .success else {
-            pipe.fileHandleForReading.readabilityHandler = nil
-            proc.terminate()
-            return nil
-        }
-        pipe.fileHandleForReading.readabilityHandler = nil
-        output.append(pipe.fileHandleForReading.readDataToEndOfFile())
-        guard proc.terminationStatus == 0 else { return nil }
-        return String(data: output.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-private final class GitOutputBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var collected = Data()
-
-    func append(_ chunk: Data) {
-        guard !chunk.isEmpty else { return }
-        lock.lock(); collected.append(chunk); lock.unlock()
-    }
-
-    var data: Data {
-        lock.lock(); defer { lock.unlock() }
-        return collected
-    }
 }
 
 public struct VisualDiffResult: Sendable {

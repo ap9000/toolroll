@@ -149,7 +149,8 @@ public enum LocalDaemonBootstrapper {
         bundleResourcePath: String? = Bundle.main.resourcePath,
         env: [String: String] = ProcessInfo.processInfo.environment,
         isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        trust: (String) -> String? = { EngineBinary.trustedPath($0) }
     ) -> LocalDaemonLaunchPlan {
         let searchPath = enrichedPATH(base: env["PATH"], home: home)
 
@@ -166,8 +167,10 @@ public enum LocalDaemonBootstrapper {
             }
         }
 
-        if let bin = findExecutable(named: "toolroll", searchPath: searchPath, isExecutable: isExecutable) {
-            return .cliBinary(path: bin)
+        if let bin = findExecutable(named: "toolroll", searchPath: searchPath, isExecutable: isExecutable),
+           let installed = trust(bin)
+        {
+            return .cliBinary(path: installed)
         }
 
         if let npx = findExecutable(named: "npx", searchPath: searchPath, isExecutable: isExecutable),

@@ -8,6 +8,9 @@ import { resolveExecutable } from "./attest.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import { scanCustody, type CustodyIO, type LaunchCustody, type ProcessWitness, type ProcRow } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
+import { plainAgentEnv } from "./agent-fence.js";
+import { directChatFence, type DirectChatFenceFn, type DirectChatTurnFence } from "./direct-chat-fence.js";
+import { confined } from "./exec.js";
 import { cleanLiveText, HIDDEN_LINE, liveSecretHit } from "./live-records.js";
 import { projectName } from "./project.js";
 import {
@@ -181,20 +184,6 @@ const DEFAULT_STOP_GRACE_MS = 5_000;
 const EMPTY_DIFF: DirectChatDiffSummary = Object.freeze({ changedFiles: [], diffText: "", dirty: false });
 const HANDOFF_MAX_TURNS = 6;
 const HANDOFF_MAX_CHARS = 6_000;
-const STRIPPED_ENV_KEYS = new Set([
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "NPM_TOKEN",
-  "NODE_AUTH_TOKEN",
-  "VERCEL_TOKEN",
-  "CLOUDFLARE_API_TOKEN",
-  "NETLIFY_AUTH_TOKEN",
-  "FLY_API_TOKEN",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "SSH_AUTH_SOCK",
-]);
 
 function sanitizeDisplay(raw: string): string {
   return raw
@@ -664,12 +653,26 @@ export function locateDirectChatBinary(provider: DirectChatProvider): string | n
   return resolveExecutable(DIRECT_CHAT_BINARIES[provider]);
 }
 
-export function buildSanitizedChildEnv(baseEnv: NodeJS.ProcessEnv = process.env, homeDir = homedir()): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
-    if (value === undefined) continue;
-    if (STRIPPED_ENV_KEYS.has(key)) continue;
-    out[key] = value;
+/** Where each provider CLI keeps its own sign-in, when its person moved it (folders, never keys). */
+const SIGN_IN_LOCATION_ENV: Readonly<Record<DirectChatProvider, readonly string[]>> = {
+  claude: ["CLAUDE_CONFIG_DIR"],
+  codex: ["CODEX_HOME"],
+  gemini: [],
+};
+const XDG_FOLDERS = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"] as const;
+
+/**
+ * The environment a Direct Chat agent starts with, exactly (never Toolroll's own with some names taken out): the plain
+ * settings every agent launch keeps (agent-fence.ts plainAgentEnv), the home and temp folders, and where this
+ * provider's CLI keeps its own sign-in. The CLI signs in from its own files there; no API key, token or other secret
+ * of the server's reaches the agent or the commands it runs.
+ */
+export function buildSanitizedChildEnv(provider: DirectChatProvider, baseEnv: NodeJS.ProcessEnv = process.env, homeDir = homedir()): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...plainAgentEnv(baseEnv) };
+  out["HOME"] = baseEnv["HOME"] ?? homeDir;
+  for (const name of ["TMPDIR", ...XDG_FOLDERS, ...SIGN_IN_LOCATION_ENV[provider]]) {
+    const value = baseEnv[name];
+    if (value !== undefined && value !== "") out[name] = value;
   }
   const extraPath = `${homeDir}/.local/bin:${homeDir}/.gemini/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
   out["PATH"] = out["PATH"] ? `${extraPath}:${out["PATH"]}` : extraPath;
@@ -717,7 +720,12 @@ export type DirectChatHostSeams = {
     env: NodeJS.ProcessEnv;
     logPath: string;
     stderrPath: string;
+    /** The outer fence Claude's turn runs in (direct-chat-fence.ts); absent for the other agents. */
+    fence?: DirectChatTurnFence;
   }) => { pid: number; pgid: number; startIdentity: string | null };
+  /** How a Claude turn's fence is made (default: direct-chat-fence.ts directChatFence). A test that injects spawnTurn
+   * and no fenceTurn makes none (no proxy or storage walk starts); production never injects spawnTurn. */
+  fenceTurn?: DirectChatFenceFn;
   prepareClone?: (input: { stateRoot: string; repo: string; clonePath: string; gitDir: string; branch: string }) => Promise<{
     baseSha: string;
     gitDir: string;
@@ -834,19 +842,22 @@ function readTreeRangeDiff(binding: TrustedCloneBinding, fromTreeSha: string, to
 
 function defaultSpawnTurn(
   custody: CustodyIO,
-  input: { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; logPath: string; stderrPath: string }
+  input: { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; logPath: string; stderrPath: string; fence?: DirectChatTurnFence }
 ): { pid: number; pgid: number; startIdentity: string | null } {
+  // Inside the turn's fence when it has one (confined refuses rather than run it bare where no OS fence applies).
+  const launch = input.fence === undefined ? { file: input.binary, args: input.args, env: {} as Record<string, string> }
+    : confined(input.binary, input.args, { fence: input.fence.launch.fence, fenceGrants: input.fence.launch.fenceGrants, confinement: input.fence.launch.confinement, cwd: input.cwd, temp: input.fence.temp });
   mkdirSync(dirname(input.logPath), { recursive: true, mode: 0o700 });
   const outFd = openSync(input.logPath, "a", 0o600);
   const errFd = openSync(input.stderrPath, "a", 0o600);
   try {
     const opts: SpawnOptions = {
       cwd: input.cwd,
-      env: input.env,
+      env: input.fence === undefined ? input.env : { ...input.env, ...input.fence.env, ...launch.env },
       detached: true,
       stdio: ["ignore", outFd, errFd],
     };
-    const child = spawn(input.binary, input.args, opts);
+    const child = spawn(launch.file, launch.args, opts);
     if (child.pid === undefined) {
       throw new Error(`Could not start ${basename(input.binary)}.`);
     }
@@ -873,6 +884,9 @@ export class DirectChatHost {
   private readonly stopGraceMs: number;
   private readonly locateBinary: (provider: DirectChatProvider) => string | null;
   private readonly spawnTurnFn: NonNullable<DirectChatHostSeams["spawnTurn"]>;
+  private readonly fenceTurnFn: DirectChatFenceFn | null;
+  /** Each running Claude turn's fence closer (its proxy and temp folder), closed when the turn settles. */
+  private readonly turnFences = new Map<string, () => Promise<void>>();
   private readonly prepareCloneFn: NonNullable<DirectChatHostSeams["prepareClone"]>;
   private readonly readDiffFn: NonNullable<DirectChatHostSeams["readDiff"]>;
   private readonly hasCustomReadDiff: boolean;
@@ -897,6 +911,7 @@ export class DirectChatHost {
     this.stopGraceMs = seams.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.locateBinary = seams.locateBinary ?? (provider => locateDirectChatBinary(provider));
     this.spawnTurnFn = seams.spawnTurn ?? (input => defaultSpawnTurn(this.custody, input));
+    this.fenceTurnFn = seams.fenceTurn ?? (seams.spawnTurn === undefined ? directChatFence(store) : null);
     this.prepareCloneFn = seams.prepareClone ?? defaultPrepareCloneAsync;
     this.hasCustomReadDiff = seams.readDiff !== undefined;
     this.readDiffFn = seams.readDiff ?? defaultReadDiff;
@@ -925,6 +940,22 @@ export class DirectChatHost {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    for (const turnId of [...this.turnFences.keys()]) this.closeTurnFence(turnId);
+  }
+
+  private closeTurnFence(turnId: string): void {
+    const close = this.turnFences.get(turnId);
+    if (close === undefined) return;
+    this.turnFences.delete(turnId);
+    // A fence that didn't close cleanly is said, in the server's log and on the turn itself, never swallowed.
+    this.trackCleanup(close().catch((error: unknown) => {
+      const said = `Toolroll couldn't finish closing this turn's sandbox: ${error instanceof Error ? error.message : String(error)}.`;
+      console.warn(`direct chat turn ${turnId}: ${said}`);
+      try {
+        this.store.handle.prepare(`UPDATE direct_chat_turn SET error_text = CASE WHEN error_text IS NULL OR error_text = '' THEN ? ELSE error_text || char(10) || ? END WHERE id = ?`)
+          .run(said, said, turnId);
+      } catch { /* the log above still says it */ }
+    }));
   }
 
   /** Await any background trash deletions scheduled by deleteThread(). */
@@ -1378,7 +1409,7 @@ export class DirectChatHost {
       stamp
     );
 
-    const started = this.sendMessage({
+    const started = await this.sendMessage({
       owner: input.owner,
       threadId,
       requestId: input.requestId,
@@ -1393,12 +1424,38 @@ export class DirectChatHost {
     return { ok: true, thread, turn: started.turn, created: true };
   }
 
-  sendMessage(input: {
+  /**
+   * Starts a turn. A Claude turn runs inside its outer fence (direct-chat-fence.ts), made first (it waits on the
+   * storage check and the proxy); everything after it, the checks and the spawn, runs in one synchronous step as before,
+   * and a turn that doesn't start closes the fence it was given.
+   */
+  async sendMessage(input: {
     owner: string;
     threadId: string;
     requestId: string;
     prompt: string;
-  }): { ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string } {
+  }): Promise<{ ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string }> {
+    const thread = HEX32.test(input.threadId) ? this.getThreadRecord(input.owner, input.threadId) : null;
+    if (thread === null || thread.provider !== "claude" || thread.isLegacy || this.fenceTurnFn === null) return this.sendMessageNow(input, null);
+    if (thread.gitDir === null) return { ok: false, status: 409, error: "This chat has no isolated Git folder, so its agent can't be fenced. Start a new chat instead." };
+    const known = this.store.handle.prepare(`SELECT 1 FROM direct_chat_turn WHERE thread_id = ? AND request_id = ?`).get(thread.id, input.requestId);
+    if (known !== undefined) return this.sendMessageNow(input, null);
+    const made = await this.fenceTurnFn({ stateRoot: this.stateRoot, repo: thread.repo, clone: thread.clonePath, gitDir: thread.gitDir });
+    if ("problem" in made) return { ok: false, status: 409, error: made.problem };
+    const fence = "unfenced" in made ? null : made;
+    let started: Awaited<ReturnType<DirectChatHost["sendMessage"]>>;
+    try { started = this.sendMessageNow(input, fence); }
+    catch (error) { if (fence !== null) await fence.close(); throw error; }
+    if (fence !== null && (!started.ok || !started.created)) await fence.close();
+    return started;
+  }
+
+  private sendMessageNow(input: {
+    owner: string;
+    threadId: string;
+    requestId: string;
+    prompt: string;
+  }, fence: DirectChatTurnFence | null): { ok: true; turn: DirectChatTurnRow; created: boolean } | { ok: false; status: number; error: string } {
     if (!HEX32.test(input.threadId) || !HEX32.test(input.requestId)) {
       return { ok: false, status: 400, error: "Invalid thread or request id." };
     }
@@ -1483,9 +1540,10 @@ export class DirectChatHost {
         binary,
         args,
         cwd: managed.realClone,
-        env: buildSanitizedChildEnv(),
+        env: buildSanitizedChildEnv(thread.provider),
         logPath,
         stderrPath,
+        ...(fence === null ? {} : { fence }),
       });
     } catch (error) {
       const msg = `Could not launch ${thread.provider}: ${error instanceof Error ? error.message : String(error)}`;
@@ -1500,6 +1558,7 @@ export class DirectChatHost {
     if (beforeTree !== null) {
       this.preTurnTreeSha.set(turnId, beforeTree);
     }
+    if (fence !== null) this.turnFences.set(turnId, fence.close);
 
     this.store.handle.prepare(`
       UPDATE direct_chat_turn SET pid = ?, start_identity = ?, pgid = ? WHERE id = ?
@@ -2077,6 +2136,7 @@ export class DirectChatHost {
   }
 
   private cleanupTurnState(turnId: string): void {
+    this.closeTurnFence(turnId);
     this.sawTerminalByTurn.delete(turnId);
     this.resetOnNextTextDelta.delete(turnId);
     this.preTurnImages.delete(turnId);

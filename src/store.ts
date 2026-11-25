@@ -15692,17 +15692,19 @@ export class Store {
 
   /**
    * The crash sweep: turns past their deadline become failed('crashed'),
-   * generation-bumped so a late finalize loses. A metered API turn that
-   * STARTED may have billed — it latches unknown spend and blocks its
-   * credential; a queued turn or a subscription turn (zero API billing)
-   * settles at zero without latching.
+   * generation-bumped so a late finalize loses. A turn that STARTED may
+   * have billed — it latches unknown spend and blocks its credential —
+   * unless the turn's own recorded billing proves it was a subscription
+   * (billing_reported). A subscription-labelled route is not that proof:
+   * the CLI may bill an API key it found itself. A queued turn never
+   * dispatched and settles at zero.
    */
   sweepStaleChatTurns(now: Date): number {
     const swept = this.db
       .prepare(
         `UPDATE chat_turn SET state = 'failed', failure_reason = 'crashed', generation = generation + 1,
-           unknown_spend = CASE WHEN started_at IS NOT NULL AND provider NOT IN ('claude-subscription','codex-subscription') THEN 1 ELSE 0 END,
-           settled_microusd = CASE WHEN started_at IS NOT NULL AND provider NOT IN ('claude-subscription','codex-subscription') THEN settled_microusd ELSE 0 END,
+           unknown_spend = CASE WHEN started_at IS NOT NULL AND billing_reported IS NOT 'subscription' THEN 1 ELSE 0 END,
+           settled_microusd = CASE WHEN started_at IS NOT NULL AND billing_reported IS NOT 'subscription' THEN settled_microusd ELSE 0 END,
            finished_at = ?
          WHERE state IN ('queued','running') AND deadline_at < ?`,
       )

@@ -61,6 +61,7 @@ public enum ClientTransport: Sendable, Equatable {
 
 public actor ToolrollClient {
     public private(set) var transport: ClientTransport
+    private var pinnedInstall: String?
     public var profile: ConnectionProfile {
         switch transport {
         case .remoteBearer(let p): return p
@@ -80,6 +81,7 @@ public actor ToolrollClient {
 
     public init(localSession: LocalSessionCredentials, session: URLSession = .shared) {
         self.transport = .localSession(localSession)
+        self.pinnedInstall = Self.installPath(localSession.databasePath)
         self.session = session
         self.decoder = JSONDecoder()
     }
@@ -279,10 +281,24 @@ public actor ToolrollClient {
     }
 
     private func reconnectLocalSession() async -> Bool {
-        guard case .localSession = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
+        guard case .localSession(let current) = transport, let fresh = await LocalConsoleConnector.discoverAndConnect() else { return false }
+        guard Self.renewalAllowed(pinned: pinnedInstall, current: current, fresh: fresh) else { return false }
         transport = .localSession(fresh)
         sessionRenewed?(fresh)
         return true
+    }
+
+    static func installPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func renewalAllowed(pinned: String?, current: LocalSessionCredentials, fresh: LocalSessionCredentials) -> Bool {
+        guard let pinned else { return false }
+        return sameInstall(current, fresh) && installPath(fresh.databasePath) == pinned
+    }
+
+    static func sameInstall(_ a: LocalSessionCredentials, _ b: LocalSessionCredentials) -> Bool {
+        a.account == b.account && installPath(a.databasePath) == installPath(b.databasePath)
     }
 
     private var sessionRenewed: (@Sendable (LocalSessionCredentials) -> Void)?
@@ -955,6 +971,8 @@ public actor ToolrollClient {
         public let networkHosts: String
         public let concurrency: Int
         public let suggestedSetupCommand: String
+        /// Pending agent network requests with the server's own terms (never the request file's words).
+        public let networkRequests: [AgentNetworkRequestTerms]
 
         public init(
             repoPath: String,
@@ -965,7 +983,8 @@ public actor ToolrollClient {
             networkLocalAny: Bool,
             networkHosts: String,
             concurrency: Int,
-            suggestedSetupCommand: String
+            suggestedSetupCommand: String,
+            networkRequests: [AgentNetworkRequestTerms] = []
         ) {
             self.repoPath = repoPath
             self.projectName = projectName
@@ -976,6 +995,7 @@ public actor ToolrollClient {
             self.networkHosts = networkHosts
             self.concurrency = concurrency
             self.suggestedSetupCommand = suggestedSetupCommand
+            self.networkRequests = networkRequests
         }
     }
 
@@ -1060,7 +1080,8 @@ public actor ToolrollClient {
             networkLocalAny: networkLocalAny,
             networkHosts: networkHosts,
             concurrency: concurrency,
-            suggestedSetupCommand: suggested
+            suggestedSetupCommand: suggested,
+            networkRequests: AgentNetworkRequestTerms.parse(projectSettingsHTML: html)
         )
     }
 
@@ -1102,6 +1123,21 @@ public actor ToolrollClient {
                 ("password", password),
             ],
             defaultDone: "Saved project network settings."
+        )
+    }
+
+    /// Approves an agent's network request exactly as the server showed it: only its id and the digest of the terms the
+    /// person saw are sent; the server re-derives the terms and refuses when they no longer match.
+    public func approveNetworkRequest(repo: String, id: String, digest: String, password: String) async throws -> String {
+        return try await sendFormAct(
+            path: "/settings/project/network",
+            fields: [
+                ("repo", repo),
+                ("request", id),
+                ("digest", digest),
+                ("password", password),
+            ],
+            defaultDone: "Approved the agent's request."
         )
     }
 

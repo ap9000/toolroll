@@ -4,6 +4,15 @@ Status: built 2026-11-22 (branch fix/codex-os-fence); live run of the failed tas
 fix the network issue." Supersedes sandbox-parity.md's "Codex terminals keep Codex's own sandbox" for pipeline
 launches on macOS.
 
+Update (2026-11-25, security review C2): the exact sign-in and sessions grants below are gone. A Codex or OpenRouter
+build's own CODEX_HOME now holds a copy of the operator's `auth.json` (a refresh stays in the copy; nothing is written
+back) and only its task's sessions, kept between that task's launches in `<state>/codex-sessions/` (denied to every
+launch) and copied out after the run as plain files proven to be inside the launch's folder (`provider-home.ts`).
+Nothing in the operator's `~/.codex` is granted to a build. If Codex asks the operator to sign in again after a build
+refreshed its token, `codex login` fixes it. A task's folder is named for its database's workspace id, its recovery
+generation (rotated by every restore) and the task's row id, and each Codex launch first removes every kept folder
+that isn't an open task's in the current generation (closed tasks', an earlier database's or generation's). Test: `test/attacks/codex-home-sessions.test.ts`.
+
 ## Problem
 
 A project's **Network & Local Services** settings (local services on, allowlisted hosts through the run proxy) reach

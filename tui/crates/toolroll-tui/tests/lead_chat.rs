@@ -696,7 +696,7 @@ fn resume_conversation() -> App {
     reply["ask"] = json!(null);
     reply["cards"] = json!([
         {"id":102,"kind":"unhold","label":"Resume work","state":"pending","data":false,
-         "lines":["Release homepage-nameplate from its hold","Project: alekseypelletier.com"],"card":null,
+         "lines":["Release homepage-nameplate from its hold","Project: my-site"],"card":null,
          "said":null,"note":null,"primary":{"kind":"confirm","label":"Release hold","irreversible":false,"native":false},
          "dismissable":true,"links":[{"label":"Peek homepage-nameplate","task":"homepage-nameplate","tab":null,"href":"/t/homepage-nameplate"}]},
         {"id":103,"kind":"control","label":"Manage projects","state":"pending","data":false,"lines":[],"card":null,

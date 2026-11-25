@@ -2339,6 +2339,30 @@ export function typedPasswordNow(proved: { ok: true; method: AuthMethod } | { ok
 }
 
 /**
+ * Whether the project's active tools now are exactly the ones the approval at `approvedDigest` sealed (same names and
+ * digests). False when the task has no repository, no seal row, or a seal that can't be read: none proves what was seen.
+ */
+export function agentChangeToolsUnchanged(store: Store, taskId: string, approvedDigest: string): boolean {
+  const repo = store.lookupRef(taskId)?.repo ?? null;
+  if (repo === null) return false;
+  const row = store.handle.prepare("SELECT tools_json FROM tool_seal WHERE task = ? AND approved_digest = ?").get(taskId, approvedDigest);
+  if (row === undefined || typeof row["tools_json"] !== "string") return false;
+  let sealed: unknown;
+  try { sealed = JSON.parse(row["tools_json"]); } catch { return false; }
+  if (!Array.isArray(sealed)) return false;
+  const seen: string[] = [];
+  for (const one of sealed) {
+    const entry = one as { name?: unknown; digest?: unknown } | null;
+    if (entry === null || typeof entry !== "object" || typeof entry.name !== "string" || typeof entry.digest !== "string") return false;
+    seen.push(JSON.stringify([entry.name, entry.digest]));
+  }
+  const today = store.projectTools(repo).map(one => JSON.stringify([one.name, one.digest]));
+  if (seen.length !== today.length) return false;
+  seen.sort(); today.sort();
+  return seen.every((one, index) => one === today[index]);
+}
+
+/**
  * approve()'s narrow branch for the Mac app's model pick (docs/plans/mac-change-models.md), read in the seal's own
  * transaction: the scope carries a standing seal that just went stale (approved, at a digest other than the current
  * one), that seal was this same person's own yes on a person's road (the ceremony or a chat tap, never a mode, grant,
@@ -2350,6 +2374,9 @@ export function agentChangeSealAllowed(store: Store, by: string, taskId: string)
   const scope = store.getScope(taskId);
   if (scope === null || scope.approvedAt === null || scope.approvedDigest === null || scope.approvedDigest === scope.digest) return false;
   if (scope.approvedBy !== by || (scope.approvalBasis !== "password" && scope.approvalBasis !== "chat")) return false;
+  // approve() seals today's project tools: carrying the yes over is only this person's yes to them when the tools the
+  // old yes saw are exactly today's. A missing or damaged seal proves nothing (fails closed).
+  if (!agentChangeToolsUnchanged(store, taskId, scope.approvedDigest)) return false;
   return agentOnlyChange(
     { routeJson: scope.approvedRouteJson, profile: scope.approvedProfile, chainJson: scope.approvedChainJson },
     { routeJson: scope.proposedRouteJson, profile: scope.profile, chainJson: scope.proposedChainJson },

@@ -4,7 +4,7 @@ export function ApproveScope() {
   return (
     <div style={{ maxWidth: 380 }}>
       <AttentionCard
-        title="Approve scope for job-scraper"
+        title="Approve scope for my-tool"
         meta="task #12"
         action={<Button size="sm">Review and sign</Button>}
       >

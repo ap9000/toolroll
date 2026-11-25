@@ -32,11 +32,11 @@ describe("command-running settings refuse teardown", () => {
 });
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
-import { carriedSettings, checkoutGit, CONFIG_READ_BYTES, CONFIG_READ_MS, teardownGit, TEARDOWN_FLAGS, viewedGitSync } from "./teardown-git.js";
+import { carriedSettings, checkoutGit, CONFIG_READ_BYTES, CONFIG_READ_MS, syncWriteArgv, teardownGit, TEARDOWN_FLAGS, viewedGitSync } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
 
@@ -386,4 +386,46 @@ describe("the hardened runners' own reads take their own bounds, never the calle
       expect(seen?.stdin).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+test("a synchronous write runs only its exact shapes: no caller option, setting, transport, HEAD or other ref", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "so-sync-write-")));
+  try {
+    const sha = "a".repeat(40);
+    const fetch = (path: string, refspec: string, ...more: string[]) => ["fetch", "--no-tags", "--no-write-fetch-head", ...more, path, refspec];
+    expect(syncWriteArgv(fetch(repo, `${sha}:refs/heads/toolroll/chat-1`))).toEqual(
+      ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head", "--", repo, `${sha}:refs/heads/toolroll/chat-1`]);
+    expect(syncWriteArgv(["branch", "-D", "toolroll/chat-1"])).toEqual(["branch", "-D", "toolroll/chat-1"]);
+    const linked = join(repo, "..", `${repo.split("/").pop()}-link`);
+    symlinkSync(repo, linked);
+    const refused: string[][] = [
+      ["-c", "core.sshCommand=touch /tmp/x", ...fetch(repo, `${sha}:refs/heads/x`)],
+      ["-C", "/", ...fetch(repo, `${sha}:refs/heads/x`)],
+      fetch(repo, `${sha}:refs/heads/x`, "--upload-pack=touch /tmp/x"),
+      ["fetch", "--upload-pack=touch /tmp/x", "--no-write-fetch-head", repo, `${sha}:refs/heads/x`],
+      fetch("ext::sh -c touch% /tmp/x", `${sha}:refs/heads/x`),
+      fetch("file:///etc", `${sha}:refs/heads/x`),
+      fetch("relative/path", `${sha}:refs/heads/x`),
+      fetch(linked, `${sha}:refs/heads/x`),
+      fetch("--upload-pack=x", `${sha}:refs/heads/x`),
+      fetch(repo, `${sha}:HEAD`),
+      fetch(repo, `${sha}:refs/remotes/origin/main`),
+      fetch(repo, `${sha}:refs/tags/v1`),
+      fetch(repo, `+${sha}:refs/heads/x`),
+      fetch(repo, `main:refs/heads/x`),
+      fetch(repo, `${sha}:refs/heads/../x`),
+      fetch(repo, `${sha}:refs/heads/x.lock`),
+      fetch(repo, `${sha}:refs/heads/-x`),
+      fetch(repo, `${sha}:refs/heads/x`, "extra"),
+      ["update-ref", "refs/heads/x", sha],
+      ["branch", "-D", "HEAD"],
+      ["branch", "-D", "--force"],
+      ["branch", "-m", "x"],
+      ["branch", "--edit-description"],
+      ["branch", "-D", "a", "b"],
+      ["-c", "x=y", "branch", "-D", "x"],
+      ["checkout", "main"],
+    ];
+    for (const args of refused) expect(syncWriteArgv(args), args.join(" ")).toBeNull();
+  } finally { rmSync(repo, { recursive: true, force: true }); rmSync(`${repo}-link`, { force: true }); }
 });

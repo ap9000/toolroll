@@ -36,6 +36,9 @@ export interface RemoteRuntime {
   options: ServeOptions;
   coding: CodingWorkspace | null;
   codingProjects: () => string[];
+  /** Native tools share the installation's login: only an installation-wide operator, on a project the coding workspace admits. */
+  codingActorAllowed: (actor: { name: string; generation: number; }) => boolean;
+  codingProjectAllowed: (repo: string) => boolean;
   liveCeiling: () => { repos: string[]; roots: readonly string[]; };
   clock: () => Date;
   evidenceRoot: string;
@@ -219,7 +222,7 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.handoff-open-pr": async ({ request, response, url }) => { await handleOpenCandidatePrHttp(request, response, url, { store, evidenceRoot, clock, liveCeiling: runtime.liveCeiling, allowedHost, browserKeys: runtime.browserKeys, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.approval-ping": async ({ request, response, url }) => { handleApprovalPingHttp(request, response, url, { store, clock, liveCeiling: runtime.liveCeiling, consoleOrigin, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.remote-terminals": async ({ request, response }) => { handleRemoteTerminalsHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, terminalHost: runtime.terminalHost, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
-    "edge.remote-terminal-start": async ({ request, response, url }) => { await handleStartRemoteTerminalHttp(request, response, url, { store, clock, liveCeiling: runtime.liveCeiling, terminalHost: runtime.terminalHost, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
+    "edge.remote-terminal-start": async ({ request, response, url }) => { await handleStartRemoteTerminalHttp(request, response, url, { store, clock, liveCeiling: runtime.liveCeiling, terminalHost: runtime.terminalHost, codingActorAllowed: runtime.codingActorAllowed, codingProjectAllowed: runtime.codingProjectAllowed, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.presence": async ({ request, response }) => { handlePresenceHttp(request, response, { store, clock, liveCeiling: runtime.liveCeiling, taskRooms: runtime.taskRooms, terminalHost: runtime.terminalHost, identify, authenticateBearer: tokenPrincipalOf, admitBearer: principal => requestBudget.admit(principal.tokenId, "api") }); },
     "edge.connect-pair-start": async ({ request, response }) => { await devicePair.start(request, response); },
     "edge.connect-pair-poll": async ({ request, response }) => { await devicePair.poll(request, response); },

@@ -280,7 +280,7 @@ public struct AddProjectSheet: View {
         Task {
             do {
                 try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-                try runGit(["init", "-b", "main"], in: target.path)
+                try await runGit(["init", "-b", "main"], in: target.path)
                 isWorking = false
                 store.isAddProjectSheetOpen = false
                 await store.addLocalProject(path: target.path)
@@ -297,6 +297,10 @@ public struct AddProjectSheet: View {
         if !raw.contains("://") && !raw.hasPrefix("git@") && raw.contains("/") {
             raw = "https://github.com/\(raw).git"
         }
+        guard HardenedGit.isCloneURL(raw) else {
+            errorText = "Enter an https or ssh address, like https://github.com/owner/repo."
+            return
+        }
         let repoSlug = URL(string: raw)?.deletingPathExtension().lastPathComponent ?? "cloned-repo"
         let target = URL(fileURLWithPath: parentFolder).appendingPathComponent(repoSlug, isDirectory: true)
         isWorking = true
@@ -304,7 +308,7 @@ public struct AddProjectSheet: View {
 
         Task {
             do {
-                try runGit(["clone", raw, target.path], in: parentFolder)
+                try await runGit(["clone", "--no-recurse-submodules", "--", raw, target.path], in: parentFolder, timeout: 600, forwardSSHAgent: true)
                 isWorking = false
                 store.isAddProjectSheetOpen = false
                 await store.addLocalProject(path: target.path)
@@ -316,19 +320,13 @@ public struct AddProjectSheet: View {
         }
     }
 
-    private func runGit(_ args: [String], in cwd: String) throws {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        let pipe = Pipe()
-        proc.standardError = pipe
-        proc.standardOutput = pipe
-        try proc.run()
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "git failed"
-            throw ToolrollClientError.refused(out.trimmingCharacters(in: .whitespacesAndNewlines))
+    private func runGit(_ args: [String], in cwd: String, timeout: TimeInterval = 30, forwardSSHAgent: Bool = false) async throws {
+        let out = await Task.detached(priority: .userInitiated) {
+            HardenedGit.run(args, in: cwd, timeout: timeout, forwardSSHAgent: forwardSSHAgent)
+        }.value
+        guard let out else { throw ToolrollClientError.refused("git didn't finish. Nothing was added.") }
+        if out.status != 0 {
+            throw ToolrollClientError.refused(out.stderr.isEmpty ? "git failed." : out.stderr)
         }
     }
 }

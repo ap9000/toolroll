@@ -48,13 +48,13 @@ mkdirSync(join(state, "control"), { recursive: true });
 
 const SCOPES = {
   "run-1527": {
-    taskId: "oddcircle-s1-astra-settlement-repair",
-    title: "OddCircle sprint 1: Astra repair of Sonnet settlement and Money work",
+    taskId: "my-site-s1-astra-settlement-repair",
+    title: "my-site sprint 1: Astra repair of Sonnet settlement and Money work",
     goal: RUN_1527_GOAL,
     outOfScope: RUN_1527_OUT_OF_SCOPE,
     touches: [...RUN_1527_TOUCHES],
     acceptance: RUN_1527_ACCEPTANCE.map(one => ({ ...one, evidence: [...one.evidence] })),
-    branch: "standing-orders/oddcircle-s1-astra-settlement-repair",
+    branch: "standing-orders/my-site-s1-astra-settlement-repair",
   },
   "small-imperative": {
     taskId: "greet-smoke",
@@ -122,9 +122,9 @@ function fixtureRepo(scopeKey, branch) {
   writeFileSync(join(repo, "src", "index.js"), "export {};\n");
   writeFileSync(join(repo, "test", ".gitkeep"), "");
   if (scopeKey === "run-1527") {
-    // The 1527 scope names an OddCircle tree this fixture does not have; the
+    // The 1527 scope names a my-site tree this fixture does not have; the
     // point of the case is only whether the wording alone stops the builder.
-    writeFileSync(join(repo, "NOTE.md"), "This disposable fixture is not the OddCircle repository.\n");
+    writeFileSync(join(repo, "NOTE.md"), "This disposable fixture is not the my-site repository.\n");
   }
   git(repo, "add", "-A");
   git(repo, "commit", "-q", "-m", "baseline");
@@ -147,7 +147,7 @@ async function generateBrief(scopeKey, worktree) {
   const { build } = await dist("builder.js");
   const scope = SCOPES[scopeKey];
   const T0 = new Date("2026-09-12T19:34:21.636Z");
-  const REPO = "/code/oddcircle";
+  const REPO = "/code/my-site";
   // One fresh control-plane file per generation: `verify` generates twice.
   const store = openStore(join(state, "control", `brief-${scopeKey}-${Date.now()}.db`));
   try {
