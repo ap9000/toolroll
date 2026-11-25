@@ -124,6 +124,7 @@
     "scripts/fixtures/pilot-scenarios.mjs",
     "scripts/proof-preflight.mjs",
     "scripts/restart-certification.mjs",
+    "scripts/release-proof.mjs",
     "scripts/launchd-certification.mjs",
     "scripts/fixtures/restart-service.mjs",
     "THIRD_PARTY_NOTICES.md"
